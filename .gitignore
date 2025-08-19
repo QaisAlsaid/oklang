@@ -1,3 +1,9 @@
+.vscode/
+build/
+ideas.txt
+.cache/
+
+# Auto-Gen (github)
 # Prerequisites
 *.d
 

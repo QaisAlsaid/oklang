@@ -1,0 +1,56 @@
+Checks: >
+  clang-analyzer-*,
+  bugprone-*,
+  modernize-*,
+  performance-*,
+  readability-*,
+  readability-identifier-naming,
+  misc-unused-parameters,
+  cppcoreguidelines-*,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -modernize-use-trailing-return-type,
+  -modernize-pass-by-value,
+  -readability-magic-numbers
+
+WarningsAsErrors: ''
+
+HeaderFilterRegex: '.*'
+
+CheckOptions:
+  ...
+  - key: readability-identifier-naming.VariableMinLength
+    value: '0'
+  - key: readability-identifier-naming.ParameterMinLength
+    value: '0'
+  - key: readability-identifier-naming.FunctionMinLength
+    value: '0'
+  - key: readability-identifier-naming.ClassMinLength
+    value: '0'
+  - key: readability-identifier-naming.StructMinLength
+    value: '0'
+  - key: readability-identifier-naming.EnumMinLength
+    value: '0'
+  - key: readability-identifier-naming.EnumConstantMinLength
+    value: '0'
+  - key: readability-identifier-naming.TypedefMinLength
+    value: '0'
+  - key: readability-identifier-naming.MacroDefinitionMinLength
+    value: '0'
+  - key: readability-identifier-naming.GlobalConstantMinLength
+    value: '0'
+  - key: readability-identifier-naming.GlobalVariableMinLength
+    value: '0'
+  - key: readability-identifier-naming.NamespaceMinLength
+    value: '0'
+  - key: readability-identifier-naming.MemberMinLength
+    value: '0'
+  - key: readability-identifier-naming.PrivateMemberMinLength
+    value: '0'
+  - key: readability-identifier-naming.ProtectedMemberMinLength
+    value: '0'
+  - key: readability-identifier-naming.PublicMemberMinLength
+    value: '0'
+  - key: readability-identifier-naming.StaticConstantMinLength
+    value: '0'
+  - key: readability-identifier-naming.AllowedIdentifiers
+    value: id;i;j;k;x;y
