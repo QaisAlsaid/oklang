@@ -5,89 +5,182 @@
 #include "parser.hpp"
 #include "token.hpp"
 #include <cstdlib>
+#include <list>
 #include <memory>
 
+// is the ood best fit here? or just plain parse functions will do?
 namespace ok
 {
+  // TODO(Qais): since we are not using exceptions, then parse function should be of type std::expected<up<expr>, error>
   struct prefix_parser_base
   {
+    prefix_parser_base() = default;
     virtual ~prefix_parser_base() = default;
-    virtual std::unique_ptr<expression> parse(parser& p_parser, token p_tok) const = 0;
+    virtual std::unique_ptr<ast::expression> parse(parser& p_parser, token p_tok) const = 0;
   };
 
   struct identifier_parser : public prefix_parser_base
   {
-    std::unique_ptr<expression> parse(parser& p_parser, token p_tok) const override
+    std::unique_ptr<ast::expression> parse(parser& p_parser, token p_tok) const override
     {
-      return std::make_unique<identifier_expression>(p_tok, p_tok.raw_literal);
+      return std::make_unique<ast::identifier_expression>(p_tok, p_tok.raw_literal);
     }
   };
 
   struct number_parser : public prefix_parser_base
   {
-    std::unique_ptr<expression> parse(parser& p_parser, token p_tok) const override
+    std::unique_ptr<ast::expression> parse(parser& p_parser, token p_tok) const override
     {
       auto c_str = p_tok.raw_literal.c_str();
-      char* end = (char*)(c_str + p_tok.raw_literal.size());
+      auto end = (char*)(c_str + p_tok.raw_literal.size());
       double ret = std::strtod(c_str, &end);
       if(ret == 0 && end == c_str) // error
       {
         // TODO(Qais): emit error
         return nullptr;
       }
-      return std::make_unique<number_expression>(p_tok, ret);
+      return std::make_unique<ast::number_expression>(p_tok, ret);
     }
   };
 
   struct string_parser : public prefix_parser_base
   {
-    std::unique_ptr<expression> parse(parser& p_parser, token p_tok) const override
+    std::unique_ptr<ast::expression> parse(parser& p_parser, token p_tok) const override
     {
-      return std::make_unique<string_expression>(p_tok, p_tok.raw_literal);
+      return std::make_unique<ast::string_expression>(p_tok, p_tok.raw_literal);
     }
   };
 
-  struct prefix_parser : public prefix_parser_base
+  struct group_parser : public prefix_parser_base
   {
-    std::unique_ptr<expression> parse(parser& p_parser, token p_tok) const override
+    std::unique_ptr<ast::expression> parse(parser& p_parser, token p_tok) const override
     {
+      p_parser.advance();
+      auto expr = p_parser.parse_expression();
+      return p_parser.expect_next(token_type::tok_right_paren) ? std::move(expr) : nullptr;
+    }
+  };
+
+  struct prefix_unary_parser : public prefix_parser_base
+  {
+    std::unique_ptr<ast::expression> parse(parser& p_parser, token p_tok) const override
+    {
+      p_parser.advance();
       auto opperand = p_parser.parse_expression();
-      return std::make_unique<prefix_expression>(p_tok, p_tok.raw_literal, opperand);
+      return std::make_unique<ast::prefix_unary_expression>(p_tok, p_tok.raw_literal, std::move(opperand));
     }
   };
 
   struct infix_parser_base
   {
+    infix_parser_base() = default;
     virtual ~infix_parser_base() = default;
-    virtual std::unique_ptr<expression>
-    parse(parser& p_parser, token p_tok, std::unique_ptr<expression> p_left) const = 0;
+    virtual std::unique_ptr<ast::expression>
+    parse(parser& p_parser, token p_tok, std::unique_ptr<ast::expression> p_left) const = 0;
+    virtual int get_precedence() const = 0;
   };
 
   struct infix_parser_unary : public infix_parser_base
   {
-    std::unique_ptr<expression> parse(parser& p_parser, token p_tok, std::unique_ptr<expression> p_left) const override
+    infix_parser_unary(int p_precedence) : m_precedence(p_precedence)
     {
-      return std::make_unique<infix_unary_expression>(p_tok, p_tok.raw_literal, std::move(p_left));
     }
+
+    std::unique_ptr<ast::expression>
+    parse(parser& p_parser, token p_tok, std::unique_ptr<ast::expression> p_left) const override
+    {
+      return std::make_unique<ast::infix_unary_expression>(p_tok, p_tok.raw_literal, std::move(p_left));
+    }
+
+    int get_precedence() const override
+    {
+      return m_precedence;
+    }
+
+  private:
+    int m_precedence;
   };
 
   struct infix_parser_binary : public infix_parser_base
   {
-    std::unique_ptr<expression> parse(parser& p_parser, token p_tok, std::unique_ptr<expression> p_left) const override
+    infix_parser_binary(int p_precedence, bool p_is_right) : m_precedence(p_precedence), m_is_right(p_is_right)
     {
-      return std::make_unique<infix_binary_expression>(
-          p_tok, p_tok.raw_literal, std::move(p_left), p_parser.parse_expression());
     }
+
+    std::unique_ptr<ast::expression>
+    parse(parser& p_parser, token p_tok, std::unique_ptr<ast::expression> p_left) const override
+    {
+      p_parser.advance();
+      auto right = p_parser.parse_expression(m_precedence - (m_is_right ? 1 : 0));
+      return std::make_unique<ast::infix_binary_expression>(
+          p_tok, p_tok.raw_literal, std::move(p_left), std::move(right));
+    }
+
+    int get_precedence() const override
+    {
+      return m_precedence;
+    }
+
+  private:
+    int m_precedence;
+    bool m_is_right;
   };
 
   struct conditional_parser : public infix_parser_base
   {
-    std::unique_ptr<expression> parse(parser& p_parser, token p_tok, std::unique_ptr<expression> p_left) const override
+    std::unique_ptr<ast::expression>
+    parse(parser& p_parser, token p_tok, std::unique_ptr<ast::expression> p_left) const override
     {
+      p_parser.advance();
       auto left = p_parser.parse_expression();
-      // TODO(Qais): FIXME: consume if token is ':', in general better consumption would be nice!
-      auto right = p_parser.parse_expression();
-      return std::make_unique<conditional_expression>(p_tok, std::move(p_left), std::move(left), std::move(right));
+      p_parser.expect_next(token_type::tok_colon);
+      // TODO(Qais): check!
+      // p_parser.advance_if_equals(token_type::tok_colon);
+      auto right = p_parser.parse_expression(precedence::conditional - 1);
+      return std::make_unique<ast::conditional_expression>(p_tok, std::move(p_left), std::move(left), std::move(right));
+    }
+
+    int get_precedence() const override
+    {
+      return precedence::conditional;
+    }
+  };
+
+  struct call_parser : public infix_parser_base
+  {
+    std::unique_ptr<ast::expression>
+    parse(parser& p_parser, token p_tok, std::unique_ptr<ast::expression> p_left) const override
+    {
+      std::list<std::unique_ptr<ast::expression>> args;
+      token_type expected_end;
+      if(p_tok.type == token_type::tok_left_paren) // is this good enough!?
+        expected_end = token_type::tok_right_paren;
+
+      if(p_parser.lookahead_token().type == expected_end)
+      {
+        p_parser.advance();
+        return std::make_unique<ast::call_expression>(p_tok, std::move(p_left), std::move(args));
+      }
+      p_parser.advance();
+      args.push_back(p_parser.parse_expression());
+      while(p_parser.lookahead_token().type == token_type::tok_comma)
+      {
+        // skip comma
+        p_parser.advance();
+        p_parser.advance();
+        // p_parser.advance();
+        args.push_back(p_parser.parse_expression());
+      }
+      if(!p_parser.expect_next(expected_end))
+        return nullptr; // TODO(Qais): error handling for god sake!
+      if(p_parser.current_token().type == token_type::tok_semicolon)
+        p_parser.advance();
+      return std::make_unique<ast::call_expression>(p_tok, std::move(p_left), std::move(args));
+    }
+
+    int get_precedence() const override
+    {
+      return precedence::call;
     }
   };
 

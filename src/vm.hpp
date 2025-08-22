@@ -5,6 +5,7 @@
 #include "value.hpp"
 #include <array>
 #include <stack>
+#include <string_view>
 namespace ok
 {
   class vm
@@ -20,7 +21,7 @@ namespace ok
   public:
     vm();
     ~vm();
-    interpret_result interpret(chunk* p_chunk);
+    interpret_result interpret(const std::string_view p_source);
 
   private:
     interpret_result run();

@@ -5,6 +5,7 @@
 #include "value.hpp"
 #include <cassert>
 #include <print>
+#include <string_view>
 #include <vector>
 
 #define DEBUG_PRINT
@@ -20,12 +21,8 @@ namespace ok
   {
   }
 
-  auto vm::interpret(chunk* p_chunk) -> interpret_result
+  auto vm::interpret(const std::string_view p_source) -> interpret_result
   {
-    m_chunk = p_chunk;
-    m_ip = p_chunk->code
-               .data(); // obviously the chunk bytecode wont be modified while running, so its safe to take pointers
-    return run();
   }
 
   auto vm::run() -> interpret_result

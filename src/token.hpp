@@ -9,7 +9,7 @@ namespace ok
   enum class token_type
   {
     // idk
-    tok_error,         // error message
+    tok_error = 0,     // error message
     tok_illegal,       // not allowed (invalid utf8 sequences)
     tok_eof,           // \0
     tok_assign,        // =

@@ -6,14 +6,20 @@
 #include <memory>
 #include <sstream>
 #include <string>
-namespace ok
+namespace ok::ast
 {
   // TODO: statements
   enum class node_type
   {
+    // base classes
     nt_node,
-    nt_statement,
     nt_expression,
+    nt_statement,
+
+    // program root
+    nt_program,
+
+    // expressions
     nt_identifier_expr,
     nt_number_expr,
     nt_string_expr,
@@ -24,7 +30,14 @@ namespace ok
     nt_assign_expr,
     nt_operator_expr,
     nt_conditional_expr,
+
+    // statements
+    nt_expression_statement_stmt
   };
+
+  /**
+   * base classes
+   **/
 
   class node
   {
@@ -54,10 +67,56 @@ namespace ok
     expression() : node(node_type::nt_expression)
     {
     }
+
     expression(node_type p_nt) : node(p_nt)
     {
     }
   };
+
+  class statement : public node
+  {
+  public:
+    statement() : node(node_type::nt_statement)
+    {
+    }
+
+    statement(node_type p_nt) : node(p_nt)
+    {
+    }
+  };
+
+  /**
+   * program root
+   **/
+
+  class program : public node
+  {
+  public:
+    program(std::list<std::unique_ptr<statement>>&& p_statements)
+        : node(node_type::nt_program), m_statements(std::move(p_statements))
+    {
+    }
+
+    std::string token_literal() override
+    {
+      return m_statements.empty() ? "" : m_statements.front()->token_literal();
+    }
+
+    std::string to_string() override
+    {
+      std::stringstream ss;
+      for(const auto& stmt : m_statements)
+        ss << stmt->to_string() << " ";
+      return ss.str();
+    }
+
+  private:
+    std::list<std::unique_ptr<statement>> m_statements;
+  };
+
+  /**
+   * expressions
+   **/
 
   class identifier_expression : public expression
   {
@@ -124,15 +183,23 @@ namespace ok
     std::string m_value;
   };
 
-  class prefix_expression : public expression
+  class prefix_unary_expression : public expression
   {
   public:
-    prefix_expression(token p_tok, const std::string& p_operator, std::unique_ptr<expression>& p_right)
+    prefix_unary_expression(token p_tok, const std::string& p_operator, std::unique_ptr<expression> p_right)
         : expression(node_type::nt_prefix_expr), m_token(p_tok), m_operator(p_operator), m_right(std::move(p_right))
     {
     }
-    std::string token_literal() override;
-    std::string to_string() override;
+
+    std::string token_literal() override
+    {
+      return m_token.raw_literal;
+    }
+
+    std::string to_string() override
+    {
+      return m_operator + m_right->to_string();
+    }
 
   private:
     token m_token;
@@ -220,10 +287,9 @@ namespace ok
   class call_expression : public expression
   {
   public:
-    call_expression(token p_tok,
-                    std::unique_ptr<expression> p_fun,
-                    const std::list<std::unique_ptr<expression>>& p_args)
-        : expression(node_type::nt_call_expr), m_token(p_tok), m_function(std::move(p_fun)), m_arguments(p_args)
+    call_expression(token p_tok, std::unique_ptr<expression> p_fun, std::list<std::unique_ptr<expression>>&& p_args)
+        : expression(node_type::nt_call_expr), m_token(p_tok), m_function(std::move(p_fun)),
+          m_arguments(std::move(p_args))
     {
     }
     std::string token_literal() override
@@ -306,6 +372,33 @@ namespace ok
     std::unique_ptr<expression> m_left;
     std::unique_ptr<expression> m_right;
   };
-} // namespace ok
+
+  /**
+   * statements
+   **/
+
+  class expression_statement : public statement
+  {
+  public:
+    expression_statement(token p_tok, std::unique_ptr<expression> p_expr)
+        : statement(node_type::nt_expression_statement_stmt), m_token(p_tok), m_expression(std::move(p_expr))
+    {
+    }
+
+    std::string token_literal() override
+    {
+      return m_token.raw_literal;
+    }
+
+    std::string to_string() override
+    {
+      return m_expression == nullptr ? "" : m_expression->to_string();
+    }
+
+  private:
+    token m_token;
+    std::unique_ptr<expression> m_expression;
+  };
+} // namespace ok::ast
 
 #endif // OK_AST_HPP

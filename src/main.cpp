@@ -1,5 +1,6 @@
 #include "chunk.hpp"
 #include "lexer.hpp"
+#include "parser.hpp"
 #include "token.hpp"
 #include <print>
 
@@ -28,11 +29,20 @@ int main(int argc, char** argv)
   //  ok::debug::disassembler::disassemble_chunk(chunk, "test");
 
   ok::lexer lx;
-  auto arr = lx.lex("'hello':.;-0+(/==let letdown + 1;");
-  for(auto idx = 0; auto elem : arr)
-    std::println("found elem: type: {}, raw: {}, line: {}, at in array location: {}",
-                 ok::token_type_to_string(elem.type),
-                 elem.raw_literal,
-                 elem.line,
-                 idx++);
+  auto arr = lx.lex("-1-1");
+  ok::parser parser{arr};
+  auto program = parser.parse_program();
+  if(program == nullptr)
+    std::println(stderr, "program is nullptr!");
+  for(const auto& err : parser.get_errors())
+    std::println(stderr, "{}", err.message);
+
+  std::println("{}", program->to_string());
+
+  // for(auto idx = 0; auto elem : arr)
+  //   std::println("found elem: type: {}, raw: {}, line: {}, at in array location: {}",
+  //                ok::token_type_to_string(elem.type),
+  //                elem.raw_literal,
+  //                elem.line,
+  //                idx++);
 }

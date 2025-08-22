@@ -8,6 +8,17 @@
 #include <vector>
 namespace ok
 {
+  struct precedence
+  {
+    constexpr static const int lowest = 0, assignment = 1, conditional = 2, sum = 3, product = 4, exponent = 5,
+                               prefix = 6, infix = 7, call = 8;
+  };
+
+  // inline precedence operator-(precedence lhs, size_t rhs)
+  //{
+  //   return (lhs == precedence::lowest ? lhs : (precedence)(lhs - rhs));
+  // }
+
   class parser
   {
   public:
@@ -22,13 +33,26 @@ namespace ok
     using errors = std::vector<error_type>;
 
   public:
-    parser(const token_array* p_token_array);
-    std::unique_ptr<expression> parse_expression();
+    parser(token_array& p_token_array);
+    std::unique_ptr<ast::program> parse_program();
+    std::unique_ptr<ast::expression> parse_expression(int p_precedence = precedence::lowest);
     void error(error_type p_err);
-    bool pump_token();
+
+    bool advance();
+    bool advance_if_equals(token_type p_type);
+    bool expect_next(token_type p_type);
+
+    token current_token() const;
+    token lookahead_token() const;
+    const errors& get_errors() const;
 
   private:
-    const token_array* m_token_array;
+    int get_precedence(token_type p_type);
+    std::unique_ptr<ast::statement> parse_statement();
+    std::unique_ptr<ast::expression_statement> parse_expression_statement();
+
+  private:
+    token_array& m_token_array;
     size_t m_current_token = 0;
     size_t m_lookahead_token = 0;
     errors m_errors;
