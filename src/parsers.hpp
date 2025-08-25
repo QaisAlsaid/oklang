@@ -66,7 +66,7 @@ namespace ok
     std::unique_ptr<ast::expression> parse(parser& p_parser, token p_tok) const override
     {
       p_parser.advance();
-      auto opperand = p_parser.parse_expression();
+      auto opperand = p_parser.parse_expression(precedence::prefix);
       return std::make_unique<ast::prefix_unary_expression>(p_tok, p_tok.raw_literal, std::move(opperand));
     }
   };
@@ -134,6 +134,8 @@ namespace ok
       p_parser.advance();
       auto left = p_parser.parse_expression();
       p_parser.expect_next(token_type::tok_colon);
+      // skip colon
+      p_parser.advance();
       // TODO(Qais): check!
       // p_parser.advance_if_equals(token_type::tok_colon);
       auto right = p_parser.parse_expression(precedence::conditional - 1);
@@ -153,7 +155,8 @@ namespace ok
     {
       std::list<std::unique_ptr<ast::expression>> args;
       token_type expected_end;
-      if(p_tok.type == token_type::tok_left_paren) // is this good enough!?
+      if(p_tok.type == token_type::tok_left_paren) // is this good enough!?, yes for now, later when you have something
+                                                   // else that needs expr list parse abstract to another function
         expected_end = token_type::tok_right_paren;
 
       if(p_parser.lookahead_token().type == expected_end)
@@ -161,6 +164,7 @@ namespace ok
         p_parser.advance();
         return std::make_unique<ast::call_expression>(p_tok, std::move(p_left), std::move(args));
       }
+
       p_parser.advance();
       args.push_back(p_parser.parse_expression());
       while(p_parser.lookahead_token().type == token_type::tok_comma)
@@ -168,19 +172,39 @@ namespace ok
         // skip comma
         p_parser.advance();
         p_parser.advance();
-        // p_parser.advance();
         args.push_back(p_parser.parse_expression());
       }
       if(!p_parser.expect_next(expected_end))
         return nullptr; // TODO(Qais): error handling for god sake!
-      if(p_parser.current_token().type == token_type::tok_semicolon)
-        p_parser.advance();
+      // this is wrong in cases of a(b)(c) this will allow cursed syntax like a(b);c to be parsed just fine lol
+      // if(p_parser.current_token().type == token_type::tok_semicolon)
+      //  p_parser.advance();
       return std::make_unique<ast::call_expression>(p_tok, std::move(p_left), std::move(args));
     }
 
     int get_precedence() const override
     {
       return precedence::call;
+    }
+  };
+
+  struct assign_parser : public infix_parser_base
+  {
+    virtual std::unique_ptr<ast::expression>
+    parse(parser& p_parser, token p_tok, std::unique_ptr<ast::expression> p_left) const
+    {
+      p_parser.advance();
+      auto right = p_parser.parse_expression(precedence::assignment - 1); // always right associative, to allow a=b=c
+      if(p_left->get_type() != ast::node_type::nt_identifier_expr)
+        return nullptr; // TODO(Qais): bitch, error handling aghhh!
+      auto real_lhs = static_cast<ast::identifier_expression*>(p_left.get());
+      return std::make_unique<ast::assign_expression>(
+          ast::assign_expression(p_tok, real_lhs->token_literal(), std::move(right)));
+    }
+
+    virtual int get_precedence() const
+    {
+      return precedence::assignment;
     }
   };
 

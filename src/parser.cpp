@@ -35,6 +35,7 @@ namespace ok
                               std::make_unique<infix_parser_binary>(precedence::product, false));
     s_infix_parse_map.emplace(token_type::tok_slash, std::make_unique<infix_parser_binary>(precedence::product, false));
     s_infix_parse_map.emplace(token_type::tok_question, std::make_unique<conditional_parser>());
+    s_infix_parse_map.emplace(token_type::tok_assign, std::make_unique<assign_parser>());
     return true;
   }();
 
@@ -55,49 +56,52 @@ namespace ok
       auto str = token_type_to_string(it.first);
       std::println("tp: {}, parser: {}", str, it.second != nullptr);
     }
+    // m_current = 0, m_lookahead = 1;
+    advance();
   }
 
   std::unique_ptr<ast::expression> parser::parse_expression(int p_precedence)
   {
-    auto* tok = &m_token_array[m_current_token];
+    auto tok = current_token();
 
-    auto prefix_it = s_prefix_parse_map.find(tok->type);
+    auto prefix_it = s_prefix_parse_map.find(tok.type);
     if(s_prefix_parse_map.end() == prefix_it)
     {
       error({error_code{}, "failed to parse!"});
       return nullptr;
     }
 
-    auto left = prefix_it->second->parse(*this, *tok);
+    auto left = prefix_it->second->parse(*this, tok);
 
-    auto lookahead = &m_token_array[m_lookahead_token];
-    while(lookahead->type != token_type::tok_semicolon && p_precedence < get_precedence(lookahead->type))
+    auto lookahead = lookahead_token();
+    while(lookahead.type != token_type::tok_semicolon && p_precedence < get_precedence(lookahead.type))
     {
-      const auto infix_it = s_infix_parse_map.find(lookahead->type);
+      const auto infix_it = s_infix_parse_map.find(lookahead.type);
       if(s_infix_parse_map.end() == infix_it)
         return left;
 
       advance();
-      tok = &m_token_array[m_current_token];
-      lookahead = &m_token_array[m_lookahead_token];
+      tok = current_token();
+      lookahead = lookahead_token();
 
-      left = infix_it->second->parse(*this, *tok, std::move(left));
+      left = infix_it->second->parse(*this, tok, std::move(left));
+      // tok = current_token();
+      lookahead = lookahead_token(); // TODO(Qais): dumu this is horrible design please make it a global source!
     }
     return left;
   }
 
   std::unique_ptr<ast::program> parser::parse_program()
   {
-    advance();
-    auto* tok = &m_token_array[m_current_token];
+    auto tok = current_token();
     std::list<std::unique_ptr<ast::statement>> list;
 
-    while(tok->type != token_type::tok_eof)
+    while(tok.type != token_type::tok_eof)
     {
       if(auto stmt = parse_statement())
         list.push_back(std::move(stmt));
       advance();
-      tok = &m_token_array[m_current_token];
+      tok = current_token();
     }
 
     return std::make_unique<ast::program>(std::move(list));
@@ -105,8 +109,7 @@ namespace ok
 
   std::unique_ptr<ast::statement> parser::parse_statement()
   {
-    const auto& tok = m_token_array[m_current_token];
-    switch(tok.type)
+    switch(current_token().type)
     {
     default:
       return parse_expression_statement();
@@ -116,8 +119,8 @@ namespace ok
   std::unique_ptr<ast::expression_statement> parser::parse_expression_statement()
   {
     auto expr = parse_expression();
-    auto expr_stmt = std::make_unique<ast::expression_statement>(m_token_array[m_current_token], std::move(expr));
-    if(m_token_array[m_lookahead_token].type == token_type::tok_semicolon)
+    auto expr_stmt = std::make_unique<ast::expression_statement>(current_token(), std::move(expr));
+    if(lookahead_token().type == token_type::tok_semicolon)
       advance();
     return expr_stmt;
   }
@@ -135,17 +138,18 @@ namespace ok
 
   bool parser::expect_next(token_type p_type)
   {
-    if(m_token_array[m_lookahead_token].type == p_type)
+    if(lookahead_token().type == p_type)
       return advance();
 
+    // TODO(Qais): error unexpected token!
     return false;
   }
 
+  // TODO(Qais): remove dups
   bool parser::advance_if_equals(token_type p_type)
   {
-    if(m_token_array[m_current_token].type == p_type)
+    if(current_token().type == p_type)
       return advance();
-    // TODO(Qais): error unexpected token!
     return false;
   }
 

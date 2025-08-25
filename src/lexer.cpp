@@ -93,6 +93,9 @@ namespace ok
       case '!':
         emplace_token(arr, match('=') ? token_type::tok_bang_equal : token_type::tok_bang);
         break;
+      case '?':
+        emplace_token(arr, token_type::tok_question);
+        break;
       case '=':
         emplace_token(arr, match('=') ? token_type::tok_equal : token_type::tok_assign);
         break;
@@ -159,10 +162,13 @@ namespace ok
 
   bool lexer::is_not_allowed(const char* c)
   {
+    constexpr auto ascii = 1;
     auto uc = (const uint8_t*)c;
     auto next = (const uint8_t*)utf8::advance(c);
-    auto length = next - uc;
-    constexpr auto ascii = 1;
+    long length = ascii;
+    if(next != nullptr) // reached end => current is "\0" therfore length is ascii set it to 1
+      length = next - uc;
+
     auto e = utf8::validate_codepoint(uc, next);
     bool ed = true;
     if(length == ascii)
@@ -204,6 +210,7 @@ namespace ok
       case '\r':
       case '\0':
         ed = false;
+        break;
       }
     }
     auto v = e.value_or(0); // 0 invalid utf

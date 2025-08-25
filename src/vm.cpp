@@ -125,7 +125,7 @@ namespace ok
       return m_chunk->constants[index]; // here we get it then m_ip is next
     }
 
-    // here we get 1st then m_ip is next so on.... to we get 3rd and m_ip is 4th
+    // here we get 1st then m_ip is next so on.... till we get 3rd and m_ip is 4th
     const uint32_t index = decode_int<uint32_t, 3>(read_bytes<3>(), 0);
     assert(index < m_chunk->constants.size() && "constant index out of range");
     return m_chunk->constants[index];

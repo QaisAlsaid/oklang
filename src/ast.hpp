@@ -105,8 +105,12 @@ namespace ok::ast
     std::string to_string() override
     {
       std::stringstream ss;
-      for(const auto& stmt : m_statements)
-        ss << stmt->to_string() << " ";
+      for(size_t ctr = 0; const auto& stmt : m_statements)
+      {
+        ss << stmt->to_string();
+        if(m_statements.size() > 1 && ctr++ < m_statements.size() - 1)
+          ss << " ";
+      }
       return ss.str();
     }
 
@@ -198,7 +202,7 @@ namespace ok::ast
 
     std::string to_string() override
     {
-      return m_operator + m_right->to_string();
+      return "(" + m_operator + m_right->to_string() + ")";
     }
 
   private:
@@ -249,7 +253,7 @@ namespace ok::ast
     std::string to_string() override
     {
       std::stringstream ss;
-      ss << "(" << m_left->to_string() << " " << m_operator << " " << m_right->to_string() << ")";
+      ss << "(" << m_left->to_string() << m_operator << m_right->to_string() << ")";
       return ss.str();
     }
 
@@ -274,7 +278,7 @@ namespace ok::ast
     std::string to_string() override
     {
       std::stringstream ss;
-      ss << m_identifier << "=" << m_right->to_string();
+      ss << "(" << m_identifier << "=" << m_right->to_string() << ")";
       return ss.str();
     }
 
@@ -300,14 +304,13 @@ namespace ok::ast
     {
       std::stringstream ss;
       ss << m_function->to_string() << "(";
-      for(auto i = 0; const auto& arg : m_arguments)
+      for(size_t ctr = 0; const auto& arg : m_arguments)
       {
         ss << arg->to_string();
-        if(i < m_arguments.size() - 1)
+        if(m_arguments.size() > 1 && ctr++ < m_arguments.size() - 1)
           ss << ", ";
-        ss << ")";
-        i++;
       }
+      ss << ")";
       return ss.str();
     }
 
@@ -335,7 +338,7 @@ namespace ok::ast
     std::string to_string() override
     {
       std::stringstream ss;
-      ss << m_expression << " ? " << m_left->to_string() << " : " << m_right->to_string();
+      ss << "(" << m_expression->to_string() << "?" << m_left->to_string() << ":" << m_right->to_string() << ")";
       return ss.str();
     }
 
