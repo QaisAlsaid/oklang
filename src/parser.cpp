@@ -173,6 +173,10 @@ namespace ok
 
   void parser::error(error_type p_err)
   {
+    if(m_panic)
+      return;
+
+    m_panic = true;
     m_errors.push_back(p_err);
   }
 

@@ -2,6 +2,7 @@
 #include "lexer.hpp"
 #include "parser.hpp"
 #include "token.hpp"
+#include "vm.hpp"
 #include <print>
 
 struct tests_progress
@@ -54,30 +55,34 @@ int main(int argc, char** argv)
   //                elem.raw_literal,
   //                elem.line,
   //                idx++);
-  test("a", "a");
-  test("15", "15");
-  test("a()", "a()");
-  test("a(b)", "a(b)");
-  test("a(a, b)", "a(a, b)");
-  test("a(b)(c)", "a(b)(c)");
-  test("a(b) + c(d)", "(a(b)+c(d))");
-  test("a(b ? c : d, e + f)", "a((b?c:d), (e+f))");
-  test("-a", "(-a)");
-  test("-!a", "(-(!a))");
-  test("-a * b", "((-a)*b)");
-  test("!a + b", "((!a)+b)");
-  test("a = b + c * e - f / g", "(a=((b+(c*e))-(f/g)))");
-  test("a = b = c", "(a=(b=c))");
-  test("a + b - c", "((a+b)-c)");
-  test("a * b / c", "((a*b)/c)");
-  test("a ? b : c ? d : e", "(a?b:(c?d:e))");
-  test("a + b ? c * d : e / f", "((a+b)?(c*d):(e/f))");
-  test("a ? b ? c : d : e", "(a?(b?c:d):e)");
-  auto tests_stats = test("a + (b + c) + d", "((a+(b+c))+d)");
-  std::println("total tests: {}", tests_stats.total);
-  std::println("passed: {}", tests_stats.pass);
-  std::println("failed: {}", tests_stats.fail);
-  std::println("accuracy: {}%", (float)tests_stats.pass / (float)tests_stats.total * 100);
+
+  // test("a", "a");
+  // test("15", "15");
+  // test("a()", "a()");
+  // test("a(b)", "a(b)");
+  // test("a(a, b)", "a(a, b)");
+  // test("a(b)(c)", "a(b)(c)");
+  // test("a(b) + c(d)", "(a(b)+c(d))");
+  // test("a(b ? c : d, e + f)", "a((b?c:d), (e+f))");
+  // test("-a", "(-a)");
+  // test("-!a", "(-(!a))");
+  // test("-a * b", "((-a)*b)");
+  // test("!a + b", "((!a)+b)");
+  // test("a = b + c * e - f / g", "(a=((b+(c*e))-(f/g)))");
+  // test("a = b = c", "(a=(b=c))");
+  // test("a + b - c", "((a+b)-c)");
+  // test("a * b / c", "((a*b)/c)");
+  // test("a ? b : c ? d : e", "(a?b:(c?d:e))");
+  // test("a + b ? c * d : e / f", "((a+b)?(c*d):(e/f))");
+  // test("a ? b ? c : d : e", "(a?(b?c:d):e)");
+  // auto tests_stats = test("a + (b + c) + d", "((a+(b+c))+d)");
+  // std::println("total tests: {}", tests_stats.total);
+  // std::println("passed: {}", tests_stats.pass);
+  // std::println("failed: {}", tests_stats.fail);
+  // std::println("accuracy: {}%", (float)tests_stats.pass / (float)tests_stats.total * 100);
+
+  ok::vm vm;
+  vm.interpret("1+1");
 }
 
 static tests_progress test(const std::string_view src, const std::string_view expect)

@@ -55,6 +55,7 @@ namespace ok
     token_array& m_token_array;
     size_t m_current_token = 0;
     size_t m_lookahead_token = 0;
+    bool m_panic = false;
     errors m_errors;
   };
 } // namespace ok

@@ -1,5 +1,6 @@
 #include "vm.hpp"
 #include "chunk.hpp"
+#include "compiler.hpp"
 #include "debug.hpp"
 #include "utility.hpp"
 #include "value.hpp"
@@ -15,14 +16,25 @@ namespace ok
   vm::vm()
   {
     m_stack.reserve(stack_base_size);
+    m_chunk = new chunk;
   }
 
   vm::~vm()
   {
+    if(m_chunk)
+      delete m_chunk;
   }
 
   auto vm::interpret(const std::string_view p_source) -> interpret_result
   {
+    compiler com;
+    auto compile_result = com.compile(p_source, m_chunk);
+    if(!compile_result)
+      return interpret_result::compile_error;
+    return interpret_result::ok;
+    // m_ip = m_chunk->code.data();
+    // auto res = run();
+    // return res;
   }
 
   auto vm::run() -> interpret_result

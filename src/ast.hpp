@@ -46,9 +46,14 @@ namespace ok::ast
     virtual std::string token_literal() = 0;
     virtual std::string to_string() = 0;
 
-    inline node_type get_type()
+    inline node_type get_type() const
     {
       return m_type;
+    }
+
+    inline size_t get_offset() const
+    {
+      return m_offset;
     }
 
   protected:
@@ -59,6 +64,8 @@ namespace ok::ast
 
   private:
     node_type m_type = node_type::nt_node;
+    size_t m_line = 0;
+    size_t m_offset = 0;
   };
 
   class expression : public node
@@ -114,6 +121,11 @@ namespace ok::ast
       return ss.str();
     }
 
+    const std::list<std::unique_ptr<statement>>& get_statements() const
+    {
+      return m_statements;
+    }
+
   private:
     std::list<std::unique_ptr<statement>> m_statements;
   };
@@ -152,13 +164,20 @@ namespace ok::ast
         : expression(node_type::nt_number_expr), m_token(p_tok), m_value(p_value)
     {
     }
+
     std::string token_literal() override
     {
       return m_token.raw_literal;
     }
+
     std::string to_string() override
     {
       return m_token.raw_literal;
+    }
+
+    double get_value() const
+    {
+      return m_value;
     }
 
   private:
@@ -205,6 +224,17 @@ namespace ok::ast
       return "(" + m_operator + m_right->to_string() + ")";
     }
 
+    inline const std::unique_ptr<expression>& get_right() const
+    {
+      return m_right;
+    }
+
+    // TODO(Qais): operators not string!!!
+    inline const std::string& get_operator() const
+    {
+      return m_operator;
+    }
+
   private:
     token m_token;
     std::string m_operator;
@@ -246,15 +276,33 @@ namespace ok::ast
           m_left(std::move(p_left)), m_right(std::move(p_right))
     {
     }
+
     std::string token_literal() override
     {
       return m_token.raw_literal;
     }
+
     std::string to_string() override
     {
       std::stringstream ss;
       ss << "(" << m_left->to_string() << m_operator << m_right->to_string() << ")";
       return ss.str();
+    }
+
+    const std::unique_ptr<expression>& get_left() const
+    {
+      return m_left;
+    }
+
+    const std::unique_ptr<expression>& get_right() const
+    {
+      return m_right;
+    }
+
+    // TODO(Qais): operators not strings!
+    const std::string& get_operator() const
+    {
+      return m_operator;
     }
 
   private:
@@ -396,6 +444,11 @@ namespace ok::ast
     std::string to_string() override
     {
       return m_expression == nullptr ? "" : m_expression->to_string();
+    }
+
+    const std::unique_ptr<expression>& get_expression() const
+    {
+      return m_expression;
     }
 
   private:
