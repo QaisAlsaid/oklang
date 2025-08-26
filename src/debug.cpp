@@ -50,6 +50,26 @@ namespace ok::debug
       return simple_instruction("op_divide", p_offset);
     case to_utype(opcode::op_negate):
       return simple_instruction("op_negate", p_offset);
+    case to_utype(opcode::op_true):
+      return simple_instruction("op_true", p_offset);
+    case to_utype(opcode::op_false):
+      return simple_instruction("op_false", p_offset);
+    case to_utype(opcode::op_null):
+      return simple_instruction("op_null", p_offset);
+    case to_utype(opcode::op_not):
+      return simple_instruction("op_not", p_offset);
+    case to_utype(opcode::op_equal):
+      return simple_instruction("op_equal", p_offset);
+    case to_utype(opcode::op_not_equal):
+      return simple_instruction("op_not_equal", p_offset);
+    case to_utype(opcode::op_less):
+      return simple_instruction("op_less", p_offset);
+    case to_utype(opcode::op_greater):
+      return simple_instruction("op_greater", p_offset);
+    case to_utype(opcode::op_less_equal):
+      return simple_instruction("op_less_equal", p_offset);
+    case to_utype(opcode::op_greater_equal):
+      return simple_instruction("op_greater_equal", p_offset);
     default:
     {
       std::println("unknown opcode: {}", instruction);

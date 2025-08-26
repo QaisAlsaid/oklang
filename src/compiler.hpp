@@ -3,7 +3,6 @@
 
 #include "ast.hpp"
 #include "chunk.hpp"
-#include <type_traits>
 
 namespace ok
 {
@@ -25,6 +24,8 @@ namespace ok
     void compile(ast::number_expression* p_number);
     void compile(ast::prefix_unary_expression* p_unary);
     void compile(ast::infix_binary_expression* p_binary);
+    void compile(ast::boolean_expression* p_boolean);
+    void compile(ast::null_expression* p_null);
 
   private:
     chunk* m_current_chunk; // maybe temp

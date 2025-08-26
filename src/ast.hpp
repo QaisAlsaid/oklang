@@ -1,6 +1,7 @@
 #ifndef OK_AST_HPP
 #define OK_AST_HPP
 
+#include "operator.hpp"
 #include "token.hpp"
 #include <list>
 #include <memory>
@@ -30,6 +31,8 @@ namespace ok::ast
     nt_assign_expr,
     nt_operator_expr,
     nt_conditional_expr,
+    nt_boolean_expr,
+    nt_null_expr,
 
     // statements
     nt_expression_statement_stmt
@@ -192,10 +195,12 @@ namespace ok::ast
         : expression(node_type::nt_string_expr), m_token(p_tok), m_value(p_value)
     {
     }
+
     std::string token_literal() override
     {
       return m_token.raw_literal;
     }
+
     std::string to_string() override
     {
       return m_value;
@@ -203,13 +208,62 @@ namespace ok::ast
 
   public:
     token m_token;
-    std::string m_value;
+    std::string m_value; // redundant copy!
+  };
+
+  class boolean_expression : public expression
+  {
+  public:
+    boolean_expression(token p_tok, bool p_value)
+        : expression(node_type::nt_boolean_expr), m_token(p_tok), m_value(p_value)
+    {
+    }
+
+    std::string token_literal() override
+    {
+      return m_token.raw_literal;
+    }
+
+    std::string to_string() override
+    {
+      return m_token.raw_literal;
+    }
+
+    bool get_value() const
+    {
+      return m_value;
+    }
+
+  private:
+    token m_token;
+    bool m_value;
+  };
+
+  class null_expression : public expression
+  {
+  public:
+    null_expression(token p_tok) : expression(node_type::nt_null_expr), m_token(p_tok)
+    {
+    }
+
+    std::string token_literal() override
+    {
+      return m_token.raw_literal;
+    }
+
+    std::string to_string() override
+    {
+      return m_token.raw_literal;
+    }
+
+  private:
+    token m_token;
   };
 
   class prefix_unary_expression : public expression
   {
   public:
-    prefix_unary_expression(token p_tok, const std::string& p_operator, std::unique_ptr<expression> p_right)
+    prefix_unary_expression(token p_tok, const operator_type& p_operator, std::unique_ptr<expression> p_right)
         : expression(node_type::nt_prefix_expr), m_token(p_tok), m_operator(p_operator), m_right(std::move(p_right))
     {
     }
@@ -221,7 +275,9 @@ namespace ok::ast
 
     std::string to_string() override
     {
-      return "(" + m_operator + m_right->to_string() + ")";
+      std::stringstream ss;
+      ss << "(" << operator_type_to_string(m_operator) << m_right->to_string() << ")";
+      return ss.str();
     }
 
     inline const std::unique_ptr<expression>& get_right() const
@@ -229,39 +285,45 @@ namespace ok::ast
       return m_right;
     }
 
-    // TODO(Qais): operators not string!!!
-    inline const std::string& get_operator() const
+    inline operator_type get_operator() const
     {
       return m_operator;
     }
 
   private:
     token m_token;
-    std::string m_operator;
+    operator_type m_operator;
     std::unique_ptr<expression> m_right;
   };
 
   class infix_unary_expression : public expression
   {
   public:
-    infix_unary_expression(token p_tok, const std::string& p_operator, std::unique_ptr<expression> p_left)
+    infix_unary_expression(token p_tok, const operator_type p_operator, std::unique_ptr<expression> p_left)
         : expression(node_type::nt_infix_unary_expr), m_token(p_tok), m_operator(p_operator), m_left(std::move(p_left))
     {
     }
+
     std::string token_literal() override
     {
       return m_token.raw_literal;
     }
+
     std::string to_string() override
     {
       std::stringstream ss;
-      ss << "(" << m_operator << m_left->to_string() << ")";
+      ss << "(" << operator_type_to_string(m_operator) << m_left->to_string() << ")";
       return ss.str();
+    }
+
+    inline operator_type get_operator() const
+    {
+      return m_operator;
     }
 
   private:
     token m_token;
-    std::string m_operator;
+    operator_type m_operator;
     std::unique_ptr<expression> m_left;
   };
 
@@ -269,7 +331,7 @@ namespace ok::ast
   {
   public:
     infix_binary_expression(token p_tok,
-                            const std::string& p_operator,
+                            const operator_type p_operator,
                             std::unique_ptr<expression> p_left,
                             std::unique_ptr<expression> p_right)
         : expression(node_type::nt_infix_binary_expr), m_token(p_tok), m_operator(p_operator),
@@ -285,7 +347,7 @@ namespace ok::ast
     std::string to_string() override
     {
       std::stringstream ss;
-      ss << "(" << m_left->to_string() << m_operator << m_right->to_string() << ")";
+      ss << "(" << m_left->to_string() << operator_type_to_string(m_operator) << m_right->to_string() << ")";
       return ss.str();
     }
 
@@ -300,14 +362,14 @@ namespace ok::ast
     }
 
     // TODO(Qais): operators not strings!
-    const std::string& get_operator() const
+    operator_type get_operator() const
     {
       return m_operator;
     }
 
   private:
     token m_token;
-    std::string m_operator;
+    operator_type m_operator;
     std::unique_ptr<expression> m_left;
     std::unique_ptr<expression> m_right;
   };

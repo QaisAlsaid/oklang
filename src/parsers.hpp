@@ -2,6 +2,7 @@
 #define OK_PARSERS_HPP
 
 #include "ast.hpp"
+#include "operator.hpp"
 #include "parser.hpp"
 #include "token.hpp"
 #include <cstdlib>
@@ -51,6 +52,22 @@ namespace ok
     }
   };
 
+  struct boolean_parser : public prefix_parser_base
+  {
+    std::unique_ptr<ast::expression> parse(parser& p_parser, token p_tok) const override
+    {
+      return std::make_unique<ast::boolean_expression>(p_tok, p_tok.raw_literal == "true" ? true : false);
+    }
+  };
+
+  struct null_parser : public prefix_parser_base
+  {
+    std::unique_ptr<ast::expression> parse(parser& p_parser, token p_tok) const override
+    {
+      return std::make_unique<ast::null_expression>(p_tok);
+    }
+  };
+
   struct group_parser : public prefix_parser_base
   {
     std::unique_ptr<ast::expression> parse(parser& p_parser, token p_tok) const override
@@ -67,7 +84,8 @@ namespace ok
     {
       p_parser.advance();
       auto opperand = p_parser.parse_expression(precedence::prefix);
-      return std::make_unique<ast::prefix_unary_expression>(p_tok, p_tok.raw_literal, std::move(opperand));
+      return std::make_unique<ast::prefix_unary_expression>(
+          p_tok, operator_type_from_string(p_tok.raw_literal), std::move(opperand));
     }
   };
 
@@ -89,7 +107,8 @@ namespace ok
     std::unique_ptr<ast::expression>
     parse(parser& p_parser, token p_tok, std::unique_ptr<ast::expression> p_left) const override
     {
-      return std::make_unique<ast::infix_unary_expression>(p_tok, p_tok.raw_literal, std::move(p_left));
+      return std::make_unique<ast::infix_unary_expression>(
+          p_tok, operator_type_from_string(p_tok.raw_literal), std::move(p_left));
     }
 
     int get_precedence() const override
@@ -113,7 +132,7 @@ namespace ok
       p_parser.advance();
       auto right = p_parser.parse_expression(m_precedence - (m_is_right ? 1 : 0));
       return std::make_unique<ast::infix_binary_expression>(
-          p_tok, p_tok.raw_literal, std::move(p_left), std::move(right));
+          p_tok, operator_type_from_string(p_tok.raw_literal), std::move(p_left), std::move(right));
     }
 
     int get_precedence() const override

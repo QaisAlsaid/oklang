@@ -10,8 +10,8 @@ namespace ok
 {
   struct precedence
   {
-    constexpr static const int lowest = 0, assignment = 1, conditional = 2, sum = 3, product = 4, exponent = 5,
-                               prefix = 6, infix = 7, call = 8;
+    constexpr static const int lowest = 0, assignment = 1, conditional = 2, equality = 3, comparision = 4, sum = 5,
+                               product = 6, exponent = 7, prefix = 8, infix = 9, call = 10;
   };
 
   // inline precedence operator-(precedence lhs, size_t rhs)

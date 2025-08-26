@@ -3,8 +3,5 @@
 
 namespace ok
 {
-  void value_type::print() const
-  {
-    std::print("{}", m_value);
-  }
+
 } // namespace ok

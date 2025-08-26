@@ -2,7 +2,6 @@
 #define OK_CHUNK_HPP
 
 #include <cstdint>
-#include <memory>
 #include <print>
 #include <span>
 #include <vector>
@@ -13,7 +12,6 @@
 namespace ok
 {
   using byte = uint8_t;
-  // TODO(Qais): make constant index size spans 4 bytes not only 1, thus the type uint32_t
   enum class opcode : byte
   {
     op_return,
@@ -24,6 +22,16 @@ namespace ok
     op_subtract,
     op_multiply,
     op_divide,
+    op_null,
+    op_true,
+    op_false,
+    op_not,
+    op_equal,
+    op_not_equal,
+    op_greater,
+    op_less,
+    op_greater_equal,
+    op_less_equal,
   };
   constexpr auto op_constant_max_count = UINT8_MAX;
   constexpr auto uint24_max = (1 << 24) - 1;
@@ -53,7 +61,7 @@ namespace ok
       write_offset(p_offset, p_bytes.size());
     }
 
-    inline void write_constant(const value_type p_value, const size_t p_offset)
+    inline void write_constant(const value_t p_value, const size_t p_offset)
     {
       constants.push_back(p_value);
       const auto index = constants.size() - 1;
@@ -76,7 +84,7 @@ namespace ok
 
     // only valid when constants.size() < UINT8_MAX, otherwise use write_constant.
     // just use write_constant this is deprecated!
-    inline uint8_t add_constant(const value_type p_value)
+    inline uint8_t add_constant(const value_t p_value)
     {
       constants.push_back(p_value);
       return constants.size() - 1;

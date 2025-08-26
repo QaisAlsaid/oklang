@@ -4,6 +4,10 @@
 #include "debug.hpp"
 #include "lexer.hpp"
 #include "parser.hpp"
+#include "utility.hpp"
+#include "value.hpp"
+#include <array>
+#include <utility>
 
 namespace ok
 {
@@ -48,8 +52,14 @@ namespace ok
     case ast::node_type::nt_number_expr:
       compile((ast::number_expression*)(p_node));
       return;
-    case ok::ast::node_type::nt_expression_statement_stmt:
+    case ast::node_type::nt_expression_statement_stmt:
       compile((ast::expression_statement*)p_node);
+      return;
+    case ast::node_type::nt_boolean_expr:
+      compile((ast::boolean_expression*)p_node);
+      return;
+    case ast::node_type::nt_null_expr:
+      compile((ast::null_expression*)p_node);
       return;
     case ast::node_type::nt_node:
     case ast::node_type::nt_expression:
@@ -88,14 +98,25 @@ namespace ok
 
   void compiler::compile(ast::number_expression* p_number)
   {
-    current_chunk()->write_constant(p_number->get_value(), p_number->get_offset());
+    current_chunk()->write_constant(value_t{p_number->get_value()}, p_number->get_offset());
   }
 
   void compiler::compile(ast::prefix_unary_expression* p_unary)
   {
     compile(p_unary->get_right().get());
-    // TODO(Qais): fix the hardcoded negate!
-    current_chunk()->write(opcode::op_negate, p_unary->get_offset());
+    switch(p_unary->get_operator())
+    {
+    case operator_type::plus:
+      return; // TODO(Qais): vm supports this but not opcode!
+    case operator_type::minus:
+      current_chunk()->write(opcode::op_negate, p_unary->get_offset());
+      return;
+    case operator_type::bang:
+      current_chunk()->write(opcode::op_not, p_unary->get_offset());
+      return;
+    default:
+      return;
+    }
   }
 
   void compiler::compile(ast::infix_binary_expression* p_binary)
@@ -106,15 +127,57 @@ namespace ok
     const auto& op = p_binary->get_operator();
     auto current = current_chunk();
 
-    // TODO(Qais): i dont have to say anything atp
-    if(op == "+")
+    switch(p_binary->get_operator())
+    {
+    case operator_type::plus:
       current->write(opcode::op_add, p_binary->get_offset());
-    else if(op == "-")
+      break;
+    case operator_type::minus:
       current->write(opcode::op_subtract, p_binary->get_offset());
-    else if(op == "*")
+      break;
+    case operator_type::asterisk:
       current->write(opcode::op_multiply, p_binary->get_offset());
-    else if(op == "/")
+      break;
+    case operator_type::slash:
       current->write(opcode::op_divide, p_binary->get_offset());
+      break;
+    case operator_type::equal:
+      current->write(opcode::op_equal, p_binary->get_offset());
+      break;
+    case operator_type::bang_equal:
+      current->write(opcode::op_not_equal, p_binary->get_offset());
+      break;
+    case operator_type::less:
+      current->write(opcode::op_less, p_binary->get_offset());
+      break;
+    case operator_type::greater:
+      current->write(opcode::op_greater, p_binary->get_offset());
+      break;
+    case operator_type::less_equal:
+    {
+      // std::array<const byte, 2> inst = {to_utype(opcode::op_greater), to_utype(opcode::op_not)};
+      current->write(opcode::op_less_equal, p_binary->get_offset());
+      break;
+    }
+    case operator_type::greater_equal:
+    {
+      // std::array<const byte, 2> inst = {to_utype(opcode::op_less), to_utype(opcode::op_not)};
+      current->write(opcode::op_greater_equal, p_binary->get_offset());
+      break;
+    }
+    default:
+      return;
+    }
+  }
+
+  void compiler::compile(ast::boolean_expression* p_boolean)
+  {
+    current_chunk()->write(p_boolean->get_value() ? opcode::op_true : opcode::op_false, p_boolean->get_offset());
+  }
+
+  void compiler::compile(ast::null_expression* p_null)
+  {
+    current_chunk()->write(opcode::op_null, p_null->get_offset());
   }
 
   // void compiler::compile(ast::expression* p_expr)

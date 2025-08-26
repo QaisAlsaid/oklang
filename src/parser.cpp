@@ -21,6 +21,9 @@ namespace ok
     s_prefix_parse_map.emplace(token_type::tok_minus, std::make_unique<prefix_unary_parser>());
     s_prefix_parse_map.emplace(token_type::tok_bang, std::make_unique<prefix_unary_parser>());
     s_prefix_parse_map.emplace(token_type::tok_left_paren, std::make_unique<group_parser>());
+    s_prefix_parse_map.emplace(token_type::tok_true, std::make_unique<boolean_parser>());
+    s_prefix_parse_map.emplace(token_type::tok_false, std::make_unique<boolean_parser>());
+    s_prefix_parse_map.emplace(token_type::tok_null, std::make_unique<null_parser>());
     return true;
   }();
 
@@ -36,6 +39,19 @@ namespace ok
     s_infix_parse_map.emplace(token_type::tok_slash, std::make_unique<infix_parser_binary>(precedence::product, false));
     s_infix_parse_map.emplace(token_type::tok_question, std::make_unique<conditional_parser>());
     s_infix_parse_map.emplace(token_type::tok_assign, std::make_unique<assign_parser>());
+    s_infix_parse_map.emplace(token_type::tok_equal,
+                              std::make_unique<infix_parser_binary>(precedence::equality, false));
+    s_infix_parse_map.emplace(token_type::tok_bang_equal,
+                              std::make_unique<infix_parser_binary>(precedence::equality, false));
+    s_infix_parse_map.emplace(token_type::tok_less,
+                              std::make_unique<infix_parser_binary>(precedence::comparision, false));
+    s_infix_parse_map.emplace(token_type::tok_less_equal,
+                              std::make_unique<infix_parser_binary>(precedence::comparision, false));
+    s_infix_parse_map.emplace(token_type::tok_greater,
+                              std::make_unique<infix_parser_binary>(precedence::comparision, false));
+    s_infix_parse_map.emplace(token_type::tok_greater_equal,
+                              std::make_unique<infix_parser_binary>(precedence::comparision, false));
+
     return true;
   }();
 
