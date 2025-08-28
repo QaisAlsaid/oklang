@@ -5,6 +5,9 @@
 #include "vm.hpp"
 #include <print>
 
+// TODO(Qais): the most basic logging solution will be sufficient (compile time switch!)
+//  also a basic testing header will be great, and write some tests!
+
 struct tests_progress
 {
   tests_progress(uint32_t t, uint32_t p, uint32_t f) : total(t), pass(p), fail(f)

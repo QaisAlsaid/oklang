@@ -4,6 +4,7 @@
 namespace ok
 {
   std::unordered_map<uint32_t, object*> object_store::s_object_stores = {};
+  std::unordered_map<uint32_t, std::unique_ptr<interned_string>> interned_strings_store::s_store = {};
 
   bool object_store::insert(uint32_t id, object* obj)
   {
@@ -22,13 +23,13 @@ namespace ok
   bool object_store::destroy(uint32_t id)
   {
     auto it = s_object_stores.find(id);
-    std::println("destroy called id: {}, id state: {}", id, s_object_stores.end() == it ? "invalid" : "valid");
+    // std::println("destroy called id: {}, id state: {}", id, s_object_stores.end() == it ? "invalid" : "valid");
     if(s_object_stores.end() == it)
       return false;
     auto head = it->second;
     while(head != nullptr)
     {
-      std::println("starting to destroy object of type: {}", to_utype(head->type));
+      // std::println("starting to destroy object of type: {}", to_utype(head->type));
       auto next = head->next;
       delete head;
       head = next;

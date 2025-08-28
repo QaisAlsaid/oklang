@@ -44,7 +44,7 @@ namespace ok
   }
 
   value_t::value_t(const char* p_str, size_t p_length, uint32_t p_vm_id)
-      : type(value_type::object_val), as({.obj = string_object::create(p_length, p_str, p_vm_id)})
+      : type(value_type::object_val), as({.obj = string_object::create(p_str, p_vm_id)})
   {
   }
 

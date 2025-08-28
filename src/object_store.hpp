@@ -1,11 +1,19 @@
 #ifndef OK_OBJECT_STORE_HPP
 #define OK_OBJECT_STORE_HPP
 
+#include "object.hpp"
 #include "utility.hpp"
 #include <expected>
+#include <memory>
+#include <new>
 #include <print>
+#include <string>
 #include <unordered_map>
+#include <unordered_set>
 
+// TODO(Qais): you might want to change this file's name since its got repurposed to store all tables
+
+// TODO(Qais): dont use hash maps, or use them it but dont use mutexes, instead make it thread local
 namespace ok
 {
   // is this the most optimal way? i dont think so
@@ -37,6 +45,77 @@ namespace ok
   private:
     static std::unordered_map<uint32_t, object*> s_object_stores;
   };
-} // namespace ok
 
+  class interned_string
+  {
+  public:
+    interned_string() = default;
+    ~interned_string()
+    {
+      // no need to free since we already do so using the linked list (gc in future)
+      // for(auto ptr : interned_strings)
+      //   delete ptr;
+    }
+
+    string_object* set(const std::string& p_str, uint32_t p_vm_id)
+    {
+      auto dummy =
+          string_object{(std::string*)&p_str}; // take by pointer not const pointer but it wont change anything on the
+                                               // pointer so its "safe", ofc it depends on the way you define safe!
+      auto it = interned_strings.find(&dummy);
+      if(interned_strings.end() != it)
+        return nullptr;
+      auto* real = new string_object{p_str, p_vm_id};
+      interned_strings.insert(real);
+      return real;
+    }
+
+    // TODO(Qais): hash compare, thus take an string_object instead of std::string_view,
+    // or support both [slow_path, hot_path]
+    string_object* get(const std::string& p_str)
+    {
+      // fake ctor no copy
+      auto dummy = string_object{(std::string*)&p_str};
+      auto it = interned_strings.find(&dummy);
+      if(interned_strings.end() == it)
+        return nullptr;
+      return *it;
+    }
+
+  private:
+    std::unordered_set<string_object*> interned_strings;
+  };
+
+  class interned_strings_store
+  {
+  public:
+    static interned_string* create_vm_interned(uint32_t p_vm_id)
+    {
+      auto ptr = new interned_string();
+      s_store[p_vm_id] = std::unique_ptr<interned_string>(ptr);
+      return ptr;
+    }
+
+    static interned_string* get_vm_interned(const uint32_t p_vm_id)
+    {
+      const auto& it = s_store.find(p_vm_id);
+      if(s_store.end() == it)
+
+        return nullptr;
+      return it->second.get();
+    }
+
+    static bool destroy_vm_interned(uint32_t p_vm_id)
+    {
+      auto it = s_store.find(p_vm_id);
+      if(s_store.end() == it)
+        return false;
+      s_store.erase(it);
+      return true;
+    }
+
+  private:
+    static std::unordered_map<uint32_t, std::unique_ptr<interned_string>> s_store;
+  };
+} // namespace ok
 #endif // OK_OBJECT_STORE_HPP

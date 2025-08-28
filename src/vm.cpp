@@ -23,6 +23,7 @@ namespace ok
     m_chunk = new chunk;
     m_id = ++id;
     object_store::set_head(m_id, nullptr);
+    interned_strings_store::create_vm_interned(m_id);
   }
 
   vm::~vm()
