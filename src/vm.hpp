@@ -10,6 +10,7 @@
 #include <string_view>
 namespace ok
 {
+  using vm_id = uint32_t;
   class vm
   {
   public:
@@ -47,7 +48,8 @@ namespace ok
 
   private:
     chunk* m_chunk;
-    byte* m_ip;                   // TODO(Qais): move this to local storage
+    byte* m_ip; // TODO(Qais): move this to local storage
+    uint32_t m_id;
     std::vector<value_t> m_stack; // is a vector with stack protocol better than std::stack? Update: yes i think so
     constexpr static size_t stack_base_size = 256;
   };

@@ -3,19 +3,23 @@
 #include "chunk.hpp"
 #include "debug.hpp"
 #include "lexer.hpp"
+#include "object_store.hpp"
 #include "parser.hpp"
-#include "utility.hpp"
+#include "utf8.hpp"
 #include "value.hpp"
-#include <array>
-#include <utility>
+#include <string>
+#include <vector>
+
+// TODO(Qais): bitch why dont you have compile errors!
 
 namespace ok
 {
-  bool compiler::compile(const std::string_view p_src, chunk* p_chunk)
+  bool compiler::compile(const std::string_view p_src, chunk* p_chunk, uint32_t p_vm_id)
   {
     if(p_chunk == nullptr)
       return false;
 
+    m_vm_id = p_vm_id;
     lexer lx;
     auto arr = lx.lex(p_src);
     parser prs{arr};
@@ -51,6 +55,9 @@ namespace ok
       return;
     case ast::node_type::nt_number_expr:
       compile((ast::number_expression*)(p_node));
+      return;
+    case ast::node_type::nt_string_expr:
+      compile((ast::string_expression*)p_node);
       return;
     case ast::node_type::nt_expression_statement_stmt:
       compile((ast::expression_statement*)p_node);
@@ -99,6 +106,60 @@ namespace ok
   void compiler::compile(ast::number_expression* p_number)
   {
     current_chunk()->write_constant(value_t{p_number->get_value()}, p_number->get_offset());
+  }
+
+  void compiler::compile(ast::string_expression* p_string)
+  {
+    const auto& src_str = p_string->to_string();
+    std::vector<byte> dest;
+    dest.reserve(src_str.size() + 1); // -1 remove size of one quote and the other is for the null terminator
+    for(auto* c = src_str.c_str(); c > src_str.c_str() + src_str.size() + 1; c = utf8::advance(c))
+    {
+      // TODO(Qais): bruh for god sake wont you just write a function that does this, instead of hacking your way
+      // through the validation function!
+
+      auto ret = utf8::validate_codepoint((const uint8_t*)c, (const uint8_t*)src_str.c_str());
+      // TODO(Qais): does that have to be in compiler, and just for strings, or is it better to support escape sequence
+      // at lexer level? (btw this code looks like shit)
+      if(ret.value() == 1) // ascii is all we need here
+      {
+        if(*c == '\\')
+        {
+          c = utf8::advance(c);
+          switch(*c)
+          {
+          case '\\':
+            dest.push_back('\\');
+            break;
+          case 'n':
+            dest.push_back('\n');
+            break;
+          case 't':
+            dest.push_back('\t');
+            break;
+          case 'r':
+            dest.push_back('\r');
+            break;
+          default:
+            // skip both
+            break; // is this what its supposed to do when we escape something?
+          }
+        }
+        else
+        {
+          // ascii as is
+          dest.push_back(*c);
+        }
+      }
+      else
+      {
+        // non ascii always as is
+        dest.push_back(*c);
+      }
+    }
+    dest.push_back('\0');
+    current_chunk()->write_constant(value_t{p_string->get_value().c_str(), p_string->get_value().size(), m_vm_id},
+                                    p_string->get_offset());
   }
 
   void compiler::compile(ast::prefix_unary_expression* p_unary)

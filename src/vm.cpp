@@ -2,6 +2,7 @@
 #include "chunk.hpp"
 #include "compiler.hpp"
 #include "debug.hpp"
+#include "object_store.hpp"
 #include "operator.hpp"
 #include "utility.hpp"
 #include "value.hpp"
@@ -17,20 +18,25 @@ namespace ok
 {
   vm::vm()
   {
+    static uint32_t id = 0;
     m_stack.reserve(stack_base_size);
     m_chunk = new chunk;
+    m_id = ++id;
+    object_store::set_head(m_id, nullptr);
   }
 
   vm::~vm()
   {
     if(m_chunk)
       delete m_chunk;
+
+    object_store::destroy(m_id);
   }
 
   auto vm::interpret(const std::string_view p_source) -> interpret_result
   {
     compiler com;
-    auto compile_result = com.compile(p_source, m_chunk);
+    auto compile_result = com.compile(p_source, m_chunk, m_id);
     if(!compile_result)
       return interpret_result::compile_error;
     m_chunk->write(opcode::op_return, 123); // TODO(Qais): remove!
@@ -218,7 +224,7 @@ namespace ok
     auto b = m_stack.back();
     m_stack.pop_back();
     auto a = m_stack.back();
-    auto ret = a.operator_infix_binary(p_operator, b);
+    auto ret = a.operator_infix_binary(p_operator, b, m_id);
     if(!ret.has_value())
     {
       // TODO(Qais): check error type at least

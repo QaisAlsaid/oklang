@@ -206,7 +206,17 @@ namespace ok::ast
       return m_value;
     }
 
-  public:
+    std::string& get_value()
+    {
+      return m_value;
+    }
+
+    const std::string& get_value() const
+    {
+      return m_value;
+    }
+
+  private:
     token m_token;
     std::string m_value; // redundant copy!
   };

@@ -9,7 +9,7 @@ namespace ok
   class compiler
   {
   public:
-    bool compile(const std::string_view p_src, chunk* p_chunk);
+    bool compile(const std::string_view p_src, chunk* p_chunk, uint32_t p_vm_id);
     chunk* current_chunk();
 
     // take by pointer to avoid moving and invalidating, since we compile directly and dont hold any reference this is
@@ -26,9 +26,11 @@ namespace ok
     void compile(ast::infix_binary_expression* p_binary);
     void compile(ast::boolean_expression* p_boolean);
     void compile(ast::null_expression* p_null);
+    void compile(ast::string_expression* p_string);
 
   private:
     chunk* m_current_chunk; // maybe temp
+    uint32_t m_vm_id;
   };
 } // namespace ok
 

@@ -138,7 +138,10 @@ namespace ok
       error(p_array, "unterminated string");
     // close
     advance();
-    emplace_token(p_array, token_type::tok_string);
+    p_array.emplace_back(token_type::tok_string,
+                         std::string(m_start_position + 1, m_current_position - m_start_position - 2),
+                         m_current_line,
+                         m_current_offset);
   }
 
   void lexer::emplace_number(token_array& p_array)
