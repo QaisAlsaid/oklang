@@ -18,15 +18,11 @@
 
 namespace ok
 {
-  enum class object_type : uint8_t
+  enum class object_type : uint8_t // TODO(Qais): for now its uint8_t and enum class, you should do this refactor asap
+                                   // before its too hard
   {
-    none, // compatiblity with _make_key for non object type
+    none, // compatiblity with _make_object_key
     obj_string,
-  };
-
-  enum class object_error
-  {
-    undefined_operation,
   };
 
   // TODO(Qais) no need for virtual table for operations such as print and equal etc.. since we are gonna roll our own
@@ -35,28 +31,28 @@ namespace ok
   // anyways for class objects that are defined at runtime
   struct object
   {
-    object_type type;
+    object_type type; // TODO(Qais): maybe store as 32 bit integer, and also steal the 1 bit boolean form here, so it
+                      // will be 24bit integer which is exactly what the _make_object_key function caps the limit to
+    bool is_registered = false; // to minimize lookups, we just check a flag => faster
     object* next = nullptr;
-
     object(object_type p_type);
-
-    virtual ~object() = default;
-
-    virtual void print() const
-    {
-      std::print("{:p}", (void*)this);
-    };
-
-    virtual std::expected<value_t, object_error> equal(object* p_other) const
-    {
-      return value_t{this == p_other};
-    }
-
-    virtual std::expected<value_t, object_error> plus(object* p_other) const
-    {
-      return std::unexpected(object_error::undefined_operation);
-    }
   };
+
+  //   //TODO(Qais): kill all of those
+  //   virtual void print() const
+  //   {
+  //     std::print("{:p}", (void*)this);
+  //   };
+  //   virtual std::expected<value_t, object_error> equal(object* p_other) const
+  //   {
+  //     return value_t{this == p_other};
+  //   }
+
+  //   virtual std::expected<value_t, object_error> plus(object* p_other) const
+  //   {
+  //     return std::unexpected(object_error::undefined_operation);
+  //   }
+  // };
 
   // struct string_object : public object
   // {
@@ -109,7 +105,7 @@ namespace ok
   // };
 
   // TODO(Qais): cleanup + remove unused + support resize
-  struct string_object : public object
+  struct string_object
   {
     // create a string object (allocates char buffer on heap)
     string_object(const std::string_view p_src);
@@ -149,40 +145,87 @@ namespace ok
 
     // create string object with char buffer right after the object
     // no, bad idea resize and destroy will be broken, also its how all strings are implemented so dont play smart!
-    static string_object* create(const std::string_view p_src);
-    static string_object* create(const std::span<std::string_view> p_srcs);
+    static object* create(const std::string_view p_src);
+    static object* create(const std::span<std::string_view> p_srcs);
 
-    void print() const override
-    {
-      std::print("{}", std::string_view{chars, length});
-    }
+    // void print() const override
+    // {
+    //   std::print("{}", std::string_view{chars, length});
+    // }
 
-    virtual std::expected<value_t, object_error> equal(object* p_other) const override
-    {
-      if(type == p_other->type)
-      {
-        auto other_string = (string_object*)p_other;
-        return value_t{this == p_other}; // pointer compare, interning deals with this
-      }
-      return std::unexpected(object_error::undefined_operation);
-    }
+    // virtual std::expected<value_t, object_error> equal(object* p_other) const override
+    // {
+    //   if(type == p_other->type)
+    //   {
+    //     auto other_string = (string_object*)p_other;
+    //     return value_t{this == p_other}; // pointer compare, interning deals with this
+    //   }
+    //   return std::unexpected(object_error::undefined_operation);
+    // }
 
-    virtual std::expected<value_t, object_error> plus(object* p_other) const override
-    {
-      if(type == p_other->type)
-      {
-        auto other_string = (string_object*)p_other;
-        std::array<std::string_view, 2> arr = {std::string_view{chars, length},
-                                               {other_string->chars, other_string->length}};
-        return value_t{create(arr)};
-      }
-      return std::unexpected(object_error::undefined_operation);
-    }
+    // virtual std::expected<value_t, object_error> plus(object* p_other) const override
+    // {
+    //   if(type == p_other->type)
+    //   {
+    //     auto other_string = (string_object*)p_other;
+    //     std::array<std::string_view, 2> arr = {std::string_view{chars, length},
+    //                                            {other_string->chars, other_string->length}};
+    //     return value_t{create(arr)};
+    //   }
+    //   return std::unexpected(object_error::undefined_operation);
+    // }
 
+    object up;
     hashed_string hash_code;
     size_t length;
     char* chars;
+
+  private:
+    string_object();
+
+  private:
+    static std::expected<value_t, value_error> equal(object* p_this, value_t p_sure_is_string);
+    static std::expected<value_t, value_error> plus(object* p_this, value_t p_sure_is_string);
+    static void print(object* p_this);
   };
+
+  // // TODO(Qais): this is shit, you cant have more than 256 objects
+  // constexpr uint32_t _make_object_key(object_type p_lhs,
+  //                                     const operator_type p_operator,
+  //                                     const value_type p_rhs,
+  //                                     const object_type p_other_object_type = object_type::none)
+  // {
+  //   // ill try a -maybe stupid- idea to make object cap at least of uint16_t size which is plenty of objects
+  //   // TODO(Qais): validate the sanity of this thing, also object_type shouldnt be an enum because its runtime
+  //   dependant
+  //   // for most cases!
+  //   if(p_other_object_type == object_type::none)
+  //   {
+  //     return static_cast<uint32_t>(to_utype(p_lhs)) << 24 | static_cast<uint32_t>(to_utype(p_operator)) << 16 |
+  //            static_cast<uint32_t>(to_utype(p_rhs)) | 8;
+  //   }
+  //   else
+  //   {
+  //     return static_cast<uint32_t>(to_utype(p_lhs)) << 24 | static_cast<uint32_t>(to_utype(p_operator)) << 16 |
+  //            static_cast<uint32_t>(to_utype(p_other_object_type));
+  //   }
+  // }
+
+  // this is much better an leaves a 24bit integer room for objects which is more than we ever will need
+  constexpr uint32_t _make_object_key(const operator_type p_operator,
+                                      const value_type p_rhs,
+                                      const object_type p_other_object_type = object_type::none)
+  {
+    // TODO(Qais): validate the sanity of this thing, also object_type shouldnt be an enum because its runtime dependant
+    if(p_other_object_type == object_type::none)
+    {
+      return static_cast<uint32_t>(to_utype(p_operator)) << 24 | static_cast<uint32_t>(to_utype(p_rhs)) | 16;
+    }
+    else
+    {
+      return static_cast<uint32_t>(to_utype(p_operator)) << 24 | static_cast<uint32_t>(to_utype(p_other_object_type));
+    }
+  }
 } // namespace ok
 
 namespace std

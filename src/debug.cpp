@@ -1,6 +1,8 @@
 #include "debug.hpp"
 #include "chunk.hpp"
 #include "utility.hpp"
+#include "vm.hpp"
+#include "vm_stack.hpp"
 #include <cstdint>
 #include <print>
 #include <string_view>
@@ -90,7 +92,7 @@ namespace ok::debug
     constexpr auto INSTRUCTION_SIZE = CONSTANT_INDEX + sizeof(uint8_t); // from start offset
     uint8_t constant = p_chunk.code[p_offset + CONSTANT_INDEX];
     std::print("{} {:4d} '", p_name, constant);
-    p_chunk.constants[constant].print();
+    get_g_vm()->print_value(p_chunk.constants[constant]);
     std::println("'");
     return p_offset + INSTRUCTION_SIZE;
   }
@@ -105,7 +107,7 @@ namespace ok::debug
     // const uint32_t constant = (first << 16) | (second << 8) | third;
     const uint32_t constant = decode_int<uint32_t, 3>(p_chunk.code, p_offset + CONSTANT_LONG_INDEX);
     std::print("{} {:4d} '", p_name, constant);
-    p_chunk.constants[constant].print();
+    get_g_vm()->print_value(p_chunk.constants[constant]);
     std::println("'");
     return p_offset + INSTRUCTION_SIZE;
   }

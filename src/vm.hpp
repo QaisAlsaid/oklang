@@ -3,11 +3,14 @@
 
 #include "chunk.hpp"
 #include "interned_string.hpp"
+#include "object.hpp"
 #include "operator.hpp"
 #include "value.hpp"
+#include "value_operations.hpp"
 #include <array>
 #include <expected>
 #include <string_view>
+#include <unordered_map>
 
 namespace ok
 {
@@ -20,6 +23,22 @@ namespace ok
       ok,
       compile_error,
       runtime_error
+    };
+
+    using operations_return_type = std::expected<value_t, value_error>;
+    using operation_function_infix_binary = std::function<operations_return_type(object* lhs, value_t rhs)>;
+    using operation_function_prefix_unary = std::function<operations_return_type(object* _this)>;
+    using operation_function_print = std::function<void(object* _this)>;
+    using object_value_operations_infix_binary =
+        value_operations_base<uint32_t, operation_function_infix_binary, operations_return_type, object*, value_t>;
+    using object_value_operations_prefix_unary =
+        value_operations_base<uint16_t, operation_function_prefix_unary, operations_return_type, object*>;
+
+    struct object_value_operations
+    {
+      object_value_operations_infix_binary binary_infix;
+      object_value_operations_prefix_unary unray_prefix;
+      operation_function_print print_function;
     };
 
   public:
@@ -36,6 +55,23 @@ namespace ok
     {
       return m_interned_strings;
     }
+
+    inline object_value_operations* get_object_operations(object_type type)
+    {
+      const auto& it = m_objects_operations.find(type);
+      if(m_objects_operations.end() == it)
+        return nullptr;
+      return &it->second;
+    }
+
+    // overwrites current if exists
+    inline object_value_operations& register_object_operations(object_type type)
+    {
+      m_objects_operations[type] = {};
+      return m_objects_operations[type];
+    }
+
+    void print_value(value_t p_value);
 
   private:
     interpret_result run();
@@ -57,6 +93,19 @@ namespace ok
     std::expected<void, interpret_result> perform_binary_infix(const operator_type p_operator);
     std::expected<void, interpret_result> perform_unary_infix(const operator_type p_operator);
 
+    std::expected<value_t, value_error> perform_unary_prefix_real(const operator_type p_operator, const value_t p_this);
+    std::expected<value_t, value_error> perform_unary_prefix_real_object(operator_type p_operator, value_t p_this);
+
+    std::expected<value_t, value_error>
+    perform_binary_infix_real(const value_t& p_this, const operator_type p_operator, const value_t& p_other);
+
+    std::expected<value_t, value_error>
+    perform_binary_infix_real_object(object* p_this, operator_type p_operator, value_t p_other);
+
+    void print_object(object* p_object);
+
+    bool is_value_falsy(value_t p_value) const;
+
     void destroy_objects_list();
 
   private:
@@ -66,6 +115,9 @@ namespace ok
     std::vector<value_t> m_stack; // is a vector with stack protocol better than std::stack? Update: yes i think so
     interned_string m_interned_strings;
     object* m_objects_list; // intrusive linked list
+
+    // yes another indirection, shutup you cant eliminate all indirections
+    std::unordered_map<object_type, object_value_operations> m_objects_operations;
     constexpr static size_t stack_base_size = 256;
   };
 } // namespace ok

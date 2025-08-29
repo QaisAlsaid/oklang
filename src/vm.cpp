@@ -2,6 +2,7 @@
 #include "chunk.hpp"
 #include "compiler.hpp"
 #include "debug.hpp"
+#include "object.hpp"
 #include "operator.hpp"
 #include "utility.hpp"
 #include "value.hpp"
@@ -59,12 +60,12 @@ namespace ok
     auto end = m_chunk->code.data() + m_chunk->code.size();
     while(m_ip < end)
     {
-#if defined(DEBUG_PRINT) // TODO(Qais): proper build targets amd definations
+#if defined(DEBUG_PRINT) // TODO(Qais): proper build targets and definations
       std::print("    ");
       for(auto e : m_stack)
       {
         std::print("[");
-        e.print();
+        print_value(e);
         std::print("]");
       }
       std::println();
@@ -79,7 +80,7 @@ namespace ok
         // TODO(Qais): abstract
         auto back = m_stack.back();
         m_stack.pop_back();
-        back.print();
+        print_value(back);
         std::println();
         return interpret_result::ok;
       }
@@ -142,7 +143,7 @@ namespace ok
       }
       case to_utype(opcode::op_not):
       {
-        m_stack.back() = value_t{m_stack.back().is_falsy()};
+        m_stack.back() = value_t{is_value_falsy(m_stack.back())};
         break;
       }
       case to_utype(opcode::op_equal):
@@ -217,10 +218,10 @@ namespace ok
 
   auto vm::perform_unary_prefix(const operator_type p_operator) -> std::expected<void, interpret_result>
   {
-    auto ret = m_stack.back().operator_prefix_unary(p_operator);
+    auto ret = perform_unary_prefix_real(p_operator, m_stack.back());
     if(!ret.has_value())
     {
-      runtime_error("invalid operation");
+      runtime_error("invalid operation"); // TODO(Qais): atleast check error type
       return std::unexpected(interpret_result::runtime_error);
     }
     m_stack.back() = ret.value();
@@ -232,7 +233,8 @@ namespace ok
     auto b = m_stack.back();
     m_stack.pop_back();
     auto a = m_stack.back();
-    auto ret = a.operator_infix_binary(p_operator, b);
+
+    auto ret = perform_binary_infix_real(a, p_operator, b); // a.operator_infix_binary(p_operator, b);
     if(!ret.has_value())
     {
       // TODO(Qais): check error type at least
@@ -245,6 +247,141 @@ namespace ok
 
   auto vm::perform_unary_infix(const operator_type p_operator) -> std::expected<void, interpret_result>
   {
+  }
+
+  std::expected<value_t, value_error>
+  vm::perform_binary_infix_real(const value_t& p_this, const operator_type p_operator, const value_t& p_other)
+  {
+    auto key = _make_value_key(p_this.type, p_operator, p_other.type);
+    switch(key)
+    {
+    case _make_value_key(value_type::number_val, operator_type::plus, value_type::number_val):
+      return value_t{p_this.as.number + p_other.as.number};
+    case _make_value_key(value_type::number_val, operator_type::minus, value_type::number_val):
+      return value_t{p_this.as.number - p_other.as.number};
+    case _make_value_key(value_type::number_val, operator_type::asterisk, value_type::number_val):
+      return value_t{p_this.as.number * p_other.as.number};
+    case _make_value_key(value_type::number_val, operator_type::slash, value_type::number_val):
+    {
+      if(p_other.as.number == 0)
+        return std::unexpected(value_error::division_by_zero);
+      return value_t{p_this.as.number / p_other.as.number};
+    }
+    case _make_value_key(value_type::number_val, operator_type::equal, value_type::number_val):
+      return value_t{p_this.as.number == p_other.as.number};
+    case _make_value_key(value_type::number_val, operator_type::bang_equal, value_type::number_val):
+      return value_t{p_this.as.number != p_other.as.number};
+    case _make_value_key(value_type::number_val, operator_type::less, value_type::number_val):
+      return value_t{p_this.as.number < p_other.as.number};
+    case _make_value_key(value_type::number_val, operator_type::greater, value_type::number_val):
+      return value_t{p_this.as.number > p_other.as.number};
+    case _make_value_key(value_type::number_val, operator_type::less_equal, value_type::number_val):
+      return value_t{p_this.as.number <= p_other.as.number};
+    case _make_value_key(value_type::number_val, operator_type::greater_equal, value_type::number_val):
+      return value_t{p_this.as.number >= p_other.as.number};
+    case _make_value_key(value_type::bool_val, operator_type::equal, value_type::bool_val):
+      return value_t{p_this.as.boolean == p_other.as.boolean};
+    case _make_value_key(value_type::bool_val, operator_type::bang_equal, value_type::bool_val):
+      return value_t{p_this.as.boolean != p_other.as.boolean};
+    case _make_value_key(value_type::null_val, operator_type::equal, value_type::null_val):
+      return value_t{true};
+    case _make_value_key(value_type::null_val, operator_type::bang_equal, value_type::null_val):
+      return value_t{false};
+    default:
+    {
+      if(p_this.type == value_type::object_val)
+      {
+        return perform_binary_infix_real_object(p_this.as.obj, p_operator, p_other);
+        // try lookup the operation in the object table
+      }
+      if(p_operator == operator_type::equal)
+      {
+        return value_t{is_value_falsy(p_this) == is_value_falsy(p_other)};
+      }
+      else if(p_operator == operator_type::bang_equal)
+      {
+        return value_t{is_value_falsy(p_this) != is_value_falsy(p_other)};
+      }
+      return std::unexpected(value_error::undefined_operation);
+    }
+    }
+  }
+
+  std::expected<value_t, value_error>
+  vm::perform_binary_infix_real_object(object* p_this, operator_type p_operator, value_t p_other)
+  {
+    auto op_it = m_objects_operations.find(p_this->type);
+    if(m_objects_operations.end() == op_it)
+      return std::unexpected(value_error::undefined_operation);
+    auto ret = op_it->second.binary_infix.call_operation(
+        _make_object_key(p_operator,
+                         p_other.type,
+                         p_other.type == value_type::object_val ? p_other.as.obj->type : object_type::none),
+        std::move(p_this),
+        std::move(p_other));
+    if(!ret.has_value())
+      return std::unexpected(value_error::undefined_operation);
+    return ret.value();
+  }
+
+  std::expected<value_t, value_error> vm::perform_unary_prefix_real(const operator_type p_operator,
+                                                                    const value_t p_this)
+  {
+    auto key = _make_value_key(p_operator, p_this.type);
+    switch(key)
+    {
+      // is this ok??
+    case _make_value_key(operator_type::plus, value_type::number_val):
+      return p_this;
+    case _make_value_key(operator_type::minus, value_type::number_val):
+      return value_t{-p_this.as.number};
+    case _make_value_key(operator_type::bang, value_type::bool_val):
+      return value_t{!p_this.as.boolean};
+    default:
+      if(p_operator == operator_type::bang)
+        return value_t{is_value_falsy(p_this)};
+      return std::unexpected(value_error::undefined_operation);
+    }
+  }
+
+  std::expected<value_t, value_error> vm::perform_unary_prefix_real_object(operator_type p_operator, value_t p_this)
+  {
+  }
+
+  bool vm::is_value_falsy(value_t p_value) const
+  {
+    return p_value.type == value_type::null_val || (p_value.type == value_type::bool_val && !p_value.as.boolean) ||
+           (p_value.type == value_type::number_val && p_value.as.number == 0);
+  }
+
+  void vm::print_value(value_t p_value)
+  {
+    switch(p_value.type)
+    {
+    case value_type::number_val:
+      std::print("{}", p_value.as.number);
+      break;
+    case value_type::bool_val:
+      std::print("{}", p_value.as.boolean ? "true" : "false");
+      break;
+    case value_type::null_val:
+      std::print("null");
+      break;
+    case value_type::object_val:
+      print_object(p_value.as.obj);
+      break;
+    default:
+      std::print("{}", p_value.as.number); // TODO(Qais): print as pointer
+      break;
+    }
+  }
+
+  void vm::print_object(object* p_object)
+  {
+    auto op_it = m_objects_operations.find(p_object->type);
+    if(m_objects_operations.end() == op_it)
+      runtime_error("invalid print");
+    op_it->second.print_function(p_object);
   }
 
   void vm::runtime_error(const std::string& err)

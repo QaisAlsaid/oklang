@@ -1,7 +1,11 @@
 #include "object.hpp"
+#include "operator.hpp"
+#include "value.hpp"
 #include "vm.hpp"
 #include "vm_stack.hpp"
+#include <array>
 #include <numeric>
+#include <print>
 
 namespace ok
 {
@@ -43,21 +47,21 @@ namespace ok
   //   return interned;
   // }
 
-  string_object::string_object(const std::string_view p_src) : object(object_type::obj_string), length(p_src.size())
+  string_object::string_object(const std::string_view p_src) : string_object()
   {
+    length = p_src.size();
     chars = new char[p_src.size() + 1];
     strncpy(chars, p_src.data(), length);
     chars[length] = '\0';
     hash_code = hash(chars);
   }
 
-  string_object::string_object(std::span<std::string_view> p_srcs) : object(object_type::obj_string)
+  string_object::string_object(std::span<std::string_view> p_srcs) : string_object()
   {
-
     hash_code = hash(chars);
   }
 
-  string_object* string_object::create(const std::string_view p_src)
+  object* string_object::create(const std::string_view p_src)
   {
     // auto mem = malloc(sizeof(string_object) + p_length);
     // new(mem) string_object(p_length, p_src, (uint8_t*)mem + sizeof(string_object), p_vm_id);
@@ -65,12 +69,12 @@ namespace ok
     auto& interned_strings = get_g_vm()->get_interned_strings();
     auto interned = interned_strings.get(p_src);
     if(interned != nullptr)
-      return interned;
+      return (object*)interned;
 
-    return interned_strings.set(p_src);
+    return (object*)interned_strings.set(p_src);
   }
 
-  string_object* string_object::create(const std::span<std::string_view> p_srcs)
+  object* string_object::create(const std::span<std::string_view> p_srcs)
   {
     // TODO(Qais): double copy new ctor and method in interned store will mitigate that
     auto length = std::accumulate(
@@ -87,8 +91,54 @@ namespace ok
     auto& interned_strings = get_g_vm()->get_interned_strings();
     auto interned = interned_strings.get({chars, length});
     if(interned != nullptr)
-      return interned;
-    return interned_strings.set({chars, length});
+      return (object*)interned;
+    return (object*)interned_strings.set({chars, length});
+  }
+
+  string_object::string_object() : up(object_type::obj_string)
+  {
+    if(up.is_registered)
+      return;
+
+    auto _vm = get_g_vm();
+    auto& ops = _vm->register_object_operations(up.type);
+    std::array<std::pair<uint32_t, vm::operation_function_infix_binary>, 2> op_fcn = {
+        std::pair<uint32_t, vm::operation_function_infix_binary>{
+            _make_object_key(operator_type::equal, value_type::object_val, object_type::obj_string),
+            string_object::equal},
+        {_make_object_key(operator_type::plus, value_type::object_val, object_type::obj_string), string_object::plus}};
+    ops.binary_infix.register_operations(op_fcn);
+
+    ops.print_function = string_object::print;
+  }
+
+  std::expected<value_t, value_error> string_object::equal(object* p_this, value_t p_sure_is_string)
+  {
+    auto other = (string_object*)p_sure_is_string.as.obj;
+    if(p_this->type == other->up.type)
+    {
+      return value_t{(string_object*)p_this == other}; // pointer compare, interning makes it possible
+    }
+    return std::unexpected(value_error::undefined_operation);
+  }
+
+  std::expected<value_t, value_error> string_object::plus(object* p_this, value_t p_sure_is_string)
+  {
+    auto other = (string_object*)p_sure_is_string.as.obj;
+    if(p_this->type == other->up.type)
+    {
+      auto this_string = (string_object*)p_this;
+      std::array<std::string_view, 2> arr = {std::string_view{this_string->chars, this_string->length},
+                                             {other->chars, other->length}};
+      return value_t{create(arr)};
+    }
+    return std::unexpected(value_error::undefined_operation);
+  }
+
+  void string_object::print(object* p_this)
+  {
+    auto this_string = (string_object*)p_this;
+    std::print("{}", std::string_view{this_string->chars, this_string->length});
   }
 
 } // namespace ok
