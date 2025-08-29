@@ -2,10 +2,8 @@
 #define OK_VALUE_HPP
 
 #include "operator.hpp"
-#include "utility.hpp"
 #include <cstdint>
 #include <expected>
-#include <print>
 #include <vector>
 
 namespace ok
@@ -40,7 +38,7 @@ namespace ok
     explicit value_t(double p_number);
     explicit value_t();
 
-    explicit value_t(const char* p_str, size_t p_length, uint32_t p_vm_id);
+    explicit value_t(const char* p_str, size_t p_length);
     explicit value_t(object* p_object);
 
     bool is(const value_type p_type) const;
@@ -51,8 +49,8 @@ namespace ok
     // supported by c++
     std::expected<value_t, value_error> operator_prefix_unary(const operator_type p_operator) const;
 
-    std::expected<value_t, value_error>
-    operator_infix_binary(const operator_type p_operator, const value_t p_other, uint32_t p_vm_id) const;
+    std::expected<value_t, value_error> operator_infix_binary(const operator_type p_operator,
+                                                              const value_t p_other) const;
 
   private:
   };

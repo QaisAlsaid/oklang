@@ -2,10 +2,10 @@
 #include "chunk.hpp"
 #include "compiler.hpp"
 #include "debug.hpp"
-#include "object_store.hpp"
 #include "operator.hpp"
 #include "utility.hpp"
 #include "value.hpp"
+#include "vm_stack.hpp"
 #include <cassert>
 #include <expected>
 #include <print>
@@ -18,12 +18,18 @@ namespace ok
 {
   vm::vm()
   {
+    // keep id will need that for logger (yes logger will be globally accessible and requires indirection but its mostly
+    // fine because its either debug only on on error where you dont even need fast code)
     static uint32_t id = 0;
     m_stack.reserve(stack_base_size);
     m_chunk = new chunk;
     m_id = ++id;
-    object_store::set_head(m_id, nullptr);
-    interned_strings_store::create_vm_interned(m_id);
+    // those will be replaced with local ones inside vm and will pass them through calls
+    // object_store::set_head(m_id, nullptr);
+    // interned_strings_store::create_vm_interned(m_id);
+
+    m_interned_strings = {};
+    m_objects_list = nullptr;
   }
 
   vm::~vm()
@@ -31,11 +37,12 @@ namespace ok
     if(m_chunk)
       delete m_chunk;
 
-    object_store::destroy(m_id);
+    destroy_objects_list();
   }
 
   auto vm::interpret(const std::string_view p_source) -> interpret_result
   {
+    vm_guard guard{this};
     compiler com;
     auto compile_result = com.compile(p_source, m_chunk, m_id);
     if(!compile_result)
@@ -225,7 +232,7 @@ namespace ok
     auto b = m_stack.back();
     m_stack.pop_back();
     auto a = m_stack.back();
-    auto ret = a.operator_infix_binary(p_operator, b, m_id);
+    auto ret = a.operator_infix_binary(p_operator, b);
     if(!ret.has_value())
     {
       // TODO(Qais): check error type at least
@@ -243,5 +250,15 @@ namespace ok
   void vm::runtime_error(const std::string& err)
   {
     std::println("runtime error: {}", err);
+  }
+
+  void vm::destroy_objects_list()
+  {
+    while(m_objects_list != nullptr)
+    {
+      auto next = m_objects_list->next;
+      delete m_objects_list;
+      m_objects_list = next;
+    }
   }
 } // namespace ok

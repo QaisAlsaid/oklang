@@ -1,7 +1,7 @@
 #ifndef OK_OBJECT_HPP
 #define OK_OBJECT_HPP
 
-// #include "object_store.hpp"
+#include "utility.hpp"
 #include "value.hpp"
 #include <array>
 #include <cstddef>
@@ -38,7 +38,7 @@ namespace ok
     object_type type;
     object* next = nullptr;
 
-    object(object_type p_type, uint32_t p_vm_id);
+    object(object_type p_type);
 
     virtual ~object() = default;
 
@@ -47,12 +47,12 @@ namespace ok
       std::print("{:p}", (void*)this);
     };
 
-    virtual std::expected<value_t, object_error> equal(object* p_other, uint32_t p_vm_id) const
+    virtual std::expected<value_t, object_error> equal(object* p_other) const
     {
       return value_t{this == p_other};
     }
 
-    virtual std::expected<value_t, object_error> plus(object* p_other, uint32_t p_vm_id) const
+    virtual std::expected<value_t, object_error> plus(object* p_other) const
     {
       return std::unexpected(object_error::undefined_operation);
     }
@@ -112,7 +112,7 @@ namespace ok
   struct string_object : public object
   {
     // create a string object (allocates char buffer on heap)
-    string_object(const std::string_view p_src, uint32_t p_vm_id);
+    string_object(const std::string_view p_src);
 
     // // create a string object from pre allocated char buffer
     // string_object(size_t p_length, const char* p_src, void* p_mem, uint32_t p_vm_id)
@@ -138,7 +138,7 @@ namespace ok
     //   }
     // }
 
-    string_object(std::span<std::string_view> p_srcs, uint32_t p_vm_id);
+    string_object(std::span<std::string_view> p_srcs);
 
     ~string_object()
     {
@@ -149,15 +149,15 @@ namespace ok
 
     // create string object with char buffer right after the object
     // no, bad idea resize and destroy will be broken, also its how all strings are implemented so dont play smart!
-    static string_object* create(const std::string_view p_src, uint32_t p_vm_id);
-    static string_object* create(const std::span<std::string_view> p_srcs, uint32_t p_vm_id);
+    static string_object* create(const std::string_view p_src);
+    static string_object* create(const std::span<std::string_view> p_srcs);
 
     void print() const override
     {
       std::print("{}", std::string_view{chars, length});
     }
 
-    virtual std::expected<value_t, object_error> equal(object* p_other, uint32_t p_vm_id) const override
+    virtual std::expected<value_t, object_error> equal(object* p_other) const override
     {
       if(type == p_other->type)
       {
@@ -167,14 +167,14 @@ namespace ok
       return std::unexpected(object_error::undefined_operation);
     }
 
-    virtual std::expected<value_t, object_error> plus(object* p_other, uint32_t p_vm_id) const override
+    virtual std::expected<value_t, object_error> plus(object* p_other) const override
     {
       if(type == p_other->type)
       {
         auto other_string = (string_object*)p_other;
         std::array<std::string_view, 2> arr = {std::string_view{chars, length},
                                                {other_string->chars, other_string->length}};
-        return value_t{create(arr, p_vm_id)};
+        return value_t{create(arr)};
       }
       return std::unexpected(object_error::undefined_operation);
     }

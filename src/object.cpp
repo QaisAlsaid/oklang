@@ -1,17 +1,14 @@
 #include "object.hpp"
-#include "object_store.hpp"
+#include "vm.hpp"
+#include "vm_stack.hpp"
 #include <numeric>
-#include <string>
 
 namespace ok
 {
-  object::object(object_type p_type, uint32_t p_vm_id) : type(p_type)
+  object::object(object_type p_type) : type(p_type)
   {
-    auto ret = object_store::insert(p_vm_id, this);
-    if(!ret)
-    {
-      std::println("vm id {}, object store is invalid", p_vm_id);
-    }
+    next = get_g_vm()->get_objects_list();
+    get_g_vm()->get_objects_list() = this;
   }
 
   // string_object::string_object(const std::string_view p_src, uint32_t p_vm_id)
@@ -46,8 +43,7 @@ namespace ok
   //   return interned;
   // }
 
-  string_object::string_object(const std::string_view p_src, uint32_t p_vm_id)
-      : object(object_type::obj_string, p_vm_id), length(p_src.size())
+  string_object::string_object(const std::string_view p_src) : object(object_type::obj_string), length(p_src.size())
   {
     chars = new char[p_src.size() + 1];
     strncpy(chars, p_src.data(), length);
@@ -55,29 +51,26 @@ namespace ok
     hash_code = hash(chars);
   }
 
-  string_object::string_object(std::span<std::string_view> p_srcs, uint32_t p_vm_id)
-      : object(object_type::obj_string, p_vm_id)
+  string_object::string_object(std::span<std::string_view> p_srcs) : object(object_type::obj_string)
   {
 
     hash_code = hash(chars);
   }
 
-  string_object* string_object::create(const std::string_view p_src, uint32_t p_vm_id)
+  string_object* string_object::create(const std::string_view p_src)
   {
     // auto mem = malloc(sizeof(string_object) + p_length);
     // new(mem) string_object(p_length, p_src, (uint8_t*)mem + sizeof(string_object), p_vm_id);
     // return (string_object*)mem;
-    auto vm_store = interned_strings_store::get_vm_interned(p_vm_id);
-    if(!vm_store)
-      return nullptr;
-    auto interned = vm_store->get(p_src);
+    auto& interned_strings = get_g_vm()->get_interned_strings();
+    auto interned = interned_strings.get(p_src);
     if(interned != nullptr)
       return interned;
 
-    return vm_store->set(p_src, p_vm_id);
+    return interned_strings.set(p_src);
   }
 
-  string_object* string_object::create(const std::span<std::string_view> p_srcs, uint32_t p_vm_id)
+  string_object* string_object::create(const std::span<std::string_view> p_srcs)
   {
     // TODO(Qais): double copy new ctor and method in interned store will mitigate that
     auto length = std::accumulate(
@@ -91,13 +84,11 @@ namespace ok
       curr += src.size();
     }
     chars[length] = '\0';
-    auto vm_store = interned_strings_store::get_vm_interned(p_vm_id);
-    if(!vm_store)
-      return nullptr;
-    auto interned = vm_store->get({chars, length});
+    auto& interned_strings = get_g_vm()->get_interned_strings();
+    auto interned = interned_strings.get({chars, length});
     if(interned != nullptr)
       return interned;
-    return vm_store->set({chars, length}, p_vm_id);
+    return interned_strings.set({chars, length});
   }
 
 } // namespace ok

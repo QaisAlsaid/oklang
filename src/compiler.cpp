@@ -3,7 +3,6 @@
 #include "chunk.hpp"
 #include "debug.hpp"
 #include "lexer.hpp"
-#include "object_store.hpp"
 #include "parser.hpp"
 #include "utf8.hpp"
 #include "value.hpp"
@@ -158,7 +157,7 @@ namespace ok
       }
     }
     dest.push_back('\0');
-    current_chunk()->write_constant(value_t{p_string->get_value().c_str(), p_string->get_value().size(), m_vm_id},
+    current_chunk()->write_constant(value_t{p_string->get_value().c_str(), p_string->get_value().size()},
                                     p_string->get_offset());
   }
 

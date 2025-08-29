@@ -2,12 +2,13 @@
 #define OK_VM_HPP
 
 #include "chunk.hpp"
+#include "interned_string.hpp"
 #include "operator.hpp"
 #include "value.hpp"
 #include <array>
 #include <expected>
-#include <stack>
 #include <string_view>
+
 namespace ok
 {
   using vm_id = uint32_t;
@@ -25,6 +26,16 @@ namespace ok
     vm();
     ~vm();
     interpret_result interpret(const std::string_view p_source);
+
+    inline object*& get_objects_list()
+    {
+      return m_objects_list;
+    }
+
+    inline interned_string& get_interned_strings()
+    {
+      return m_interned_strings;
+    }
 
   private:
     interpret_result run();
@@ -46,11 +57,15 @@ namespace ok
     std::expected<void, interpret_result> perform_binary_infix(const operator_type p_operator);
     std::expected<void, interpret_result> perform_unary_infix(const operator_type p_operator);
 
+    void destroy_objects_list();
+
   private:
     chunk* m_chunk;
     byte* m_ip; // TODO(Qais): move this to local storage
     uint32_t m_id;
     std::vector<value_t> m_stack; // is a vector with stack protocol better than std::stack? Update: yes i think so
+    interned_string m_interned_strings;
+    object* m_objects_list; // intrusive linked list
     constexpr static size_t stack_base_size = 256;
   };
 } // namespace ok

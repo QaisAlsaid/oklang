@@ -43,8 +43,8 @@ namespace ok
   {
   }
 
-  value_t::value_t(const char* p_str, size_t p_length, uint32_t p_vm_id)
-      : type(value_type::object_val), as({.obj = string_object::create(p_str, p_vm_id)})
+  value_t::value_t(const char* p_str, size_t p_length)
+      : type(value_type::object_val), as({.obj = string_object::create(p_str)})
   {
   }
 
@@ -81,8 +81,8 @@ namespace ok
     }
   }
 
-  std::expected<value_t, value_error>
-  value_t::operator_infix_binary(const operator_type p_operator, const value_t p_other, uint32_t p_vm_id) const
+  std::expected<value_t, value_error> value_t::operator_infix_binary(const operator_type p_operator,
+                                                                     const value_t p_other) const
   {
     auto key =
         _make_key(type, p_operator, p_other.type, type == value_type::object_val ? (as.obj->type) : object_type::none);
@@ -122,14 +122,14 @@ namespace ok
       return value_t{false};
     case _make_key(value_type::object_val, operator_type::equal, value_type::object_val, object_type::obj_string):
     {
-      auto ret = as.obj->equal(p_other.as.obj, p_vm_id);
+      auto ret = as.obj->equal(p_other.as.obj);
       if(ret.has_value())
         return ret.value();
       return std::unexpected(object_error_to_value_error(ret.error()));
     }
     case _make_key(value_type::object_val, operator_type::plus, value_type::object_val, object_type::obj_string):
     {
-      auto ret = as.obj->plus(p_other.as.obj, p_vm_id);
+      auto ret = as.obj->plus(p_other.as.obj);
       if(ret.has_value())
         return ret.value();
       return std::unexpected(object_error_to_value_error(ret.error()));
