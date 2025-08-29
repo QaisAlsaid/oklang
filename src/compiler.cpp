@@ -81,19 +81,6 @@ namespace ok
     compile(expr.get());
   }
 
-  // void compiler::compile(ast::statement* p_stmt)
-  // {
-  //   switch(p_stmt->get_type())
-  //   {
-  //   case ast::node_type::nt_expression_statement_stmt:
-  //     compile((ast::expression_statement*)p_stmt);
-  //     return;
-  //   case ast::node_type::nt_statement:
-  //   default:
-  //     return;
-  //   }
-  // }
-
   void compiler::compile(ast::program* p_program)
   {
     for(const auto& stmt : p_program->get_statements())
@@ -239,24 +226,4 @@ namespace ok
   {
     current_chunk()->write(opcode::op_null, p_null->get_offset());
   }
-
-  // void compiler::compile(ast::expression* p_expr)
-  // {
-  //   switch(p_expr->get_type())
-  //   {
-  //   case ast::node_type::nt_infix_binary_expr:
-  //     compile((ast::infix_binary_expression*)(p_expr));
-  //     return;
-  //   case ast::node_type::nt_prefix_expr:
-  //     compile((ast::prefix_unary_expression*)(p_expr));
-  //     return;
-  //   case ast::node_type::nt_number_expr:
-  //     compile((ast::number_expression*)(p_expr));
-  //     return;
-  //   case ast::node_type::nt_expression:
-  //   default:
-  //     return;
-  //   }
-  // }
-
 } // namespace ok

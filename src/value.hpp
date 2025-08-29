@@ -4,7 +4,6 @@
 #include "operator.hpp"
 #include "utility.hpp"
 #include <cstdint>
-#include <expected>
 #include <vector>
 
 namespace ok
@@ -41,20 +40,8 @@ namespace ok
 
     explicit value_t(const char* p_str, size_t p_length);
     explicit value_t(object* p_object);
-
-    // bool is(const value_type p_type) const;
-    // void print() const;
-    // bool is_falsy() const;
-
-    // // we wont use c++ operator overload so it doesnt look out of place if introduce functions for operators not
-    // // supported by c++
-    // std::expected<value_t, value_error> operator_prefix_unary(const operator_type p_operator) const;
-
-    // std::expected<value_t, value_error> operator_infix_binary(const operator_type p_operator,
-    //                                                           const value_t p_other) const;
-
-  private:
   };
+
   using value_array = std::vector<value_t>;
 
   constexpr uint32_t _make_value_key(const value_type p_lhs, const operator_type p_operator, const value_type p_rhs)

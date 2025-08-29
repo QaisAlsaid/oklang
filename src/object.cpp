@@ -15,38 +15,6 @@ namespace ok
     get_g_vm()->get_objects_list() = this;
   }
 
-  // string_object::string_object(const std::string_view p_src, uint32_t p_vm_id)
-  //     : object(object_type::obj_string, p_vm_id), string(new std::string{p_src})
-  // {
-  // }
-
-  // // TODO(Qais): fix
-  // string_object::string_object(const std::span<std::string_view> p_sources, uint32_t p_vm_id)
-  //     : object(object_type::obj_string, p_vm_id), string(new std::string())
-  // {
-  //   auto len = std::accumulate(
-  //       p_sources.begin(), p_sources.end(), size_t{0}, [](const auto sum, const auto src) { return sum + src.size();
-  //       });
-  //   string->reserve(len);
-  //   // string.resize(len);
-  //   for(const auto src : p_sources)
-  //   {
-  //     *string += src;
-  //   }
-  // }
-
-  // string_object* string_object::create(const std::string_view p_src, uint32_t p_vm_id)
-  // {
-  //   auto vm_store = interned_strings_store::get_vm_interned(p_vm_id);
-  //   if(vm_store == nullptr)
-  //     return nullptr;
-  //   // TODO(Qais): fix: bad call will create a string out of the view
-  //   auto interned = vm_store->get(std::string{p_src});
-  //   if(interned == nullptr)
-  //     return vm_store->set(std::string{p_src}, p_vm_id);
-  //   return interned;
-  // }
-
   string_object::string_object(const std::string_view p_src) : string_object()
   {
     length = p_src.size();
@@ -61,11 +29,14 @@ namespace ok
     hash_code = hash(chars);
   }
 
+  string_object::~string_object()
+  {
+    delete[] chars;
+    chars = nullptr;
+  }
+
   object* string_object::create(const std::string_view p_src)
   {
-    // auto mem = malloc(sizeof(string_object) + p_length);
-    // new(mem) string_object(p_length, p_src, (uint8_t*)mem + sizeof(string_object), p_vm_id);
-    // return (string_object*)mem;
     auto& interned_strings = get_g_vm()->get_interned_strings();
     auto interned = interned_strings.get(p_src);
     if(interned != nullptr)
