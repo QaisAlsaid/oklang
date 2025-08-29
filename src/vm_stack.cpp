@@ -4,22 +4,22 @@
 
 namespace ok
 {
-  static thread_local vm* g_vm;
+  static thread_local std::vector<vm*> g_vms;
 
   vm* get_g_vm()
   {
     // you cant access nullptr you silly!
-    assert(g_vm != nullptr);
-    return g_vm;
+    assert(!g_vms.empty());
+    return g_vms.back();
   }
 
-  vm_guard::vm_guard(vm* p_new_g_vm) : m_prev_g_vm(g_vm)
+  vm_guard::vm_guard(vm* p_new_g_vm)
   {
-    g_vm = p_new_g_vm;
+    g_vms.push_back(p_new_g_vm);
   }
 
   vm_guard::~vm_guard()
   {
-    g_vm = m_prev_g_vm;
+    g_vms.pop_back();
   }
 } // namespace ok
