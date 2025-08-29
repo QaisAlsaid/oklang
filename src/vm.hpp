@@ -3,6 +3,7 @@
 
 #include "chunk.hpp"
 #include "interned_string.hpp"
+#include "log.hpp"
 #include "object.hpp"
 #include "operator.hpp"
 #include "value.hpp"
@@ -73,6 +74,11 @@ namespace ok
 
     void print_value(value_t p_value);
 
+    inline logger& get_logger()
+    {
+      return m_logger;
+    }
+
   private:
     interpret_result run();
     value_t read_constant(opcode p_op);
@@ -118,6 +124,7 @@ namespace ok
 
     // yes another indirection, shutup you cant eliminate all indirections
     std::unordered_map<object_type, object_value_operations> m_objects_operations;
+    logger m_logger;
     constexpr static size_t stack_base_size = 256;
   };
 } // namespace ok

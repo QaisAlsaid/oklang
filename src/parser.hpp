@@ -14,11 +14,6 @@ namespace ok
                                product = 6, exponent = 7, prefix = 8, infix = 9, call = 10;
   };
 
-  // inline precedence operator-(precedence lhs, size_t rhs)
-  //{
-  //   return (lhs == precedence::lowest ? lhs : (precedence)(lhs - rhs));
-  // }
-
   class parser
   {
   public:

@@ -85,7 +85,7 @@ int main(int argc, char** argv)
   // std::println("accuracy: {}%", (float)tests_stats.pass / (float)tests_stats.total * 100);
 
   ok::vm vm;
-  vm.interpret("'q' + 'q' + 'qq'");
+  vm.interpret("1+232/(34+1) / +3+3");
 }
 
 static tests_progress test(const std::string_view src, const std::string_view expect)

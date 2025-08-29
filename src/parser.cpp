@@ -3,7 +3,6 @@
 #include "parsers.hpp"
 #include "token.hpp"
 #include <memory>
-#include <print>
 #include <unordered_map>
 
 namespace ok
@@ -57,22 +56,6 @@ namespace ok
 
   parser::parser(token_array& p_token_array) : m_token_array(p_token_array)
   {
-    // useless!
-    // if(p_token_array.empty() || p_token_array.back().type != token_type::tok_eof)
-    //  return;
-    std::println("prefix_funs:");
-    for(const auto& it : s_prefix_parse_map)
-    {
-      auto str = token_type_to_string(it.first);
-      std::println("tp: {}, parser: {}", str, it.second != nullptr);
-    }
-    std::println("infix_funs:");
-    for(const auto& it : s_infix_parse_map)
-    {
-      auto str = token_type_to_string(it.first);
-      std::println("tp: {}, parser: {}", str, it.second != nullptr);
-    }
-    // m_current = 0, m_lookahead = 1;
     advance();
   }
 
@@ -109,6 +92,8 @@ namespace ok
 
   std::unique_ptr<ast::program> parser::parse_program()
   {
+    if(m_token_array.empty())
+      return nullptr;
     auto tok = current_token();
     std::list<std::unique_ptr<ast::statement>> list;
 

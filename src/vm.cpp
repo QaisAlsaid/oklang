@@ -2,6 +2,7 @@
 #include "chunk.hpp"
 #include "compiler.hpp"
 #include "debug.hpp"
+#include "macros.hpp"
 #include "object.hpp"
 #include "operator.hpp"
 #include "utility.hpp"
@@ -60,15 +61,15 @@ namespace ok
     auto end = m_chunk->code.data() + m_chunk->code.size();
     while(m_ip < end)
     {
-#if defined(DEBUG_PRINT) // TODO(Qais): proper build targets and definations
-      std::print("    ");
+#ifdef PARANOID
+      TRACE("    ");
       for(auto e : m_stack)
       {
-        std::print("[");
+        TRACE("[");
         print_value(e);
-        std::print("]");
+        TRACE("]");
       }
-      std::println();
+      TRACELN("");
       // FIXME(Qais): offset isnt being calculated properly, Update: i think its fixed, keeping this if it broke
       debug::disassembler::disassemble_instruction(*m_chunk, static_cast<size_t>(m_ip - m_chunk->code.data()));
 #endif
@@ -196,7 +197,8 @@ namespace ok
   {
     const auto base = m_chunk->code.data();
     const auto end = base + m_chunk->code.size();
-    assert(m_ip < end && "ip out of bounds");
+
+    ASSERT(m_ip < end); // address pointer out of pounds
     return *m_ip++;
   }
 
@@ -206,13 +208,15 @@ namespace ok
     if(p_op == opcode::op_constant)
     {
       const uint32_t index = read_byte();
-      assert(index < m_chunk->constants.size() && "constant index out of range");
+      ASSERT(index < m_chunk->constants.size()); // constant index out of range
+
       return m_chunk->constants[index]; // here we get it then m_ip is next
     }
 
     // here we get 1st then m_ip is next so on.... till we get 3rd and m_ip is 4th
     const uint32_t index = decode_int<uint32_t, 3>(read_bytes<3>(), 0);
-    assert(index < m_chunk->constants.size() && "constant index out of range");
+    ASSERT(index < m_chunk->constants.size()); // constant index out of range
+
     return m_chunk->constants[index];
   }
 
@@ -386,7 +390,7 @@ namespace ok
 
   void vm::runtime_error(const std::string& err)
   {
-    std::println("runtime error: {}", err);
+    ERRORLN("runtime error: {}", err);
   }
 
   void vm::destroy_objects_list()

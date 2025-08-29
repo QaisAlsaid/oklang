@@ -22,4 +22,9 @@ namespace ok
   {
     g_vms.pop_back();
   }
+
+  logger& get_vm_logger()
+  {
+    return get_g_vm()->get_logger();
+  }
 } // namespace ok
