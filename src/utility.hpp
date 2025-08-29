@@ -37,6 +37,31 @@ namespace ok
     }
     return result;
   }
+
+  using hashed_string = size_t;
+
+  inline constexpr hashed_string fnv1a_hash(const char* str, size_t hash = 14695981039346656037ULL)
+  {
+    return (*str == 0) ? hash : fnv1a_hash(str + 1, (hash ^ static_cast<size_t>(*str)) * 1099511628211ULL);
+  }
+
+  inline constexpr hashed_string hash(const char* str)
+  {
+    return fnv1a_hash(str);
+  }
+
+  namespace stringliterals
+  {
+    inline constexpr hashed_string operator""_fnv1a_hs(const char* str, size_t size)
+    {
+      return fnv1a_hash(str);
+    }
+
+    inline constexpr hashed_string operator""_hs(const char* str, size_t size)
+    {
+      return hash(str);
+    }
+  } // namespace stringliterals
 } // namespace ok
 
 #endif // OK_UTILITY_HPP
