@@ -16,6 +16,7 @@ namespace ok::ast
     nt_node,
     nt_expression,
     nt_statement,
+    nt_declaration, // technically a statement, but meh who cares
 
     // program root
     nt_program,
@@ -35,7 +36,10 @@ namespace ok::ast
     nt_null_expr,
 
     // statements
-    nt_expression_statement_stmt
+    nt_expression_statement_stmt,
+    nt_print_stmt,
+    // declarations
+    nt_let_decl,
   };
 
   /**
@@ -95,6 +99,18 @@ namespace ok::ast
     }
   };
 
+  class declaration : public statement
+  {
+  public:
+    declaration() : statement(node_type::nt_declaration)
+    {
+    }
+
+    declaration(node_type p_nt) : statement(p_nt)
+    {
+    }
+  };
+
   /**
    * program root
    **/
@@ -146,11 +162,23 @@ namespace ok::ast
     {
     }
 
+    // TODO(Qais): this isnt correct either make it for all classes or find another way
+    const token& get_token() const
+    {
+      return m_token;
+    }
+
     std::string token_literal() override
     {
       return m_token.raw_literal;
     }
+
     std::string to_string() override
+    {
+      return m_value;
+    }
+
+    const std::string& get_value() const
     {
       return m_value;
     }
@@ -263,7 +291,7 @@ namespace ok::ast
 
     std::string to_string() override
     {
-      return m_token.raw_literal;
+      return "null";
     }
 
   private:
@@ -384,6 +412,7 @@ namespace ok::ast
     std::unique_ptr<expression> m_right;
   };
 
+  // TODO(Qais): why is assign expr expecting left to be an identifier only!?
   class assign_expression : public expression
   {
   public:
@@ -400,6 +429,16 @@ namespace ok::ast
       std::stringstream ss;
       ss << "(" << m_identifier << "=" << m_right->to_string() << ")";
       return ss.str();
+    }
+
+    const std::string& get_identifier() const
+    {
+      return m_identifier;
+    }
+
+    std::unique_ptr<expression>& get_right()
+    {
+      return m_right;
     }
 
   private:
@@ -526,6 +565,75 @@ namespace ok::ast
   private:
     token m_token;
     std::unique_ptr<expression> m_expression;
+  };
+
+  class print_statement : public statement
+  {
+  public:
+    print_statement(token p_tok, std::unique_ptr<expression> p_expr)
+        : statement(node_type::nt_print_stmt), m_token(p_tok), m_expression(std::move(p_expr))
+    {
+    }
+
+    std::string token_literal() override
+    {
+      return m_token.raw_literal;
+    }
+
+    std::string to_string() override
+    {
+      // ugly
+      return "print" + (m_expression == nullptr ? std::string("null") : m_expression->to_string());
+    }
+
+    const std::unique_ptr<expression>& get_expression() const
+    {
+      return m_expression;
+    }
+
+  private:
+    token m_token;
+    std::unique_ptr<expression> m_expression;
+  };
+
+  /**
+   * declarations
+   **/
+
+  class let_declaration : public declaration
+  {
+  public:
+    let_declaration(token p_tok, std::unique_ptr<identifier_expression> p_ident, std::unique_ptr<expression> p_value)
+        : declaration(node_type::nt_let_decl), m_token(p_tok), m_identifier(std::move(p_ident)),
+          m_value(std::move(p_value))
+    {
+    }
+
+    std::string token_literal() override
+    {
+      return m_token.raw_literal;
+    }
+
+    std::string to_string() override
+    {
+      // ugly
+      return "let " + m_identifier->to_string() + " " + m_value->to_string();
+    }
+
+    const std::unique_ptr<expression>& get_value() const
+    {
+      return m_value;
+    }
+
+    const std::unique_ptr<identifier_expression>& get_identifier() const
+    {
+      return m_identifier;
+    }
+
+  private:
+    token m_token;
+    std::unique_ptr<identifier_expression> m_identifier;
+    std::unique_ptr<expression> m_value;
   };
 } // namespace ok::ast
 

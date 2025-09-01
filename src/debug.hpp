@@ -16,6 +16,8 @@ namespace ok::debug
     static int simple_instruction(const std::string_view p_name, int p_offset);
     static int constant_instruction(const std::string_view p_name, const chunk& p_chunk, int p_offset);
     static int constant_long_instruction(const std::string_view p_name, const chunk& p_chunk, int p_offset);
+    static int identifier_instruction(const std::string_view p_name, const chunk& p_chunk, int p_offset);
+    static int identifier_long_instruction(const std::string_view p_name, const chunk& p_chunk, int p_offset);
   };
 } // namespace ok::debug
 

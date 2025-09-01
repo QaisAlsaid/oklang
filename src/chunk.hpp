@@ -1,13 +1,15 @@
 #ifndef OK_CHUNK_HPP
 #define OK_CHUNK_HPP
 
+#include "macros.hpp"
+#include "utility.hpp"
+#include "value.hpp"
+#include "vm_stack.hpp"
 #include <cstdint>
 #include <print>
 #include <span>
+#include <utility>
 #include <vector>
-
-#include "utility.hpp"
-#include "value.hpp"
 
 namespace ok
 {
@@ -15,6 +17,7 @@ namespace ok
   enum class opcode : byte
   {
     op_return,
+    op_pop,
     op_constant,
     op_constant_long,
     op_negate,
@@ -32,10 +35,19 @@ namespace ok
     op_less,
     op_greater_equal,
     op_less_equal,
+    op_print,
+    op_define_global,
+    op_define_global_long,
+    op_get_global,
+    op_get_global_long,
+    op_set_global,
+    op_set_global_long
   };
   constexpr auto op_constant_max_count = UINT8_MAX;
   constexpr auto uint24_max = (1 << 24) - 1;
   constexpr auto op_constant_long_max_count = uint24_max; // UINT24_MAX
+  constexpr auto op__global_max_count = UINT8_MAX;
+  constexpr auto op__global_long_max_count = uint24_max;
 
   // TODO(Qais): add sized writes, i.e. the constant write should be dependant on constant_index_type. and so on
   // Update: done needs testing and maybe templating
@@ -74,12 +86,38 @@ namespace ok
       {
         write(opcode::op_constant_long, p_offset);
         const auto span = encode_int<size_t, 3>(index);
-        // const auto span = std::span<const byte>{(const byte*)std::addressof(index), 3};
+#if defined(PARANOID)
         for(auto s : span)
-          std::println("byte: {}", (uint8_t)s);
+          TRACELN("byte: {}", (uint8_t)s);
+#endif
         write(span, p_offset); // 3 bytes since it is uint24
       }
       // TODO(Qais): else error: out of constants
+    }
+
+    // returns pair of <is_long, index>, and it doesnt write anything to the table
+    inline std::pair<bool, uint32_t> add_global(const value_t p_global, const size_t p_offset)
+    {
+      ASSERT(p_global.type == value_type::object_val);
+      identifiers.push_back(p_global);
+      const auto index = identifiers.size() - 1;
+      if(index < op__global_max_count + 1)
+      {
+        // write(is_define ? opcode::op_define_global : opcode::op_get_global, p_offset);
+        // write(index, p_offset);
+        return {false, index};
+      }
+      else if(index < op__global_long_max_count + 1)
+      {
+        // write(is_define ? opcode::op_define_global_long : opcode::op_get_global_long, p_offset);
+        // const auto span = encode_int<size_t, 3>(index);
+#if defined(PARANOID)
+        // for(auto s : span)
+        //   TRACELN("byte: {}", (uint8_t)s);
+#endif
+        // write(span, p_offset);
+        return {true, index};
+      }
     }
 
     // only valid when constants.size() < UINT8_MAX, otherwise use write_constant.
@@ -118,10 +156,7 @@ namespace ok
 
     std::vector<byte> code;
     value_array constants;
-    // TODO(Qais): find a better way of storing this WITHOUT cluttering the bytecode array
-    // [legacy]: std::vector<size_t> offsets; // stores offset to the first character mapping to the bytecode
-    // instruction Update: here is a new version that is not as wasteful as the last one, but still dont think its that
-    // great either
+    value_array identifiers;
     struct offset_with_rep
     {
       size_t offset;

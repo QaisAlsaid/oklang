@@ -59,6 +59,14 @@ namespace ok
     advance();
   }
 
+  // TODO(Qais): you pice of shit of a developer, check where this function returns,
+  // and by that i mean the current token state, and does it guarantee it on all execution paths?
+  // ok update, i might've gone too harsh on myself, while its clear(from the behavior of parse_expression_statement)
+  // that it skips all tokens that are related to the current expression, but still is that a guarantee or just an
+  // assumption?
+  // TODO(Qais): i think this off by one problem is a common problem in parsers. so if you really want to design this
+  // in an actually bullet proof/clean way, you might want to introduce something like advancement policy and state
+  // synchronizer or santi checker or something like that idk tbh
   std::unique_ptr<ast::expression> parser::parse_expression(int p_precedence)
   {
     auto tok = current_token();
@@ -66,6 +74,7 @@ namespace ok
     auto prefix_it = s_prefix_parse_map.find(tok.type);
     if(s_prefix_parse_map.end() == prefix_it)
     {
+      // TODO(Qais): wtf?
       error({error_code{}, "failed to parse!"});
       return nullptr;
     }
@@ -84,8 +93,7 @@ namespace ok
       lookahead = lookahead_token();
 
       left = infix_it->second->parse(*this, tok, std::move(left));
-      // tok = current_token();
-      lookahead = lookahead_token(); // TODO(Qais): dumu this is horrible design please make it a global source!
+      lookahead = lookahead_token();
     }
     return left;
   }
@@ -99,7 +107,7 @@ namespace ok
 
     while(tok.type != token_type::tok_eof)
     {
-      if(auto stmt = parse_statement())
+      if(auto stmt = parse_declaration())
         list.push_back(std::move(stmt));
       advance();
       tok = current_token();
@@ -108,10 +116,29 @@ namespace ok
     return std::make_unique<ast::program>(std::move(list));
   }
 
+  std::unique_ptr<ast::statement> parser::parse_declaration()
+  {
+    std::unique_ptr<ast::statement> ret;
+    switch(current_token().type)
+    {
+    case token_type::tok_let:
+      ret = parse_let_declaration();
+      break;
+    default:
+      ret = parse_statement();
+      break;
+    }
+    if(m_paranoia)
+      sync_state();
+    return ret;
+  }
+
   std::unique_ptr<ast::statement> parser::parse_statement()
   {
     switch(current_token().type)
     {
+    case token_type::tok_print:
+      return parse_print_statement();
     default:
       return parse_expression_statement();
     }
@@ -119,11 +146,60 @@ namespace ok
 
   std::unique_ptr<ast::expression_statement> parser::parse_expression_statement()
   {
+    auto trigger_tok = current_token();
     auto expr = parse_expression();
-    auto expr_stmt = std::make_unique<ast::expression_statement>(current_token(), std::move(expr));
-    if(lookahead_token().type == token_type::tok_semicolon)
-      advance();
+    auto expr_stmt = std::make_unique<ast::expression_statement>(trigger_tok, std::move(expr));
+    if(lookahead_token().type != token_type::tok_semicolon)
+      error({{}, "expected ';'"});
+    advance();
     return expr_stmt;
+  }
+
+  std::unique_ptr<ast::print_statement> parser::parse_print_statement()
+  {
+    auto print_tok = current_token();
+    advance();
+    auto expr = parse_expression();
+    if(lookahead_token().type != token_type::tok_semicolon)
+      error({{}, "expected ';'"});
+    advance();
+
+    return std::make_unique<ast::print_statement>(print_tok, std::move(expr));
+  }
+
+  std::unique_ptr<ast::let_declaration> parser::parse_let_declaration()
+  {
+    // ugly ugly ugly
+    auto let_tok = current_token();
+    advance();
+    std::unique_ptr<ast::assign_expression> assign;
+    auto ident = parse_expression();
+    if(ident->get_type() == ast::node_type::nt_assign_expr)
+      assign = std::unique_ptr<ast::assign_expression>((ast::assign_expression*)ident.release());
+    else if(ident->get_type() == ast::node_type::nt_identifier_expr)
+    {
+      auto ident_identifier = std::unique_ptr<ast::identifier_expression>((ast::identifier_expression*)ident.release());
+      const auto& tok = ident_identifier->get_token();
+      assign = std::make_unique<ast::assign_expression>(
+          tok, ident_identifier->get_value(), std::make_unique<ast::null_expression>(tok));
+    }
+    else
+      error({{}, "expected identifier"});
+
+    // std::unique_ptr<ast::expression> expr;
+    // advance();
+    // if(current_token().type == token_type::tok_equal)
+    // {
+    //   expr = parse_expression();
+    //   advance();
+    // }
+    advance();
+    if(current_token().type != token_type::tok_semicolon)
+      error({{}, "expected ';'"});
+    return std::make_unique<ast::let_declaration>(
+        let_tok,
+        std::make_unique<ast::identifier_expression>(let_tok, assign->get_identifier()),
+        std::move(assign->get_right()));
   }
 
   bool parser::advance()
@@ -143,14 +219,6 @@ namespace ok
       return advance();
 
     // TODO(Qais): error unexpected token!
-    return false;
-  }
-
-  // TODO(Qais): remove dups
-  bool parser::advance_if_equals(token_type p_type)
-  {
-    if(current_token().type == p_type)
-      return advance();
     return false;
   }
 
@@ -174,11 +242,36 @@ namespace ok
 
   void parser::error(error_type p_err)
   {
-    if(m_panic)
+    if(m_paranoia)
       return;
 
-    m_panic = true;
+    m_paranoia = true;
     m_errors.push_back(p_err);
+  }
+
+  void parser::sync_state()
+  {
+    m_paranoia = false;
+    while(lookahead_token().type != token_type::tok_eof)
+    {
+      if(current_token().type == token_type::tok_semicolon)
+        return;
+      switch(current_token().type)
+      {
+      case token_type::tok_class:
+      case token_type::tok_fun:
+      case token_type::tok_let:
+      case token_type::tok_letdown:
+      case token_type::tok_for:
+      case token_type::tok_if:
+      case token_type::tok_while:
+      case token_type::tok_print:
+      case token_type::tok_return:
+        return;
+      default:;
+      }
+      advance();
+    }
   }
 
   auto parser::get_errors() const -> const errors&

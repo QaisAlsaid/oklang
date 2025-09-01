@@ -34,7 +34,6 @@ namespace ok
     void error(error_type p_err);
 
     bool advance();
-    bool advance_if_equals(token_type p_type);
     bool expect_next(token_type p_type);
 
     token current_token() const;
@@ -45,12 +44,17 @@ namespace ok
     int get_precedence(token_type p_type);
     std::unique_ptr<ast::statement> parse_statement();
     std::unique_ptr<ast::expression_statement> parse_expression_statement();
+    std::unique_ptr<ast::statement> parse_declaration();
+    std::unique_ptr<ast::print_statement> parse_print_statement();
+    std::unique_ptr<ast::let_declaration> parse_let_declaration();
+
+    void sync_state();
 
   private:
     token_array& m_token_array;
     size_t m_current_token = 0;
     size_t m_lookahead_token = 0;
-    bool m_panic = false;
+    bool m_paranoia = false;
     errors m_errors;
   };
 } // namespace ok

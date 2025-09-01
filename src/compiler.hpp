@@ -27,6 +27,10 @@ namespace ok
     void compile(ast::boolean_expression* p_boolean);
     void compile(ast::null_expression* p_null);
     void compile(ast::string_expression* p_string);
+    void compile(ast::print_statement* p_print_stmt);
+    void compile(ast::let_declaration* p_let_decl);
+    void compile(ast::identifier_expression* p_ident_expr);
+    void compile(ast::assign_expression* p_assignment_expr);
 
   private:
     chunk* m_current_chunk; // maybe temp

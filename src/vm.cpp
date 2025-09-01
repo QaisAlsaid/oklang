@@ -14,8 +14,6 @@
 #include <string_view>
 #include <vector>
 
-#define DEBUG_PRINT
-
 namespace ok
 {
   vm::vm()
@@ -79,11 +77,16 @@ namespace ok
       case to_utype(opcode::op_return):
       {
         // TODO(Qais): abstract
-        auto back = m_stack.back();
-        m_stack.pop_back();
-        print_value(back);
-        std::println();
+        // auto back = m_stack.back();
+        // m_stack.pop_back();
+        // print_value(back);
+        // std::println();
         return interpret_result::ok;
+      }
+      case to_utype(opcode::op_pop):
+      {
+        m_stack.pop_back();
+        break;
       }
       case to_utype(opcode::op_constant):
       case to_utype(opcode::op_constant_long):
@@ -189,6 +192,62 @@ namespace ok
           return ret.error();
         break;
       }
+      case to_utype(opcode::op_print):
+      {
+        auto back = m_stack.back();
+        m_stack.pop_back();
+        print_value(back);
+        break;
+      }
+      case to_utype(opcode::op_define_global):
+      case to_utype(opcode::op_define_global_long):
+      {
+        auto name = read_global_definition(static_cast<opcode>(instruction) == opcode::op_define_global_long);
+        ASSERT(name.type == value_type::object_val);
+        ASSERT(name.as.obj->type == object_type::obj_string);
+        auto name_str = (string_object*)name.as.obj;
+        auto it = m_globals.find(name_str);
+        if(m_globals.end() != it)
+        {
+          runtime_error("redefining global"); // tf is this?
+          return vm::interpret_result::runtime_error;
+        }
+        m_globals[name_str] = m_stack.back();
+        m_stack.pop_back();
+        break;
+      }
+      case to_utype(opcode::op_get_global):
+      case to_utype(opcode::op_get_global_long):
+      {
+        auto name = read_global_definition(static_cast<opcode>(instruction) == opcode::op_get_global_long);
+        ASSERT(name.type == value_type::object_val);
+        ASSERT(name.as.obj->type == object_type::obj_string);
+        auto name_str = (string_object*)name.as.obj;
+        auto it = m_globals.find(name_str);
+        if(m_globals.end() == it)
+        {
+          runtime_error("undefined global"); // tf is this?
+          return vm::interpret_result::runtime_error;
+        }
+        m_stack.push_back(it->second);
+        break;
+      }
+      case to_utype(opcode::op_set_global):
+      case to_utype(opcode::op_set_global_long):
+      {
+        auto name = read_global_definition(static_cast<opcode>(instruction) == opcode::op_set_global_long);
+        ASSERT(name.type == value_type::object_val);
+        ASSERT(name.as.obj->type == object_type::obj_string);
+        auto name_str = (string_object*)name.as.obj;
+        auto it = m_globals.find(name_str);
+        if(m_globals.end() == it)
+        {
+          runtime_error("undefined global");
+          return interpret_result::runtime_error;
+        }
+        it->second = m_stack.back();
+        break;
+      }
       }
     }
   }
@@ -218,6 +277,25 @@ namespace ok
     ASSERT(index < m_chunk->constants.size()); // constant index out of range
 
     return m_chunk->constants[index];
+  }
+
+  // i know its just a copy from the previous function, but this method is temporary so its ok-ish
+  value_t vm::read_global_definition(bool p_is_long)
+  {
+    // here m_ip is the first in the series of bytes
+    if(!p_is_long)
+    {
+      const uint32_t index = read_byte();
+      ASSERT(index < m_chunk->identifiers.size()); // constant index out of range
+
+      return m_chunk->identifiers[index]; // here we get it then m_ip is next
+    }
+
+    // here we get 1st then m_ip is next so on.... till we get 3rd and m_ip is 4th
+    const uint32_t index = decode_int<uint32_t, 3>(read_bytes<3>(), 0);
+    ASSERT(index < m_chunk->identifiers.size()); // constant index out of range
+
+    return m_chunk->identifiers[index];
   }
 
   auto vm::perform_unary_prefix(const operator_type p_operator) -> std::expected<void, interpret_result>
@@ -375,7 +453,7 @@ namespace ok
       print_object(p_value.as.obj);
       break;
     default:
-      std::print("{}", p_value.as.number); // TODO(Qais): print as pointer
+      std::print("{}", (uintptr_t)(uint8_t*)p_value.as.obj); // TODO(Qais): print as pointer
       break;
     }
   }

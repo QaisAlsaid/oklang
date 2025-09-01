@@ -82,6 +82,7 @@ namespace ok
   private:
     interpret_result run();
     value_t read_constant(opcode p_op);
+    value_t read_global_definition(bool p_is_long);
     byte read_byte();
     void runtime_error(const std::string& err); // TODO(Qais): error types and format strings
 
@@ -121,7 +122,9 @@ namespace ok
     std::vector<value_t> m_stack; // is a vector with stack protocol better than std::stack? Update: yes i think so
     interned_string m_interned_strings;
     object* m_objects_list; // intrusive linked list
-
+    // TODO(Qais): integer based globals, with the compiler defining those ints, is much faster than hash map lookup.
+    // maybe do it when adding optimization pass
+    std::unordered_map<string_object*, value_t> m_globals;
     // yes another indirection, shutup you cant eliminate all indirections
     std::unordered_map<object_type, object_value_operations> m_objects_operations;
     logger m_logger;

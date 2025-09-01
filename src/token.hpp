@@ -45,6 +45,7 @@ namespace ok
     tok_import,
     tok_as,
     tok_fun,
+    tok_print,
     tok_let,
     tok_letdown,
     tok_while,
@@ -146,6 +147,8 @@ namespace ok
       return "as"sv;
     case token_type::tok_fun:
       return "fun"sv;
+    case token_type::tok_print:
+      return "print"sv;
     case token_type::tok_let:
       return "let"sv;
     case token_type::tok_letdown:

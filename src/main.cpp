@@ -85,7 +85,14 @@ int main(int argc, char** argv)
   // std::println("accuracy: {}%", (float)tests_stats.pass / (float)tests_stats.total * 100);
 
   ok::vm vm;
-  vm.interpret("1+232/(34+1) / +3+3");
+  // TODO(Qais): if you'd do something like "let a = 'a\na'"  the \n is not being handled by oklang's runtime, rather
+  // its the c++ compiler, so if i were to take this string from a file this wont work!
+
+  // TODO(Qais): parsing malformed assignments like this: "a * b = c" indeed doesnt parse, but it doesnt propagate an
+  // error either.
+  // the problem comes from the individual expression parsers doesnt propagate errors, so fix that asap
+
+  vm.interpret("let a=1; print a; print '\n====\n'; a='oklang'; print a; print '\n';");
 }
 
 static tests_progress test(const std::string_view src, const std::string_view expect)

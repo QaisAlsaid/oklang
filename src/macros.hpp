@@ -2,14 +2,14 @@
 #define OK_MACROS_HPP
 
 // TODO(Qais): config and stuff
-#define TRACE(...) get_logger().trace(__VA_ARGS__)
-#define LOG(...) get_logger().log(__VA_ARGS__)
-#define WARN(...) get_logger().warn(__VA_ARGS__)
-#define ERROR(...) get_logger().error(__VA_ARGS__)
-#define TRACELN(...) get_logger().traceln(__VA_ARGS__)
-#define LOGLN(...) get_logger().logln(__VA_ARGS__)
-#define WARNLN(...) get_logger().warnln(__VA_ARGS__)
-#define ERRORLN(...) get_logger().errorln(__VA_ARGS__)
+#define TRACE(...) get_vm_logger().trace(__VA_ARGS__)
+#define LOG(...) get_vm_logger().log(__VA_ARGS__)
+#define WARN(...) get_vm_logger().warn(__VA_ARGS__)
+#define ERROR(...) get_vm_logger().error(__VA_ARGS__)
+#define TRACELN(...) get_vm_logger().traceln(__VA_ARGS__)
+#define LOGLN(...) get_vm_logger().logln(__VA_ARGS__)
+#define WARNLN(...) get_vm_logger().warnln(__VA_ARGS__)
+#define ERRORLN(...) get_vm_logger().errorln(__VA_ARGS__)
 
 #define ASSERT(x)                                                                                                      \
   do                                                                                                                   \

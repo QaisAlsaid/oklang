@@ -38,6 +38,8 @@ namespace ok::debug
     {
     case to_utype(opcode::op_return):
       return simple_instruction("op_return", p_offset);
+    case to_utype(opcode::op_pop):
+      return simple_instruction("op_pop", p_offset);
     case to_utype(opcode::op_constant):
       return constant_instruction("op_constant", p_chunk, p_offset);
     case to_utype(opcode::op_constant_long):
@@ -72,6 +74,20 @@ namespace ok::debug
       return simple_instruction("op_less_equal", p_offset);
     case to_utype(opcode::op_greater_equal):
       return simple_instruction("op_greater_equal", p_offset);
+    case to_utype(opcode::op_print):
+      return simple_instruction("op_print", p_offset);
+    case to_utype(opcode::op_define_global):
+      return identifier_instruction("op_define_global", p_chunk, p_offset);
+    case to_utype(opcode::op_define_global_long):
+      return identifier_long_instruction("op_define_global_long", p_chunk, p_offset);
+    case to_utype(opcode::op_get_global):
+      return identifier_instruction("op_get_global", p_chunk, p_offset);
+    case to_utype(opcode::op_get_global_long):
+      return identifier_long_instruction("op_get_global_long", p_chunk, p_offset);
+    case to_utype(opcode::op_set_global):
+      return identifier_instruction("op_set_global", p_chunk, p_offset);
+    case to_utype(opcode::op_set_global_long):
+      return identifier_long_instruction("op_set_global_long", p_chunk, p_offset);
     default:
     {
       std::println("unknown opcode: {}", instruction);
@@ -90,7 +106,7 @@ namespace ok::debug
   {
     constexpr auto CONSTANT_INDEX = 1;                                  // from start offset
     constexpr auto INSTRUCTION_SIZE = CONSTANT_INDEX + sizeof(uint8_t); // from start offset
-    uint8_t constant = p_chunk.code[p_offset + CONSTANT_INDEX];
+    uint32_t constant = p_chunk.code[p_offset + CONSTANT_INDEX];
     std::print("{} {:4d} '", p_name, constant);
     get_g_vm()->print_value(p_chunk.constants[constant]);
     std::println("'");
@@ -101,13 +117,31 @@ namespace ok::debug
   {
     constexpr auto CONSTANT_LONG_INDEX = 1;
     constexpr auto INSTRUCTION_SIZE = CONSTANT_LONG_INDEX + sizeof(uint8_t) * 3;
-    // const uint8_t first = p_chunk.code[p_offset + CONSTANT_LONG_INDEX];
-    // const uint8_t second = p_chunk.code[p_offset + CONSTANT_LONG_INDEX + 1];
-    // const uint8_t third = p_chunk.code[p_offset + CONSTANT_LONG_INDEX + 2];
-    // const uint32_t constant = (first << 16) | (second << 8) | third;
     const uint32_t constant = decode_int<uint32_t, 3>(p_chunk.code, p_offset + CONSTANT_LONG_INDEX);
     std::print("{} {:4d} '", p_name, constant);
     get_g_vm()->print_value(p_chunk.constants[constant]);
+    std::println("'");
+    return p_offset + INSTRUCTION_SIZE;
+  }
+
+  int disassembler::identifier_instruction(const std::string_view p_name, const chunk& p_chunk, int p_offset)
+  {
+    constexpr auto CONSTANT_INDEX = 1;                                  // from start offset
+    constexpr auto INSTRUCTION_SIZE = CONSTANT_INDEX + sizeof(uint8_t); // from start offset
+    uint32_t constant = p_chunk.code[p_offset + CONSTANT_INDEX];
+    std::print("{} {:4d} '", p_name, constant);
+    get_g_vm()->print_value(p_chunk.identifiers[constant]);
+    std::println("'");
+    return p_offset + INSTRUCTION_SIZE;
+  }
+
+  int disassembler::identifier_long_instruction(const std::string_view p_name, const chunk& p_chunk, int p_offset)
+  {
+    constexpr auto CONSTANT_LONG_INDEX = 1;
+    constexpr auto INSTRUCTION_SIZE = CONSTANT_LONG_INDEX + sizeof(uint8_t) * 3;
+    const uint32_t constant = decode_int<uint32_t, 3>(p_chunk.code, p_offset + CONSTANT_LONG_INDEX);
+    std::print("{} {:4d} '", p_name, constant);
+    get_g_vm()->print_value(p_chunk.identifiers[constant]);
     std::println("'");
     return p_offset + INSTRUCTION_SIZE;
   }

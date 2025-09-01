@@ -3,13 +3,16 @@
 #include "chunk.hpp"
 #include "debug.hpp"
 #include "lexer.hpp"
+#include "macros.hpp"
 #include "parser.hpp"
 #include "utf8.hpp"
 #include "value.hpp"
+#include "vm_stack.hpp"
 #include <string>
 #include <vector>
 
 // TODO(Qais): bitch why dont you have compile errors!
+// TODO(Qais): this file is all over the place just organize it
 
 namespace ok
 {
@@ -26,6 +29,7 @@ namespace ok
     auto errors = prs.get_errors();
     if(!errors.empty() || root == nullptr)
       return false; // TODO(Qais): parse error with info
+    LOGLN("{}", root->to_string());
 
     m_current_chunk = p_chunk;
     compile(root.get());
@@ -67,6 +71,18 @@ namespace ok
     case ast::node_type::nt_null_expr:
       compile((ast::null_expression*)p_node);
       return;
+    case ast::node_type::nt_print_stmt:
+      compile((ast::print_statement*)p_node);
+      return;
+    case ast::node_type::nt_let_decl:
+      compile((ast::let_declaration*)p_node);
+      return;
+    case ast::node_type::nt_identifier_expr:
+      compile((ast::identifier_expression*)p_node);
+      return;
+    case ast::node_type::nt_assign_expr:
+      compile((ast::assign_expression*)p_node);
+      return;
     case ast::node_type::nt_node:
     case ast::node_type::nt_expression:
     case ast::node_type::nt_statement:
@@ -79,6 +95,7 @@ namespace ok
   {
     const auto& expr = p_expr_stmt->get_expression();
     compile(expr.get());
+    current_chunk()->write(opcode::op_pop, p_expr_stmt->get_offset());
   }
 
   void compiler::compile(ast::program* p_program)
@@ -217,6 +234,62 @@ namespace ok
     }
   }
 
+  // TODO(Qais): DRY will cry because of these 3 functions
+
+  void compiler::compile(ast::let_declaration* p_let_decl)
+  {
+    const auto& str_ident = p_let_decl->get_identifier()->get_value();
+    compile((ast::node*)p_let_decl->get_value().get());
+    auto res = current_chunk()->add_global(value_t{str_ident.c_str(), str_ident.size()}, p_let_decl->get_offset());
+    if(res.first)
+    {
+      current_chunk()->write(opcode::op_define_global_long, p_let_decl->get_offset());
+      const auto span = encode_int<size_t, 3>(res.second);
+      current_chunk()->write(span, p_let_decl->get_offset());
+    }
+    else
+    {
+      current_chunk()->write(opcode::op_define_global, p_let_decl->get_offset());
+      current_chunk()->write(res.second, p_let_decl->get_offset());
+    }
+  }
+
+  void compiler::compile(ast::identifier_expression* p_ident_expr)
+  {
+    // TODO(Qais): ok this is so wasteful and optimization pass with the integer idea is required asap
+    const auto& str_val = p_ident_expr->get_value();
+    auto res = current_chunk()->add_global(value_t{str_val.c_str(), str_val.size()}, p_ident_expr->get_offset());
+    if(res.first)
+    {
+      current_chunk()->write(opcode::op_get_global_long, p_ident_expr->get_offset());
+      const auto span = encode_int<size_t, 3>(res.second);
+      current_chunk()->write(span, p_ident_expr->get_offset());
+    }
+    else
+    {
+      current_chunk()->write(opcode::op_get_global, p_ident_expr->get_offset());
+      current_chunk()->write(res.second, p_ident_expr->get_offset());
+    }
+  }
+
+  void compiler::compile(ast::assign_expression* p_assignment_expr)
+  {
+    compile(p_assignment_expr->get_right().get());
+    const auto& str_val = p_assignment_expr->get_identifier();
+    auto res = current_chunk()->add_global(value_t{str_val.c_str(), str_val.size()}, p_assignment_expr->get_offset());
+    if(res.first)
+    {
+      current_chunk()->write(opcode::op_set_global_long, p_assignment_expr->get_offset());
+      const auto span = encode_int<size_t, 3>(res.second);
+      current_chunk()->write(span, p_assignment_expr->get_offset());
+    }
+    else
+    {
+      current_chunk()->write(opcode::op_set_global, p_assignment_expr->get_offset());
+      current_chunk()->write(res.second, p_assignment_expr->get_offset());
+    }
+  }
+
   void compiler::compile(ast::boolean_expression* p_boolean)
   {
     current_chunk()->write(p_boolean->get_value() ? opcode::op_true : opcode::op_false, p_boolean->get_offset());
@@ -225,5 +298,11 @@ namespace ok
   void compiler::compile(ast::null_expression* p_null)
   {
     current_chunk()->write(opcode::op_null, p_null->get_offset());
+  }
+
+  void compiler::compile(ast::print_statement* p_print_stmt)
+  {
+    compile(p_print_stmt->get_expression().get());
+    m_current_chunk->write(opcode::op_print, p_print_stmt->get_offset());
   }
 } // namespace ok

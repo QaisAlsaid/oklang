@@ -12,6 +12,7 @@ namespace ok
           {"import"sv, token_type::tok_import},
           {"as"sv, token_type::tok_as},
           {"fun"sv, token_type::tok_fun},
+          {"print"sv, token_type::tok_print},
           {"let"sv, token_type::tok_let},
           {"letdown"sv, token_type::tok_letdown},
           {"while"sv, token_type::tok_while},
