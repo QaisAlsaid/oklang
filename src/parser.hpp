@@ -47,6 +47,7 @@ namespace ok
     std::unique_ptr<ast::statement> parse_declaration();
     std::unique_ptr<ast::print_statement> parse_print_statement();
     std::unique_ptr<ast::let_declaration> parse_let_declaration();
+    std::unique_ptr<ast::block_statement> parse_block_statement();
 
     void sync_state();
 

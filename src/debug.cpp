@@ -40,6 +40,8 @@ namespace ok::debug
       return simple_instruction("op_return", p_offset);
     case to_utype(opcode::op_pop):
       return simple_instruction("op_pop", p_offset);
+    case to_utype(opcode::op_pop_n):
+      return single_operand_instruction("op_pop_n", p_chunk, p_offset);
     case to_utype(opcode::op_constant):
       return constant_instruction("op_constant", p_chunk, p_offset);
     case to_utype(opcode::op_constant_long):
@@ -88,6 +90,14 @@ namespace ok::debug
       return identifier_instruction("op_set_global", p_chunk, p_offset);
     case to_utype(opcode::op_set_global_long):
       return identifier_long_instruction("op_set_global_long", p_chunk, p_offset);
+    case to_utype(opcode::op_get_local):
+      return single_operand_instruction("op_get_local", p_chunk, p_offset);
+    case to_utype(opcode::op_get_local_long):
+      return multi_operand_instruction<3>("op_get_local_long", p_chunk, p_offset);
+    case to_utype(opcode::op_set_local):
+      return single_operand_instruction("op_set_local", p_chunk, p_offset);
+    case to_utype(opcode::op_set_local_long):
+      return multi_operand_instruction<3>("op_set_local_long", p_chunk, p_offset);
     default:
     {
       std::println("unknown opcode: {}", instruction);
@@ -100,6 +110,12 @@ namespace ok::debug
   {
     std::println("{}", p_name);
     return p_offset + 1;
+  }
+
+  int disassembler::single_operand_instruction(const std::string_view p_name, const chunk& p_chunk, int p_offset)
+  {
+    std::println("{}: {:4d}", p_name, p_chunk.code[p_offset + 1]);
+    return p_offset + 2;
   }
 
   int disassembler::constant_instruction(const std::string_view p_name, const chunk& p_chunk, int p_offset)

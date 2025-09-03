@@ -3,9 +3,15 @@
 
 #include "ast.hpp"
 #include "chunk.hpp"
+#include <optional>
 
 namespace ok
 {
+  struct local
+  {
+    std::string name;
+    int depth;
+  };
   class compiler
   {
   public:
@@ -31,10 +37,26 @@ namespace ok
     void compile(ast::let_declaration* p_let_decl);
     void compile(ast::identifier_expression* p_ident_expr);
     void compile(ast::assign_expression* p_assignment_expr);
+    void compile(ast::block_statement* p_block_stmt);
+
+    const std::vector<local>& get_locals() const
+    {
+      return m_locals;
+    }
+
+  private:
+    std::optional<std::pair<bool, uint32_t>> declare_variable(const std::string& str_ident, size_t offset);
+    std::pair<std::optional<std::pair<bool, uint32_t>>, std::optional<uint32_t>>
+    resolve_variable(const std::string& str_ident, size_t offset);
+    void being_scope();
+    void end_scope();
 
   private:
     chunk* m_current_chunk; // maybe temp
     uint32_t m_vm_id;
+    std::vector<local> m_locals;
+    size_t m_locals_count = 0;
+    size_t m_scope_depth = 0;
   };
 } // namespace ok
 

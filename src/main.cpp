@@ -92,7 +92,7 @@ int main(int argc, char** argv)
   // error either.
   // the problem comes from the individual expression parsers doesnt propagate errors, so fix that asap
 
-  vm.interpret("let a=1; print a; print '\n====\n'; a='oklang'; print a; print '\n';");
+  vm.interpret("let f; {f=2; f=69; print f; { f='qais'; print f; }}");
 }
 
 static tests_progress test(const std::string_view src, const std::string_view expect)

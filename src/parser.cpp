@@ -139,6 +139,8 @@ namespace ok
     {
     case token_type::tok_print:
       return parse_print_statement();
+    case token_type::tok_left_brace:
+      return parse_block_statement();
     default:
       return parse_expression_statement();
     }
@@ -165,6 +167,22 @@ namespace ok
     advance();
 
     return std::make_unique<ast::print_statement>(print_tok, std::move(expr));
+  }
+
+  std::unique_ptr<ast::block_statement> parser::parse_block_statement()
+  {
+    auto trigger_tok = current_token();
+    std::list<std::unique_ptr<ast::statement>> statements;
+    while(lookahead_token().type != token_type::tok_right_brace && lookahead_token().type != token_type::tok_eof)
+    {
+      advance();
+      auto decl = parse_declaration();
+      statements.push_back(std::move(decl));
+    }
+    advance();
+    if(current_token().type != token_type::tok_right_brace)
+      error({{}, "expected '}'"});
+    return std::make_unique<ast::block_statement>(trigger_tok, std::move(statements));
   }
 
   std::unique_ptr<ast::let_declaration> parser::parse_let_declaration()

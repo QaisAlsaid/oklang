@@ -15,6 +15,7 @@
 
 namespace ok
 {
+  class compiler;
   using vm_id = uint32_t;
   class vm
   {
@@ -81,8 +82,11 @@ namespace ok
 
   private:
     interpret_result run();
+    // TODO(Qais): refactor all functions that take either one byte operand or 24bit int operand into sourceing one
+    // place for getting the values
     value_t read_constant(opcode p_op);
     value_t read_global_definition(bool p_is_long);
+    value_t& read_local(bool is_long);
     byte read_byte();
     void runtime_error(const std::string& err); // TODO(Qais): error types and format strings
 
@@ -128,6 +132,7 @@ namespace ok
     // yes another indirection, shutup you cant eliminate all indirections
     std::unordered_map<object_type, object_value_operations> m_objects_operations;
     logger m_logger;
+    compiler* m_compiler = nullptr; // temporary
     constexpr static size_t stack_base_size = 256;
   };
 } // namespace ok

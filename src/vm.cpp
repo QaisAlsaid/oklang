@@ -2,6 +2,7 @@
 #include "chunk.hpp"
 #include "compiler.hpp"
 #include "debug.hpp"
+#include "log.hpp"
 #include "macros.hpp"
 #include "object.hpp"
 #include "operator.hpp"
@@ -16,7 +17,7 @@
 
 namespace ok
 {
-  vm::vm()
+  vm::vm() : m_logger(log_level::paranoid)
   {
     // keep id will need that for logger (yes logger will be globally accessible and requires indirection but its mostly
     // fine because its either debug only on on error where you dont even need fast code)
@@ -44,12 +45,14 @@ namespace ok
   {
     vm_guard guard{this};
     compiler com;
+    m_compiler = &com;
     auto compile_result = com.compile(p_source, m_chunk, m_id);
     if(!compile_result)
       return interpret_result::compile_error;
     m_chunk->write(opcode::op_return, 123); // TODO(Qais): remove!
     m_ip = m_chunk->code.data();
     auto res = run();
+    m_compiler = nullptr;
     return res;
     // return interpret_result::ok;
   }
@@ -86,6 +89,15 @@ namespace ok
       case to_utype(opcode::op_pop):
       {
         m_stack.pop_back();
+        break;
+      }
+      case to_utype(opcode::op_pop_n):
+      {
+        uint32_t count = read_byte();
+        ASSERT(m_stack.size() > count - 1);
+        // TODO(Qais): batch remove
+        for(auto i = 0; i < count; ++i)
+          m_stack.pop_back();
         break;
       }
       case to_utype(opcode::op_constant):
@@ -248,8 +260,35 @@ namespace ok
         it->second = m_stack.back();
         break;
       }
+      case to_utype(opcode::op_get_local):
+      case to_utype(opcode::op_get_local_long):
+      {
+        const auto val = read_local(static_cast<opcode>(instruction) == opcode::op_get_local_long);
+        m_stack.push_back(val);
+        break;
+      }
+      case to_utype(opcode::op_set_local):
+      case to_utype(opcode::op_set_local_long):
+      {
+        auto& val = read_local(static_cast<opcode>(instruction) == opcode::op_set_local_long);
+        val = m_stack.back();
+        break;
+      }
       }
     }
+  }
+
+  value_t& vm::read_local(bool p_is_long)
+  {
+    if(!p_is_long)
+    {
+      const uint32_t index = read_byte();
+      ASSERT(index < m_stack.size());
+      return m_stack[index];
+    }
+    const uint32_t index = decode_int<uint32_t, 3>(read_bytes<3>(), 0);
+    ASSERT(index < m_stack.size());
+    return m_stack[index];
   }
 
   byte vm::read_byte()

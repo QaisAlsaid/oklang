@@ -10,5 +10,6 @@ file(GLOB_RECURSE OK_HDR CONFIGURE_DEPENDS src/*.hpp)
 #file(GLOB_RECURSE OK_INC CONFIGURE_DEPENDS include/OKLang/*.hpp)
 #file(GLOB_RECURSE OK_INC_H CONFIGURE_DEPENDS include/OKLang/*.h)
 
+add_compile_definitions(PARANOID)
 add_executable(${PROJECT_NAME} ${OK_SRC} ${OK_HDR} ${OK_INC} ${OK_INC_H})
 target_include_directories(${PROJECT_NAME} PRIVATE ${OK_PATH}/src/ ${OK_PATH}/include/)

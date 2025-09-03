@@ -16,18 +16,17 @@ namespace ok
   using byte = uint8_t;
   enum class opcode : byte
   {
-    op_return,
+    // internal idk
     op_pop,
+    op_pop_n, // no long version, max is 255 pops. other than that emit more than one of these
     op_constant,
     op_constant_long,
+    // operators
     op_negate,
     op_add,
     op_subtract,
     op_multiply,
     op_divide,
-    op_null,
-    op_true,
-    op_false,
     op_not,
     op_equal,
     op_not_equal,
@@ -35,13 +34,28 @@ namespace ok
     op_less,
     op_greater_equal,
     op_less_equal,
+    // idk name
+    op_null,
+    op_true,
+    op_false,
+    // statements
     op_print,
+    op_return,
+
+    // globals
     op_define_global,
     op_define_global_long,
     op_get_global,
     op_get_global_long,
     op_set_global,
-    op_set_global_long
+    op_set_global_long,
+
+    // locals
+    // no define cuz there is nothing to do since its stack based operation
+    op_get_local,
+    op_get_local_long,
+    op_set_local,
+    op_set_local_long,
   };
   constexpr auto op_constant_max_count = UINT8_MAX;
   constexpr auto uint24_max = (1 << 24) - 1;

@@ -38,6 +38,7 @@ namespace ok::ast
     // statements
     nt_expression_statement_stmt,
     nt_print_stmt,
+    nt_block_stmt,
     // declarations
     nt_let_decl,
   };
@@ -594,6 +595,43 @@ namespace ok::ast
   private:
     token m_token;
     std::unique_ptr<expression> m_expression;
+  };
+
+  class block_statement : public statement
+  {
+  public:
+    block_statement(token p_tok, std::list<std::unique_ptr<statement>>&& p_statements)
+        : statement(node_type::nt_block_stmt), m_token(p_tok), m_statements(std::move(p_statements))
+    {
+    }
+
+    std::string token_literal() override
+    {
+      return m_token.raw_literal;
+    }
+
+    std::string to_string() override
+    {
+      std::stringstream ss;
+      ss << "{";
+      for(auto ctr = 0; const auto& stmt : m_statements)
+      {
+        ss << stmt->to_string();
+        if(m_statements.size() > 1 && ctr++ < m_statements.size() - 1)
+          ss << "\n";
+      }
+      ss << "}";
+      return ss.str();
+    }
+
+    const std::list<std::unique_ptr<statement>>& get_statement() const
+    {
+      return m_statements;
+    }
+
+  private:
+    token m_token;
+    std::list<std::unique_ptr<statement>> m_statements;
   };
 
   /**

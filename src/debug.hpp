@@ -6,6 +6,7 @@
 
 namespace ok::debug
 {
+  // TODO(Qais): offset size_t
   class disassembler
   {
   public:
@@ -18,6 +19,16 @@ namespace ok::debug
     static int constant_long_instruction(const std::string_view p_name, const chunk& p_chunk, int p_offset);
     static int identifier_instruction(const std::string_view p_name, const chunk& p_chunk, int p_offset);
     static int identifier_long_instruction(const std::string_view p_name, const chunk& p_chunk, int p_offset);
+    static int single_operand_instruction(const std::string_view p_name, const chunk& p_chunk, int p_offset);
+    template <size_t Count>
+      requires(sizeof(uint8_t) * Count <= sizeof(size_t))
+    static int multi_operand_instruction(const std::string_view p_name, const chunk& p_chunk, int p_offset)
+    {
+      constexpr auto INSTRUCTION_OP_INDEX = 1;
+      const auto INSTRUCTION_WIDTH = INSTRUCTION_OP_INDEX + sizeof(uint8_t) * Count;
+      auto operand = decode_int<size_t, Count>(p_chunk.code, p_offset + INSTRUCTION_OP_INDEX);
+      std::println("{}: {}", p_name, operand);
+    }
   };
 } // namespace ok::debug
 
