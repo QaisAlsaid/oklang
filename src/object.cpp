@@ -75,9 +75,10 @@ namespace ok
     auto& ops = _vm->register_object_operations(up.type);
     std::array<std::pair<uint32_t, vm::operation_function_infix_binary>, 2> op_fcn = {
         std::pair<uint32_t, vm::operation_function_infix_binary>{
-            _make_object_key(operator_type::equal, value_type::object_val, object_type::obj_string),
+            _make_object_key(operator_type::op_equal, value_type::object_val, object_type::obj_string),
             string_object::equal},
-        {_make_object_key(operator_type::plus, value_type::object_val, object_type::obj_string), string_object::plus}};
+        {_make_object_key(operator_type::op_plus, value_type::object_val, object_type::obj_string),
+         string_object::plus}};
     ops.binary_infix.register_operations(op_fcn);
 
     ops.print_function = string_object::print;

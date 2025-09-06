@@ -32,8 +32,10 @@ namespace ok
     }
     char advance()
     {
+      auto tmp_ptr = m_current_position;
       auto tmp = *m_current_position;
       m_current_position = utf8::advance(m_current_position);
+      m_current_offset += m_current_position - tmp_ptr;
       return tmp;
     }
     bool match(char p_expect)

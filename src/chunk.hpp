@@ -17,10 +17,15 @@ namespace ok
   enum class opcode : byte
   {
     // internal idk
+    op_invalid,
     op_pop,
     op_pop_n, // no long version, max is 255 pops. other than that emit more than one of these
     op_constant,
     op_constant_long,
+    op_conditional_jump, // jumps are long by default (24bit) integer operator
+    op_conditional_truthy_jump,
+    op_jump,
+    op_loop,
     // operators
     op_negate,
     op_add,
@@ -87,6 +92,13 @@ namespace ok
       write_offset(p_offset, p_bytes.size());
     }
 
+    inline void patch(const std::span<const byte> p_bytes, const size_t p_position)
+    {
+      ASSERT(p_position < code.size());
+      for(size_t i = 0; auto b : p_bytes)
+        code[p_position + i++] = b;
+    }
+
     inline void write_constant(const value_t p_value, const size_t p_offset)
     {
       constants.push_back(p_value);
@@ -132,6 +144,7 @@ namespace ok
         // write(span, p_offset);
         return {true, index};
       }
+      return {false, UINT32_MAX}; // error cant add more
     }
 
     // only valid when constants.size() < UINT8_MAX, otherwise use write_constant.

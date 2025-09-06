@@ -43,18 +43,18 @@ namespace ok
 
   auto vm::interpret(const std::string_view p_source) -> interpret_result
   {
-    vm_guard guard{this};
-    compiler com;
-    m_compiler = &com;
-    auto compile_result = com.compile(p_source, m_chunk, m_id);
+    m_compiler = compiler{}; // reinitialize and clear previous state
+    auto compile_result = m_compiler.compile(p_source, m_chunk, m_id);
     if(!compile_result)
-      return interpret_result::compile_error;
+    {
+      if(m_compiler.get_parse_errors().errs.empty())
+        return interpret_result::compile_error;
+      return interpret_result::parse_error;
+    }
     m_chunk->write(opcode::op_return, 123); // TODO(Qais): remove!
     m_ip = m_chunk->code.data();
     auto res = run();
-    m_compiler = nullptr;
     return res;
-    // return interpret_result::ok;
   }
 
   auto vm::run() -> interpret_result
@@ -109,35 +109,35 @@ namespace ok
       }
       case to_utype(opcode::op_negate):
       {
-        auto ret = perform_unary_prefix(operator_type::minus);
+        auto ret = perform_unary_prefix(operator_type::op_minus);
         if(!ret.has_value())
           return ret.error();
         break;
       }
       case to_utype(opcode::op_add):
       {
-        auto ret = perform_binary_infix(operator_type::plus);
+        auto ret = perform_binary_infix(operator_type::op_plus);
         if(!ret.has_value())
           return ret.error();
         break;
       }
       case to_utype(opcode::op_subtract):
       {
-        auto ret = perform_binary_infix(operator_type::minus);
+        auto ret = perform_binary_infix(operator_type::op_minus);
         if(!ret.has_value())
           return ret.error();
         break;
       }
       case to_utype(opcode::op_multiply):
       {
-        auto ret = perform_binary_infix(operator_type::asterisk);
+        auto ret = perform_binary_infix(operator_type::op_asterisk);
         if(!ret.has_value())
           return ret.error();
         break;
       }
       case to_utype(opcode::op_divide):
       {
-        auto ret = perform_binary_infix(operator_type::slash);
+        auto ret = perform_binary_infix(operator_type::op_slash);
         if(!ret.has_value())
           return ret.error();
         break;
@@ -164,42 +164,42 @@ namespace ok
       }
       case to_utype(opcode::op_equal):
       {
-        auto ret = perform_binary_infix(operator_type::equal);
+        auto ret = perform_binary_infix(operator_type::op_equal);
         if(!ret.has_value())
           return ret.error();
         break;
       }
       case to_utype(opcode::op_not_equal):
       {
-        auto ret = perform_binary_infix(operator_type::bang_equal);
+        auto ret = perform_binary_infix(operator_type::op_bang_equal);
         if(!ret.has_value())
           return ret.error();
         break;
       }
       case to_utype(opcode::op_less):
       {
-        auto ret = perform_binary_infix(operator_type::less);
+        auto ret = perform_binary_infix(operator_type::op_less);
         if(!ret.has_value())
           return ret.error();
         break;
       }
       case to_utype(opcode::op_greater):
       {
-        auto ret = perform_binary_infix(operator_type::greater);
+        auto ret = perform_binary_infix(operator_type::op_greater);
         if(!ret.has_value())
           return ret.error();
         break;
       }
       case to_utype(opcode::op_less_equal):
       {
-        auto ret = perform_binary_infix(operator_type::less_equal);
+        auto ret = perform_binary_infix(operator_type::op_less_equal);
         if(!ret.has_value())
           return ret.error();
         break;
       }
       case to_utype(opcode::op_greater_equal):
       {
-        auto ret = perform_binary_infix(operator_type::greater_equal);
+        auto ret = perform_binary_infix(operator_type::op_greater_equal);
         if(!ret.has_value())
           return ret.error();
         break;
@@ -272,6 +272,29 @@ namespace ok
       {
         auto& val = read_local(static_cast<opcode>(instruction) == opcode::op_set_local_long);
         val = m_stack.back();
+        break;
+      }
+      case to_utype(opcode::op_conditional_jump):
+      case to_utype(opcode::op_conditional_truthy_jump):
+      {
+        auto jump = decode_int<uint32_t, 3>(read_bytes<3>(), 0);
+        auto cond = static_cast<opcode>(instruction) == opcode::op_conditional_jump ? is_value_falsy(m_stack.back())
+                                                                                    : is_value_falsy(m_stack.back());
+        if(cond)
+          m_ip += jump;
+        int x = jump;
+        break;
+      }
+      case to_utype(opcode::op_jump):
+      {
+        auto jump = decode_int<uint32_t, 3>(read_bytes<3>(), 0);
+        m_ip += jump;
+        break;
+      }
+      case to_utype(opcode::op_loop):
+      {
+        auto loop = decode_int<uint32_t, 3>(read_bytes<3>(), 0);
+        m_ip -= loop;
         break;
       }
       }
@@ -376,37 +399,37 @@ namespace ok
     auto key = _make_value_key(p_this.type, p_operator, p_other.type);
     switch(key)
     {
-    case _make_value_key(value_type::number_val, operator_type::plus, value_type::number_val):
+    case _make_value_key(value_type::number_val, operator_type::op_plus, value_type::number_val):
       return value_t{p_this.as.number + p_other.as.number};
-    case _make_value_key(value_type::number_val, operator_type::minus, value_type::number_val):
+    case _make_value_key(value_type::number_val, operator_type::op_minus, value_type::number_val):
       return value_t{p_this.as.number - p_other.as.number};
-    case _make_value_key(value_type::number_val, operator_type::asterisk, value_type::number_val):
+    case _make_value_key(value_type::number_val, operator_type::op_asterisk, value_type::number_val):
       return value_t{p_this.as.number * p_other.as.number};
-    case _make_value_key(value_type::number_val, operator_type::slash, value_type::number_val):
+    case _make_value_key(value_type::number_val, operator_type::op_slash, value_type::number_val):
     {
       if(p_other.as.number == 0)
         return std::unexpected(value_error::division_by_zero);
       return value_t{p_this.as.number / p_other.as.number};
     }
-    case _make_value_key(value_type::number_val, operator_type::equal, value_type::number_val):
+    case _make_value_key(value_type::number_val, operator_type::op_equal, value_type::number_val):
       return value_t{p_this.as.number == p_other.as.number};
-    case _make_value_key(value_type::number_val, operator_type::bang_equal, value_type::number_val):
+    case _make_value_key(value_type::number_val, operator_type::op_bang_equal, value_type::number_val):
       return value_t{p_this.as.number != p_other.as.number};
-    case _make_value_key(value_type::number_val, operator_type::less, value_type::number_val):
+    case _make_value_key(value_type::number_val, operator_type::op_less, value_type::number_val):
       return value_t{p_this.as.number < p_other.as.number};
-    case _make_value_key(value_type::number_val, operator_type::greater, value_type::number_val):
+    case _make_value_key(value_type::number_val, operator_type::op_greater, value_type::number_val):
       return value_t{p_this.as.number > p_other.as.number};
-    case _make_value_key(value_type::number_val, operator_type::less_equal, value_type::number_val):
+    case _make_value_key(value_type::number_val, operator_type::op_less_equal, value_type::number_val):
       return value_t{p_this.as.number <= p_other.as.number};
-    case _make_value_key(value_type::number_val, operator_type::greater_equal, value_type::number_val):
+    case _make_value_key(value_type::number_val, operator_type::op_greater_equal, value_type::number_val):
       return value_t{p_this.as.number >= p_other.as.number};
-    case _make_value_key(value_type::bool_val, operator_type::equal, value_type::bool_val):
+    case _make_value_key(value_type::bool_val, operator_type::op_equal, value_type::bool_val):
       return value_t{p_this.as.boolean == p_other.as.boolean};
-    case _make_value_key(value_type::bool_val, operator_type::bang_equal, value_type::bool_val):
+    case _make_value_key(value_type::bool_val, operator_type::op_bang_equal, value_type::bool_val):
       return value_t{p_this.as.boolean != p_other.as.boolean};
-    case _make_value_key(value_type::null_val, operator_type::equal, value_type::null_val):
+    case _make_value_key(value_type::null_val, operator_type::op_equal, value_type::null_val):
       return value_t{true};
-    case _make_value_key(value_type::null_val, operator_type::bang_equal, value_type::null_val):
+    case _make_value_key(value_type::null_val, operator_type::op_bang_equal, value_type::null_val):
       return value_t{false};
     default:
     {
@@ -415,11 +438,11 @@ namespace ok
         return perform_binary_infix_real_object(p_this.as.obj, p_operator, p_other);
         // try lookup the operation in the object table
       }
-      if(p_operator == operator_type::equal)
+      if(p_operator == operator_type::op_equal)
       {
         return value_t{is_value_falsy(p_this) == is_value_falsy(p_other)};
       }
-      else if(p_operator == operator_type::bang_equal)
+      else if(p_operator == operator_type::op_bang_equal)
       {
         return value_t{is_value_falsy(p_this) != is_value_falsy(p_other)};
       }
@@ -452,14 +475,14 @@ namespace ok
     switch(key)
     {
       // is this ok??
-    case _make_value_key(operator_type::plus, value_type::number_val):
+    case _make_value_key(operator_type::op_plus, value_type::number_val):
       return p_this;
-    case _make_value_key(operator_type::minus, value_type::number_val):
+    case _make_value_key(operator_type::op_minus, value_type::number_val):
       return value_t{-p_this.as.number};
-    case _make_value_key(operator_type::bang, value_type::bool_val):
+    case _make_value_key(operator_type::op_bang, value_type::bool_val):
       return value_t{!p_this.as.boolean};
     default:
-      if(p_operator == operator_type::bang)
+      if(p_operator == operator_type::op_bang)
         return value_t{is_value_falsy(p_this)};
       return std::unexpected(value_error::undefined_operation);
     }

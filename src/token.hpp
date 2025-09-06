@@ -35,6 +35,7 @@ namespace ok
     tok_right_brace,   // }
     tok_left_bracket,  // [
     tok_right_bracket, // ]
+    tok_arrow,         // ->
 
     // literals
     tok_identifier, // oklang
@@ -135,6 +136,8 @@ namespace ok
       return "left_bracket"sv;
     case token_type::tok_right_bracket:
       return "right_bracket"sv;
+    case token_type::tok_arrow:
+      return "arrow"sv;
     case token_type::tok_identifier:
       return "identifier"sv;
     case token_type::tok_number:

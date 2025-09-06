@@ -85,6 +85,8 @@ int main(int argc, char** argv)
   // std::println("accuracy: {}%", (float)tests_stats.pass / (float)tests_stats.total * 100);
 
   ok::vm vm;
+  ok::vm_guard guard{&vm};
+
   // TODO(Qais): if you'd do something like "let a = 'a\na'"  the \n is not being handled by oklang's runtime, rather
   // its the c++ compiler, so if i were to take this string from a file this wont work!
 
@@ -92,7 +94,22 @@ int main(int argc, char** argv)
   // error either.
   // the problem comes from the individual expression parsers doesnt propagate errors, so fix that asap
 
-  vm.interpret("let f; {f=2; f=69; print f; { f='qais'; print f; }}");
+  auto res = vm.interpret(" for let i = 0, i < 10, i = i+1 -> print i; ");
+
+  // auto res = vm.interpret("{let x = 'hello world'; print x; { x = 'foo'; print x; x = 34; { print x; }; }}");
+  switch(res)
+  {
+  case ok::vm::interpret_result::ok:
+    break;
+  case ok::vm::interpret_result::compile_error:
+    vm.get_compile_errors().show();
+    break;
+  case ok::vm::interpret_result::parse_error:
+    vm.get_parse_errors().show();
+    break;
+  case ok::vm::interpret_result::runtime_error:
+    break;
+  }
 }
 
 static tests_progress test(const std::string_view src, const std::string_view expect)
@@ -120,10 +137,10 @@ static tests_progress test(const std::string_view src, const std::string_view ex
 
   std::println("test[{}]: ({}), actual: '{}', expected: '{}'", tests_tot, pass ? "pass" : "fail", out, expect);
   const auto& errs = prs.get_errors();
-  if(!errs.empty())
+  if(!errs.errs.empty())
   {
     std::println("extras: errors: {{");
-    for(auto num = 0; const auto& err : errs)
+    for(auto num = 0; const auto& err : errs.errs)
       std::println("  error[{}]: '{}'", num++, err.message);
     std::println("}}");
   }

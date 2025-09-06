@@ -2,6 +2,7 @@
 #define OK_VM_HPP
 
 #include "chunk.hpp"
+#include "compiler.hpp"
 #include "interned_string.hpp"
 #include "log.hpp"
 #include "object.hpp"
@@ -15,7 +16,6 @@
 
 namespace ok
 {
-  class compiler;
   using vm_id = uint32_t;
   class vm
   {
@@ -23,8 +23,9 @@ namespace ok
     enum class interpret_result
     {
       ok,
+      parse_error,
       compile_error,
-      runtime_error
+      runtime_error,
     };
 
     using operations_return_type = std::expected<value_t, value_error>;
@@ -73,12 +74,22 @@ namespace ok
       return m_objects_operations[type];
     }
 
-    void print_value(value_t p_value);
-
     inline logger& get_logger()
     {
       return m_logger;
     }
+
+    inline const compiler::errors& get_compile_errors() const
+    {
+      return m_compiler.get_compile_errors();
+    }
+
+    inline const parser::errors& get_parse_errors() const
+    {
+      return m_compiler.get_parse_errors();
+    }
+
+    void print_value(value_t p_value);
 
   private:
     interpret_result run();
@@ -132,7 +143,7 @@ namespace ok
     // yes another indirection, shutup you cant eliminate all indirections
     std::unordered_map<object_type, object_value_operations> m_objects_operations;
     logger m_logger;
-    compiler* m_compiler = nullptr; // temporary
+    compiler m_compiler; // temporary
     constexpr static size_t stack_base_size = 256;
   };
 } // namespace ok

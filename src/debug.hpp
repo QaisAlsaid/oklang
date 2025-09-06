@@ -28,6 +28,7 @@ namespace ok::debug
       const auto INSTRUCTION_WIDTH = INSTRUCTION_OP_INDEX + sizeof(uint8_t) * Count;
       auto operand = decode_int<size_t, Count>(p_chunk.code, p_offset + INSTRUCTION_OP_INDEX);
       std::println("{}: {}", p_name, operand);
+      return p_offset + INSTRUCTION_WIDTH;
     }
   };
 } // namespace ok::debug

@@ -7,6 +7,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+
 namespace ok::ast
 {
   // TODO: statements
@@ -39,6 +40,9 @@ namespace ok::ast
     nt_expression_statement_stmt,
     nt_print_stmt,
     nt_block_stmt,
+    nt_if_stmt,
+    nt_while_stmt,
+    nt_for_stmt,
     // declarations
     nt_let_decl,
   };
@@ -632,6 +636,150 @@ namespace ok::ast
   private:
     token m_token;
     std::list<std::unique_ptr<statement>> m_statements;
+  };
+
+  class if_statement : public statement
+  {
+  public:
+    if_statement(token p_tok,
+                 std::unique_ptr<expression> p_expr,
+                 std::unique_ptr<statement> p_consequences,
+                 std::unique_ptr<statement> p_alternative)
+        : statement(node_type::nt_if_stmt), m_token(p_tok), m_expression(std::move(p_expr)),
+          m_consequence(std::move(p_consequences)), m_alternative(std::move(p_alternative))
+    {
+    }
+
+    std::string token_literal() override
+    {
+      return m_token.raw_literal;
+    }
+
+    std::string to_string() override
+    {
+      std::stringstream ss;
+      ss << "if " << m_expression->to_string() << " -> ";
+      ss << m_consequence->to_string();
+      if(m_alternative != nullptr)
+        ss << " else -> " << m_alternative->to_string();
+      return ss.str();
+    }
+
+    const std::unique_ptr<expression>& get_expression() const
+    {
+      return m_expression;
+    }
+
+    const std::unique_ptr<statement>& get_consequence() const
+    {
+      return m_consequence;
+    }
+
+    const std::unique_ptr<statement>& get_alternative() const
+    {
+      return m_alternative;
+    }
+
+  private:
+    token m_token;
+    std::unique_ptr<expression> m_expression;
+    std::unique_ptr<statement> m_consequence;
+    std::unique_ptr<statement> m_alternative;
+  };
+
+  class while_statement : public statement
+  {
+  public:
+    while_statement(token p_tok, std::unique_ptr<expression> p_expr, std::unique_ptr<statement> p_body)
+        : statement(node_type::nt_while_stmt), m_token(p_tok), m_expression(std::move(p_expr)),
+          m_body(std::move(p_body))
+    {
+    }
+
+    std::string token_literal() override
+    {
+      return m_token.raw_literal;
+    }
+
+    std::string to_string() override
+    {
+      std::stringstream ss;
+      ss << "while " << m_expression->to_string() << " -> ";
+      ss << m_body->to_string();
+      return ss.str();
+    }
+
+    const std::unique_ptr<expression>& get_expression() const
+    {
+      return m_expression;
+    }
+
+    const std::unique_ptr<statement>& get_body() const
+    {
+      return m_body;
+    }
+
+  private:
+    token m_token;
+    std::unique_ptr<expression> m_expression;
+    std::unique_ptr<statement> m_body;
+  };
+
+  class for_statement : public statement
+  {
+  public:
+    for_statement(token p_tok,
+                  std::unique_ptr<statement> p_body,
+                  std::unique_ptr<statement> p_initializer = nullptr,
+                  std::unique_ptr<expression> p_condition = nullptr,
+                  std::unique_ptr<expression> p_increment = nullptr)
+        : statement(node_type::nt_for_stmt), m_token(p_tok), m_body(std::move(p_body)),
+          m_initializer(std::move(p_initializer)), m_condition(std::move(p_condition)),
+          m_increment(std::move(p_increment))
+    {
+    }
+
+    std::string token_literal() override
+    {
+      return m_token.raw_literal;
+    }
+
+    std::string to_string() override
+    {
+      std::stringstream ss;
+      ss << "for " << (m_initializer != nullptr ? m_initializer->to_string() : "") << " ; ";
+      ss << (m_condition != nullptr ? m_condition->to_string() : "") << " ; ";
+      ss << (m_initializer != nullptr ? m_increment->to_string() : "") << " ; ";
+      ss << "-> " << m_body->to_string();
+      return ss.str();
+    }
+
+    const std::unique_ptr<statement>& get_body() const
+    {
+      return m_body;
+    }
+
+    const std::unique_ptr<statement>& get_initializer() const
+    {
+      return m_initializer;
+    }
+
+    const std::unique_ptr<expression>& get_condition() const
+    {
+      return m_condition;
+    }
+
+    const std::unique_ptr<expression>& get_increment() const
+    {
+      return m_increment;
+    }
+
+  private:
+    token m_token;
+    std::unique_ptr<statement> m_body;
+    std::unique_ptr<statement> m_initializer;
+    std::unique_ptr<expression> m_condition;
+    std::unique_ptr<expression> m_increment;
   };
 
   /**

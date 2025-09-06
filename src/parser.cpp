@@ -1,7 +1,9 @@
 #include "parser.hpp"
 #include "ast.hpp"
+#include "macros.hpp"
 #include "parsers.hpp"
 #include "token.hpp"
+#include "vm_stack.hpp"
 #include <memory>
 #include <unordered_map>
 
@@ -31,26 +33,29 @@ namespace ok
   static const auto infix_dummy = [] -> bool
   {
     s_infix_parse_map.emplace(token_type::tok_left_paren, std::make_unique<call_parser>());
-    s_infix_parse_map.emplace(token_type::tok_plus, std::make_unique<infix_parser_binary>(precedence::sum, false));
-    s_infix_parse_map.emplace(token_type::tok_minus, std::make_unique<infix_parser_binary>(precedence::sum, false));
+    s_infix_parse_map.emplace(token_type::tok_and, std::make_unique<infix_parser_binary>(precedence::prec_and, false));
+    s_infix_parse_map.emplace(token_type::tok_or, std::make_unique<infix_parser_binary>(precedence::prec_or, false));
+    s_infix_parse_map.emplace(token_type::tok_plus, std::make_unique<infix_parser_binary>(precedence::prec_sum, false));
+    s_infix_parse_map.emplace(token_type::tok_minus,
+                              std::make_unique<infix_parser_binary>(precedence::prec_sum, false));
     s_infix_parse_map.emplace(token_type::tok_asterisk,
-                              std::make_unique<infix_parser_binary>(precedence::product, false));
-    s_infix_parse_map.emplace(token_type::tok_slash, std::make_unique<infix_parser_binary>(precedence::product, false));
+                              std::make_unique<infix_parser_binary>(precedence::prec_product, false));
+    s_infix_parse_map.emplace(token_type::tok_slash,
+                              std::make_unique<infix_parser_binary>(precedence::prec_product, false));
     s_infix_parse_map.emplace(token_type::tok_question, std::make_unique<conditional_parser>());
     s_infix_parse_map.emplace(token_type::tok_assign, std::make_unique<assign_parser>());
     s_infix_parse_map.emplace(token_type::tok_equal,
-                              std::make_unique<infix_parser_binary>(precedence::equality, false));
+                              std::make_unique<infix_parser_binary>(precedence::prec_equality, false));
     s_infix_parse_map.emplace(token_type::tok_bang_equal,
-                              std::make_unique<infix_parser_binary>(precedence::equality, false));
+                              std::make_unique<infix_parser_binary>(precedence::prec_equality, false));
     s_infix_parse_map.emplace(token_type::tok_less,
-                              std::make_unique<infix_parser_binary>(precedence::comparision, false));
+                              std::make_unique<infix_parser_binary>(precedence::prec_comparision, false));
     s_infix_parse_map.emplace(token_type::tok_less_equal,
-                              std::make_unique<infix_parser_binary>(precedence::comparision, false));
+                              std::make_unique<infix_parser_binary>(precedence::prec_comparision, false));
     s_infix_parse_map.emplace(token_type::tok_greater,
-                              std::make_unique<infix_parser_binary>(precedence::comparision, false));
+                              std::make_unique<infix_parser_binary>(precedence::prec_comparision, false));
     s_infix_parse_map.emplace(token_type::tok_greater_equal,
-                              std::make_unique<infix_parser_binary>(precedence::comparision, false));
-
+                              std::make_unique<infix_parser_binary>(precedence::prec_comparision, false));
     return true;
   }();
 
@@ -70,12 +75,12 @@ namespace ok
   std::unique_ptr<ast::expression> parser::parse_expression(int p_precedence)
   {
     auto tok = current_token();
-
     auto prefix_it = s_prefix_parse_map.find(tok.type);
     if(s_prefix_parse_map.end() == prefix_it)
     {
       // TODO(Qais): wtf?
-      error({error_code{}, "failed to parse!"});
+      parse_error(
+          error::code::no_prefix_parse_function, "[{}] no prefix parser found for: {}", tok.offset, tok.raw_literal);
       return nullptr;
     }
 
@@ -123,6 +128,9 @@ namespace ok
     {
     case token_type::tok_let:
       ret = parse_let_declaration();
+      // if(current_token().type != token_type::tok_semicolon)
+      //   parse_error(error::code::expected_token, "expected ';', after: {}", ret->token_literal());
+      // munch_extra_semicolons();
       break;
     default:
       ret = parse_statement();
@@ -135,12 +143,22 @@ namespace ok
 
   std::unique_ptr<ast::statement> parser::parse_statement()
   {
+    while(current_token().type == token_type::tok_semicolon)
+      advance();
     switch(current_token().type)
     {
     case token_type::tok_print:
       return parse_print_statement();
     case token_type::tok_left_brace:
       return parse_block_statement();
+    case token_type::tok_if:
+      return parse_if_statement();
+    case token_type::tok_while:
+      return parse_while_statement();
+    case token_type::tok_for:
+      return parse_for_statement();
+    case token_type::tok_eof:
+      return nullptr;
     default:
       return parse_expression_statement();
     }
@@ -152,7 +170,9 @@ namespace ok
     auto expr = parse_expression();
     auto expr_stmt = std::make_unique<ast::expression_statement>(trigger_tok, std::move(expr));
     if(lookahead_token().type != token_type::tok_semicolon)
-      error({{}, "expected ';'"});
+      parse_error(error::code::expected_token, "expected ';', after: {}", expr_stmt->token_literal());
+    munch_extra_semicolons();
+
     advance();
     return expr_stmt;
   }
@@ -163,7 +183,9 @@ namespace ok
     advance();
     auto expr = parse_expression();
     if(lookahead_token().type != token_type::tok_semicolon)
-      error({{}, "expected ';'"});
+      parse_error(error::code::expected_token, "expected ';', after: {}", expr->token_literal());
+    munch_extra_semicolons();
+
     advance();
 
     return std::make_unique<ast::print_statement>(print_tok, std::move(expr));
@@ -181,8 +203,140 @@ namespace ok
     }
     advance();
     if(current_token().type != token_type::tok_right_brace)
-      error({{}, "expected '}'"});
+      parse_error(error::code::expected_token, "expected '}}', after {}", statements.back()->token_literal());
+    if(lookahead_token().type == token_type::tok_semicolon)
+      advance(); // skip semicolon if present
     return std::make_unique<ast::block_statement>(trigger_tok, std::move(statements));
+  }
+
+  std::unique_ptr<ast::if_statement> parser::parse_if_statement()
+  {
+    auto if_token = current_token();
+    advance();
+    auto expr = parse_expression();
+    if(!expr)
+    {
+      parse_error(error::code::invalid_expression, "expected expression after 'if'");
+      return nullptr;
+    }
+    advance();
+    if(current_token().type != token_type::tok_arrow)
+    {
+      parse_error(error::code::expected_token, "expected '->' after expression: {}", expr->to_string());
+      return nullptr;
+    }
+    advance(); // skip '->'
+    auto cons = parse_statement();
+    if(!cons)
+    {
+      parse_error(error::code::expected_statement, "expected statement after '{}'", "->");
+      return nullptr;
+    }
+    std::unique_ptr<ast::statement> alt = nullptr;
+    auto lat = lookahead_token().type;
+    if(lat == token_type::tok_else)
+    {
+      advance();
+      advance();
+      if(current_token().type == token_type::tok_arrow)
+        advance();
+      alt = parse_statement();
+      if(alt == nullptr)
+      {
+        parse_error(error::code::expected_statement, "expected statement after 'else'");
+        return nullptr;
+      }
+    }
+    return std::make_unique<ast::if_statement>(if_token, std::move(expr), std::move(cons), std::move(alt));
+  }
+
+  std::unique_ptr<ast::while_statement> parser::parse_while_statement()
+  {
+    auto while_token = current_token();
+    advance();
+    auto expr = parse_expression();
+    if(!expr)
+    {
+      parse_error(error::code::invalid_expression, "expected expression after 'while'");
+      return nullptr;
+    }
+    advance();
+    if(current_token().type != token_type::tok_arrow)
+    {
+      parse_error(error::code::expected_token, "expected '->' after expression: {}", expr->to_string());
+      return nullptr;
+    }
+    advance(); // skip '->'
+    auto body = parse_statement();
+    if(!body)
+    {
+      parse_error(error::code::expected_statement, "expected statement after '{}'", "->");
+      return nullptr;
+    }
+    return std::make_unique<ast::while_statement>(while_token, std::move(expr), std::move(body));
+  }
+
+  std::unique_ptr<ast::for_statement> parser::parse_for_statement()
+  {
+    // auto for_token = current_token();
+    // advance();
+    // std::unique_ptr<ast::statement> body;
+    // std::unique_ptr<ast::statement> init = nullptr;
+    // std::unique_ptr<ast::expression> cond = nullptr;
+    // std::unique_ptr<ast::expression> inc = nullptr;
+    // if(current_token().type == token_type::tok_colon)
+    // {
+    //   // stays nullptr
+    // }
+    // else if(current_token().type == token_type::tok_let)
+    // {
+    //   init = parse_let_declaration();
+    // }
+    // else
+    // {
+    //   init = parse_expression_statement();
+    // }
+    // advance();
+    // if(current_token().type != token_type::tok_colon) // there must be a condition
+    // {
+    //   cond = parse_expression();
+    //   if(cond == nullptr)
+    //   {
+    //     parse_error(error::code::expected_expression, "expected expression as 'for' condition");
+    //     return nullptr;
+    //   }
+    // }
+    // // advance();
+    // if(current_token().type != token_type::tok_colon)
+    // {
+    //   parse_error(error::code::expected_token, "expected ',' after condition");
+    //   return nullptr;
+    // }
+    // advance();
+    // if(current_token().type != token_type::tok_arrow) // there must be an increment
+    // {
+    //   inc = parse_expression();
+    //   if(inc == nullptr)
+    //   {
+    //     parse_error(error::code::expected_expression, "expected expression as 'for' increment");
+    //     return nullptr;
+    //   }
+    // }
+    // advance();
+    // if(current_token().type != token_type::tok_arrow)
+    // {
+    //   parse_error(error::code::expected_token, "expected '->' after for clauses");
+    //   return nullptr;
+    // }
+    // advance();
+    // body = parse_statement();
+    // if(body == nullptr)
+    // {
+    //   parse_error(error::code::expected_statement, "expected statement as 'for' body");
+    //   return nullptr;
+    // }
+    // return std::make_unique<ast::for_statement>(
+    //     for_token, std::move(body), std::move(init), std::move(cond), std::move(inc));
   }
 
   std::unique_ptr<ast::let_declaration> parser::parse_let_declaration()
@@ -202,7 +356,7 @@ namespace ok
           tok, ident_identifier->get_value(), std::make_unique<ast::null_expression>(tok));
     }
     else
-      error({{}, "expected identifier"});
+      parse_error(error::code::expected_identifier, "expected identifier before: {}", ident->token_literal());
 
     // std::unique_ptr<ast::expression> expr;
     // advance();
@@ -212,8 +366,10 @@ namespace ok
     //   advance();
     // }
     advance();
+    //// move outside for compatibility with for initializer not requiring ';'
     if(current_token().type != token_type::tok_semicolon)
-      error({{}, "expected ';'"});
+      parse_error(error::code::expected_token, "expected ';', after: {}", assign->token_literal());
+    munch_extra_semicolons();
     return std::make_unique<ast::let_declaration>(
         let_tok,
         std::make_unique<ast::identifier_expression>(let_tok, assign->get_identifier()),
@@ -236,7 +392,10 @@ namespace ok
     if(lookahead_token().type == p_type)
       return advance();
 
-    // TODO(Qais): error unexpected token!
+    parse_error(error::code::expected_token,
+                "expected token of type: {}, at: {}",
+                token_type_to_string(p_type),
+                lookahead_token().offset);
     return false;
   }
 
@@ -245,7 +404,7 @@ namespace ok
     auto infix_it = s_infix_parse_map.find(p_type);
     if(s_infix_parse_map.end() != infix_it)
       return infix_it->second->get_precedence();
-    return precedence::lowest;
+    return precedence::prec_lowest;
   }
 
   token parser::current_token() const
@@ -258,22 +417,16 @@ namespace ok
     return m_token_array[m_lookahead_token];
   }
 
-  void parser::error(error_type p_err)
-  {
-    if(m_paranoia)
-      return;
-
-    m_paranoia = true;
-    m_errors.push_back(p_err);
-  }
-
   void parser::sync_state()
   {
     m_paranoia = false;
     while(lookahead_token().type != token_type::tok_eof)
     {
       if(current_token().type == token_type::tok_semicolon)
+      {
+        munch_extra_semicolons();
         return;
+      }
       switch(current_token().type)
       {
       case token_type::tok_class:
@@ -295,6 +448,20 @@ namespace ok
   auto parser::get_errors() const -> const errors&
   {
     return m_errors;
+  }
+
+  void parser::munch_extra_semicolons()
+  {
+    // while(lookahead_token().type == token_type::tok_semicolon)
+    //{
+    //   advance();
+    // }
+  }
+
+  void parser::errors::show() const
+  {
+    for(const auto& err : errs)
+      ERRORLN("parse error: {}:{}", error::code_to_string(err.error_code), err.message);
   }
 
 } // namespace ok

@@ -72,7 +72,7 @@ namespace ok
         emplace_token(arr, token_type::tok_plus);
         break;
       case '-':
-        emplace_token(arr, token_type::tok_minus);
+        emplace_token(arr, match('>') ? token_type::tok_arrow : token_type::tok_minus);
         break;
       case '*':
         emplace_token(arr, token_type::tok_asterisk);

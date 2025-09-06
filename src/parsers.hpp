@@ -37,8 +37,7 @@ namespace ok
       double ret = std::strtod(c_str, &end);
       if(ret == 0 && end == c_str) // error
       {
-        // TODO(Qais): emit error
-        return nullptr;
+        p_parser.parse_error(parser::error::code::malformed_number, "error converting: '{}', to a number", c_str);
       }
       return std::make_unique<ast::number_expression>(p_tok, ret);
     }
@@ -83,7 +82,7 @@ namespace ok
     std::unique_ptr<ast::expression> parse(parser& p_parser, token p_tok) const override
     {
       p_parser.advance();
-      auto opperand = p_parser.parse_expression(precedence::prefix);
+      auto opperand = p_parser.parse_expression(precedence::prec_prefix);
       return std::make_unique<ast::prefix_unary_expression>(
           p_tok, operator_type_from_string(p_tok.raw_literal), std::move(opperand));
     }
@@ -157,13 +156,13 @@ namespace ok
       p_parser.advance();
       // TODO(Qais): check!
       // p_parser.advance_if_equals(token_type::tok_colon);
-      auto right = p_parser.parse_expression(precedence::conditional - 1);
+      auto right = p_parser.parse_expression(precedence::prec_conditional - 1);
       return std::make_unique<ast::conditional_expression>(p_tok, std::move(p_left), std::move(left), std::move(right));
     }
 
     int get_precedence() const override
     {
-      return precedence::conditional;
+      return precedence::prec_conditional;
     }
   };
 
@@ -193,8 +192,8 @@ namespace ok
         p_parser.advance();
         args.push_back(p_parser.parse_expression());
       }
-      if(!p_parser.expect_next(expected_end))
-        return nullptr; // TODO(Qais): error handling for god sake!
+      p_parser.expect_next(expected_end);
+      // return nullptr; // TODO(Qais): error handling for god sake!
       // this is wrong in cases of a(b)(c) this will allow cursed syntax like a(b);c to be parsed just fine lol
       // if(p_parser.current_token().type == token_type::tok_semicolon)
       //  p_parser.advance();
@@ -203,7 +202,7 @@ namespace ok
 
     int get_precedence() const override
     {
-      return precedence::call;
+      return precedence::prec_call;
     }
   };
 
@@ -212,10 +211,14 @@ namespace ok
     virtual std::unique_ptr<ast::expression>
     parse(parser& p_parser, token p_tok, std::unique_ptr<ast::expression> p_left) const
     {
+      // TODO(Qais): expect valid assignment target not only identifiers
       p_parser.advance();
-      auto right = p_parser.parse_expression(precedence::assignment - 1); // always right associative, to allow a=b=c
+      auto right =
+          p_parser.parse_expression(precedence::prec_assignment - 1); // always right associative, to allow a=b=c
       if(p_left->get_type() != ast::node_type::nt_identifier_expr)
-        return nullptr; // TODO(Qais): bitch, error handling aghhh!
+        p_parser.parse_error(
+            parser::error::code::expected_identifier, "expected identifier before: {}", right->token_literal());
+      // return nullptr; // TODO(Qais): bitch, error handling aghhh!
       auto real_lhs = static_cast<ast::identifier_expression*>(p_left.get());
       return std::make_unique<ast::assign_expression>(
           ast::assign_expression(p_tok, real_lhs->token_literal(), std::move(right)));
@@ -223,10 +226,9 @@ namespace ok
 
     virtual int get_precedence() const
     {
-      return precedence::assignment;
+      return precedence::prec_assignment;
     }
   };
-
 } // namespace ok
 
 #endif // OK_PARSERS_HPP

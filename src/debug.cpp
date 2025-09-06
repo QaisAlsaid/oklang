@@ -98,6 +98,14 @@ namespace ok::debug
       return single_operand_instruction("op_set_local", p_chunk, p_offset);
     case to_utype(opcode::op_set_local_long):
       return multi_operand_instruction<3>("op_set_local_long", p_chunk, p_offset);
+    case to_utype(opcode::op_conditional_jump):
+      return multi_operand_instruction<3>("op_conditional_jump", p_chunk, p_offset);
+    case to_utype(opcode::op_conditional_truthy_jump):
+      return multi_operand_instruction<3>("op_conditional_truthy_jump", p_chunk, p_offset);
+    case to_utype(opcode::op_jump):
+      return multi_operand_instruction<3>("op_jump", p_chunk, p_offset);
+    case to_utype(opcode::op_loop):
+      return multi_operand_instruction<3>("op_loop", p_chunk, p_offset);
     default:
     {
       std::println("unknown opcode: {}", instruction);
