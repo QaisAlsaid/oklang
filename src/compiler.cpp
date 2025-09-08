@@ -4,6 +4,7 @@
 #include "debug.hpp"
 #include "lexer.hpp"
 #include "macros.hpp"
+#include "object.hpp"
 #include "operator.hpp"
 #include "parser.hpp"
 #include "token.hpp"
@@ -38,11 +39,9 @@ namespace ok
     Class* cls;
   };
 
-  bool compiler::compile(const std::string_view p_src, chunk* p_chunk, uint32_t p_vm_id)
+  function_object* compiler::compile(const std::string_view p_src, string_object* p_function_name, uint32_t p_vm_id)
   {
-    ASSERT(p_chunk);
     m_compiled = true;
-
     m_vm_id = p_vm_id;
     lexer lx;
     auto arr = lx.lex(p_src);
@@ -56,14 +55,15 @@ namespace ok
     auto root = prs.parse_program();
     m_parse_errors = prs.get_errors();
     if(!m_parse_errors.errs.empty() || root == nullptr)
-      return false;
-    LOGLN("{}", root->to_string());
-    m_current_chunk = p_chunk;
+      return nullptr;
+    TRACELN("{}", root->to_string());
+    // top level script function
+    push_function({function_object::create(0, p_function_name), compile_function::type::script});
     compile(root.get());
 #ifdef PARANOID
-    debug::disassembler::disassemble_chunk(*m_current_chunk, "debug");
+    debug::disassembler::disassemble_chunk(*current_chunk(), current_function().function->name->chars);
 #endif
-    return m_errors.errs.empty();
+    return m_errors.errs.empty() ? current_function().function : nullptr;
   }
 
   void compiler::compile(ast::node* p_node)
@@ -116,10 +116,16 @@ namespace ok
     case ast::node_type::nt_while_stmt:
       compile((ast::while_statement*)p_node);
       return;
+    case ast::node_type::nt_for_stmt:
+      compile((ast::for_statement*)p_node);
+      return;
+    case ast::node_type::nt_control_flow_stmt:
+      compile((ast::control_flow_statement*)p_node);
+      return;
     default:
       // TODO(Qais): node_type_to_string
       compile_error(error::code::invalid_compilation_target,
-                    "compile called with in compatible node: {}",
+                    "compile called with an incompatible node: {}",
                     (uint32_t)p_node->get_type());
       return;
     }
@@ -256,30 +262,131 @@ namespace ok
     compile(p_if_statement->get_expression().get());
     auto offset = p_if_statement->get_offset();
 
+    if(!m_loop_stack.empty())
+    {
+      m_loop_stack.back().pops_required++;
+    }
+
     auto if_jump = emit_jump(opcode::op_conditional_jump, offset);
     compile(p_if_statement->get_consequence().get());
     auto else_jump = emit_jump(opcode::op_jump, offset);
-    patch_jump(if_jump);
+    patch_jump(if_jump, current_chunk()->code.size());
     const auto& alt = p_if_statement->get_alternative();
     if(alt != nullptr)
     {
       compile(alt.get());
     }
-    patch_jump(else_jump);
+    patch_jump(else_jump, current_chunk()->code.size());
     current_chunk()->write(opcode::op_pop, offset);
   }
 
   void compiler::compile(ast::while_statement* p_while_statement)
   {
     auto loop_start = current_chunk()->code.size();
+    m_loop_stack.emplace_back();
+    m_loop_stack.back().scope_depth = m_scope_depth;
     compile(p_while_statement->get_expression().get());
     auto offset = p_while_statement->get_offset();
     auto exit_jump = emit_jump(opcode::op_conditional_jump, offset);
     current_chunk()->write(opcode::op_pop, offset); // pop expression on first path
+    auto body_start = current_chunk()->code.size();
     compile(p_while_statement->get_body().get());
     emit_loop(loop_start, offset);
-    patch_jump(exit_jump);
+    m_loop_stack.back().break_target = current_chunk()->code.size();
+    patch_jump(exit_jump, current_chunk()->code.size());
     current_chunk()->write(opcode::op_pop, offset); // pop expression second path
+    m_loop_stack.back().continue_target = loop_start;
+    patch_loop_context();
+    m_loop_stack.pop_back();
+  }
+
+  void compiler::compile(ast::for_statement* p_for_statement)
+  {
+    scope_guard<compiler> guard{&compiler::being_scope, &compiler::end_scope, this};
+    {
+      const auto& init = p_for_statement->get_initializer();
+      if(init != nullptr)
+        compile(init.get());
+    }
+    auto loop_start = current_chunk()->code.size();
+    m_loop_stack.emplace_back();
+    m_loop_stack.back().scope_depth = m_scope_depth;
+    long long exit_jump = -1;
+    auto offset = p_for_statement->get_offset();
+
+    {
+      const auto& cond = p_for_statement->get_condition();
+      if(cond != nullptr)
+      {
+        compile(cond.get());
+        exit_jump = emit_jump(opcode::op_conditional_jump, offset);
+        current_chunk()->write(opcode::op_pop, offset);
+      }
+    }
+
+    const auto& inc = p_for_statement->get_increment();
+    // make sure correct jump gets written(for continue statement) so we dont patch instructions, cuz it feels wrong to
+    // do so
+    if(inc != nullptr)
+      m_loop_stack.back().continue_forward = true;
+
+    compile(p_for_statement->get_body().get());
+    m_loop_stack.back().continue_target = loop_start;
+    {
+      if(inc != nullptr)
+      {
+        m_loop_stack.back().continue_target = current_chunk()->code.size();
+        compile(inc.get());
+        current_chunk()->write(opcode::op_pop, offset);
+      }
+    }
+    emit_loop(loop_start, offset);
+    m_loop_stack.back().break_target = current_chunk()->code.size();
+    if(exit_jump != -1)
+    {
+      patch_jump(exit_jump, current_chunk()->code.size());
+      current_chunk()->write(opcode::op_pop, offset);
+    }
+    patch_loop_context();
+    m_loop_stack.pop_back();
+  }
+
+  void compiler::compile(ast::control_flow_statement* p_control_flow_statement)
+  {
+    ASSERT(false); // control flow statements arent supported yet!
+    auto cft = p_control_flow_statement->get_control_flow_type();
+    ASSERT(cft != ast::control_flow_statement::cftype::cf_invalid);
+    if(m_loop_stack.empty())
+    {
+      compile_error(error::code::control_flow_outside_loop,
+                    "invalid usage of control flow: '{}', outside of loop",
+                    ast::control_flow_statement::control_flow_type_to_string(cft));
+      return;
+    }
+
+    auto offset = p_control_flow_statement->get_offset();
+    auto& loop_ctx = m_loop_stack.back();
+
+    if(m_scope_depth > loop_ctx.scope_depth)
+    {
+      auto prev_scope_depth = m_scope_depth;
+      m_scope_depth = loop_ctx.scope_depth;
+      clean_scope_garbage();
+      m_scope_depth = prev_scope_depth;
+    }
+
+    if(cft == ast::control_flow_statement::cftype::cf_break)
+    {
+      auto jump = emit_jump(opcode::op_jump, offset);
+      loop_ctx.breaks.push_back(jump);
+    }
+    else
+    {
+      emit_pops(loop_ctx.pops_required);
+      loop_ctx.pops_required = 0;
+      auto jump = emit_jump(loop_ctx.continue_forward ? opcode::op_jump : opcode::op_loop, offset);
+      loop_ctx.continues.push_back(jump);
+    }
   }
 
   void compiler::compile(ast::identifier_expression* p_ident_expr)
@@ -386,7 +493,7 @@ namespace ok
   void compiler::compile(ast::print_statement* p_print_stmt)
   {
     compile(p_print_stmt->get_expression().get());
-    m_current_chunk->write(opcode::op_print, p_print_stmt->get_offset());
+    current_chunk()->write(opcode::op_print, p_print_stmt->get_offset());
   }
 
   void compiler::compile_logical_operator(ast::infix_binary_expression* p_logical_operator)
@@ -398,7 +505,24 @@ namespace ok
     auto jump = emit_jump(jump_inst, offset);
     current_chunk()->write(opcode::op_pop, offset);
     compile(p_logical_operator->get_right().get());
-    patch_jump(jump);
+    patch_jump(jump, current_chunk()->code.size());
+  }
+
+  void compiler::push_function(compile_function p_function)
+  {
+    m_functions.push_back(p_function);
+  }
+
+  void compiler::pop_function()
+  {
+    ASSERT(!m_functions.empty());
+    m_functions.pop_back();
+  }
+
+  auto compiler::current_function() -> compile_function
+  {
+    ASSERT(!m_functions.empty());
+    return m_functions.back();
   }
 
   void compiler::being_scope()
@@ -409,14 +533,31 @@ namespace ok
   void compiler::end_scope()
   {
     m_scope_depth--;
+    clean_scope_garbage();
+  }
+
+  // we separate end_scope, from clean_scope_garbage, because end_scope always decrements the scope_depth on compile
+  // time even when executing a jump instruction while the clean up is runtime dependant and it might get skipped by the
+  // jump instruction so we need to call it once again in other execution paths think of continue -> we compile the body
+  // -> body on exit indeed calls end scope which decrements the scope_depth on compile time and it emits pop
+  // instructions, then continue call skips those pop instructions so we try to compensate for that by calling end_scope
+  // again in compile_control_flow_statement but that would result in another decrement to the m_scope_depth, and then
+  // it will emit wrong pop instructions that will clean the target scope and yet another scope above it.
+  void compiler::clean_scope_garbage()
+  {
     uint32_t removed_count = 0;
     while(!m_locals.empty() && m_locals.back().depth > m_scope_depth)
     {
       removed_count++;
       m_locals.pop_back();
     }
-    auto batches = removed_count / UINT8_MAX;
-    auto reminder = removed_count % UINT8_MAX;
+    emit_pops(removed_count);
+  }
+
+  void compiler::emit_pops(uint32_t p_count)
+  {
+    auto batches = p_count / UINT8_MAX;
+    auto reminder = p_count % UINT8_MAX;
     for(auto i = 0; i < batches; ++i)
     {
       // TODO(Qais): fix offset, aint doing it now it requires either global state or forwarding
@@ -565,11 +706,11 @@ namespace ok
     return jump_start;
   }
 
-  void compiler::patch_jump(size_t start_position)
+  void compiler::patch_jump(size_t start_position, size_t jump_position)
   {
     constexpr auto OPERANDS_WIDTH = 3;
     auto& code = current_chunk()->code;
-    uint32_t jump = code.size() - start_position - OPERANDS_WIDTH;
+    uint32_t jump = jump_position - start_position - OPERANDS_WIDTH;
     if(jump > uint24_max)
     {
       compile_error(error::code::jump_width_exceeds_limit,
@@ -579,6 +720,40 @@ namespace ok
     }
 
     current_chunk()->patch(encode_int<uint32_t, OPERANDS_WIDTH>(jump), start_position);
+  }
+
+  void compiler::patch_loop(size_t start_position, size_t loop_position)
+  {
+    constexpr auto OPERANDS_WIDTH = 3;
+    auto& code = current_chunk()->code;
+    const auto loop_length = start_position - loop_position + OPERANDS_WIDTH;
+    if(loop_length > uint24_max)
+    {
+      compile_error(error::code::jump_width_exceeds_limit,
+                    "loop instruction with operand of: {}, exceeds max loop limit, which is: {}",
+                    loop_length,
+                    uint24_max);
+    }
+
+    current_chunk()->patch(encode_int<uint32_t, OPERANDS_WIDTH>(loop_length), start_position);
+  }
+
+  void compiler::patch_loop_context()
+  {
+    ASSERT(!m_loop_stack.empty());
+    auto ctx = m_loop_stack.back();
+    auto chunk = current_chunk();
+    for(auto b : ctx.breaks)
+    {
+      patch_jump(b, ctx.break_target);
+    }
+    for(auto c : ctx.continues)
+    {
+      if(ctx.continue_forward)
+        patch_jump(c, ctx.continue_target);
+      else
+        patch_loop(c, ctx.continue_target);
+    }
   }
 
   void compiler::errors::show() const

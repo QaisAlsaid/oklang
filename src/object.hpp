@@ -1,6 +1,7 @@
 #ifndef OK_OBJECT_HPP
 #define OK_OBJECT_HPP
 
+#include "chunk.hpp"
 #include "utility.hpp"
 #include "value.hpp"
 #include <cstddef>
@@ -11,22 +12,58 @@
 #include <span>
 #include <string_view>
 
+// TODO(Qais): each object type in separate header file and they all share same implementation file
+
 namespace ok
 {
-  enum class object_type : uint8_t // TODO(Qais): for now its uint8_t and enum class, you should do this refactor asap
-                                   // before its too hard
+  // enum class object_type : uint8_t // TODO(Qais): for now its uint8_t and enum class, you should do this refactor
+  // asap
+  //  before its too hard
+  //{
+  //  none, // compatiblity with _make_object_key
+  //  obj_string,
+  // };
+
+  namespace object_type
   {
-    none, // compatiblity with _make_object_key
-    obj_string,
-  };
+    enum
+    {
+      none = 0,
+      obj_string,
+      obj_function,
+      obj_native_function,
+    };
+  }
 
   struct object
   {
-    object_type type; // TODO(Qais): maybe store as 32 bit integer, and also steal the 1 bit boolean form here, so it
-                      // will be 24bit integer which is exactly what the _make_object_key function caps the limit to
-    bool is_registered = false; // to minimize lookups, we just check a flag => faster
+    uint32_t type; // 24bit for the type , and 1 bit for the is_registered boolean, and 7 free bits
     object* next = nullptr;
-    object(object_type p_type);
+    object(uint32_t p_type);
+
+    // 24bit integer
+    inline uint32_t get_type() const
+    {
+      return type << 24;
+    }
+
+    inline void set_type(uint32_t p_type)
+    {
+      ASSERT(p_type <= uint24_max);
+      uint8_t extras = type << 24;
+      type = p_type << 8 | extras;
+    }
+
+    inline bool is_registered() const
+    {
+      return type & 0x000010;
+    }
+
+    inline void set_registered(bool p_is_registered)
+    {
+      uint8_t extras = type << 24;
+      type = type << 24 | extras << 1 & p_is_registered | extras << 7;
+    }
   };
 
   struct string_object
@@ -55,10 +92,28 @@ namespace ok
     static void print(object* p_this);
   };
 
+  struct function_object
+  {
+    function_object(uint8_t p_arity, const string_object* p_name);
+    ~function_object();
+
+    template <typename Obj = function_object>
+    static Obj* create(uint8_t p_arity, const string_object* p_name);
+
+    object up;
+    chunk associated_chunk;
+    string_object* name = nullptr;
+    uint8_t arity = 0;
+
+  private:
+    static std::expected<value_t, value_error> equal(object* p_this, value_t p_sure_is_function);
+    static void print(object* p_this);
+  };
+
   // leaves a 24bit integer room for objects which is more than we ever will need
   constexpr uint32_t _make_object_key(const operator_type p_operator,
                                       const value_type p_rhs,
-                                      const object_type p_other_object_type = object_type::none)
+                                      const uint32_t p_other_object_type = object_type::none)
   {
     // TODO(Qais): validate the sanity of this thing, also object_type shouldnt be an enum because its runtime dependant
     if(p_other_object_type == object_type::none)
@@ -67,7 +122,7 @@ namespace ok
     }
     else
     {
-      return static_cast<uint32_t>(to_utype(p_operator)) << 24 | static_cast<uint32_t>(to_utype(p_other_object_type));
+      return static_cast<uint32_t>(to_utype(p_operator)) << 24 | (p_other_object_type);
     }
   }
 } // namespace ok

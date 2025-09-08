@@ -1,4 +1,5 @@
 #include "object.hpp"
+#include "chunk.hpp"
 #include "operator.hpp"
 #include "value.hpp"
 #include "vm.hpp"
@@ -9,8 +10,9 @@
 
 namespace ok
 {
-  object::object(object_type p_type) : type(p_type)
+  object::object(uint32_t p_type) : type(p_type)
   {
+    ASSERT(p_type <= uint24_max);
     next = get_g_vm()->get_objects_list();
     get_g_vm()->get_objects_list() = this;
   }
@@ -68,7 +70,7 @@ namespace ok
 
   string_object::string_object() : up(object_type::obj_string)
   {
-    if(up.is_registered)
+    if(up.is_registered())
       return;
 
     auto _vm = get_g_vm();
@@ -97,7 +99,7 @@ namespace ok
   std::expected<value_t, value_error> string_object::plus(object* p_this, value_t p_sure_is_string)
   {
     auto other = (string_object*)p_sure_is_string.as.obj;
-    if(p_this->type == other->up.type)
+    if(p_this->type == other->up.type) // redundant check!
     {
       auto this_string = (string_object*)p_this;
       std::array<std::string_view, 2> arr = {std::string_view{this_string->chars, this_string->length},
@@ -113,4 +115,46 @@ namespace ok
     std::print("{}", std::string_view{this_string->chars, this_string->length});
   }
 
+  function_object::function_object(uint8_t p_arity, const string_object* p_name) : up(object_type::obj_function)
+  {
+  }
+
+  function_object::~function_object()
+  {
+  }
+
+  std::expected<value_t, value_error> function_object::equal(object* p_this, value_t p_sure_is_function)
+  {
+    auto other = (function_object*)p_sure_is_function.as.obj;
+    auto this_function = (function_object*)p_this;
+    return value_t{this_function->arity == other->arity &&
+                   this_function->name ==
+                       other->name /*&& this_function->associated_chunk == other->associated_chunk*/};
+  }
+
+  void function_object::print(object* p_this)
+  {
+    auto this_function = (function_object*)p_this;
+    std::print("<fu {}>", std::string_view{this_function->name->chars, this_function->name->length});
+  }
+
+  template <typename T>
+  T* function_object::create(uint8_t p_arity, const string_object* p_name)
+  {
+    static_assert(false, "type mismatch");
+  }
+
+  template <>
+  object* function_object::create<object>(uint8_t p_arity, const string_object* p_name)
+  {
+    auto fo = new function_object(p_arity, p_name);
+    return (object*)fo;
+  }
+
+  template <>
+  function_object* function_object::create<function_object>(uint8_t p_arity, const string_object* p_name)
+  {
+    auto fo = new function_object(p_arity, p_name);
+    return fo;
+  }
 } // namespace ok

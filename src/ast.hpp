@@ -3,6 +3,7 @@
 
 #include "operator.hpp"
 #include "token.hpp"
+#include "utility.hpp"
 #include <list>
 #include <memory>
 #include <sstream>
@@ -43,6 +44,7 @@ namespace ok::ast
     nt_if_stmt,
     nt_while_stmt,
     nt_for_stmt,
+    nt_control_flow_stmt,
     // declarations
     nt_let_decl,
   };
@@ -749,7 +751,7 @@ namespace ok::ast
       std::stringstream ss;
       ss << "for " << (m_initializer != nullptr ? m_initializer->to_string() : "") << " ; ";
       ss << (m_condition != nullptr ? m_condition->to_string() : "") << " ; ";
-      ss << (m_initializer != nullptr ? m_increment->to_string() : "") << " ; ";
+      ss << (m_increment != nullptr ? m_increment->to_string() : "");
       ss << "-> " << m_body->to_string();
       return ss.str();
     }
@@ -780,6 +782,67 @@ namespace ok::ast
     std::unique_ptr<statement> m_initializer;
     std::unique_ptr<expression> m_condition;
     std::unique_ptr<expression> m_increment;
+  };
+
+  class control_flow_statement : public statement
+  {
+  public:
+    enum class cftype
+    {
+      cf_invalid,
+      cf_break,
+      cf_continue
+    };
+
+    static constexpr std::string_view control_flow_type_to_string(cftype cft)
+    {
+      using namespace std::string_view_literals;
+      switch(cft)
+      {
+      case cftype::cf_break:
+        return "break"sv;
+      case cftype::cf_continue:
+        return "continue"sv;
+      default:
+        return "invalid"sv;
+      }
+    }
+
+  public:
+    control_flow_statement(token p_tok) : statement(node_type::nt_control_flow_stmt), m_token(p_tok)
+    {
+      switch(p_tok.type)
+      {
+      case token_type::tok_break:
+        m_cf_type = cftype::cf_break;
+        break;
+      case token_type::tok_continue:
+        m_cf_type = cftype::cf_continue;
+        break;
+      default:
+        m_cf_type = cftype::cf_invalid;
+        break;
+      }
+    }
+
+    std::string token_literal() override
+    {
+      return m_token.raw_literal;
+    }
+
+    std::string to_string() override
+    {
+      return m_token.raw_literal;
+    }
+
+    cftype get_control_flow_type() const
+    {
+      return m_cf_type;
+    }
+
+  private:
+    token m_token;
+    cftype m_cf_type;
   };
 
   /**
@@ -821,6 +884,69 @@ namespace ok::ast
     std::unique_ptr<identifier_expression> m_identifier;
     std::unique_ptr<expression> m_value;
   };
+
+  /**
+   * misc
+   **/
+
+  constexpr std::string_view node_type_to_string(node_type p_nt)
+  {
+    using namespace std::string_view_literals;
+    switch(p_nt)
+    {
+    case node_type::nt_node:
+      return "node"sv;
+    case node_type::nt_expression:
+      return "expression"sv;
+    case node_type::nt_statement:
+      return "statement"sv;
+    case node_type::nt_declaration:
+      return "declaration"sv;
+    case node_type::nt_program:
+      return "program"sv;
+    case node_type::nt_identifier_expr:
+      return "identifier_expression"sv;
+    case node_type::nt_number_expr:
+      return "number_expression"sv;
+    case node_type::nt_string_expr:
+      return "string_expression"sv;
+    case node_type::nt_prefix_expr:
+      return "prefix_expression"sv;
+    case node_type::nt_infix_binary_expr:
+      return "infix_binary_expression"sv;
+    case node_type::nt_infix_unary_expr:
+      return "infix_unary_expression"sv;
+    case node_type::nt_call_expr:
+      return "call_expression"sv;
+    case node_type::nt_assign_expr:
+      return "assign_expression"sv;
+    case node_type::nt_operator_expr:
+      return "operator_expression"sv;
+    case node_type::nt_conditional_expr:
+      return "conditional_expression"sv;
+    case node_type::nt_boolean_expr:
+      return "boolean_expression"sv;
+    case node_type::nt_null_expr:
+      return "null_expression"sv;
+    case node_type::nt_expression_statement_stmt:
+      return "expression_statement_statement"sv;
+    case node_type::nt_print_stmt:
+      return "print_statement"sv;
+    case node_type::nt_block_stmt:
+      return "block_statement"sv;
+    case node_type::nt_if_stmt:
+      return "if_statement"sv;
+    case node_type::nt_while_stmt:
+      return "while_statement"sv;
+    case node_type::nt_for_stmt:
+      return "for_statement"sv;
+    case node_type::nt_control_flow_stmt:
+      return "control_flow"sv;
+    case node_type::nt_let_decl:
+      return "let_declaration"sv;
+    }
+    return "unknown_node"sv;
+  }
 } // namespace ok::ast
 
 #endif // OK_AST_HPP

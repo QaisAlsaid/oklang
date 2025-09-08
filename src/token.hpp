@@ -51,6 +51,8 @@ namespace ok
     tok_letdown,
     tok_while,
     tok_for,
+    tok_break,
+    tok_continue,
     tok_if,
     tok_elif,
     tok_else,
@@ -160,6 +162,10 @@ namespace ok
       return "while"sv;
     case token_type::tok_for:
       return "for"sv;
+    case token_type::tok_break:
+      return "break"sv;
+    case token_type::tok_continue:
+      return "continue"sv;
     case token_type::tok_if:
       return "if"sv;
     case token_type::tok_elif:

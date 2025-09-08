@@ -157,6 +157,9 @@ namespace ok
       return parse_while_statement();
     case token_type::tok_for:
       return parse_for_statement();
+    case token_type::tok_break:
+    case token_type::tok_continue:
+      return parse_control_flow_statement();
     case token_type::tok_eof:
       return nullptr;
     default:
@@ -171,7 +174,7 @@ namespace ok
     auto expr_stmt = std::make_unique<ast::expression_statement>(trigger_tok, std::move(expr));
     if(lookahead_token().type != token_type::tok_semicolon)
       parse_error(error::code::expected_token, "expected ';', after: {}", expr_stmt->token_literal());
-    munch_extra_semicolons();
+    // munch_extra_semicolons();
 
     advance();
     return expr_stmt;
@@ -184,11 +187,20 @@ namespace ok
     auto expr = parse_expression();
     if(lookahead_token().type != token_type::tok_semicolon)
       parse_error(error::code::expected_token, "expected ';', after: {}", expr->token_literal());
-    munch_extra_semicolons();
+    // munch_extra_semicolons();
 
     advance();
 
     return std::make_unique<ast::print_statement>(print_tok, std::move(expr));
+  }
+
+  std::unique_ptr<ast::control_flow_statement> parser::parse_control_flow_statement()
+  {
+    auto cf_tok = current_token();
+    if(lookahead_token().type != token_type::tok_semicolon)
+      parse_error(error::code::expected_token, "expected ';', after: {}", cf_tok.raw_literal);
+    advance();
+    return std::make_unique<ast::control_flow_statement>(cf_tok);
   }
 
   std::unique_ptr<ast::block_statement> parser::parse_block_statement()
@@ -278,65 +290,65 @@ namespace ok
 
   std::unique_ptr<ast::for_statement> parser::parse_for_statement()
   {
-    // auto for_token = current_token();
-    // advance();
-    // std::unique_ptr<ast::statement> body;
-    // std::unique_ptr<ast::statement> init = nullptr;
-    // std::unique_ptr<ast::expression> cond = nullptr;
-    // std::unique_ptr<ast::expression> inc = nullptr;
-    // if(current_token().type == token_type::tok_colon)
-    // {
-    //   // stays nullptr
-    // }
-    // else if(current_token().type == token_type::tok_let)
-    // {
-    //   init = parse_let_declaration();
-    // }
-    // else
-    // {
-    //   init = parse_expression_statement();
-    // }
-    // advance();
-    // if(current_token().type != token_type::tok_colon) // there must be a condition
-    // {
-    //   cond = parse_expression();
-    //   if(cond == nullptr)
-    //   {
-    //     parse_error(error::code::expected_expression, "expected expression as 'for' condition");
-    //     return nullptr;
-    //   }
-    // }
-    // // advance();
-    // if(current_token().type != token_type::tok_colon)
-    // {
-    //   parse_error(error::code::expected_token, "expected ',' after condition");
-    //   return nullptr;
-    // }
-    // advance();
-    // if(current_token().type != token_type::tok_arrow) // there must be an increment
-    // {
-    //   inc = parse_expression();
-    //   if(inc == nullptr)
-    //   {
-    //     parse_error(error::code::expected_expression, "expected expression as 'for' increment");
-    //     return nullptr;
-    //   }
-    // }
-    // advance();
-    // if(current_token().type != token_type::tok_arrow)
-    // {
-    //   parse_error(error::code::expected_token, "expected '->' after for clauses");
-    //   return nullptr;
-    // }
-    // advance();
-    // body = parse_statement();
-    // if(body == nullptr)
-    // {
-    //   parse_error(error::code::expected_statement, "expected statement as 'for' body");
-    //   return nullptr;
-    // }
-    // return std::make_unique<ast::for_statement>(
-    //     for_token, std::move(body), std::move(init), std::move(cond), std::move(inc));
+    auto for_token = current_token();
+    std::unique_ptr<ast::statement> body;
+    std::unique_ptr<ast::statement> init = nullptr;
+    std::unique_ptr<ast::expression> cond = nullptr;
+    std::unique_ptr<ast::expression> inc = nullptr;
+    advance();
+    if(current_token().type == token_type::tok_semicolon)
+    {
+      // stays nullptr
+    }
+    else if(current_token().type == token_type::tok_let)
+    {
+      init = parse_let_declaration(); // checks semicolon
+    }
+    else
+    {
+      init = parse_expression_statement(); // checks semicolon
+    }
+    advance();
+    if(current_token().type != token_type::tok_semicolon) // there must be a condition
+    {
+      cond = parse_expression();
+      if(cond == nullptr)
+      {
+        parse_error(error::code::expected_expression, "expected expression as 'for' condition");
+        return nullptr;
+      }
+      advance();
+    }
+    if(current_token().type != token_type::tok_semicolon)
+    {
+      parse_error(error::code::expected_token, "expected ';' after condition");
+      return nullptr;
+    }
+    advance();
+    if(current_token().type != token_type::tok_arrow) // there must be an increment
+    {
+      inc = parse_expression();
+      if(inc == nullptr)
+      {
+        parse_error(error::code::expected_expression, "expected expression as 'for' increment");
+        return nullptr;
+      }
+      advance();
+    }
+    if(current_token().type != token_type::tok_arrow)
+    {
+      parse_error(error::code::expected_token, "expected '->' after for clauses");
+      return nullptr;
+    }
+    advance();
+    body = parse_statement();
+    if(body == nullptr)
+    {
+      parse_error(error::code::expected_statement, "expected statement as 'for' body");
+      return nullptr;
+    }
+    return std::make_unique<ast::for_statement>(
+        for_token, std::move(body), std::move(init), std::move(cond), std::move(inc));
   }
 
   std::unique_ptr<ast::let_declaration> parser::parse_let_declaration()

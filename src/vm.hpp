@@ -17,6 +17,13 @@
 namespace ok
 {
   using vm_id = uint32_t;
+  struct call_frame
+  {
+    function_object* function;
+    byte* ip;
+    value_t* slots;
+  };
+
   class vm
   {
   public:
@@ -111,6 +118,7 @@ namespace ok
     }
 
   private:
+    void reset_stack();
     std::expected<void, interpret_result> perform_unary_prefix(const operator_type p_operator);
     std::expected<void, interpret_result> perform_binary_infix(const operator_type p_operator);
     std::expected<void, interpret_result> perform_unary_infix(const operator_type p_operator);
@@ -131,8 +139,9 @@ namespace ok
     void destroy_objects_list();
 
   private:
-    chunk* m_chunk;
-    byte* m_ip; // TODO(Qais): move this to local storage
+    // chunk* m_chunk;
+    // byte* m_ip; // TODO(Qais): move this to local storage
+    std::vector<call_frame> m_call_frames;
     uint32_t m_id;
     std::vector<value_t> m_stack; // is a vector with stack protocol better than std::stack? Update: yes i think so
     interned_string m_interned_strings;
@@ -141,7 +150,7 @@ namespace ok
     // maybe do it when adding optimization pass
     std::unordered_map<string_object*, value_t> m_globals;
     // yes another indirection, shutup you cant eliminate all indirections
-    std::unordered_map<object_type, object_value_operations> m_objects_operations;
+    std::unordered_map<uint32_t, object_value_operations> m_objects_operations;
     logger m_logger;
     compiler m_compiler; // temporary
     constexpr static size_t stack_base_size = 256;

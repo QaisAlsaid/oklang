@@ -59,8 +59,10 @@ namespace ok
 
   auto vm::run() -> interpret_result
   {
-    auto end = m_chunk->code.data() + m_chunk->code.size();
-    while(m_ip < end)
+    auto* frame = &m_call_frames.back();
+    // auto end = m_chunk->code.data() + m_chunk->code.size();
+    auto end = frame->function->associated_chunk.code.data() + frame->function->associated_chunk.code.size();
+    while(frame->ip < end)
     {
 #ifdef PARANOID
       TRACE("    ");
@@ -538,7 +540,18 @@ namespace ok
     while(m_objects_list != nullptr)
     {
       auto next = m_objects_list->next;
-      delete m_objects_list;
+      switch(m_objects_list->type)
+      {
+      case object_type::obj_string:
+        delete(string_object*)m_objects_list;
+        break;
+      case object_type::obj_function:
+        delete(function_object*)m_objects_list;
+        break;
+      default:
+        runtime_error("trying to free an object of an unallocateing type");
+        break; // TODO(Qais): error
+      }
       m_objects_list = next;
     }
   }

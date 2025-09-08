@@ -17,6 +17,8 @@ namespace ok
           {"letdown"sv, token_type::tok_letdown},
           {"while"sv, token_type::tok_while},
           {"for"sv, token_type::tok_for},
+          {"break"sv, token_type::tok_break},
+          {"continue"sv, token_type::tok_continue},
           {"if"sv, token_type::tok_if},
           {"elif"sv, token_type::tok_elif},
           {"else"sv, token_type::tok_else},

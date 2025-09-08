@@ -94,7 +94,7 @@ int main(int argc, char** argv)
   // error either.
   // the problem comes from the individual expression parsers doesnt propagate errors, so fix that asap
 
-  auto res = vm.interpret(" for let i = 0, i < 10, i = i+1 -> print i; ");
+  auto res = vm.interpret(" for let i = 0; i < 10; i = i + 1 -> { let x = 2; x = x +1; x = 22 +x; } ");
 
   // auto res = vm.interpret("{let x = 'hello world'; print x; { x = 'foo'; print x; x = 34; { print x; }; }}");
   switch(res)

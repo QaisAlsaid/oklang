@@ -103,6 +103,7 @@ namespace ok
     std::unique_ptr<ast::if_statement> parse_if_statement();
     std::unique_ptr<ast::while_statement> parse_while_statement();
     std::unique_ptr<ast::for_statement> parse_for_statement();
+    std::unique_ptr<ast::control_flow_statement> parse_control_flow_statement();
 
     void sync_state();
     void munch_extra_semicolons();
