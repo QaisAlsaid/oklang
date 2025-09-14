@@ -931,7 +931,7 @@ namespace ok::ast
   {
   public:
     function_declaration(token p_tok,
-                         std::unique_ptr<block_statement> p_body,
+                         std::unique_ptr<statement> p_body,
                          std::unique_ptr<identifier_expression> p_identifier = nullptr,
                          std::list<std::unique_ptr<identifier_expression>>&& p_parameatres = {})
         : declaration(node_type::nt_function_decl), m_token(p_tok), m_identifier(std::move(p_identifier)),
@@ -971,7 +971,7 @@ namespace ok::ast
       return m_parameters;
     }
 
-    const std::unique_ptr<block_statement>& get_body() const
+    const std::unique_ptr<statement>& get_body() const
     {
       return m_body;
     }
@@ -980,7 +980,7 @@ namespace ok::ast
     token m_token;
     std::unique_ptr<identifier_expression> m_identifier;
     std::list<std::unique_ptr<identifier_expression>> m_parameters;
-    std::unique_ptr<block_statement> m_body;
+    std::unique_ptr<statement> m_body;
   };
 
   /**

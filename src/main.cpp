@@ -95,7 +95,9 @@ int main(int argc, char** argv)
   // error either.
   // the problem comes from the individual expression parsers doesnt propagate errors, so fix that asap
 
-  auto res = vm.interpret(" srand(); print rand(); ");
+  auto res =
+      vm.interpret(" fu for_each(i, n, f) { for let _s = i; _s < n; _s = _s+1  -> { f(_s); } } fu pr(x) -> print "
+                   "x; for_each(0, 10, pr); print clock();");
 
   // auto res = vm.interpret("{let x = 'hello world'; print x; { x = 'foo'; print x; x = 34; { print x; }; }}");
   switch(res)

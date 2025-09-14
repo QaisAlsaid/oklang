@@ -357,7 +357,7 @@ namespace ok
     }
     if(current_token().type != token_type::tok_arrow)
     {
-      parse_error(error::code::expected_token, "expected '->' after for clauses");
+      parse_error(error::code::expected_token, "expected '->' after 'for' clauses");
       return nullptr;
     }
     advance();
@@ -410,8 +410,10 @@ namespace ok
 
   std::unique_ptr<ast::function_declaration> parser::parse_function_declaration()
   {
-    // fu do_stuff() -> {  }
-    // let f = fu () -> {  }
+    // fu do_stuff() -> {  } // optional arrow when body is block
+    // fu do_stuff() {  } // notmal stuff
+    // fu do_stuff() -> print("doing stuff"); // one statement requires arrow
+    // let f = fu () -> {  } // TODO
     auto fu_token = current_token();
     advance();
     std::unique_ptr<ast::identifier_expression>
@@ -460,16 +462,37 @@ namespace ok
 
     if(current_token().type != token_type::tok_right_paren)
       parse_error(error::code::expected_token, "expected ')' after function parameters");
+
+    // advance();
+
+    // if next is arrow we skip and set had arrow to true, if next is brace we dont do anything, but if next is other
+    // stateent we check arrow first if not we error if its there we dont do anything and parse normally
+
+    bool had_arrow = false;
+    if(lookahead_token().type == token_type::tok_arrow)
+    {
+      advance();
+      had_arrow = true;
+    }
+
+    if(lookahead_token().type != token_type::tok_left_brace && !had_arrow)
+      parse_error(error::code::expected_token, "expected '->' in one-liner function declaration");
+
     advance();
 
-    if(current_token().type != token_type::tok_arrow)
-      parse_error(error::code::expected_token, "expected '->' in function declaration");
-    advance();
+    // if(lookahead_token().type == token_type::tok_left_brace && current_token().type == token_type::tok_arrow)
+    //   advance();
+    // else if(lookahead_token().type != token_type::tok_left_brace && current_token().type != token_type::tok_arrow)
+    //   else if(current_token().type == token_type::tok_left_brace)
+    //   {
+    //   }
+    // else
+    //   advance();
 
-    if(current_token().type != token_type::tok_left_brace)
-      parse_error(error::code::expected_token, "expected '{{' before function body");
+    // if(current_token().type != token_type::tok_left_brace)
+    //   parse_error(error::code::expected_token, "expected '{{' before function body");
 
-    auto body = parse_block_statement();
+    auto body = parse_statement();
 
     return std::make_unique<ast::function_declaration>(fu_token, std::move(body), std::move(ident), std::move(params));
   }
