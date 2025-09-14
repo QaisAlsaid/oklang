@@ -85,7 +85,8 @@ int main(int argc, char** argv)
   // std::println("accuracy: {}%", (float)tests_stats.pass / (float)tests_stats.total * 100);
 
   ok::vm vm;
-  ok::vm_guard guard{&vm};
+  ok::vm_guard guard{
+      &vm}; // wtf bad design guard gets destroyed before vm thus on vm destructor no access to global vm and no logging
 
   // TODO(Qais): if you'd do something like "let a = 'a\na'"  the \n is not being handled by oklang's runtime, rather
   // its the c++ compiler, so if i were to take this string from a file this wont work!
@@ -94,7 +95,7 @@ int main(int argc, char** argv)
   // error either.
   // the problem comes from the individual expression parsers doesnt propagate errors, so fix that asap
 
-  auto res = vm.interpret(" for let i = 0; i < 10; i = i + 1 -> { let x = 2; x = x +1; x = 22 +x; } ");
+  auto res = vm.interpret(" srand(); print rand(); ");
 
   // auto res = vm.interpret("{let x = 'hello world'; print x; { x = 'foo'; print x; x = 34; { print x; }; }}");
   switch(res)

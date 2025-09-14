@@ -13,6 +13,11 @@
 
 namespace ok
 {
+  struct local
+  {
+    std::string name;
+    int depth;
+  };
   using byte = uint8_t;
   enum class opcode : byte
   {
@@ -26,6 +31,7 @@ namespace ok
     op_conditional_truthy_jump,
     op_jump,
     op_loop,
+    op_call,
     // operators
     op_negate,
     op_add,
@@ -184,6 +190,7 @@ namespace ok
     std::vector<byte> code;
     value_array constants;
     value_array identifiers;
+    // std::vector<local> m_locals;
     struct offset_with_rep
     {
       size_t offset;

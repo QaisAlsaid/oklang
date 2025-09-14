@@ -45,8 +45,10 @@ namespace ok::ast
     nt_while_stmt,
     nt_for_stmt,
     nt_control_flow_stmt,
+    nt_return_stmt,
     // declarations
     nt_let_decl,
+    nt_function_decl,
   };
 
   /**
@@ -480,6 +482,16 @@ namespace ok::ast
       return ss.str();
     }
 
+    const std::unique_ptr<expression>& get_callable() const
+    {
+      return m_function;
+    }
+
+    const std::list<std::unique_ptr<expression>>& get_arguments() const
+    {
+      return m_arguments;
+    }
+
   private:
     token m_token;
     std::unique_ptr<expression> m_function;
@@ -845,6 +857,36 @@ namespace ok::ast
     cftype m_cf_type;
   };
 
+  class return_statement : public statement
+  {
+  public:
+    return_statement(token p_tok, std::unique_ptr<expression> p_expr = nullptr)
+        : statement(node_type::nt_return_stmt), m_token(p_tok), m_expression(std::move(p_expr))
+    {
+    }
+
+    std::string token_literal() override
+    {
+      return m_token.raw_literal;
+    }
+
+    std::string to_string() override
+    {
+      std::stringstream ss;
+      ss << m_token.raw_literal << "  " << (m_expression == nullptr ? m_expression->to_string() : "null");
+      return ss.str();
+    }
+
+    const std::unique_ptr<expression>& get_expression() const
+    {
+      return m_expression;
+    }
+
+  private:
+    token m_token;
+    std::unique_ptr<expression> m_expression;
+  };
+
   /**
    * declarations
    **/
@@ -883,6 +925,62 @@ namespace ok::ast
     token m_token;
     std::unique_ptr<identifier_expression> m_identifier;
     std::unique_ptr<expression> m_value;
+  };
+
+  class function_declaration : public declaration
+  {
+  public:
+    function_declaration(token p_tok,
+                         std::unique_ptr<block_statement> p_body,
+                         std::unique_ptr<identifier_expression> p_identifier = nullptr,
+                         std::list<std::unique_ptr<identifier_expression>>&& p_parameatres = {})
+        : declaration(node_type::nt_function_decl), m_token(p_tok), m_identifier(std::move(p_identifier)),
+          m_parameters(std::move(p_parameatres)), m_body(std::move(p_body))
+    {
+    }
+
+    std::string token_literal() override
+    {
+      return m_token.raw_literal;
+    }
+
+    std::string to_string() override
+    {
+      std::stringstream ss;
+      ss << "fu ";
+      ss << (m_identifier == nullptr ? "" : m_identifier->to_string());
+      ss << "(";
+      for(auto i = 0; const auto& p : m_parameters)
+      {
+        ss << p->to_string();
+        if(i < m_parameters.size() - 1)
+          ss << ", ";
+      }
+      ss << ")";
+      ss << m_body->to_string();
+      return ss.str();
+    }
+
+    const std::unique_ptr<identifier_expression>& get_identifier() const
+    {
+      return m_identifier;
+    }
+
+    const std::list<std::unique_ptr<identifier_expression>>& get_parameters() const
+    {
+      return m_parameters;
+    }
+
+    const std::unique_ptr<block_statement>& get_body() const
+    {
+      return m_body;
+    }
+
+  private:
+    token m_token;
+    std::unique_ptr<identifier_expression> m_identifier;
+    std::list<std::unique_ptr<identifier_expression>> m_parameters;
+    std::unique_ptr<block_statement> m_body;
   };
 
   /**

@@ -12,11 +12,6 @@
 
 namespace ok
 {
-  struct local
-  {
-    std::string name;
-    int depth;
-  };
   class compiler
   {
   public:
@@ -32,6 +27,7 @@ namespace ok
         jump_width_exceeds_limit,
         loop_width_exceeds_limit,
         control_flow_outside_loop,
+        arguments_count_exceeds_limit
       };
       code error_code;
       std::string message;
@@ -90,7 +86,7 @@ namespace ok
   public:
     // type is always string the name will determine the script being ran and the future namespace also the main
     function_object* compile(const std::string_view p_src, string_object* p_function_name, uint32_t p_vm_id);
-    chunk* current_chunk()
+    chunk* current_chunk() const
     {
       ASSERT(m_compiled);
       ASSERT(!m_functions.empty());
@@ -100,7 +96,26 @@ namespace ok
     const std::vector<local>& get_locals() const
     {
       ASSERT(m_compiled);
-      ASSERT(!m_locals.empty());
+      // ASSERT(!m_locals.empty());
+      // return m_locals.back();
+      return m_locals.back();
+    }
+
+    void push_locals()
+    {
+      m_locals.emplace_back();
+    }
+
+    void pop_locals()
+    {
+      m_locals.pop_back();
+    }
+
+    std::vector<local>& get_locals()
+    {
+      ASSERT(m_compiled);
+      // ASSERT(!m_locals.empty());
+      // return m_locals.back();
       return m_locals.back();
     }
 
@@ -154,6 +169,9 @@ namespace ok
     void compile(ast::while_statement* p_while_statement);
     void compile(ast::for_statement* p_for_statement);
     void compile(ast::control_flow_statement* p_control_flow_statement);
+    void compile(ast::function_declaration* p_function_declaration);
+    void compile(ast::call_expression* p_call_expression);
+    void compile(ast::return_statement* p_return_statement);
 
     void push_function(compile_function p_function);
     void pop_function();
@@ -180,12 +198,13 @@ namespace ok
     void patch_loop_context();
 
     void compile_logical_operator(ast::infix_binary_expression* p_logical_operator);
+    uint8_t compile_arguments_list(const std::list<std::unique_ptr<ast::expression>>& p_list);
 
-    inline std::vector<local>& get_locals()
-    {
-      ASSERT(!m_locals.empty());
-      return m_locals.back();
-    }
+    // inline std::vector<local>& get_locals()
+    //{
+    //   ASSERT(!m_locals.empty());
+    //   return m_locals.back();
+    // }
 
     template <typename... Args>
     void compile_error(error::code code, std::format_string<Args...> fmt, Args&&... args)
@@ -200,9 +219,11 @@ namespace ok
 
   private:
     uint32_t m_vm_id;
-    std::vector<compile_function> m_functions; // a function stack, so we dont spin multiple compiler instances
-    std::vector<std::vector<local>>
-        m_locals; // locals stack relative positioning, also so we dont spin multiple compiler instances
+    // a function stack, so we dont spin multiple compiler instances
+    std::vector<compile_function> m_functions;
+    //// locals stack relative positioning, also so we dont spin multiple compiler instances
+    // std::vector<std::vector<local>> m_locals;
+    std::vector<std::vector<local>> m_locals;
     std::unordered_map<string_object*, std::pair<bool, uint32_t>> m_globals;
     std::vector<loop_context> m_loop_stack;
     errors m_errors;

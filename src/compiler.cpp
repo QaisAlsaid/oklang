@@ -17,9 +17,6 @@
 #include <string>
 #include <vector>
 
-// TODO(Qais): bitch why dont you have compile errors!
-// TODO(Qais): this file is all over the place just organize it
-
 namespace ok
 {
   template <typename Class>
@@ -58,8 +55,10 @@ namespace ok
       return nullptr;
     TRACELN("{}", root->to_string());
     // top level script function
-    push_function({function_object::create(0, p_function_name), compile_function::type::script});
+    push_function({function_object::create<function_object>(0, p_function_name), compile_function::type::script});
     compile(root.get());
+    current_chunk()->write(opcode::op_null, 0);
+    current_chunk()->write(opcode::op_return, 0);
 #ifdef PARANOID
     debug::disassembler::disassemble_chunk(*current_chunk(), current_function().function->name->chars);
 #endif
@@ -121,6 +120,15 @@ namespace ok
       return;
     case ast::node_type::nt_control_flow_stmt:
       compile((ast::control_flow_statement*)p_node);
+      return;
+    case ast::node_type::nt_function_decl:
+      compile((ast::function_declaration*)p_node);
+      return;
+    case ast::node_type::nt_call_expr:
+      compile((ast::call_expression*)p_node);
+      return;
+    case ast::node_type::nt_return_stmt:
+      compile((ast::return_statement*)p_node);
       return;
     default:
       // TODO(Qais): node_type_to_string
@@ -246,6 +254,74 @@ namespace ok
         current_chunk()->write(res.second, offset);
       }
     }
+  }
+
+  void compiler::compile(ast::function_declaration* p_function_declaration)
+  {
+    auto& ident = p_function_declaration->get_identifier();
+    if(ident == nullptr)
+    {
+      return; // TODO(Qais): warning declaration doesnt declare anything
+    }
+    const auto& str_name = ident->get_value();
+    auto offset = ident->get_offset();
+    auto opt = declare_variable(str_name, ident->get_offset());
+    auto& params = p_function_declaration->get_parameters();
+    // TODO(Qais): move this into own function
+    push_function(
+        {function_object::create<function_object>(params.size(), string_object::create<string_object>(str_name)),
+         compile_function::type::function});
+    scope_guard<compiler> guard{&compiler::being_scope, &compiler::end_scope, this};
+
+    for(const auto& param : params)
+    {
+      auto opt = declare_variable(param->get_value(), param->get_offset());
+      if(opt.has_value())
+      {
+        auto res = opt.value();
+        if(res.first)
+        {
+          current_chunk()->write(opcode::op_define_global_long, offset);
+          const auto span = encode_int<size_t, 3>(res.second);
+          current_chunk()->write(span, offset);
+        }
+        else
+        {
+          current_chunk()->write(opcode::op_define_global, offset);
+          current_chunk()->write(res.second, offset);
+        }
+      }
+    }
+    compile(p_function_declaration->get_body().get());
+    current_chunk()->write(opcode::op_null, p_function_declaration->get_body()->get_offset());
+    current_chunk()->write(opcode::op_return, p_function_declaration->get_body()->get_offset());
+    auto fun = current_function();
+    fun.function->arity = params.size();
+    pop_function();
+    current_chunk()->write_constant(value_t{fun.function}, ident->get_offset());
+    if(opt.has_value())
+    {
+      auto res = opt.value();
+      if(res.first)
+      {
+        current_chunk()->write(opcode::op_define_global_long, offset);
+        const auto span = encode_int<size_t, 3>(res.second);
+        current_chunk()->write(span, offset);
+      }
+      else
+      {
+        current_chunk()->write(opcode::op_define_global, offset);
+        current_chunk()->write(res.second, offset);
+      }
+    }
+  }
+
+  void compiler::compile(ast::call_expression* p_call_expression)
+  {
+    compile(p_call_expression->get_callable().get());
+    auto i = compile_arguments_list(p_call_expression->get_arguments());
+    current_chunk()->write(opcode::op_call, p_call_expression->get_offset());
+    current_chunk()->write(i, p_call_expression->get_offset());
   }
 
   void compiler::compile(ast::block_statement* p_block_stmt)
@@ -389,6 +465,20 @@ namespace ok
     }
   }
 
+  void compiler::compile(ast::return_statement* p_return_statement)
+  {
+    if(p_return_statement->get_expression() == nullptr)
+    {
+      current_chunk()->write(opcode::op_null, p_return_statement->get_offset());
+      current_chunk()->write(opcode::op_return, p_return_statement->get_offset());
+    }
+    else
+    {
+      compile(p_return_statement->get_expression().get());
+      current_chunk()->write(opcode::op_return, p_return_statement->get_offset());
+    }
+  }
+
   void compiler::compile(ast::identifier_expression* p_ident_expr)
   {
     const auto& str_val = p_ident_expr->get_value();
@@ -508,15 +598,33 @@ namespace ok
     patch_jump(jump, current_chunk()->code.size());
   }
 
+  uint8_t compiler::compile_arguments_list(const std::list<std::unique_ptr<ast::expression>>& p_list)
+  {
+    if(p_list.size() > UINT8_MAX)
+    {
+      compile_error(error::code::arguments_count_exceeds_limit,
+                    "arguments count: {} exceeds limit which is: {}",
+                    p_list.size(),
+                    UINT8_MAX);
+      return 0;
+    }
+    for(auto& arg : p_list)
+      compile(arg.get());
+    return p_list.size();
+  }
+
   void compiler::push_function(compile_function p_function)
   {
+    push_locals();
     m_functions.push_back(p_function);
+    get_locals().push_back(local{"", 0});
   }
 
   void compiler::pop_function()
   {
     ASSERT(!m_functions.empty());
     m_functions.pop_back();
+    pop_locals();
   }
 
   auto compiler::current_function() -> compile_function
@@ -546,10 +654,11 @@ namespace ok
   void compiler::clean_scope_garbage()
   {
     uint32_t removed_count = 0;
-    while(!m_locals.empty() && m_locals.back().depth > m_scope_depth)
+    auto& curr_locals = get_locals();
+    while(!curr_locals.empty() && curr_locals.back().depth > m_scope_depth)
     {
       removed_count++;
-      m_locals.pop_back();
+      curr_locals.pop_back();
     }
     emit_pops(removed_count);
   }
@@ -576,9 +685,10 @@ namespace ok
     // local
     if(m_scope_depth > 0)
     {
-      for(long i = m_locals.size() - 1; i > -1; --i)
+      auto& curr_locals = get_locals();
+      for(long i = curr_locals.size() - 1; i > -1; --i)
       {
-        auto& loc = m_locals[i];
+        auto& loc = curr_locals[i];
         if(loc.depth < m_scope_depth)
           break;
         if(p_str_ident == loc.name)
@@ -587,10 +697,10 @@ namespace ok
           return {};
         }
       }
-      if(m_locals.size() >= uint24_max)
+      if(curr_locals.size() >= uint24_max)
         compile_error(
             error::code::local_count_exceeds_limit, "too many local variables, exceeds limit which is: {}", uint24_max);
-      m_locals.emplace_back(p_str_ident, m_scope_depth);
+      curr_locals.emplace_back(p_str_ident, m_scope_depth);
       return {};
     }
     // global
@@ -600,9 +710,10 @@ namespace ok
   std::pair<std::optional<std::pair<bool, uint32_t>>, std::optional<uint32_t>>
   compiler::resolve_variable(const std::string& p_str_ident, size_t p_offset)
   {
-    for(long i = m_locals.size() - 1; i > -1; i--)
+    auto& curr_locals = get_locals();
+    for(long i = curr_locals.size() - 1; i > -1; i--)
     {
-      auto& loc = m_locals[i];
+      auto& loc = curr_locals[i];
       if(p_str_ident == loc.name)
       {
         return {{}, i};
@@ -641,6 +752,18 @@ namespace ok
       // global
       return add_global(p_global, p_offset);
     }
+
+    // TODO(Qais): this slow and started to be very messy, but idk this hack will fix identifiers not in the function
+    // identifiers table for now
+    for(const auto& g : current_function().function->associated_chunk.identifiers)
+    {
+      if((string_object*)g.as.obj == str_glob)
+      {
+        goto RET;
+      }
+    }
+    add_global(p_global, p_offset);
+  RET:
     return it->second;
   }
 

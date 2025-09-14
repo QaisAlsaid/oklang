@@ -106,6 +106,8 @@ namespace ok::debug
       return multi_operand_instruction<3>("op_jump", p_chunk, p_offset);
     case to_utype(opcode::op_loop):
       return multi_operand_instruction<3>("op_loop", p_chunk, p_offset);
+    case to_utype(opcode::op_call):
+      return single_operand_instruction("op_call", p_chunk, p_offset);
     default:
     {
       std::println("unknown opcode: {}", instruction);

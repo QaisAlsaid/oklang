@@ -5,6 +5,7 @@
 #include "vm.hpp"
 #include "vm_stack.hpp"
 #include <array>
+#include <expected>
 #include <numeric>
 #include <print>
 
@@ -37,17 +38,25 @@ namespace ok
     chars = nullptr;
   }
 
-  object* string_object::create(const std::string_view p_src)
+  template <>
+  string_object* string_object::create(const std::string_view p_src)
   {
     auto& interned_strings = get_g_vm()->get_interned_strings();
     auto interned = interned_strings.get(p_src);
     if(interned != nullptr)
-      return (object*)interned;
+      return interned;
 
-    return (object*)interned_strings.set(p_src);
+    return interned_strings.set(p_src);
   }
 
-  object* string_object::create(const std::span<std::string_view> p_srcs)
+  template <>
+  object* string_object::create(const std::string_view p_src)
+  {
+    return (object*)create<string_object>(p_src);
+  }
+
+  template <>
+  string_object* string_object::create(const std::span<std::string_view> p_srcs)
   {
     // TODO(Qais): double copy new ctor and method in interned store will mitigate that
     auto length = std::accumulate(
@@ -64,8 +73,14 @@ namespace ok
     auto& interned_strings = get_g_vm()->get_interned_strings();
     auto interned = interned_strings.get({chars, length});
     if(interned != nullptr)
-      return (object*)interned;
-    return (object*)interned_strings.set({chars, length});
+      return interned;
+    return interned_strings.set({chars, length});
+  }
+
+  template <>
+  object* string_object::create(const std::span<std::string_view> p_srcs)
+  {
+    return (object*)create<string_object>(p_srcs);
   }
 
   string_object::string_object() : up(object_type::obj_string)
@@ -115,8 +130,24 @@ namespace ok
     std::print("{}", std::string_view{this_string->chars, this_string->length});
   }
 
-  function_object::function_object(uint8_t p_arity, const string_object* p_name) : up(object_type::obj_function)
+  function_object::function_object(uint8_t p_arity, string_object* p_name) : function_object()
   {
+    name = p_name;
+  }
+
+  function_object::function_object() : up(object_type::obj_function)
+  {
+    if(up.is_registered())
+      return;
+    auto _vm = get_g_vm();
+    auto& ops = _vm->register_object_operations(up.type);
+    std::array<std::pair<uint32_t, vm::operation_function_infix_binary>, 2> op_fcn = {
+        std::pair<uint32_t, vm::operation_function_infix_binary>{
+            _make_object_key(operator_type::op_equal, value_type::object_val, object_type::obj_function),
+            function_object::equal}};
+    ops.binary_infix.register_operations(op_fcn);
+    ops.call_function = function_object::call;
+    ops.print_function = function_object::print;
   }
 
   function_object::~function_object()
@@ -138,23 +169,108 @@ namespace ok
     std::print("<fu {}>", std::string_view{this_function->name->chars, this_function->name->length});
   }
 
+  std::expected<std::optional<call_frame>, value_error> function_object::call(object* p_this, uint8_t p_argc)
+  {
+    auto this_function = (function_object*)p_this;
+    if(p_argc != this_function->arity)
+    {
+      return std::unexpected(value_error::arguments_mismatch);
+    }
+    auto vm = get_g_vm();
+    auto frame = call_frame{this_function,
+                            this_function->associated_chunk.code.data(),
+                            vm->frame_stack_top() - p_argc - 1,
+                            vm->frame_stack_top() - p_argc - 1};
+    return frame;
+  }
+
   template <typename T>
-  T* function_object::create(uint8_t p_arity, const string_object* p_name)
+  T* function_object::create(uint8_t p_arity, string_object* p_name)
   {
     static_assert(false, "type mismatch");
   }
 
   template <>
-  object* function_object::create<object>(uint8_t p_arity, const string_object* p_name)
+  object* function_object::create<object>(uint8_t p_arity, string_object* p_name)
   {
     auto fo = new function_object(p_arity, p_name);
     return (object*)fo;
   }
 
   template <>
-  function_object* function_object::create<function_object>(uint8_t p_arity, const string_object* p_name)
+  function_object* function_object::create<function_object>(uint8_t p_arity, string_object* p_name)
   {
     auto fo = new function_object(p_arity, p_name);
     return fo;
   }
+
+  native_function_object::native_function_object(native_function p_function) : native_function_object()
+  {
+    function = p_function;
+  }
+
+  native_function_object::~native_function_object()
+  {
+  }
+
+  std::expected<value_t, value_error> native_function_object::equal(object* p_this, value_t p_sure_is_function)
+  {
+    auto other = (native_function_object*)p_sure_is_function.as.obj;
+    auto this_native_function = (native_function_object*)p_this;
+    return value_t{this_native_function->function == other->function};
+  }
+
+  void native_function_object::print(object* p_this)
+  {
+    auto this_native_function = (native_function_object*)p_this;
+    std::print("<native fu {:p}>", (void*)this_native_function->function);
+  }
+
+  std::expected<std::optional<call_frame>, value_error> native_function_object::call(object* p_this, uint8_t p_argc)
+  {
+    auto this_native_function = (native_function_object*)p_this;
+    auto vm = get_g_vm();
+    auto ret = this_native_function->function(p_argc, vm->stack_at(vm->frame_stack_top() - p_argc));
+
+    vm->get_current_call_frame().top = vm->frame_stack_top() - p_argc - 1;
+    vm->stack_resize(vm->get_current_call_frame().top);
+    vm->stack_push(ret);
+    return {};
+  }
+
+  native_function_object::native_function_object() : up(object_type::obj_native_function)
+  {
+    if(up.is_registered())
+      return;
+    auto _vm = get_g_vm();
+    auto& ops = _vm->register_object_operations(up.type);
+    std::array<std::pair<uint32_t, vm::operation_function_infix_binary>, 2> op_fcn = {
+        std::pair<uint32_t, vm::operation_function_infix_binary>{
+            _make_object_key(operator_type::op_equal, value_type::object_val, object_type::obj_native_function),
+            native_function_object::equal}};
+    ops.binary_infix.register_operations(op_fcn);
+    ops.call_function = native_function_object::call;
+    ops.print_function = native_function_object::print;
+  }
+
+  template <typename T>
+  T* native_function_object::create(native_function p_function)
+  {
+    static_assert(false, "type mismatch");
+  }
+
+  template <>
+  object* native_function_object::create<object>(native_function p_function)
+  {
+    auto fo = new native_function_object(p_function);
+    return (object*)fo;
+  }
+
+  template <>
+  native_function_object* native_function_object::create<native_function_object>(native_function p_function)
+  {
+    auto fo = new native_function_object(p_function);
+    return fo;
+  }
+
 } // namespace ok

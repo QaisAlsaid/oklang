@@ -132,6 +132,9 @@ namespace ok
       //   parse_error(error::code::expected_token, "expected ';', after: {}", ret->token_literal());
       // munch_extra_semicolons();
       break;
+    case token_type::tok_fu:
+      ret = parse_function_declaration();
+      break;
     default:
       ret = parse_statement();
       break;
@@ -160,6 +163,8 @@ namespace ok
     case token_type::tok_break:
     case token_type::tok_continue:
       return parse_control_flow_statement();
+    case token_type::tok_return:
+      return parse_return_statement();
     case token_type::tok_eof:
       return nullptr;
     default:
@@ -201,6 +206,21 @@ namespace ok
       parse_error(error::code::expected_token, "expected ';', after: {}", cf_tok.raw_literal);
     advance();
     return std::make_unique<ast::control_flow_statement>(cf_tok);
+  }
+
+  std::unique_ptr<ast::return_statement> parser::parse_return_statement()
+  {
+    auto ret_tok = current_token();
+    std::unique_ptr<ast::expression> expr = nullptr;
+    if(lookahead_token().type != token_type::tok_semicolon)
+    {
+      advance();
+      expr = parse_expression();
+    }
+    if(lookahead_token().type != token_type::tok_semicolon)
+      parse_error(error::code::expected_token, "expected ';', after return statement");
+    advance();
+    return std::make_unique<ast::return_statement>(ret_tok, std::move(expr));
   }
 
   std::unique_ptr<ast::block_statement> parser::parse_block_statement()
@@ -388,6 +408,72 @@ namespace ok
         std::move(assign->get_right()));
   }
 
+  std::unique_ptr<ast::function_declaration> parser::parse_function_declaration()
+  {
+    // fu do_stuff() -> {  }
+    // let f = fu () -> {  }
+    auto fu_token = current_token();
+    advance();
+    std::unique_ptr<ast::identifier_expression>
+        ident; // TODO(Qais): take as optional parameter for function declared using let
+    if(current_token().type == token_type::tok_identifier && ident == nullptr) // no identifier supplied
+    {
+      auto t = current_token();
+      ident = std::make_unique<ast::identifier_expression>(t, t.raw_literal);
+      advance();
+    }
+    else if(ident != nullptr)
+    {
+      // ident = ident;
+    }
+    // else // not in let context and no name provided parser doesnt care but it will be a compile error
+    if(current_token().type != token_type::tok_left_paren)
+      parse_error(error::code::expected_token, "expected '(' in function declaration");
+    advance();
+    std::list<std::unique_ptr<ast::identifier_expression>> params;
+    if(current_token().type != token_type::tok_right_paren)
+    {
+      auto tok = current_token();
+      params.push_back(std::make_unique<ast::identifier_expression>(tok, tok.raw_literal));
+      while(lookahead_token().type == token_type::tok_comma)
+      {
+        advance();
+        advance();
+        auto tok = current_token();
+        if(tok.type != token_type::tok_identifier)
+        {
+          parse_error(error::code::expected_identifier, "expected identifier as function parameter");
+        }
+        params.push_back(std::make_unique<ast::identifier_expression>(tok, tok.raw_literal));
+      }
+      // do
+      // {
+      //   auto tok = current_token();
+      //   if(tok.type != token_type::tok_identifier)
+      //   {
+      //     parse_error(error::code::expected_identifier, "expected identifier as function parameter");
+      //   }
+      //   params.push_back(std::make_unique<ast::identifier_expression>(tok, tok.raw_literal));
+      // } while(current_token().type == token_type::tok_comma && advance());
+      advance();
+    }
+
+    if(current_token().type != token_type::tok_right_paren)
+      parse_error(error::code::expected_token, "expected ')' after function parameters");
+    advance();
+
+    if(current_token().type != token_type::tok_arrow)
+      parse_error(error::code::expected_token, "expected '->' in function declaration");
+    advance();
+
+    if(current_token().type != token_type::tok_left_brace)
+      parse_error(error::code::expected_token, "expected '{{' before function body");
+
+    auto body = parse_block_statement();
+
+    return std::make_unique<ast::function_declaration>(fu_token, std::move(body), std::move(ident), std::move(params));
+  }
+
   bool parser::advance()
   {
     if(m_lookahead_token >= m_token_array.size() - 1)
@@ -442,7 +528,7 @@ namespace ok
       switch(current_token().type)
       {
       case token_type::tok_class:
-      case token_type::tok_fun:
+      case token_type::tok_fu:
       case token_type::tok_let:
       case token_type::tok_letdown:
       case token_type::tok_for:

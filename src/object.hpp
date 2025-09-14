@@ -1,6 +1,7 @@
 #ifndef OK_OBJECT_HPP
 #define OK_OBJECT_HPP
 
+#include "call_frame.hpp"
 #include "chunk.hpp"
 #include "utility.hpp"
 #include "value.hpp"
@@ -44,25 +45,23 @@ namespace ok
     // 24bit integer
     inline uint32_t get_type() const
     {
-      return type << 24;
+      return type & 0x00ffffff;
     }
 
     inline void set_type(uint32_t p_type)
     {
       ASSERT(p_type <= uint24_max);
-      uint8_t extras = type << 24;
-      type = p_type << 8 | extras;
+      type = (type & 0xff000000) | (p_type & 0x00ffffff);
     }
 
     inline bool is_registered() const
     {
-      return type & 0x000010;
+      return (type >> 24) & 0x00ffffff;
     }
 
     inline void set_registered(bool p_is_registered)
     {
-      uint8_t extras = type << 24;
-      type = type << 24 | extras << 1 & p_is_registered | extras << 7;
+      p_is_registered ? type |= (1 << 24) : type &= ~(1 << 24);
     }
   };
 
@@ -75,8 +74,10 @@ namespace ok
 
     ~string_object();
 
-    static object* create(const std::string_view p_src);
-    static object* create(const std::span<std::string_view> p_srcs);
+    template <typename Obj = object>
+    static Obj* create(const std::string_view p_src);
+    template <typename Obj = object>
+    static Obj* create(const std::span<std::string_view> p_srcs);
 
     object up;
     hashed_string hash_code;
@@ -94,11 +95,11 @@ namespace ok
 
   struct function_object
   {
-    function_object(uint8_t p_arity, const string_object* p_name);
+    function_object(uint8_t p_arity, string_object* p_name);
     ~function_object();
 
-    template <typename Obj = function_object>
-    static Obj* create(uint8_t p_arity, const string_object* p_name);
+    template <typename Obj = object>
+    static Obj* create(uint8_t p_arity, string_object* p_name);
 
     object up;
     chunk associated_chunk;
@@ -106,8 +107,30 @@ namespace ok
     uint8_t arity = 0;
 
   private:
+    function_object();
     static std::expected<value_t, value_error> equal(object* p_this, value_t p_sure_is_function);
     static void print(object* p_this);
+    static std::expected<std::optional<call_frame>, value_error> call(object* p_this, uint8_t p_argc);
+  };
+
+  typedef value_t (*native_function)(uint8_t argc, value_t* argv);
+
+  struct native_function_object
+  {
+    native_function_object(native_function p_function);
+    ~native_function_object();
+
+    template <typename Obj = object>
+    static Obj* create(native_function p_function);
+
+    object up;
+    native_function function;
+
+  private:
+    native_function_object();
+    static std::expected<value_t, value_error> equal(object* p_this, value_t p_sure_is_native_function);
+    static void print(object* p_this);
+    static std::expected<std::optional<call_frame>, value_error> call(object* p_this, uint8_t p_argc);
   };
 
   // leaves a 24bit integer room for objects which is more than we ever will need
@@ -125,6 +148,7 @@ namespace ok
       return static_cast<uint32_t>(to_utype(p_operator)) << 24 | (p_other_object_type);
     }
   }
+
 } // namespace ok
 
 namespace std
