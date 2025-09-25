@@ -7,7 +7,6 @@
 #include "object.hpp"
 #include "parser.hpp"
 #include <format>
-#include <optional>
 #include <unordered_map>
 
 namespace ok
@@ -27,7 +26,8 @@ namespace ok
         jump_width_exceeds_limit,
         loop_width_exceeds_limit,
         control_flow_outside_loop,
-        arguments_count_exceeds_limit
+        arguments_count_exceeds_limit,
+        upvalue_count_exceeds_limit,
       };
       code error_code;
       std::string message;
@@ -83,14 +83,59 @@ namespace ok
       type function_type;
     };
 
+    struct upvalue
+    {
+      uint32_t index; // 24 bit integer index, and 1 bit for is_local boolean
+      inline uint32_t get_index() const
+      {
+        return index & 0x00ffffff;
+      }
+
+      inline void set_index(uint32_t p_index)
+      {
+        ASSERT(p_index <= uint24_max);
+        index = (index & 0xff000000) | (p_index & 0x00ffffff);
+      }
+
+      inline bool is_local() const
+      {
+        return (index >> 24) & 0x00ffffff;
+      }
+
+      inline void set_local(bool p_is_local)
+      {
+        p_is_local ? index |= (1 << 24) : index &= ~(1 << 24);
+      }
+    };
+
   public:
     // type is always string the name will determine the script being ran and the future namespace also the main
     function_object* compile(const std::string_view p_src, string_object* p_function_name, uint32_t p_vm_id);
     chunk* current_chunk() const
     {
       ASSERT(m_compiled);
-      ASSERT(!m_functions.empty());
-      return &m_functions.back().function->associated_chunk;
+      ASSERT(!m_function_contexts.empty());
+      return &m_function_contexts.back().function.function->associated_chunk;
+    }
+
+    // void push_locals()
+    // {
+    //   // m_locals.emplace_back();
+    // }
+
+    // void pop_locals()
+    // {
+    //   // m_locals.pop_back();
+    //   get_locals().pop_back();
+    // }
+
+    std::vector<local>& get_locals()
+    {
+      ASSERT(m_compiled);
+      // ASSERT(!m_locals.empty());
+      // return m_locals.back();
+      // return m_locals.back();
+      return m_function_contexts.back().locals;
     }
 
     const std::vector<local>& get_locals() const
@@ -98,25 +143,8 @@ namespace ok
       ASSERT(m_compiled);
       // ASSERT(!m_locals.empty());
       // return m_locals.back();
-      return m_locals.back();
-    }
-
-    void push_locals()
-    {
-      m_locals.emplace_back();
-    }
-
-    void pop_locals()
-    {
-      m_locals.pop_back();
-    }
-
-    std::vector<local>& get_locals()
-    {
-      ASSERT(m_compiled);
-      // ASSERT(!m_locals.empty());
       // return m_locals.back();
-      return m_locals.back();
+      return m_function_contexts.back().locals;
     }
 
     const errors& get_compile_errors() const
@@ -148,6 +176,13 @@ namespace ok
       vw_short
     };
 
+    struct function_context
+    {
+      compile_function function;
+      std::vector<local> locals;
+      std::vector<upvalue> upvalues;
+    };
+
   private:
     // take by pointer to avoid moving and invalidating, since we compile directly and dont hold any reference this is
     // totally fine.
@@ -173,18 +208,28 @@ namespace ok
     void compile(ast::call_expression* p_call_expression);
     void compile(ast::return_statement* p_return_statement);
 
-    void push_function(compile_function p_function);
-    void pop_function();
+    void push_function_context(compile_function p_function);
+    void pop_function_context();
     compile_function current_function();
+    function_context& current_context();
 
-    std::optional<std::pair<bool, uint32_t>> declare_variable(const std::string& str_ident, size_t offset);
-    std::pair<std::optional<std::pair<bool, uint32_t>>, std::optional<uint32_t>>
-    resolve_variable(const std::string& str_ident, size_t offset);
-    std::pair<bool, uint32_t> get_or_add_global(value_t p_global, size_t p_offset);
-    std::pair<bool, uint32_t> add_global(value_t p_global, size_t p_offset);
-    void
-    write_variable(variable_operation p_op, variable_type p_t, variable_width p_w, uint32_t p_value, size_t p_offset);
-    opcode get_variable_opcode(variable_operation p_op, variable_type p_t, variable_width p_w);
+    // std::optional<std::pair<bool, uint32_t>> declare_variable(const std::string& str_ident, size_t offset);
+    // std::pair<std::optional<std::pair<bool, uint32_t>>, std::optional<uint32_t>>
+    // resolve_variable(const std::string& str_ident, size_t offset);
+    uint32_t get_or_add_global(value_t p_global, size_t p_offset);
+    uint32_t add_global(value_t p_global, size_t p_offset);
+    // void
+    // write_variable(variable_operation p_op, variable_type p_t, variable_width p_w, uint32_t p_value, size_t
+    // p_offset); opcode get_variable_opcode(variable_operation p_op, variable_type p_t, variable_width p_w);
+
+    void write_variable(opcode p_op, uint32_t p_value, size_t p_offset);
+    void named_variable(const std::string& str_ident, size_t offset, variable_operation op);
+    void declare_variable(const std::string& str_ident, size_t offset);
+    std::optional<uint32_t> declare_variable_late(const std::string& str_ident, size_t offset);
+    uint32_t resolve_local(const std::string& str_ident, size_t offset, const function_context& p_context);
+    uint32_t resolve_upvalue(const std::string& str_ident, size_t offset, int64_t p_function_context_reverse_index);
+    uint32_t add_upvalue(uint32_t p_local, bool p_is_local, size_t offset, function_context& p_context);
+
     void being_scope();
     void end_scope();
     void clean_scope_garbage();
@@ -219,12 +264,12 @@ namespace ok
 
   private:
     uint32_t m_vm_id;
-    // a function stack, so we dont spin multiple compiler instances
-    std::vector<compile_function> m_functions;
-    //// locals stack relative positioning, also so we dont spin multiple compiler instances
+    // std::vector<compile_function> m_functions;
     // std::vector<std::vector<local>> m_locals;
-    std::vector<std::vector<local>> m_locals;
-    std::unordered_map<string_object*, std::pair<bool, uint32_t>> m_globals;
+
+    std::vector<function_context> m_function_contexts;
+
+    std::unordered_map<string_object*, uint32_t> m_globals;
     std::vector<loop_context> m_loop_stack;
     errors m_errors;
     parser::errors m_parse_errors;

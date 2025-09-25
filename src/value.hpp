@@ -11,6 +11,7 @@ namespace ok
 {
   class object;
   class function_object;
+  class closure_object;
   struct value_t;
   typedef value_t (*native_function)(uint8_t argc, value_t* argv);
 
@@ -50,6 +51,7 @@ namespace ok
 
     explicit value_t(function_object* p_function);
     explicit value_t(native_function p_native_function);
+    explicit value_t(closure_object* p_closure);
   };
 
   using value_array = std::vector<value_t>;

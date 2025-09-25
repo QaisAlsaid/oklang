@@ -17,6 +17,7 @@ namespace ok
   {
     std::string name;
     int depth;
+    bool is_captured = false;
   };
   using byte = uint8_t;
   enum class opcode : byte
@@ -31,7 +32,8 @@ namespace ok
     op_conditional_truthy_jump,
     op_jump,
     op_loop,
-    op_call,
+    op_call, // kinda operator!
+    op_closure,
     // operators
     op_negate,
     op_add,
@@ -67,10 +69,17 @@ namespace ok
     op_get_local_long,
     op_set_local,
     op_set_local_long,
+
+    // upvalues
+    op_get_upvalue,
+    op_get_upvalue_long,
+    op_set_up_value,
+    op_set_upvalue_long,
+    op_close_upvalue
   };
   constexpr auto op_constant_max_count = UINT8_MAX;
   constexpr auto uint24_max = (1 << 24) - 1;
-  constexpr auto op_constant_long_max_count = uint24_max; // UINT24_MAX
+  constexpr auto op_constant_long_max_count = uint24_max;
   constexpr auto op__global_max_count = UINT8_MAX;
   constexpr auto op__global_long_max_count = uint24_max;
 
@@ -128,7 +137,8 @@ namespace ok
     }
 
     // returns pair of <is_long, index>, and it doesnt write anything to the table
-    inline std::pair<bool, uint32_t> add_global(const value_t p_global, const size_t p_offset)
+    // lmao wont the index tell you that its long or not, why the boolean lol
+    uint32_t add_global(const value_t p_global, const size_t p_offset)
     {
       ASSERT(p_global.type == value_type::object_val);
       identifiers.push_back(p_global);
@@ -137,7 +147,7 @@ namespace ok
       {
         // write(is_define ? opcode::op_define_global : opcode::op_get_global, p_offset);
         // write(index, p_offset);
-        return {false, index};
+        return index;
       }
       else if(index < op__global_long_max_count + 1)
       {
@@ -148,9 +158,9 @@ namespace ok
         //   TRACELN("byte: {}", (uint8_t)s);
 #endif
         // write(span, p_offset);
-        return {true, index};
+        return index;
       }
-      return {false, UINT32_MAX}; // error cant add more
+      return UINT32_MAX; // error cant add more
     }
 
     // only valid when constants.size() < UINT8_MAX, otherwise use write_constant.

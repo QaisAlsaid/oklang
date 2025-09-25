@@ -85,20 +85,21 @@ namespace ok
 
   string_object::string_object() : up(object_type::obj_string)
   {
-    if(up.is_registered())
-      return;
+    [[maybe_unused]] static const bool _ = [this] -> bool
+    {
+      auto _vm = get_g_vm();
+      auto& ops = _vm->register_object_operations(up.type);
+      std::array<std::pair<uint32_t, vm::operation_function_infix_binary>, 2> op_fcn = {
+          std::pair<uint32_t, vm::operation_function_infix_binary>{
+              _make_object_key(operator_type::op_equal, value_type::object_val, object_type::obj_string),
+              string_object::equal},
+          {_make_object_key(operator_type::op_plus, value_type::object_val, object_type::obj_string),
+           string_object::plus}};
+      ops.binary_infix.register_operations(op_fcn);
 
-    auto _vm = get_g_vm();
-    auto& ops = _vm->register_object_operations(up.type);
-    std::array<std::pair<uint32_t, vm::operation_function_infix_binary>, 2> op_fcn = {
-        std::pair<uint32_t, vm::operation_function_infix_binary>{
-            _make_object_key(operator_type::op_equal, value_type::object_val, object_type::obj_string),
-            string_object::equal},
-        {_make_object_key(operator_type::op_plus, value_type::object_val, object_type::obj_string),
-         string_object::plus}};
-    ops.binary_infix.register_operations(op_fcn);
-
-    ops.print_function = string_object::print;
+      ops.print_function = string_object::print;
+      return true;
+    }();
   }
 
   std::expected<value_t, value_error> string_object::equal(object* p_this, value_t p_sure_is_string)
@@ -137,17 +138,19 @@ namespace ok
 
   function_object::function_object() : up(object_type::obj_function)
   {
-    if(up.is_registered())
-      return;
-    auto _vm = get_g_vm();
-    auto& ops = _vm->register_object_operations(up.type);
-    std::array<std::pair<uint32_t, vm::operation_function_infix_binary>, 2> op_fcn = {
-        std::pair<uint32_t, vm::operation_function_infix_binary>{
-            _make_object_key(operator_type::op_equal, value_type::object_val, object_type::obj_function),
-            function_object::equal}};
-    ops.binary_infix.register_operations(op_fcn);
-    ops.call_function = function_object::call;
-    ops.print_function = function_object::print;
+    [[maybe_unused]] static const bool _ = [this] -> bool
+    {
+      auto _vm = get_g_vm();
+      auto& ops = _vm->register_object_operations(up.type);
+      std::array<std::pair<uint32_t, vm::operation_function_infix_binary>, 2> op_fcn = {
+          std::pair<uint32_t, vm::operation_function_infix_binary>{
+              _make_object_key(operator_type::op_equal, value_type::object_val, object_type::obj_function),
+              function_object::equal}};
+      ops.binary_infix.register_operations(op_fcn);
+      ops.call_function = function_object::call;
+      ops.print_function = function_object::print;
+      return true;
+    }();
   }
 
   function_object::~function_object()
@@ -156,11 +159,13 @@ namespace ok
 
   std::expected<value_t, value_error> function_object::equal(object* p_this, value_t p_sure_is_function)
   {
-    auto other = (function_object*)p_sure_is_function.as.obj;
-    auto this_function = (function_object*)p_this;
-    return value_t{this_function->arity == other->arity &&
-                   this_function->name ==
-                       other->name /*&& this_function->associated_chunk == other->associated_chunk*/};
+    return equal_impl((function_object*)p_this, (function_object*)p_sure_is_function.as.obj);
+  }
+
+  std::expected<value_t, value_error> function_object::equal_impl(function_object* p_this, function_object* p_other)
+  {
+    return value_t{p_this->arity == p_other->arity &&
+                   p_this->name == p_other->name /*&& this_function->associated_chunk == other->associated_chunk*/};
   }
 
   void function_object::print(object* p_this)
@@ -171,17 +176,17 @@ namespace ok
 
   std::expected<std::optional<call_frame>, value_error> function_object::call(object* p_this, uint8_t p_argc)
   {
-    auto this_function = (function_object*)p_this;
-    if(p_argc != this_function->arity)
-    {
-      return std::unexpected(value_error::arguments_mismatch);
-    }
-    auto vm = get_g_vm();
-    auto frame = call_frame{this_function,
-                            this_function->associated_chunk.code.data(),
-                            vm->frame_stack_top() - p_argc - 1,
-                            vm->frame_stack_top() - p_argc - 1};
-    return frame;
+    // auto this_function = (function_object*)p_this;
+    // if(p_argc != this_function->arity)
+    // {
+    //   return std::unexpected(value_error::arguments_mismatch);
+    // }
+    // auto vm = get_g_vm();
+    // auto frame = call_frame{this_function,
+    //                         this_function->associated_chunk.code.data(),
+    //                         vm->frame_stack_top() - p_argc - 1,
+    //                         vm->frame_stack_top() - p_argc - 1};
+    // return frame;
   }
 
   template <typename T>
@@ -240,17 +245,19 @@ namespace ok
 
   native_function_object::native_function_object() : up(object_type::obj_native_function)
   {
-    if(up.is_registered())
-      return;
-    auto _vm = get_g_vm();
-    auto& ops = _vm->register_object_operations(up.type);
-    std::array<std::pair<uint32_t, vm::operation_function_infix_binary>, 2> op_fcn = {
-        std::pair<uint32_t, vm::operation_function_infix_binary>{
-            _make_object_key(operator_type::op_equal, value_type::object_val, object_type::obj_native_function),
-            native_function_object::equal}};
-    ops.binary_infix.register_operations(op_fcn);
-    ops.call_function = native_function_object::call;
-    ops.print_function = native_function_object::print;
+    [[maybe_unused]] static const bool _ = [this] -> bool
+    {
+      auto _vm = get_g_vm();
+      auto& ops = _vm->register_object_operations(up.type);
+      std::array<std::pair<uint32_t, vm::operation_function_infix_binary>, 2> op_fcn = {
+          std::pair<uint32_t, vm::operation_function_infix_binary>{
+              _make_object_key(operator_type::op_equal, value_type::object_val, object_type::obj_native_function),
+              native_function_object::equal}};
+      ops.binary_infix.register_operations(op_fcn);
+      ops.call_function = native_function_object::call;
+      ops.print_function = native_function_object::print;
+      return true;
+    }();
   }
 
   template <typename T>
@@ -273,4 +280,114 @@ namespace ok
     return fo;
   }
 
+  closure_object::closure_object(function_object* p_function) : closure_object()
+  {
+    function = p_function;
+    for(uint32_t i = 0; i < p_function->upvalues; ++i)
+      upvalues.emplace_back(nullptr);
+  }
+
+  closure_object::closure_object() : up(object_type::obj_closure)
+  {
+    [[maybe_unused]] static const bool _ = [this] -> bool
+    {
+      auto _vm = get_g_vm();
+      auto& ops = _vm->register_object_operations(up.type);
+      std::array<std::pair<uint32_t, vm::operation_function_infix_binary>, 2> op_fcn = {
+          std::pair<uint32_t, vm::operation_function_infix_binary>{
+              _make_object_key(operator_type::op_equal, value_type::object_val, object_type::obj_native_function),
+              closure_object::equal}};
+      ops.binary_infix.register_operations(op_fcn);
+      ops.call_function = closure_object::call;
+      ops.print_function = closure_object::print;
+      return true;
+    }();
+  }
+
+  closure_object::~closure_object()
+  {
+  }
+
+  std::expected<value_t, value_error> closure_object::equal(object* p_this, value_t p_sure_is_closure)
+  {
+    auto other = (closure_object*)p_sure_is_closure.as.obj;
+    auto this_closure = (closure_object*)p_this;
+    return function_object::equal_impl(this_closure->function, other->function);
+  }
+
+  void closure_object::print(object* p_this)
+  {
+    std::print("<closure {:p}>", (void*)p_this);
+  }
+
+  std::expected<std::optional<call_frame>, value_error> closure_object::call(object* p_this, uint8_t p_argc)
+  {
+    auto this_closure = (closure_object*)p_this;
+    if(p_argc != this_closure->function->arity)
+    {
+      return std::unexpected(value_error::arguments_mismatch);
+    }
+    auto vm = get_g_vm();
+    auto frame = call_frame{this_closure,
+                            this_closure->function->associated_chunk.code.data(),
+                            vm->frame_stack_top() - p_argc - 1,
+                            vm->frame_stack_top() - p_argc - 1};
+    return frame;
+  }
+
+  template <typename T>
+  T* closure_object::create(function_object* p_function)
+  {
+    static_assert(false, "type mismatch");
+  }
+
+  template <>
+  object* closure_object::create<object>(function_object* p_function)
+  {
+    auto fo = new closure_object(p_function);
+    return (object*)fo;
+  }
+
+  template <>
+  closure_object* closure_object::create<closure_object>(function_object* p_function)
+  {
+    auto fo = new closure_object(p_function);
+    return fo;
+  }
+
+  upvalue_object::upvalue_object(value_t* slot) : upvalue_object()
+  {
+    location = slot;
+  }
+
+  upvalue_object::~upvalue_object()
+  {
+  }
+
+  template <typename T>
+  T* upvalue_object::create(value_t* p_slot)
+  {
+    static_assert(false, "type mismatch");
+  }
+
+  template <>
+  object* upvalue_object::create(value_t* p_slot)
+  {
+    return (object*)new upvalue_object(p_slot);
+  }
+
+  template <>
+  upvalue_object* upvalue_object::create(value_t* p_slot)
+  {
+    return new upvalue_object(p_slot);
+  }
+
+  upvalue_object::upvalue_object() : up(object_type::obj_upvalue)
+  {
+  }
+
+  void upvalue_object::print(object* p_this)
+  {
+    std::print("upvalue: {:p}", (void*)p_this);
+  }
 } // namespace ok

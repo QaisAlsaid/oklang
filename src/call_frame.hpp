@@ -6,11 +6,11 @@
 
 namespace ok
 {
-  class function_object;
+  class closure_object;
 
   struct call_frame
   {
-    function_object* function;
+    closure_object* closure;
     byte* ip;
     size_t slots = 0;
     size_t top = 0;

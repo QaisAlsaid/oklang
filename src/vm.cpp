@@ -71,13 +71,20 @@ namespace ok
     define_native_function("srand", srand_native);
     define_native_function("rand", rand_native);
     m_stack.push(value_t{compile_result});
-    call_frame frame;
-    frame.function = compile_result;
-    frame.ip = compile_result->associated_chunk.code.data();
-    frame.slots = 0;
-    auto cfr = push_call_frame(frame);
-    if(!cfr.has_value())
-      return cfr.error();
+    // call_frame frame;
+    // frame.closure = compile_result;
+    // frame.ip = compile_result->associated_chunk.code.data();
+    // frame.slots = 0;
+    // auto cfr = push_call_frame(frame);
+    // if(!cfr.has_value())
+    //   return cfr.error();
+    auto closure = closure_object::create<closure_object>(compile_result);
+    m_stack.pop();
+    m_stack.push(value_t{closure});
+    // auto call_result = call_value(0, m_stack.top());
+    auto call_result = push_call_frame(call_frame{closure, closure->function->associated_chunk.code.data(), 0, 0});
+    if(!call_result.has_value())
+      return call_result.error();
     auto res = run();
     return res;
   }
@@ -86,7 +93,8 @@ namespace ok
   {
     auto* frame = &m_call_frames.back();
     // auto end = m_chunk->code.data() + m_chunk->code.size();
-    void* endptr = frame->function->associated_chunk.code.data() + frame->function->associated_chunk.code.size();
+    void* endptr =
+        frame->closure->function->associated_chunk.code.data() + frame->closure->function->associated_chunk.code.size();
     auto end = (byte*)endptr;
     auto& ip = frame->ip;
     while(true)
@@ -102,8 +110,8 @@ namespace ok
       TRACELN("");
       // FIXME(Qais): offset isnt being calculated properly, Update: i think its fixed, keeping this if it broke
       debug::disassembler::disassemble_instruction(
-          frame->function->associated_chunk,
-          static_cast<size_t>(frame->ip - frame->function->associated_chunk.code.data()));
+          frame->closure->function->associated_chunk,
+          static_cast<size_t>(frame->ip - frame->closure->function->associated_chunk.code.data()));
 #endif
       // TODO(Qais): computed goto
       switch(uint8_t instruction = read_byte())
@@ -111,6 +119,7 @@ namespace ok
       case to_utype(opcode::op_return):
       {
         auto res = m_stack.pop();
+        close_upvalue(m_stack.value_ptr(m_call_frames.back().slots));
         m_stack.resize(m_call_frames.back().slots);
         pop_call_frame();
         if(m_call_frames.size() == 0)
@@ -340,6 +349,54 @@ namespace ok
         if(!res.has_value())
           return res.error();
         frame = &m_call_frames.back();
+        break;
+      }
+      case to_utype(opcode::op_closure):
+      {
+        auto const_inst = *frame->ip++;
+        auto function = read_constant((opcode)const_inst);
+        auto closure = closure_object::create<closure_object>((function_object*)function.as.obj);
+        m_stack.push(value_t{closure});
+        for(uint32_t i = 0; i < closure->function->upvalues; ++i)
+        {
+          uint8_t is_local = read_byte();
+          uint32_t index = decode_int<uint32_t, 3>(read_bytes<3>(), 0);
+          if(is_local)
+            closure->upvalues[i] = capture_value(frame->slots + index);
+          else
+            closure->upvalues[i] = frame->closure->upvalues[index];
+        }
+        break;
+      }
+      case to_utype(opcode::op_get_upvalue):
+      {
+        auto slot = read_byte();
+        m_stack.push(*frame->closure->upvalues[slot]->location);
+        break;
+      }
+      case to_utype(opcode::op_get_upvalue_long):
+      {
+        auto slot = decode_int<uint32_t, 3>(read_bytes<3>(), 0);
+        m_stack.push(*frame->closure->upvalues[slot]->location);
+        break;
+      }
+      case to_utype(opcode::op_set_up_value):
+      {
+        auto slot = read_byte();
+        *frame->closure->upvalues[slot]->location = m_stack.top();
+        break;
+      }
+      case to_utype(opcode::op_set_upvalue_long):
+      {
+        auto slot = decode_int<uint32_t, 3>(read_bytes<3>(), 0);
+        *frame->closure->upvalues[slot]->location = m_stack.top();
+        break;
+      }
+      case to_utype(opcode::op_close_upvalue):
+      {
+        close_upvalue(m_stack.value_ptr_top());
+        // dont pop because it will be handled later by op_pop_n
+        break;
       }
       }
     }
@@ -363,8 +420,8 @@ namespace ok
   byte vm::read_byte()
   {
     auto* frame = &m_call_frames.back();
-    const auto base = frame->function->associated_chunk.code.data();
-    const auto end = base + frame->function->associated_chunk.code.size();
+    const auto base = frame->closure->function->associated_chunk.code.data();
+    const auto end = base + frame->closure->function->associated_chunk.code.size();
 
     ASSERT(frame->ip < end); // address pointer out of pounds
     return *frame->ip++;
@@ -378,16 +435,16 @@ namespace ok
     if(p_op == opcode::op_constant)
     {
       const uint32_t index = read_byte();
-      ASSERT(index < frame->function->associated_chunk.constants.size()); // constant index out of range
+      ASSERT(index < frame->closure->function->associated_chunk.constants.size()); // constant index out of range
 
-      return frame->function->associated_chunk.constants[index]; // here we get it then m_ip is next
+      return frame->closure->function->associated_chunk.constants[index]; // here we get it then m_ip is next
     }
 
     // here we get 1st then m_ip is next so on.... till we get 3rd and m_ip is 4th
     const uint32_t index = decode_int<uint32_t, 3>(read_bytes<3>(), 0);
-    ASSERT(index < frame->function->associated_chunk.constants.size()); // constant index out of range
+    ASSERT(index < frame->closure->function->associated_chunk.constants.size()); // constant index out of range
 
-    return frame->function->associated_chunk.constants[index];
+    return frame->closure->function->associated_chunk.constants[index];
   }
 
   // i know its just a copy from the previous function, but this method is temporary so its ok-ish
@@ -399,16 +456,16 @@ namespace ok
     if(!p_is_long)
     {
       const uint32_t index = read_byte();
-      ASSERT(index < frame->function->associated_chunk.identifiers.size()); // constant index out of range
+      ASSERT(index < frame->closure->function->associated_chunk.identifiers.size()); // constant index out of range
 
-      return frame->function->associated_chunk.identifiers[index]; // here we get it then m_ip is next
+      return frame->closure->function->associated_chunk.identifiers[index]; // here we get it then m_ip is next
     }
 
     // here we get 1st then m_ip is next so on.... till we get 3rd and m_ip is 4th
     const uint32_t index = decode_int<uint32_t, 3>(read_bytes<3>(), 0);
-    ASSERT(index < frame->function->associated_chunk.identifiers.size()); // constant index out of range
+    ASSERT(index < frame->closure->function->associated_chunk.identifiers.size()); // constant index out of range
 
-    return frame->function->associated_chunk.identifiers[index];
+    return frame->closure->function->associated_chunk.identifiers[index];
   }
 
   auto vm::perform_unary_prefix(const operator_type p_operator) -> std::expected<void, interpret_result>
@@ -478,6 +535,38 @@ namespace ok
       }
     }
     return {};
+  }
+
+  upvalue_object* vm::capture_value(size_t p_slot)
+  {
+    auto slot_ptr = m_stack.value_ptr(p_slot);
+    upvalue_object* pre = nullptr;
+    upvalue_object* upval = m_open_upvalues;
+    while(upval != nullptr && upval->location > slot_ptr)
+    {
+      pre = upval;
+      upval = upval->next;
+    }
+    if(upval != nullptr && upval->location == slot_ptr)
+      return upval;
+    auto* new_upval = upvalue_object::create<upvalue_object>(slot_ptr);
+    new_upval->next = upval;
+    if(pre == nullptr)
+      m_open_upvalues = new_upval;
+    else
+      pre->next = new_upval;
+    return new_upval;
+  }
+
+  void vm::close_upvalue(value_t* p_value)
+  {
+    while(m_open_upvalues != nullptr && m_open_upvalues->location >= p_value)
+    {
+      auto* upval = m_open_upvalues;
+      upval->closed = *upval->location;
+      upval->location = &upval->closed;
+      m_open_upvalues = upval->next;
+    }
   }
 
   std::expected<value_t, value_error>
@@ -620,9 +709,10 @@ namespace ok
     ERRORLN("runtime error: {}", err);
     for(const auto& frame : m_call_frames)
     {
-      size_t instruction = frame.ip - frame.function->associated_chunk.code.data() - 1;
-      ERRORLN(
-          "offset: {}, in: {}", frame.function->associated_chunk.get_offset(instruction), frame.function->name->chars);
+      size_t instruction = frame.ip - frame.closure->function->associated_chunk.code.data() - 1;
+      ERRORLN("offset: {}, in: {}",
+              frame.closure->function->associated_chunk.get_offset(instruction),
+              frame.closure->function->name->chars);
     }
   }
 
@@ -656,8 +746,14 @@ namespace ok
       case object_type::obj_native_function:
         delete(native_function_object*)m_objects_list;
         break;
+      case object_type::obj_closure:
+        delete(closure_object*)m_objects_list;
+        break;
+      case object_type::obj_upvalue:
+        delete(upvalue_object*)m_objects_list;
+        break;
       default:
-        runtime_error("trying to free an object of an unallocateing type");
+        ASSERT(false);
         break; // TODO(Qais): error
       }
       m_objects_list = next;

@@ -30,6 +30,7 @@ namespace ok::debug
       std::println("{}: {}", p_name, operand);
       return p_offset + INSTRUCTION_WIDTH;
     }
+    static int closure_instruction(const std::string_view p_name, const chunk& p_chunk, int p_offset);
   };
 } // namespace ok::debug
 

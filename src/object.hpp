@@ -33,6 +33,8 @@ namespace ok
       obj_string,
       obj_function,
       obj_native_function,
+      obj_closure,
+      obj_upvalue
     };
   }
 
@@ -104,13 +106,16 @@ namespace ok
     object up;
     chunk associated_chunk;
     string_object* name = nullptr;
+    uint32_t upvalues = 0;
     uint8_t arity = 0;
 
   private:
     function_object();
     static std::expected<value_t, value_error> equal(object* p_this, value_t p_sure_is_function);
+    static std::expected<value_t, value_error> equal_impl(function_object* p_this, function_object* p_other);
     static void print(object* p_this);
     static std::expected<std::optional<call_frame>, value_error> call(object* p_this, uint8_t p_argc);
+    friend struct closure_object;
   };
 
   typedef value_t (*native_function)(uint8_t argc, value_t* argv);
@@ -133,12 +138,48 @@ namespace ok
     static std::expected<std::optional<call_frame>, value_error> call(object* p_this, uint8_t p_argc);
   };
 
+  struct upvalue_object
+  {
+    upvalue_object(value_t* slot);
+    ~upvalue_object();
+
+    template <typename Obj = object>
+    static Obj* create(value_t* slot);
+
+    object up;
+    value_t* location = nullptr;
+    upvalue_object* next = nullptr;
+    value_t closed{};
+
+  private:
+    upvalue_object();
+    static void print(object* p_this);
+  };
+
+  struct closure_object
+  {
+    closure_object(function_object* p_function);
+    ~closure_object();
+
+    template <typename Obj = object>
+    static Obj* create(function_object* p_function);
+
+    object up;
+    function_object* function;
+    std::vector<upvalue_object*> upvalues;
+
+  private:
+    closure_object();
+    static std::expected<value_t, value_error> equal(object* p_this, value_t p_sure_is_closure);
+    static void print(object* p_this);
+    static std::expected<std::optional<call_frame>, value_error> call(object* p_this, uint8_t p_argc);
+  };
+
   // leaves a 24bit integer room for objects which is more than we ever will need
   constexpr uint32_t _make_object_key(const operator_type p_operator,
                                       const value_type p_rhs,
                                       const uint32_t p_other_object_type = object_type::none)
   {
-    // TODO(Qais): validate the sanity of this thing, also object_type shouldnt be an enum because its runtime dependant
     if(p_other_object_type == object_type::none)
     {
       return static_cast<uint32_t>(to_utype(p_operator)) << 24 | static_cast<uint32_t>(to_utype(p_rhs)) | 16;

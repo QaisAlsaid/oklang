@@ -300,6 +300,8 @@ namespace ok
     perform_binary_infix_real_object(object* p_this, operator_type p_operator, value_t p_other);
     void print_object(object* p_object);
     bool is_value_falsy(value_t p_value) const;
+    upvalue_object* capture_value(size_t p_slot);
+    void close_upvalue(value_t* p_value);
 
     inline void pop_call_frame()
     {
@@ -316,6 +318,7 @@ namespace ok
     // std::vector<value_t> m_stack; // is a vector with stack protocol better than std::stack? Update: yes i think so
     interned_string m_interned_strings;
     object* m_objects_list; // intrusive linked list
+    upvalue_object* m_open_upvalues = nullptr;
     // TODO(Qais): integer based globals, with the compiler defining those ints, is much faster than hash map lookup.
     // maybe do it when adding optimization pass
     std::unordered_map<string_object*, value_t> m_globals;

@@ -1,5 +1,6 @@
 #include "debug.hpp"
 #include "chunk.hpp"
+#include "object.hpp"
 #include "utility.hpp"
 #include "vm.hpp"
 #include "vm_stack.hpp"
@@ -108,9 +109,21 @@ namespace ok::debug
       return multi_operand_instruction<3>("op_loop", p_chunk, p_offset);
     case to_utype(opcode::op_call):
       return single_operand_instruction("op_call", p_chunk, p_offset);
+    case to_utype(opcode::op_closure):
+      return closure_instruction("op_closure", p_chunk, p_offset);
+    case to_utype(opcode::op_get_upvalue):
+      return single_operand_instruction("op_get_upvalue", p_chunk, p_offset);
+    case to_utype(opcode::op_get_upvalue_long):
+      return multi_operand_instruction<3>("op_get_upvalue_long", p_chunk, p_offset);
+    case to_utype(opcode::op_set_up_value):
+      return single_operand_instruction("op_set_upvalue", p_chunk, p_offset);
+    case to_utype(opcode::op_set_upvalue_long):
+      return multi_operand_instruction<3>("op_set_upvalue_long", p_chunk, p_offset);
+    case to_utype(opcode::op_close_upvalue):
+      return simple_instruction("op_close_upvalue", p_offset);
     default:
     {
-      std::println("unknown opcode: {}", instruction);
+      std::println("unknown opcode: '{}'", instruction);
       return p_offset + 1;
     }
     }
@@ -170,5 +183,28 @@ namespace ok::debug
     get_g_vm()->print_value(p_chunk.identifiers[constant]);
     std::println("'");
     return p_offset + INSTRUCTION_SIZE;
+  }
+
+  int disassembler::closure_instruction(std::string_view p_name, const chunk& p_chunk, int p_offset)
+  {
+    auto const_inst = p_chunk.code[++p_offset];
+    uint32_t constant;
+    if(const_inst == to_utype(opcode::op_constant))
+      constant = p_chunk.code[++p_offset];
+    else
+      constant = decode_int<uint32_t, 3>(p_chunk.code, ++p_offset);
+    std::print("{} {:4d} ", p_name, constant);
+    get_g_vm()->print_value(p_chunk.constants[constant]);
+    std::println();
+
+    auto fun = (function_object*)p_chunk.constants[constant].as.obj;
+    for(uint32_t i = 0; i < fun->upvalues; ++i)
+    {
+      auto is_local = p_chunk.code[++p_offset];
+      auto index = decode_int<uint32_t, 3>(p_chunk.code, ++p_offset);
+      std::println("    {:4d} {} {}", p_offset - 2, is_local ? "local" : "upvalue", index);
+      p_offset += 3;
+    }
+    return ++p_offset;
   }
 } // namespace ok::debug

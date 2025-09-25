@@ -38,4 +38,9 @@ namespace ok
   value_t::value_t(object* p_object) : type(value_type::object_val), as({.obj = p_object})
   {
   }
+
+  value_t::value_t(closure_object* p_closure) : type(value_type::object_val), as({.obj = (object*)p_closure})
+  {
+  }
+
 } // namespace ok

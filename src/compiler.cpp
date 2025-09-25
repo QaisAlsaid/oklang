@@ -12,6 +12,7 @@
 #include "utility.hpp"
 #include "value.hpp"
 #include "vm_stack.hpp"
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -55,7 +56,8 @@ namespace ok
       return nullptr;
     TRACELN("{}", root->to_string());
     // top level script function
-    push_function({function_object::create<function_object>(0, p_function_name), compile_function::type::script});
+    push_function_context(
+        {function_object::create<function_object>(0, p_function_name), compile_function::type::script});
     compile(root.get());
     current_chunk()->write(opcode::op_null, 0);
     current_chunk()->write(opcode::op_return, 0);
@@ -238,22 +240,23 @@ namespace ok
     }
     compile((ast::node*)p_let_decl->get_value().get());
     auto offset = p_let_decl->get_offset();
-    auto opt = declare_variable(str_ident, offset);
-    if(opt.has_value())
-    {
-      auto res = opt.value();
-      if(res.first)
-      {
-        current_chunk()->write(opcode::op_define_global_long, offset);
-        const auto span = encode_int<size_t, 3>(res.second);
-        current_chunk()->write(span, offset);
-      }
-      else
-      {
-        current_chunk()->write(opcode::op_define_global, offset);
-        current_chunk()->write(res.second, offset);
-      }
-    }
+    declare_variable(str_ident, offset);
+    // auto opt = declare_variable(str_ident, offset);
+    // if(opt.has_value())
+    // {
+    //   auto res = opt.value();
+    //   if(res.first)
+    //   {
+    //     current_chunk()->write(opcode::op_define_global_long, offset);
+    //     const auto span = encode_int<size_t, 3>(res.second);
+    //     current_chunk()->write(span, offset);
+    //   }
+    //   else
+    //   {
+    //     current_chunk()->write(opcode::op_define_global, offset);
+    //     current_chunk()->write(res.second, offset);
+    //   }
+    // }
   }
 
   void compiler::compile(ast::function_declaration* p_function_declaration)
@@ -265,53 +268,68 @@ namespace ok
     }
     const auto& str_name = ident->get_value();
     auto offset = ident->get_offset();
-    auto opt = declare_variable(str_name, ident->get_offset());
+
+    auto opt = declare_variable_late(str_name, ident->get_offset());
+    // auto opt = declare_variable(str_name, ident->get_offset());
+
     auto& params = p_function_declaration->get_parameters();
     // TODO(Qais): move this into own function
-    push_function(
+    push_function_context(
         {function_object::create<function_object>(params.size(), string_object::create<string_object>(str_name)),
          compile_function::type::function});
     scope_guard<compiler> guard{&compiler::being_scope, &compiler::end_scope, this};
 
     for(const auto& param : params)
     {
-      auto opt = declare_variable(param->get_value(), param->get_offset());
-      if(opt.has_value())
-      {
-        auto res = opt.value();
-        if(res.first)
-        {
-          current_chunk()->write(opcode::op_define_global_long, offset);
-          const auto span = encode_int<size_t, 3>(res.second);
-          current_chunk()->write(span, offset);
-        }
-        else
-        {
-          current_chunk()->write(opcode::op_define_global, offset);
-          current_chunk()->write(res.second, offset);
-        }
-      }
+      declare_variable(param->get_value(), param->get_offset());
+      // auto opt = declare_variable(param->get_value(), param->get_offset());
+
+      // if(opt.has_value())
+      // {
+      //   auto res = opt.value();
+      //   if(res.first)
+      //   {
+      //     current_chunk()->write(opcode::op_define_global_long, offset);
+      //     const auto span = encode_int<size_t, 3>(res.second);
+      //     current_chunk()->write(span, offset);
+      //   }
+      //   else
+      //   {
+      //     current_chunk()->write(opcode::op_define_global, offset);
+      //     current_chunk()->write(res.second, offset);
+      //   }
+      // }
     }
     compile(p_function_declaration->get_body().get());
     current_chunk()->write(opcode::op_null, p_function_declaration->get_body()->get_offset());
     current_chunk()->write(opcode::op_return, p_function_declaration->get_body()->get_offset());
     auto fun = current_function();
     fun.function->arity = params.size();
-    pop_function();
+    auto ups = m_function_contexts.back().upvalues;
+    pop_function_context();
+    current_chunk()->write(opcode::op_closure, ident->get_offset());
     current_chunk()->write_constant(value_t{fun.function}, ident->get_offset());
+    auto& ctx = m_function_contexts.back();
+    for(uint32_t i = 0; i < fun.function->upvalues; ++i)
+    {
+      current_chunk()->write(ups[i].is_local() ? 1 : 0, p_function_declaration->get_body()->get_offset());
+      const auto idx = encode_int<uint32_t, 3>(ups[i].get_index());
+      current_chunk()->write(idx, p_function_declaration->get_body()->get_offset());
+    }
+
     if(opt.has_value())
     {
       auto res = opt.value();
-      if(res.first)
+      if(res > UINT8_MAX)
       {
         current_chunk()->write(opcode::op_define_global_long, offset);
-        const auto span = encode_int<size_t, 3>(res.second);
+        const auto span = encode_int<size_t, 3>(res);
         current_chunk()->write(span, offset);
       }
       else
       {
         current_chunk()->write(opcode::op_define_global, offset);
-        current_chunk()->write(res.second, offset);
+        current_chunk()->write(res, offset);
       }
     }
   }
@@ -483,15 +501,16 @@ namespace ok
   {
     const auto& str_val = p_ident_expr->get_value();
     auto offset = p_ident_expr->get_offset();
-    auto opt = resolve_variable(str_val, offset);
-    const auto op = variable_operation::vo_get;
-    const auto tp = opt.first.has_value() ? variable_type::vt_global : variable_type::vt_local;
-    const auto w = tp == variable_type::vt_global
-                       ? opt.first.value().first ? variable_width::vw_long : variable_width::vw_short
-                   : opt.second.value() > UINT8_MAX ? variable_width::vw_long
-                                                    : variable_width::vw_short;
-    const auto value = tp == variable_type::vt_global ? opt.first.value().second : opt.second.value();
-    write_variable(op, tp, w, value, p_ident_expr->get_offset());
+    // auto opt = resolve_variable(str_val, offset);
+    named_variable(str_val, offset, variable_operation::vo_get);
+    // const auto op = variable_operation::vo_get;
+    // const auto tp = opt.first.has_value() ? variable_type::vt_global : variable_type::vt_local;
+    // const auto w = tp == variable_type::vt_global
+    //                    ? opt.first.value().first ? variable_width::vw_long : variable_width::vw_short
+    //                : opt.second.value() > UINT8_MAX ? variable_width::vw_long
+    //                                                 : variable_width::vw_short;
+    // const auto value = tp == variable_type::vt_global ? opt.first.value().second : opt.second.value();
+    // write_variable(op, tp, w, value, p_ident_expr->get_offset());
   }
 
   void compiler::compile(ast::assign_expression* p_assignment_expr)
@@ -499,16 +518,81 @@ namespace ok
     compile(p_assignment_expr->get_right().get());
     const auto& str_val = p_assignment_expr->get_identifier();
     auto offset = p_assignment_expr->get_offset();
-    auto opt = resolve_variable(str_val, offset);
+    named_variable(str_val, offset, variable_operation::vo_set);
+    // auto opt = resolve_variable(str_val, offset);
 
-    const auto op = variable_operation::vo_set;
-    const auto tp = opt.first.has_value() ? variable_type::vt_global : variable_type::vt_local;
-    const auto w = tp == variable_type::vt_global
-                       ? opt.first.value().first ? variable_width::vw_long : variable_width::vw_short
-                   : opt.second.value() > UINT8_MAX ? variable_width::vw_long
-                                                    : variable_width::vw_short;
-    const auto value = tp == variable_type::vt_global ? opt.first.value().second : opt.second.value();
-    write_variable(op, tp, w, value, p_assignment_expr->get_offset());
+    // const auto op = variable_operation::vo_set;
+    // const auto tp = opt.first.has_value() ? variable_type::vt_global : variable_type::vt_local;
+    // const auto w = tp == variable_type::vt_global
+    //                    ? opt.first.value().first ? variable_width::vw_long : variable_width::vw_short
+    //                : opt.second.value() > UINT8_MAX ? variable_width::vw_long
+    //                                                 : variable_width::vw_short;
+    // const auto value = tp == variable_type::vt_global ? opt.first.value().second : opt.second.value();
+    // write_variable(op, tp, w, value, p_assignment_expr->get_offset());
+  }
+
+  void compiler::named_variable(const std::string& str_ident, size_t offset, variable_operation op)
+  {
+    uint32_t arg;
+    uint32_t value;
+    opcode get_op;
+    opcode set_op;
+    if((arg = resolve_local(str_ident, offset, m_function_contexts.back())) != UINT32_MAX) // local
+    {
+      auto& curr_locals = get_locals();
+      for(long i = curr_locals.size() - 1; i > -1; i--)
+      {
+        auto& loc = curr_locals[i];
+        if(str_ident == loc.name)
+        {
+          if(i > UINT8_MAX)
+          {
+            get_op = opcode::op_get_local_long;
+            set_op = opcode::op_set_local_long;
+          }
+          else
+          {
+            get_op = opcode::op_get_local;
+            set_op = opcode::op_set_local;
+          }
+          break;
+        }
+      }
+      value = arg;
+    }
+    else if((arg = resolve_upvalue(str_ident, offset, 0)) != UINT32_MAX)
+    {
+      if(arg > UINT8_MAX)
+      {
+        get_op = opcode::op_get_upvalue_long;
+        set_op = opcode::op_set_upvalue_long;
+      }
+      else
+      {
+        get_op = opcode::op_get_upvalue;
+        set_op = opcode::op_set_up_value;
+      }
+      value = arg;
+    }
+    else
+    {
+      auto glob = get_or_add_global(value_t{str_ident.c_str(), str_ident.size()}, offset);
+      if(glob <= UINT8_MAX)
+      {
+        get_op = opcode::op_get_global;
+        set_op = opcode::op_set_global;
+      }
+      else if(glob >= UINT8_MAX && glob <= uint24_max)
+      {
+        get_op = opcode::op_get_global_long;
+        set_op = opcode::op_set_global_long;
+      }
+      else
+      { // error
+      }
+      value = glob;
+    }
+    write_variable(op == variable_operation::vo_get ? get_op : set_op, value, offset);
   }
 
   void compiler::compile(ast::number_expression* p_number)
@@ -613,24 +697,30 @@ namespace ok
     return p_list.size();
   }
 
-  void compiler::push_function(compile_function p_function)
+  void compiler::push_function_context(compile_function p_function)
   {
-    push_locals();
-    m_functions.push_back(p_function);
+    function_context ctx;
+    ctx.function = p_function;
+    m_function_contexts.push_back(ctx);
     get_locals().push_back(local{"", 0});
   }
 
-  void compiler::pop_function()
+  void compiler::pop_function_context()
   {
-    ASSERT(!m_functions.empty());
-    m_functions.pop_back();
-    pop_locals();
+    ASSERT(!m_function_contexts.empty());
+    m_function_contexts.pop_back();
   }
 
   auto compiler::current_function() -> compile_function
   {
-    ASSERT(!m_functions.empty());
-    return m_functions.back();
+    ASSERT(!m_function_contexts.empty());
+    return m_function_contexts.back().function;
+  }
+
+  auto compiler::current_context() -> function_context&
+  {
+    ASSERT(!m_function_contexts.empty());
+    return m_function_contexts.back();
   }
 
   void compiler::being_scope()
@@ -658,6 +748,8 @@ namespace ok
     while(!curr_locals.empty() && curr_locals.back().depth > m_scope_depth)
     {
       removed_count++;
+      if(curr_locals.back().is_captured)
+        current_chunk()->write(opcode::op_close_upvalue, 0);
       curr_locals.pop_back();
     }
     emit_pops(removed_count);
@@ -680,13 +772,117 @@ namespace ok
     }
   }
 
-  std::optional<std::pair<bool, uint32_t>> compiler::declare_variable(const std::string& p_str_ident, size_t p_offset)
+  // std::optional<std::pair<bool, uint32_t>> compiler::declare_variable(const std::string& p_str_ident, size_t
+  // p_offset)
+  // {
+  //   // local
+  //   if(m_scope_depth > 0)
+  //   {
+  //     auto& curr_locals = get_locals();
+  //     for(long i = curr_locals.size() - 1; i > -1; --i)
+  //     {
+  //       auto& loc = curr_locals[i];
+  //       if(loc.depth < m_scope_depth)
+  //         break;
+  //       if(p_str_ident == loc.name)
+  //       {
+  //         compile_error(error::code::local_redefinition, "redefinition of '{}' in same scope", p_str_ident);
+  //         return {};
+  //       }
+  //     }
+  //     if(curr_locals.size() >= uint24_max)
+  //       compile_error(
+  //           error::code::local_count_exceeds_limit, "too many local variables, exceeds limit which is: {}",
+  //           uint24_max);
+  //     curr_locals.emplace_back(p_str_ident, m_scope_depth);
+  //     return {};
+  //   }
+  //   // global
+  //   return add_global(value_t{p_str_ident.c_str(), p_str_ident.size()}, p_offset);
+  // }
+
+  // std::pair<std::optional<std::pair<bool, uint32_t>>, std::optional<uint32_t>>
+  // compiler::resolve_variable(const std::string& p_str_ident, size_t p_offset)
+  // {
+  //   auto& curr_locals = get_locals();
+  //   for(long i = curr_locals.size() - 1; i > -1; i--)
+  //   {
+  //     auto& loc = curr_locals[i];
+  //     if(p_str_ident == loc.name)
+  //     {
+  //       return {{}, i};
+  //     }
+  //   }
+
+  //   // if not found local assume global
+  //   return {get_or_add_global(value_t{p_str_ident.c_str(), p_str_ident.size()}, p_offset), {}};
+  // }
+
+  // void compiler::write_variable(
+  //     variable_operation p_op, variable_type p_t, variable_width p_w, uint32_t p_value, size_t p_offset)
+  // {
+  //   auto op_code = get_variable_opcode(p_op, p_t, p_w);
+  //   if(p_w == variable_width::vw_short)
+  //   {
+  //     current_chunk()->write(op_code, p_offset);
+  //     current_chunk()->write(p_value, p_offset);
+  //   }
+  //   else
+  //   {
+  //     current_chunk()->write(op_code, p_offset);
+  //     const auto span = encode_int<size_t, 3>(p_value);
+  //     current_chunk()->write(span, p_offset);
+  //   }
+  // }
+
+  void compiler::declare_variable(const std::string& p_str_ident, size_t p_offset)
   {
     // local
     if(m_scope_depth > 0)
     {
       auto& curr_locals = get_locals();
-      for(long i = curr_locals.size() - 1; i > -1; --i)
+      for(uint32_t i = curr_locals.size() - 1; i >= 0; --i)
+      {
+        auto& loc = curr_locals[i];
+        if(loc.depth < m_scope_depth)
+          break;
+        if(p_str_ident == loc.name)
+        {
+          compile_error(error::code::local_redefinition, "redefinition of '{}' in same scope", p_str_ident);
+          return;
+        }
+      }
+      if(curr_locals.size() > uint24_max)
+        compile_error(
+            error::code::local_count_exceeds_limit, "too many local variables, exceeds limit which is: {}", uint24_max);
+      curr_locals.emplace_back(p_str_ident, m_scope_depth);
+      return;
+    }
+    // global
+    auto glob = add_global(value_t{p_str_ident.c_str(), p_str_ident.size()}, p_offset);
+    if(glob > UINT8_MAX)
+    {
+      current_chunk()->write(opcode::op_define_global_long, p_offset);
+      const auto span = encode_int<size_t, 3>(glob);
+      current_chunk()->write(span, p_offset);
+    }
+    else if(glob < UINT8_MAX + 1)
+    {
+      current_chunk()->write(opcode::op_define_global, p_offset);
+      current_chunk()->write(glob, p_offset);
+    }
+    else
+    { // error
+    }
+  }
+
+  std::optional<uint32_t> compiler::declare_variable_late(const std::string& p_str_ident, size_t p_offset)
+  {
+    // local
+    if(m_scope_depth > 0)
+    {
+      auto& curr_locals = get_locals();
+      for(uint32_t i = curr_locals.size() - 1; i >= 0; --i)
       {
         auto& loc = curr_locals[i];
         if(loc.depth < m_scope_depth)
@@ -697,59 +893,98 @@ namespace ok
           return {};
         }
       }
-      if(curr_locals.size() >= uint24_max)
+      if(curr_locals.size() > uint24_max)
         compile_error(
             error::code::local_count_exceeds_limit, "too many local variables, exceeds limit which is: {}", uint24_max);
       curr_locals.emplace_back(p_str_ident, m_scope_depth);
       return {};
     }
-    // global
-    return add_global(value_t{p_str_ident.c_str(), p_str_ident.size()}, p_offset);
+    return {add_global(value_t{p_str_ident.c_str(), p_str_ident.size()}, p_offset)};
   }
 
-  std::pair<std::optional<std::pair<bool, uint32_t>>, std::optional<uint32_t>>
-  compiler::resolve_variable(const std::string& p_str_ident, size_t p_offset)
+  uint32_t compiler::resolve_local(const std::string& p_str_ident, size_t p_offset, const function_context& p_context)
   {
-    auto& curr_locals = get_locals();
+    auto& curr_locals = p_context.locals;
     for(long i = curr_locals.size() - 1; i > -1; i--)
     {
       auto& loc = curr_locals[i];
       if(p_str_ident == loc.name)
       {
-        return {{}, i};
+        return i;
       }
     }
-
-    // if not found local assume global
-    return {get_or_add_global(value_t{p_str_ident.c_str(), p_str_ident.size()}, p_offset), {}};
+    return UINT32_MAX;
   }
 
-  void compiler::write_variable(
-      variable_operation p_op, variable_type p_t, variable_width p_w, uint32_t p_value, size_t p_offset)
+  uint32_t
+  compiler::resolve_upvalue(const std::string& str_ident, size_t offset, int64_t p_function_context_reverse_index)
   {
-    auto op_code = get_variable_opcode(p_op, p_t, p_w);
-    if(p_w == variable_width::vw_short)
+    if(p_function_context_reverse_index < 0 || m_function_contexts.size() < 2 ||
+       int(m_function_contexts.size() - p_function_context_reverse_index - 2) < 0)
+      return UINT32_MAX;
+
+    auto& ctx = m_function_contexts[m_function_contexts.size() - p_function_context_reverse_index - 1];
+    auto& up_ctx = m_function_contexts[m_function_contexts.size() - p_function_context_reverse_index - 2];
+    auto loc = resolve_local(str_ident, offset, up_ctx);
+    if(loc != UINT32_MAX)
     {
-      current_chunk()->write(op_code, p_offset);
-      current_chunk()->write(p_value, p_offset);
+      up_ctx.locals[loc].is_captured = true;
+      return add_upvalue(loc, true, offset, ctx);
     }
-    else
+    auto up = resolve_upvalue(str_ident, offset, p_function_context_reverse_index + 1);
+    if(up != UINT32_MAX)
+      return add_upvalue(up, false, offset, ctx);
+    return UINT32_MAX;
+  }
+
+  uint32_t compiler::add_upvalue(uint32_t p_local, bool p_is_local, size_t offset, function_context& p_context)
+  {
+    upvalue up;
+    up.set_index(p_local);
+    up.set_local(p_is_local);
+    for(size_t i = 0; i < p_context.upvalues.size(); ++i)
     {
-      current_chunk()->write(op_code, p_offset);
+      if(up.index == p_context.upvalues[i].index)
+        return i;
+    }
+    if(p_context.upvalues.size() > uint24_max)
+    {
+      compile_error(error::code::upvalue_count_exceeds_limit,
+                    "too many upvalues in closure: {}, exceeds limit which is: {}",
+                    p_context.upvalues.size(),
+                    uint24_max);
+      return UINT32_MAX;
+    }
+    p_context.upvalues.push_back(up);
+    auto sz = p_context.upvalues.size();
+    p_context.function.function->upvalues = sz;
+    return sz - 1; // TODO(Qais): validate
+  }
+
+  void compiler::write_variable(opcode p_op, uint32_t p_value, size_t p_offset)
+  {
+    if(p_value > UINT8_MAX)
+    {
+      current_chunk()->write(p_op, p_offset);
       const auto span = encode_int<size_t, 3>(p_value);
       current_chunk()->write(span, p_offset);
     }
+    else
+    {
+      current_chunk()->write(p_op, p_offset);
+      current_chunk()->write(p_value, p_offset);
+    }
   }
 
-  std::pair<bool, uint32_t> compiler::get_or_add_global(value_t p_global, size_t p_offset)
+  uint32_t compiler::get_or_add_global(value_t p_global, size_t p_offset)
   {
     ASSERT(p_global.type == value_type::object_val && p_global.as.obj->type == object_type::obj_string);
     auto* str_glob = (string_object*)p_global.as.obj;
     auto it = m_globals.find(str_glob);
     if(m_globals.end() == it)
     {
-      // so we support late binding of globals, if this were strict get that could fail it will fail on first late bound
-      // global
+      // so we support late binding of globals, if this were strict get that could fail it will fail on first late
+      // bound global
       return add_global(p_global, p_offset);
     }
 
@@ -767,42 +1002,42 @@ namespace ok
     return it->second;
   }
 
-  std::pair<bool, uint32_t> compiler::add_global(value_t p_global, size_t p_offset)
+  uint32_t compiler::add_global(value_t p_global, size_t p_offset)
   {
     ASSERT(p_global.type == value_type::object_val && p_global.as.obj->type == object_type::obj_string);
     auto* str_glob = (string_object*)p_global.as.obj;
     auto glob = current_chunk()->add_global(p_global, p_offset);
     m_globals[str_glob] = glob;
-    if(glob.second >= uint24_max)
+    if(glob >= uint24_max)
       compile_error(
           error::code::global_count_exceeds_limit, "too many global variables, exceeds limit which is: {}", uint24_max);
     return glob;
   }
 
-  opcode compiler::get_variable_opcode(variable_operation p_op, variable_type p_t, variable_width p_w)
-  {
-    auto key = _make_variable_key(p_op, p_t, p_w);
-    switch(key)
-    {
-    case _make_variable_key(variable_operation::vo_get, variable_type::vt_global, variable_width::vw_short):
-      return opcode::op_get_global;
-    case _make_variable_key(variable_operation::vo_get, variable_type::vt_global, variable_width::vw_long):
-      return opcode::op_get_global_long;
-    case _make_variable_key(variable_operation::vo_get, variable_type::vt_local, variable_width::vw_short):
-      return opcode::op_get_local;
-    case _make_variable_key(variable_operation::vo_get, variable_type::vt_local, variable_width::vw_long):
-      return opcode::op_get_local_long;
-    case _make_variable_key(variable_operation::vo_set, variable_type::vt_global, variable_width::vw_short):
-      return opcode::op_set_global;
-    case _make_variable_key(variable_operation::vo_set, variable_type::vt_global, variable_width::vw_long):
-      return opcode::op_set_global_long;
-    case _make_variable_key(variable_operation::vo_set, variable_type::vt_local, variable_width::vw_short):
-      return opcode::op_set_local;
-    case _make_variable_key(variable_operation::vo_set, variable_type::vt_local, variable_width::vw_long):
-      return opcode::op_set_local_long;
-    }
-    return opcode::op_invalid;
-  }
+  // opcode compiler::get_variable_opcode(variable_operation p_op, variable_type p_t, variable_width p_w)
+  // {
+  //   auto key = _make_variable_key(p_op, p_t, p_w);
+  //   switch(key)
+  //   {
+  //   case _make_variable_key(variable_operation::vo_get, variable_type::vt_global, variable_width::vw_short):
+  //     return opcode::op_get_global;
+  //   case _make_variable_key(variable_operation::vo_get, variable_type::vt_global, variable_width::vw_long):
+  //     return opcode::op_get_global_long;
+  //   case _make_variable_key(variable_operation::vo_get, variable_type::vt_local, variable_width::vw_short):
+  //     return opcode::op_get_local;
+  //   case _make_variable_key(variable_operation::vo_get, variable_type::vt_local, variable_width::vw_long):
+  //     return opcode::op_get_local_long;
+  //   case _make_variable_key(variable_operation::vo_set, variable_type::vt_global, variable_width::vw_short):
+  //     return opcode::op_set_global;
+  //   case _make_variable_key(variable_operation::vo_set, variable_type::vt_global, variable_width::vw_long):
+  //     return opcode::op_set_global_long;
+  //   case _make_variable_key(variable_operation::vo_set, variable_type::vt_local, variable_width::vw_short):
+  //     return opcode::op_set_local;
+  //   case _make_variable_key(variable_operation::vo_set, variable_type::vt_local, variable_width::vw_long):
+  //     return opcode::op_set_local_long;
+  //   }
+  //   return opcode::op_invalid;
+  // }
 
   void compiler::emit_loop(size_t p_loop_start, size_t p_offset)
   {
