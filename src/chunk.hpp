@@ -18,6 +18,7 @@ namespace ok
     std::string name;
     int depth;
     bool is_captured = false;
+    bool is_imported_module = false;
   };
   using byte = uint8_t;
   enum class opcode : byte
@@ -34,6 +35,17 @@ namespace ok
     op_loop,
     op_call, // kinda operator!
     op_closure,
+    op_class,
+    op_class_long,
+    op_method,
+    op_method_long,
+    op_invoke,
+    op_invoke_long,
+    op_inherit,
+    op_get_super,
+    op_get_super_long,
+    op_invoke_super,
+    op_invoke_super_long,
     // operators
     op_negate,
     op_add,
@@ -75,13 +87,19 @@ namespace ok
     op_get_upvalue_long,
     op_set_up_value,
     op_set_upvalue_long,
-    op_close_upvalue
+    op_close_upvalue,
+
+    // properties
+    op_get_property,
+    op_get_property_long,
+    op_set_property,
+    op_set_property_long,
   };
-  constexpr auto op_constant_max_count = UINT8_MAX;
-  constexpr auto uint24_max = (1 << 24) - 1;
-  constexpr auto op_constant_long_max_count = uint24_max;
-  constexpr auto op__global_max_count = UINT8_MAX;
-  constexpr auto op__global_long_max_count = uint24_max;
+  constexpr uint32_t op_constant_max_count = UINT8_MAX;
+  constexpr uint32_t uint24_max = (1 << 24) - 1;
+  constexpr uint32_t op_constant_long_max_count = uint24_max;
+  constexpr uint32_t op__global_max_count = UINT8_MAX;
+  constexpr uint32_t op__global_long_max_count = uint24_max;
 
   // TODO(Qais): add sized writes, i.e. the constant write should be dependant on constant_index_type. and so on
   // Update: done needs testing and maybe templating
@@ -138,7 +156,7 @@ namespace ok
 
     // returns pair of <is_long, index>, and it doesnt write anything to the table
     // lmao wont the index tell you that its long or not, why the boolean lol
-    uint32_t add_global(const value_t p_global, const size_t p_offset)
+    uint32_t add_identifier(const value_t p_global, const size_t p_offset)
     {
       ASSERT(p_global.type == value_type::object_val);
       identifiers.push_back(p_global);
@@ -163,12 +181,27 @@ namespace ok
       return UINT32_MAX; // error cant add more
     }
 
-    // only valid when constants.size() < UINT8_MAX, otherwise use write_constant.
-    // just use write_constant this is deprecated!
-    inline uint8_t add_constant(const value_t p_value)
+    inline uint32_t add_constant(const value_t p_value, const size_t p_offset)
     {
       constants.push_back(p_value);
-      return constants.size() - 1;
+      const auto index = constants.size() - 1;
+      if(index < op_constant_max_count + 1)
+      {
+        write(index, p_offset);
+        return index;
+      }
+      else if(index < op_constant_long_max_count + 1)
+      {
+        const auto span = encode_int<size_t, 3>(index);
+#if defined(PARANOID)
+        for(auto s : span)
+          TRACELN("byte: {}", (uint8_t)s);
+#endif
+        write(span, p_offset); // 3 bytes since it is uint24
+        return index;
+      }
+      return UINT32_MAX;
+      // ASSERT(false);
     }
 
     inline void write_offset(const size_t p_offset, const size_t range_count = 1)

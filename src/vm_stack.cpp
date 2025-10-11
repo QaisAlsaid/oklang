@@ -27,4 +27,9 @@ namespace ok
   {
     return get_g_vm()->get_logger();
   }
+
+  gc& get_vm_gc()
+  {
+    return get_g_vm()->get_gc();
+  }
 } // namespace ok

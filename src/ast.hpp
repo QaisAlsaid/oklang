@@ -3,7 +3,6 @@
 
 #include "operator.hpp"
 #include "token.hpp"
-#include "utility.hpp"
 #include <list>
 #include <memory>
 #include <sstream>
@@ -36,6 +35,9 @@ namespace ok::ast
     nt_conditional_expr,
     nt_boolean_expr,
     nt_null_expr,
+    nt_access_expr,
+    nt_this_expr,
+    nt_super_expr,
 
     // statements
     nt_expression_statement_stmt,
@@ -49,6 +51,7 @@ namespace ok::ast
     // declarations
     nt_let_decl,
     nt_function_decl,
+    nt_class_decl,
   };
 
   /**
@@ -59,7 +62,6 @@ namespace ok::ast
   {
   public:
     virtual ~node() = default;
-    virtual std::string token_literal() = 0;
     virtual std::string to_string() = 0;
 
     inline node_type get_type() const
@@ -67,31 +69,46 @@ namespace ok::ast
       return m_type;
     }
 
+    inline std::string token_literal() const
+    {
+      return m_token.raw_literal;
+    }
+
+    inline token get_token() const
+    {
+      return m_token;
+    }
+
     inline size_t get_offset() const
     {
-      return m_offset;
+      return m_token.offset;
+    }
+
+    inline size_t get_line() const
+    {
+      return m_token.line;
     }
 
   protected:
     node() = delete;
-    node(node_type p_nt) : m_type(p_nt)
+    node(node_type p_nt, token p_tok) : m_type(p_nt), m_token(p_tok)
     {
     }
 
+  protected:
+    token m_token; // forgive the usage of m_ here
   private:
     node_type m_type = node_type::nt_node;
-    size_t m_line = 0;
-    size_t m_offset = 0;
   };
 
   class expression : public node
   {
   public:
-    expression() : node(node_type::nt_expression)
+    expression(token p_tok) : node(node_type::nt_expression, p_tok)
     {
     }
 
-    expression(node_type p_nt) : node(p_nt)
+    expression(node_type p_nt, token p_tok) : node(p_nt, p_tok)
     {
     }
   };
@@ -99,11 +116,11 @@ namespace ok::ast
   class statement : public node
   {
   public:
-    statement() : node(node_type::nt_statement)
+    statement(token p_tok) : node(node_type::nt_statement, p_tok)
     {
     }
 
-    statement(node_type p_nt) : node(p_nt)
+    statement(node_type p_nt, token p_tok) : node(p_nt, p_tok)
     {
     }
   };
@@ -111,11 +128,11 @@ namespace ok::ast
   class declaration : public statement
   {
   public:
-    declaration() : statement(node_type::nt_declaration)
+    declaration(token p_tok) : statement(node_type::nt_declaration, p_tok)
     {
     }
 
-    declaration(node_type p_nt) : statement(p_nt)
+    declaration(node_type p_nt, token p_tok) : statement(p_nt, p_tok)
     {
     }
   };
@@ -128,13 +145,9 @@ namespace ok::ast
   {
   public:
     program(std::list<std::unique_ptr<statement>>&& p_statements)
-        : node(node_type::nt_program), m_statements(std::move(p_statements))
+        : node(node_type::nt_program, p_statements.empty() ? token{} : p_statements.front()->get_token()),
+          m_statements(std::move(p_statements))
     {
-    }
-
-    std::string token_literal() override
-    {
-      return m_statements.empty() ? "" : m_statements.front()->token_literal();
     }
 
     std::string to_string() override
@@ -167,7 +180,7 @@ namespace ok::ast
   public:
     identifier_expression() = default;
     identifier_expression(token p_tok, const std::string& p_value)
-        : expression(node_type::nt_identifier_expr), m_token(p_tok), m_value(p_value)
+        : expression(node_type::nt_identifier_expr, p_tok), m_value(p_value)
     {
     }
 
@@ -175,11 +188,6 @@ namespace ok::ast
     const token& get_token() const
     {
       return m_token;
-    }
-
-    std::string token_literal() override
-    {
-      return m_token.raw_literal;
     }
 
     std::string to_string() override
@@ -193,7 +201,6 @@ namespace ok::ast
     }
 
   private:
-    token m_token;
     std::string m_value;
   };
 
@@ -201,13 +208,8 @@ namespace ok::ast
   {
   public:
     number_expression(token p_tok, const double p_value)
-        : expression(node_type::nt_number_expr), m_token(p_tok), m_value(p_value)
+        : expression(node_type::nt_number_expr, p_tok), m_value(p_value)
     {
-    }
-
-    std::string token_literal() override
-    {
-      return m_token.raw_literal;
     }
 
     std::string to_string() override
@@ -221,7 +223,6 @@ namespace ok::ast
     }
 
   private:
-    token m_token;
     double m_value;
   };
 
@@ -229,13 +230,8 @@ namespace ok::ast
   {
   public:
     string_expression(token p_tok, const std::string& p_value)
-        : expression(node_type::nt_string_expr), m_token(p_tok), m_value(p_value)
+        : expression(node_type::nt_string_expr, p_tok), m_value(p_value)
     {
-    }
-
-    std::string token_literal() override
-    {
-      return m_token.raw_literal;
     }
 
     std::string to_string() override
@@ -254,21 +250,14 @@ namespace ok::ast
     }
 
   private:
-    token m_token;
     std::string m_value; // redundant copy!
   };
 
   class boolean_expression : public expression
   {
   public:
-    boolean_expression(token p_tok, bool p_value)
-        : expression(node_type::nt_boolean_expr), m_token(p_tok), m_value(p_value)
+    boolean_expression(token p_tok, bool p_value) : expression(node_type::nt_boolean_expr, p_tok), m_value(p_value)
     {
-    }
-
-    std::string token_literal() override
-    {
-      return m_token.raw_literal;
     }
 
     std::string to_string() override
@@ -282,42 +271,28 @@ namespace ok::ast
     }
 
   private:
-    token m_token;
     bool m_value;
   };
 
   class null_expression : public expression
   {
   public:
-    null_expression(token p_tok) : expression(node_type::nt_null_expr), m_token(p_tok)
+    null_expression(token p_tok) : expression(node_type::nt_null_expr, p_tok)
     {
-    }
-
-    std::string token_literal() override
-    {
-      return m_token.raw_literal;
     }
 
     std::string to_string() override
     {
       return "null";
     }
-
-  private:
-    token m_token;
   };
 
   class prefix_unary_expression : public expression
   {
   public:
     prefix_unary_expression(token p_tok, const operator_type& p_operator, std::unique_ptr<expression> p_right)
-        : expression(node_type::nt_prefix_expr), m_token(p_tok), m_operator(p_operator), m_right(std::move(p_right))
+        : expression(node_type::nt_prefix_expr, p_tok), m_operator(p_operator), m_right(std::move(p_right))
     {
-    }
-
-    std::string token_literal() override
-    {
-      return m_token.raw_literal;
     }
 
     std::string to_string() override
@@ -338,7 +313,6 @@ namespace ok::ast
     }
 
   private:
-    token m_token;
     operator_type m_operator;
     std::unique_ptr<expression> m_right;
   };
@@ -347,13 +321,8 @@ namespace ok::ast
   {
   public:
     infix_unary_expression(token p_tok, const operator_type p_operator, std::unique_ptr<expression> p_left)
-        : expression(node_type::nt_infix_unary_expr), m_token(p_tok), m_operator(p_operator), m_left(std::move(p_left))
+        : expression(node_type::nt_infix_unary_expr, p_tok), m_operator(p_operator), m_left(std::move(p_left))
     {
-    }
-
-    std::string token_literal() override
-    {
-      return m_token.raw_literal;
     }
 
     std::string to_string() override
@@ -369,7 +338,6 @@ namespace ok::ast
     }
 
   private:
-    token m_token;
     operator_type m_operator;
     std::unique_ptr<expression> m_left;
   };
@@ -381,14 +349,9 @@ namespace ok::ast
                             const operator_type p_operator,
                             std::unique_ptr<expression> p_left,
                             std::unique_ptr<expression> p_right)
-        : expression(node_type::nt_infix_binary_expr), m_token(p_tok), m_operator(p_operator),
-          m_left(std::move(p_left)), m_right(std::move(p_right))
+        : expression(node_type::nt_infix_binary_expr, p_tok), m_operator(p_operator), m_left(std::move(p_left)),
+          m_right(std::move(p_right))
     {
-    }
-
-    std::string token_literal() override
-    {
-      return m_token.raw_literal;
     }
 
     std::string to_string() override
@@ -415,7 +378,6 @@ namespace ok::ast
     }
 
   private:
-    token m_token;
     operator_type m_operator;
     std::unique_ptr<expression> m_left;
     std::unique_ptr<expression> m_right;
@@ -426,13 +388,10 @@ namespace ok::ast
   {
   public:
     assign_expression(token p_tok, const std::string& p_ident, std::unique_ptr<expression> p_right)
-        : expression(node_type::nt_assign_expr), m_token(p_tok), m_identifier(p_ident), m_right(std::move(p_right))
+        : expression(node_type::nt_assign_expr, p_tok), m_identifier(p_ident), m_right(std::move(p_right))
     {
     }
-    std::string token_literal() override
-    {
-      return m_token.raw_literal;
-    }
+
     std::string to_string() override
     {
       std::stringstream ss;
@@ -451,7 +410,6 @@ namespace ok::ast
     }
 
   private:
-    token m_token;
     std::string m_identifier;
     std::unique_ptr<expression> m_right;
   };
@@ -460,14 +418,10 @@ namespace ok::ast
   {
   public:
     call_expression(token p_tok, std::unique_ptr<expression> p_fun, std::list<std::unique_ptr<expression>>&& p_args)
-        : expression(node_type::nt_call_expr), m_token(p_tok), m_function(std::move(p_fun)),
-          m_arguments(std::move(p_args))
+        : expression(node_type::nt_call_expr, p_tok), m_function(std::move(p_fun)), m_arguments(std::move(p_args))
     {
     }
-    std::string token_literal() override
-    {
-      return m_token.raw_literal;
-    }
+
     std::string to_string() override
     {
       std::stringstream ss;
@@ -493,7 +447,6 @@ namespace ok::ast
     }
 
   private:
-    token m_token;
     std::unique_ptr<expression> m_function;
     std::list<std::unique_ptr<expression>> m_arguments;
   };
@@ -501,18 +454,15 @@ namespace ok::ast
   class conditional_expression : public expression
   {
   public:
-    conditional_expression(token p_token,
+    conditional_expression(token p_tok,
                            std::unique_ptr<expression> p_expr,
                            std::unique_ptr<expression> p_left,
                            std::unique_ptr<expression> p_right)
-        : expression(node_type::nt_conditional_expr), m_token(p_token), m_expression(std::move(p_expr)),
-          m_left(std::move(p_left)), m_right(std::move(p_right))
+        : expression(node_type::nt_conditional_expr, p_tok), m_expression(std::move(p_expr)), m_left(std::move(p_left)),
+          m_right(std::move(p_right))
     {
     }
-    std::string token_literal() override
-    {
-      return m_token.raw_literal;
-    }
+
     std::string to_string() override
     {
       std::stringstream ss;
@@ -521,7 +471,6 @@ namespace ok::ast
     }
 
   private:
-    token m_token;
     std::unique_ptr<expression> m_expression;
     std::unique_ptr<expression> m_left;
     std::unique_ptr<expression> m_right;
@@ -531,14 +480,8 @@ namespace ok::ast
   {
   public:
     operator_expression(token p_tok, std::unique_ptr<expression> p_left, std::unique_ptr<expression> p_right)
-        : expression(node_type::nt_operator_expr), m_token(p_tok), m_left(std::move(p_left)),
-          m_right(std::move(p_right))
+        : expression(node_type::nt_operator_expr, p_tok), m_left(std::move(p_left)), m_right(std::move(p_right))
     {
-    }
-
-    std::string token_literal() override
-    {
-      return m_token.raw_literal;
     }
 
     std::string to_string() override
@@ -549,9 +492,120 @@ namespace ok::ast
     }
 
   private:
-    token m_token;
     std::unique_ptr<expression> m_left;
     std::unique_ptr<expression> m_right;
+  };
+
+  class access_expression : public expression
+  {
+  public:
+    access_expression(token p_tok,
+                      std::unique_ptr<expression> p_target,
+                      std::unique_ptr<identifier_expression> p_property,
+                      std::unique_ptr<expression> p_value = nullptr,
+                      std::list<std::unique_ptr<expression>>&& p_args = {},
+                      bool p_is_invoke = false)
+        : expression(node_type::nt_access_expr, p_tok), m_target(std::move(p_target)),
+          m_property(std::move(p_property)), m_value(std::move(p_value)), m_arguments(std::move(p_args)),
+          m_is_invoke(p_is_invoke)
+    {
+    }
+
+    std::string to_string() override
+    {
+      std::stringstream ss;
+      ss << m_target->to_string() << "." << m_property->to_string();
+      if(m_value)
+      {
+        ss << " = " << m_value->to_string();
+      }
+      return ss.str();
+    }
+
+    const std::unique_ptr<expression>& get_target() const
+    {
+      return m_target;
+    }
+
+    const std::unique_ptr<identifier_expression>& get_property() const
+    {
+      return m_property;
+    }
+
+    const std::unique_ptr<expression>& get_value() const
+    {
+      return m_value;
+    }
+
+    const bool is_invoke() const
+    {
+      return m_is_invoke;
+    }
+
+    const std::list<std::unique_ptr<expression>>& get_arguments_list() const
+    {
+      return m_arguments;
+    }
+
+  private:
+    std::unique_ptr<expression> m_target;
+    std::unique_ptr<identifier_expression> m_property;
+    std::unique_ptr<expression> m_value;
+    std::list<std::unique_ptr<expression>> m_arguments;
+    bool m_is_invoke = false;
+  };
+
+  class this_expression : public expression
+  {
+  public:
+    this_expression(token p_tok) : expression(node_type::nt_this_expr, p_tok)
+    {
+    }
+
+    std::string to_string() override
+    {
+      return m_token.raw_literal;
+    }
+  };
+
+  class super_expression : public expression
+  {
+  public:
+    super_expression(token p_tok,
+                     std::unique_ptr<identifier_expression> p_method,
+                     std::list<std::unique_ptr<expression>>&& p_args = {},
+                     bool p_is_invoke = false)
+        : expression(node_type::nt_super_expr, p_tok), m_method(std::move(p_method)), m_arguments(std::move(p_args)),
+          m_is_invoke(p_is_invoke)
+    {
+    }
+
+    std::string to_string() override
+    {
+      std::stringstream ss;
+      ss << m_token.raw_literal << "." << m_method->token_literal();
+      return ss.str();
+    }
+
+    const std::unique_ptr<identifier_expression>& get_method() const
+    {
+      return m_method;
+    }
+
+    const std::list<std::unique_ptr<expression>>& get_arguments() const
+    {
+      return m_arguments;
+    }
+
+    bool is_invoke() const
+    {
+      return m_is_invoke;
+    }
+
+  private:
+    std::unique_ptr<identifier_expression> m_method;
+    std::list<std::unique_ptr<expression>> m_arguments;
+    bool m_is_invoke = false;
   };
 
   /**
@@ -562,13 +616,8 @@ namespace ok::ast
   {
   public:
     expression_statement(token p_tok, std::unique_ptr<expression> p_expr)
-        : statement(node_type::nt_expression_statement_stmt), m_token(p_tok), m_expression(std::move(p_expr))
+        : statement(node_type::nt_expression_statement_stmt, p_tok), m_expression(std::move(p_expr))
     {
-    }
-
-    std::string token_literal() override
-    {
-      return m_token.raw_literal;
     }
 
     std::string to_string() override
@@ -582,7 +631,6 @@ namespace ok::ast
     }
 
   private:
-    token m_token;
     std::unique_ptr<expression> m_expression;
   };
 
@@ -590,13 +638,8 @@ namespace ok::ast
   {
   public:
     print_statement(token p_tok, std::unique_ptr<expression> p_expr)
-        : statement(node_type::nt_print_stmt), m_token(p_tok), m_expression(std::move(p_expr))
+        : statement(node_type::nt_print_stmt, p_tok), m_expression(std::move(p_expr))
     {
-    }
-
-    std::string token_literal() override
-    {
-      return m_token.raw_literal;
     }
 
     std::string to_string() override
@@ -611,7 +654,6 @@ namespace ok::ast
     }
 
   private:
-    token m_token;
     std::unique_ptr<expression> m_expression;
   };
 
@@ -619,13 +661,8 @@ namespace ok::ast
   {
   public:
     block_statement(token p_tok, std::list<std::unique_ptr<statement>>&& p_statements)
-        : statement(node_type::nt_block_stmt), m_token(p_tok), m_statements(std::move(p_statements))
+        : statement(node_type::nt_block_stmt, p_tok), m_statements(std::move(p_statements))
     {
-    }
-
-    std::string token_literal() override
-    {
-      return m_token.raw_literal;
     }
 
     std::string to_string() override
@@ -648,7 +685,6 @@ namespace ok::ast
     }
 
   private:
-    token m_token;
     std::list<std::unique_ptr<statement>> m_statements;
   };
 
@@ -659,14 +695,9 @@ namespace ok::ast
                  std::unique_ptr<expression> p_expr,
                  std::unique_ptr<statement> p_consequences,
                  std::unique_ptr<statement> p_alternative)
-        : statement(node_type::nt_if_stmt), m_token(p_tok), m_expression(std::move(p_expr)),
+        : statement(node_type::nt_if_stmt, p_tok), m_expression(std::move(p_expr)),
           m_consequence(std::move(p_consequences)), m_alternative(std::move(p_alternative))
     {
-    }
-
-    std::string token_literal() override
-    {
-      return m_token.raw_literal;
     }
 
     std::string to_string() override
@@ -695,7 +726,6 @@ namespace ok::ast
     }
 
   private:
-    token m_token;
     std::unique_ptr<expression> m_expression;
     std::unique_ptr<statement> m_consequence;
     std::unique_ptr<statement> m_alternative;
@@ -705,14 +735,8 @@ namespace ok::ast
   {
   public:
     while_statement(token p_tok, std::unique_ptr<expression> p_expr, std::unique_ptr<statement> p_body)
-        : statement(node_type::nt_while_stmt), m_token(p_tok), m_expression(std::move(p_expr)),
-          m_body(std::move(p_body))
+        : statement(node_type::nt_while_stmt, p_tok), m_expression(std::move(p_expr)), m_body(std::move(p_body))
     {
-    }
-
-    std::string token_literal() override
-    {
-      return m_token.raw_literal;
     }
 
     std::string to_string() override
@@ -734,7 +758,6 @@ namespace ok::ast
     }
 
   private:
-    token m_token;
     std::unique_ptr<expression> m_expression;
     std::unique_ptr<statement> m_body;
   };
@@ -747,15 +770,9 @@ namespace ok::ast
                   std::unique_ptr<statement> p_initializer = nullptr,
                   std::unique_ptr<expression> p_condition = nullptr,
                   std::unique_ptr<expression> p_increment = nullptr)
-        : statement(node_type::nt_for_stmt), m_token(p_tok), m_body(std::move(p_body)),
-          m_initializer(std::move(p_initializer)), m_condition(std::move(p_condition)),
-          m_increment(std::move(p_increment))
+        : statement(node_type::nt_for_stmt, p_tok), m_body(std::move(p_body)), m_initializer(std::move(p_initializer)),
+          m_condition(std::move(p_condition)), m_increment(std::move(p_increment))
     {
-    }
-
-    std::string token_literal() override
-    {
-      return m_token.raw_literal;
     }
 
     std::string to_string() override
@@ -789,7 +806,6 @@ namespace ok::ast
     }
 
   private:
-    token m_token;
     std::unique_ptr<statement> m_body;
     std::unique_ptr<statement> m_initializer;
     std::unique_ptr<expression> m_condition;
@@ -821,7 +837,7 @@ namespace ok::ast
     }
 
   public:
-    control_flow_statement(token p_tok) : statement(node_type::nt_control_flow_stmt), m_token(p_tok)
+    control_flow_statement(token p_tok) : statement(node_type::nt_control_flow_stmt, p_tok)
     {
       switch(p_tok.type)
       {
@@ -837,11 +853,6 @@ namespace ok::ast
       }
     }
 
-    std::string token_literal() override
-    {
-      return m_token.raw_literal;
-    }
-
     std::string to_string() override
     {
       return m_token.raw_literal;
@@ -853,7 +864,6 @@ namespace ok::ast
     }
 
   private:
-    token m_token;
     cftype m_cf_type;
   };
 
@@ -861,13 +871,8 @@ namespace ok::ast
   {
   public:
     return_statement(token p_tok, std::unique_ptr<expression> p_expr = nullptr)
-        : statement(node_type::nt_return_stmt), m_token(p_tok), m_expression(std::move(p_expr))
+        : statement(node_type::nt_return_stmt, p_tok), m_expression(std::move(p_expr))
     {
-    }
-
-    std::string token_literal() override
-    {
-      return m_token.raw_literal;
     }
 
     std::string to_string() override
@@ -883,7 +888,6 @@ namespace ok::ast
     }
 
   private:
-    token m_token;
     std::unique_ptr<expression> m_expression;
   };
 
@@ -895,20 +899,15 @@ namespace ok::ast
   {
   public:
     let_declaration(token p_tok, std::unique_ptr<identifier_expression> p_ident, std::unique_ptr<expression> p_value)
-        : declaration(node_type::nt_let_decl), m_token(p_tok), m_identifier(std::move(p_ident)),
-          m_value(std::move(p_value))
+        : declaration(node_type::nt_let_decl, p_tok), m_identifier(std::move(p_ident)), m_value(std::move(p_value))
     {
-    }
-
-    std::string token_literal() override
-    {
-      return m_token.raw_literal;
     }
 
     std::string to_string() override
     {
-      // ugly
-      return "let " + m_identifier->to_string() + " " + m_value->to_string();
+      std::stringstream ss;
+      ss << "let " + m_identifier->to_string() << " " << m_value->to_string();
+      return ss.str();
     }
 
     const std::unique_ptr<expression>& get_value() const
@@ -922,7 +921,6 @@ namespace ok::ast
     }
 
   private:
-    token m_token;
     std::unique_ptr<identifier_expression> m_identifier;
     std::unique_ptr<expression> m_value;
   };
@@ -934,14 +932,9 @@ namespace ok::ast
                          std::unique_ptr<statement> p_body,
                          std::unique_ptr<identifier_expression> p_identifier = nullptr,
                          std::list<std::unique_ptr<identifier_expression>>&& p_parameatres = {})
-        : declaration(node_type::nt_function_decl), m_token(p_tok), m_identifier(std::move(p_identifier)),
+        : declaration(node_type::nt_function_decl, p_tok), m_identifier(std::move(p_identifier)),
           m_parameters(std::move(p_parameatres)), m_body(std::move(p_body))
     {
-    }
-
-    std::string token_literal() override
-    {
-      return m_token.raw_literal;
     }
 
     std::string to_string() override
@@ -977,10 +970,57 @@ namespace ok::ast
     }
 
   private:
-    token m_token;
     std::unique_ptr<identifier_expression> m_identifier;
     std::list<std::unique_ptr<identifier_expression>> m_parameters;
     std::unique_ptr<statement> m_body;
+  };
+
+  class class_declaration : public declaration
+  {
+  public:
+    class_declaration(token p_tok,
+                      std::unique_ptr<identifier_expression> p_identifier,
+                      std::list<std::unique_ptr<function_declaration>>&& p_methods,
+                      std::unique_ptr<identifier_expression> p_super = nullptr)
+        : declaration(node_type::nt_class_decl, p_tok), m_identifier(std::move(p_identifier)),
+          m_methods(std::move(p_methods)), m_super(std::move(p_super))
+    {
+    }
+
+    std::string to_string() override
+    {
+      std::stringstream ss;
+      ss << "class ";
+      ss << m_identifier->to_string();
+      ss << (m_super == nullptr ? "" : "inherits " + m_super->to_string());
+      ss << " {\n";
+      for(auto i = 0; const auto& m : m_methods)
+      {
+        ss << m->to_string() << "\n";
+      }
+      ss << "}\n";
+      return ss.str();
+    }
+
+    const std::unique_ptr<identifier_expression>& get_identifier() const
+    {
+      return m_identifier;
+    }
+
+    const std::list<std::unique_ptr<function_declaration>>& get_methods() const
+    {
+      return m_methods;
+    }
+
+    const std::unique_ptr<identifier_expression>& get_super() const
+    {
+      return m_super;
+    }
+
+  private:
+    std::unique_ptr<identifier_expression> m_identifier;
+    std::list<std::unique_ptr<function_declaration>> m_methods;
+    std::unique_ptr<identifier_expression> m_super;
   };
 
   /**

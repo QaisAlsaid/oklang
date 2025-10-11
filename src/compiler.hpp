@@ -6,8 +6,10 @@
 #include "macros.hpp"
 #include "object.hpp"
 #include "parser.hpp"
+#include <cstdint>
 #include <format>
 #include <unordered_map>
+#include <vector>
 
 namespace ok
 {
@@ -28,6 +30,11 @@ namespace ok
         control_flow_outside_loop,
         arguments_count_exceeds_limit,
         upvalue_count_exceeds_limit,
+        invalid_usage_of_this_outside_of_class,
+        invalid_usage_of_super_outside_of_class,
+        invalid_return_from_non_returning_method,
+        self_inheritance,
+        invalid_usage_of_super_in_non_inherited_class,
       };
       code error_code;
       std::string message;
@@ -66,7 +73,6 @@ namespace ok
       size_t scope_depth;
       size_t continue_target;
       size_t break_target;
-      size_t pops_required{0};
       bool continue_forward{false};
       std::vector<size_t> breaks;
       std::vector<size_t> continues;
@@ -78,6 +84,9 @@ namespace ok
       {
         script,
         function,
+        method,
+        initializer,
+        deinitializer
       };
       function_object* function;
       type function_type;
@@ -183,6 +192,11 @@ namespace ok
       std::vector<upvalue> upvalues;
     };
 
+    struct class_context
+    {
+      bool has_super = false;
+    };
+
   private:
     // take by pointer to avoid moving and invalidating, since we compile directly and dont hold any reference this is
     // totally fine.
@@ -194,6 +208,8 @@ namespace ok
     void compile(ast::infix_binary_expression* p_binary);
     void compile(ast::boolean_expression* p_boolean);
     void compile(ast::null_expression* p_null);
+    void compile(ast::this_expression* p_this);
+    void compile(ast::super_expression* p_super);
     void compile(ast::string_expression* p_string);
     void compile(ast::print_statement* p_print_stmt);
     void compile(ast::let_declaration* p_let_decl);
@@ -207,17 +223,24 @@ namespace ok
     void compile(ast::function_declaration* p_function_declaration);
     void compile(ast::call_expression* p_call_expression);
     void compile(ast::return_statement* p_return_statement);
+    void compile(ast::class_declaration* p_class_declaration);
+    void compile(ast::access_expression* p_access_expression);
 
+    void do_compile_function(ast::function_declaration* p_function_declaration, compile_function::type p_type);
     void push_function_context(compile_function p_function);
     void pop_function_context();
     compile_function current_function();
     function_context& current_context();
 
+    void push_class_context(class_context p_ctx);
+    void pop_class_context();
+    class_context* current_class_context();
+
     // std::optional<std::pair<bool, uint32_t>> declare_variable(const std::string& str_ident, size_t offset);
     // std::pair<std::optional<std::pair<bool, uint32_t>>, std::optional<uint32_t>>
     // resolve_variable(const std::string& str_ident, size_t offset);
     uint32_t get_or_add_global(value_t p_global, size_t p_offset);
-    uint32_t add_global(value_t p_global, size_t p_offset);
+    uint32_t add_global(value_t p_global, size_t p_offset, uint32_t p_identifiers_table_index = UINT32_MAX);
     // void
     // write_variable(variable_operation p_op, variable_type p_t, variable_width p_w, uint32_t p_value, size_t
     // p_offset); opcode get_variable_opcode(variable_operation p_op, variable_type p_t, variable_width p_w);
@@ -225,7 +248,8 @@ namespace ok
     void write_variable(opcode p_op, uint32_t p_value, size_t p_offset);
     void named_variable(const std::string& str_ident, size_t offset, variable_operation op);
     void declare_variable(const std::string& str_ident, size_t offset);
-    std::optional<uint32_t> declare_variable_late(const std::string& str_ident, size_t offset);
+    std::optional<uint32_t>
+    declare_variable_late(const std::string& str_ident, size_t offset, uint32_t p_identifiers_table_index = UINT32_MAX);
     uint32_t resolve_local(const std::string& str_ident, size_t offset, const function_context& p_context);
     uint32_t resolve_upvalue(const std::string& str_ident, size_t offset, int64_t p_function_context_reverse_index);
     uint32_t add_upvalue(uint32_t p_local, bool p_is_local, size_t offset, function_context& p_context);
@@ -233,8 +257,11 @@ namespace ok
     void being_scope();
     void end_scope();
     void clean_scope_garbage();
+
+    void pop_locals();
     void emit_pops(uint32_t p_count);
 
+    void emit_return(size_t p_offset);
     void emit_loop(size_t p_loop_start, size_t p_offset);
     size_t emit_jump(opcode jump_instruction, size_t p_offset);
     void patch_jump(size_t start_position, size_t jump_position);
@@ -244,12 +271,6 @@ namespace ok
 
     void compile_logical_operator(ast::infix_binary_expression* p_logical_operator);
     uint8_t compile_arguments_list(const std::list<std::unique_ptr<ast::expression>>& p_list);
-
-    // inline std::vector<local>& get_locals()
-    //{
-    //   ASSERT(!m_locals.empty());
-    //   return m_locals.back();
-    // }
 
     template <typename... Args>
     void compile_error(error::code code, std::format_string<Args...> fmt, Args&&... args)
@@ -262,12 +283,15 @@ namespace ok
       return static_cast<uint8_t>(p_op) << 2 | static_cast<uint8_t>(p_t) << 1 | static_cast<uint8_t>(p_w);
     }
 
+    static constexpr bool is_long(uint32_t p_index)
+    {
+      return !(p_index < op_constant_max_count + 1);
+    }
+
   private:
     uint32_t m_vm_id;
-    // std::vector<compile_function> m_functions;
-    // std::vector<std::vector<local>> m_locals;
-
     std::vector<function_context> m_function_contexts;
+    std::vector<class_context> m_class_contexts;
 
     std::unordered_map<string_object*, uint32_t> m_globals;
     std::vector<loop_context> m_loop_stack;
@@ -276,6 +300,9 @@ namespace ok
     bool m_compiled = false;
     size_t m_locals_count = 0;
     size_t m_scope_depth = 0;
+
+  private:
+    friend class gc;
   };
 } // namespace ok
 

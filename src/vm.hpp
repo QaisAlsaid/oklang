@@ -4,6 +4,8 @@
 #include "call_frame.hpp"
 #include "chunk.hpp"
 #include "compiler.hpp"
+#include "constants.hpp"
+#include "gc.hpp"
 #include "interned_string.hpp"
 #include "log.hpp"
 #include "macros.hpp"
@@ -42,16 +44,16 @@ namespace ok
       }
     }
 
-    const T& top() const
+    const T& top(size_t p_index = 0) const
     {
       ASSERT(!m_storeage.empty());
-      return m_storeage[m_top - 1];
+      return m_storeage[m_top - 1 - p_index];
     }
 
-    T& top()
+    T& top(size_t p_index = 0)
     {
       ASSERT(!m_storeage.empty());
-      return m_storeage[m_top - 1];
+      return m_storeage[m_top - 1 - p_index];
     }
 
     T pop()
@@ -152,6 +154,18 @@ namespace ok
       operation_function_call call_function;
     };
 
+    struct statics
+    {
+      void init()
+      {
+        init_string = new_tobject<string_object>(constants::init_string_literal);
+        deinit_string = new_tobject<string_object>(constants::deinit_string_literal);
+      }
+
+      string_object* init_string = nullptr;
+      string_object* deinit_string = nullptr;
+    };
+
   public:
     vm();
     ~vm();
@@ -250,6 +264,16 @@ namespace ok
       return m_stack.value_ptr(p_pos);
     }
 
+    inline const value_t& stack_top(size_t p_pos) const
+    {
+      return m_stack.top(p_pos);
+    }
+
+    inline value_t& stack_top(size_t p_pos)
+    {
+      return m_stack.top(p_pos);
+    }
+
     inline void stack_push(value_t p_val)
     {
       m_stack.push(p_val);
@@ -260,20 +284,30 @@ namespace ok
       m_stack.resize(p_new_top);
     }
 
+    inline gc& get_gc()
+    {
+      return m_gc;
+    }
+
+    inline const statics& get_statics() const
+    {
+      return m_statics;
+    }
+
     bool define_native_function(std::string_view p_name, native_function p_fu);
 
     void print_value(value_t p_value);
+    bool call_value(uint8_t argc, value_t callee);
+    void runtime_error(const std::string& err); // TODO(Qais): error types and format strings
 
   private:
     interpret_result run();
     // TODO(Qais): refactor all functions that take either one byte operand or 24bit int operand into sourceing one
     // place for getting the values
     value_t read_constant(opcode p_op);
-    value_t read_global_definition(bool p_is_long);
+    value_t read_variable_definition(bool p_is_long);
     value_t& read_local(bool is_long);
     byte read_byte();
-    void runtime_error(const std::string& err); // TODO(Qais): error types and format strings
-    std::expected<void, interpret_result> call_value(uint8_t argc, value_t callee);
 
     template <size_t N>
     std::array<byte, N> read_bytes()
@@ -284,7 +318,6 @@ namespace ok
       return bytearray;
     }
 
-  private:
     void reset_stack();
     std::expected<void, interpret_result> perform_unary_prefix(const operator_type p_operator);
     std::expected<void, interpret_result> perform_binary_infix(const operator_type p_operator);
@@ -303,6 +336,12 @@ namespace ok
     upvalue_object* capture_value(size_t p_slot);
     void close_upvalue(value_t* p_value);
 
+    void define_method(string_object* p_name);
+    bool bind_a_method(class_object* p_class, string_object* p_name);
+    bool invoke(string_object* p_method_name, uint8_t p_argc);
+    bool invoke_from_class(class_object* p_class, string_object* p_method_name, uint8_t p_argc);
+    bool call(uint8_t p_argc, closure_object* p_callee);
+
     inline void pop_call_frame()
     {
       ASSERT(!m_call_frames.empty());
@@ -312,6 +351,7 @@ namespace ok
   private:
     // chunk* m_chunk;
     // byte* m_ip; // TODO(Qais): move this to local storage
+    gc m_gc;
     stack<value_t> m_stack;
     std::vector<call_frame> m_call_frames;
     uint32_t m_id;
@@ -326,8 +366,12 @@ namespace ok
     std::unordered_map<uint32_t, object_value_operations> m_objects_operations;
     logger m_logger;
     compiler m_compiler; // temporary
+    statics m_statics;
     constexpr static size_t call_frame_max_size = 64;
     constexpr static size_t stack_base_size = (UINT8_MAX + 1) * call_frame_max_size;
+
+  private:
+    friend class gc;
   };
 } // namespace ok
 

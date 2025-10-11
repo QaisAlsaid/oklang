@@ -22,7 +22,6 @@ namespace ok::debug
   int disassembler::disassemble_instruction(const chunk& p_chunk, int p_offset)
   {
     std::print("{:04d}", p_offset);
-
     // this was broken at first because it was comparing the previous offset regardless of that instruction being even
     // printed or it is used implicitly and its even more broken after introducing the small memory optimization for the
     // offset storage, so its not worth the hassel
@@ -121,6 +120,36 @@ namespace ok::debug
       return multi_operand_instruction<3>("op_set_upvalue_long", p_chunk, p_offset);
     case to_utype(opcode::op_close_upvalue):
       return simple_instruction("op_close_upvalue", p_offset);
+    case to_utype(opcode::op_class):
+      return identifier_instruction("op_class", p_chunk, p_offset);
+    case to_utype(opcode::op_class_long):
+      return identifier_long_instruction("op_class", p_chunk, p_offset);
+    case to_utype(opcode::op_get_property):
+      return identifier_instruction("op_get_property", p_chunk, p_offset);
+    case to_utype(opcode::op_get_property_long):
+      return identifier_long_instruction("op_get_property_long", p_chunk, p_offset);
+    case to_utype(opcode::op_set_property):
+      return identifier_instruction("op_set_property", p_chunk, p_offset);
+    case to_utype(opcode::op_set_property_long):
+      return identifier_long_instruction("op_set_property_long", p_chunk, p_offset);
+    case to_utype(opcode::op_method):
+      return identifier_instruction("op_method", p_chunk, p_offset);
+    case to_utype(opcode::op_method_long):
+      return identifier_long_instruction("op_method_long", p_chunk, p_offset);
+    case to_utype(opcode::op_invoke):
+      return invoke_instruction("op_invoke", p_chunk, p_offset);
+    case to_utype(opcode::op_invoke_long):
+      return invoke_long_instruction("op_invoke_long", p_chunk, p_offset);
+    case to_utype(opcode::op_inherit):
+      return simple_instruction("op_inherit", p_offset);
+    case to_utype(opcode::op_get_super):
+      return identifier_instruction("op_get_super", p_chunk, p_offset);
+    case to_utype(opcode::op_get_super_long):
+      return identifier_long_instruction("op_get_super_long", p_chunk, p_offset);
+    case to_utype(opcode::op_invoke_super):
+      return invoke_instruction("op_invoke_super", p_chunk, p_offset);
+    case to_utype(opcode::op_invoke_super_long):
+      return invoke_long_instruction("op_invoke_super_long", p_chunk, p_offset);
     default:
     {
       std::println("unknown opcode: '{}'", instruction);
@@ -192,7 +221,10 @@ namespace ok::debug
     if(const_inst == to_utype(opcode::op_constant))
       constant = p_chunk.code[++p_offset];
     else
+    {
       constant = decode_int<uint32_t, 3>(p_chunk.code, ++p_offset);
+      p_offset = p_offset + 3;
+    }
     std::print("{} {:4d} ", p_name, constant);
     get_g_vm()->print_value(p_chunk.constants[constant]);
     std::println();
@@ -200,11 +232,31 @@ namespace ok::debug
     auto fun = (function_object*)p_chunk.constants[constant].as.obj;
     for(uint32_t i = 0; i < fun->upvalues; ++i)
     {
-      auto is_local = p_chunk.code[++p_offset];
+      auto is_local = p_chunk.code[p_offset++];
       auto index = decode_int<uint32_t, 3>(p_chunk.code, ++p_offset);
       std::println("    {:4d} {} {}", p_offset - 2, is_local ? "local" : "upvalue", index);
       p_offset += 3;
     }
     return ++p_offset;
+  }
+
+  int disassembler::invoke_instruction(std::string_view p_name, const chunk& p_chunk, int p_offset)
+  {
+    auto ident = p_chunk.code[p_offset + 1];
+    auto argc = p_chunk.code[p_offset + 2];
+    std::print("{} ({} args) {:4d} ", p_name, argc, ident);
+    get_g_vm()->print_value(p_chunk.identifiers[ident]);
+    std::println("");
+    return p_offset + 3;
+  }
+
+  int disassembler::invoke_long_instruction(std::string_view p_name, const chunk& p_chunk, int p_offset)
+  {
+    auto ident = decode_int<uint32_t, 3>(p_chunk.code, p_offset + 1);
+    auto argc = p_chunk.code[p_offset + 5];
+    std::print("{} ({} args) {:4d} ", p_name, argc, ident);
+    get_g_vm()->print_value(p_chunk.identifiers[ident]);
+    std::println("");
+    return p_offset + 6;
   }
 } // namespace ok::debug

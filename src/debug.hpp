@@ -31,6 +31,8 @@ namespace ok::debug
       return p_offset + INSTRUCTION_WIDTH;
     }
     static int closure_instruction(const std::string_view p_name, const chunk& p_chunk, int p_offset);
+    static int invoke_instruction(std::string_view p_name, const chunk& p_chunk, int p_offset);
+    static int invoke_long_instruction(std::string_view p_name, const chunk& p_chunk, int p_offset);
   };
 } // namespace ok::debug
 

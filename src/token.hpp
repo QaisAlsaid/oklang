@@ -60,6 +60,7 @@ namespace ok
     tok_or,
     tok_class,
     tok_super,
+    tok_inherits,
     tok_this,
     tok_null,
     tok_true,
@@ -180,6 +181,8 @@ namespace ok
       return "class"sv;
     case token_type::tok_super:
       return "super"sv;
+    case token_type::tok_inherits:
+      return "inherits"sv;
     case token_type::tok_this:
       return "this"sv;
     case token_type::tok_null:

@@ -25,6 +25,8 @@ namespace ok
     s_prefix_parse_map.emplace(token_type::tok_true, std::make_unique<boolean_parser>());
     s_prefix_parse_map.emplace(token_type::tok_false, std::make_unique<boolean_parser>());
     s_prefix_parse_map.emplace(token_type::tok_null, std::make_unique<null_parser>());
+    s_prefix_parse_map.emplace(token_type::tok_this, std::make_unique<this_parser>());
+    s_prefix_parse_map.emplace(token_type::tok_super, std::make_unique<super_parser>());
     return true;
   }();
 
@@ -56,6 +58,7 @@ namespace ok
                               std::make_unique<infix_parser_binary>(precedence::prec_comparision, false));
     s_infix_parse_map.emplace(token_type::tok_greater_equal,
                               std::make_unique<infix_parser_binary>(precedence::prec_comparision, false));
+    s_infix_parse_map.emplace(token_type::tok_dot, std::make_unique<access_parser>(precedence::prec_call, false));
     return true;
   }();
 
@@ -134,6 +137,9 @@ namespace ok
       break;
     case token_type::tok_fu:
       ret = parse_function_declaration();
+      break;
+    case token_type::tok_class:
+      ret = parse_class_declaration();
       break;
     default:
       ret = parse_statement();
@@ -413,9 +419,16 @@ namespace ok
     // fu do_stuff() -> {  } // optional arrow when body is block
     // fu do_stuff() {  } // notmal stuff
     // fu do_stuff() -> print("doing stuff"); // one statement requires arrow
-    // let f = fu () -> {  } // TODO
+    //// let f = fu () -> {  } // TODO, Update: no cant do this because it breaks the semantics and is not expected to
+    //// work when the functions are statements rather than expressions
     auto fu_token = current_token();
     advance();
+    return parse_function_declaration_impl(fu_token);
+  }
+
+  std::unique_ptr<ast::function_declaration> parser::parse_function_declaration_impl(token p_trigger,
+                                                                                     std::string_view callit)
+  {
     std::unique_ptr<ast::identifier_expression>
         ident; // TODO(Qais): take as optional parameter for function declared using let
     if(current_token().type == token_type::tok_identifier && ident == nullptr) // no identifier supplied
@@ -430,7 +443,7 @@ namespace ok
     }
     // else // not in let context and no name provided parser doesnt care but it will be a compile error
     if(current_token().type != token_type::tok_left_paren)
-      parse_error(error::code::expected_token, "expected '(' in function declaration");
+      parse_error(error::code::expected_token, "expected '(' in {} declaration", callit);
     advance();
     std::list<std::unique_ptr<ast::identifier_expression>> params;
     if(current_token().type != token_type::tok_right_paren)
@@ -444,26 +457,15 @@ namespace ok
         auto tok = current_token();
         if(tok.type != token_type::tok_identifier)
         {
-          parse_error(error::code::expected_identifier, "expected identifier as function parameter");
+          parse_error(error::code::expected_identifier, "expected identifier as {} parameter", callit);
         }
         params.push_back(std::make_unique<ast::identifier_expression>(tok, tok.raw_literal));
       }
-      // do
-      // {
-      //   auto tok = current_token();
-      //   if(tok.type != token_type::tok_identifier)
-      //   {
-      //     parse_error(error::code::expected_identifier, "expected identifier as function parameter");
-      //   }
-      //   params.push_back(std::make_unique<ast::identifier_expression>(tok, tok.raw_literal));
-      // } while(current_token().type == token_type::tok_comma && advance());
       advance();
     }
 
     if(current_token().type != token_type::tok_right_paren)
-      parse_error(error::code::expected_token, "expected ')' after function parameters");
-
-    // advance();
+      parse_error(error::code::expected_token, "expected ')' after {} parameters", callit);
 
     // if next is arrow we skip and set had arrow to true, if next is brace we dont do anything, but if next is other
     // stateent we check arrow first if not we error if its there we dont do anything and parse normally
@@ -476,25 +478,70 @@ namespace ok
     }
 
     if(lookahead_token().type != token_type::tok_left_brace && !had_arrow)
-      parse_error(error::code::expected_token, "expected '->' in one-liner function declaration");
+      parse_error(error::code::expected_token, "expected '->' in one-liner {} declaration", callit);
 
     advance();
 
-    // if(lookahead_token().type == token_type::tok_left_brace && current_token().type == token_type::tok_arrow)
-    //   advance();
-    // else if(lookahead_token().type != token_type::tok_left_brace && current_token().type != token_type::tok_arrow)
-    //   else if(current_token().type == token_type::tok_left_brace)
-    //   {
-    //   }
-    // else
-    //   advance();
-
-    // if(current_token().type != token_type::tok_left_brace)
-    //   parse_error(error::code::expected_token, "expected '{{' before function body");
-
     auto body = parse_statement();
 
-    return std::make_unique<ast::function_declaration>(fu_token, std::move(body), std::move(ident), std::move(params));
+    return std::make_unique<ast::function_declaration>(p_trigger, std::move(body), std::move(ident), std::move(params));
+  }
+
+  std::unique_ptr<ast::class_declaration> parser::parse_class_declaration()
+  {
+    auto cls_token = current_token();
+    advance();
+    if(current_token().type != token_type::tok_identifier)
+    {
+      parse_error(error::code::expected_identifier, "expected class name");
+    }
+    auto t = current_token();
+    auto ident = std::make_unique<ast::identifier_expression>(t, t.raw_literal);
+    std::unique_ptr<ast::identifier_expression> super = nullptr;
+    advance();
+
+    if(current_token().type == token_type::tok_inherits)
+    {
+      if(lookahead_token().type != token_type::tok_identifier)
+      {
+        parse_error(error::code::expected_identifier, "expected superclass name");
+      }
+      advance();
+      auto curr = current_token();
+      super = std::make_unique<ast::identifier_expression>(curr, curr.raw_literal);
+      advance();
+    }
+
+    if(current_token().type != token_type::tok_left_brace)
+    {
+      parse_error(error::code::expected_token, "expected '{{' before class body");
+    }
+    advance();
+
+    std::list<std::unique_ptr<ast::function_declaration>> methods;
+    while(current_token().type != token_type::tok_right_brace && current_token().type != token_type::tok_eof)
+    {
+      auto tok = current_token();
+      // TODO(Qais): support fields in class
+      switch(tok.type)
+      {
+      case token_type::tok_identifier:
+        methods.push_back(parse_function_declaration_impl(tok, "method"));
+        advance(); // the function's right brace
+        break;
+      default:
+        parse_error(error::code::unexpected_token, "unexpected token: '{}' in class body", tok.raw_literal);
+        goto OUT;
+      }
+    }
+  OUT:
+    if(current_token().type != token_type::tok_right_brace)
+    {
+      parse_error(error::code::expected_token, "expected '}}' after class body");
+    }
+    // advance();
+
+    return std::make_unique<ast::class_declaration>(cls_token, std::move(ident), std::move(methods), std::move(super));
   }
 
   bool parser::advance()

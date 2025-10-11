@@ -12,6 +12,29 @@
 // is the ood best fit here? or just plain parse functions will do?
 namespace ok
 {
+  inline std::list<std::unique_ptr<ast::expression>> parse_arguments_list(parser& p_parser, token_type expected_end)
+  {
+    if(p_parser.lookahead_token().type == expected_end)
+    {
+      p_parser.advance();
+      return {};
+    }
+
+    p_parser.advance();
+    std::list<std::unique_ptr<ast::expression>> args;
+    args.push_back(p_parser.parse_expression()); // TODO(Qais): bad!
+    while(p_parser.lookahead_token().type == token_type::tok_comma)
+    {
+      // skip comma
+      p_parser.advance();
+      p_parser.advance();
+      args.push_back(p_parser.parse_expression());
+    }
+    if(p_parser.expect_next(expected_end))
+      return std::move(args);
+    return {};
+  }
+
   // TODO(Qais): since we are not using exceptions, then parse function should be of type std::expected<up<expr>, error>
   struct prefix_parser_base
   {
@@ -64,6 +87,45 @@ namespace ok
     std::unique_ptr<ast::expression> parse(parser& p_parser, token p_tok) const override
     {
       return std::make_unique<ast::null_expression>(p_tok);
+    }
+  };
+
+  struct this_parser : public prefix_parser_base
+  {
+    std::unique_ptr<ast::expression> parse(parser& p_parser, token p_tok) const override
+    {
+      return std::make_unique<ast::this_expression>(p_tok);
+    }
+  };
+
+  struct super_parser : public prefix_parser_base
+  {
+    std::unique_ptr<ast::expression> parse(parser& p_parser, token p_tok) const override
+    {
+      if(p_parser.lookahead_token().type != token_type::tok_dot)
+      {
+        p_parser.parse_error(parser::error::code::expected_token, "expected '.' after 'super'");
+      }
+      p_parser.advance();
+      if(p_parser.lookahead_token().type != token_type::tok_identifier)
+      {
+        p_parser.parse_error(parser::error::code::expected_identifier, "expected superclass method name");
+      }
+      p_parser.advance();
+      auto method_tok = p_parser.current_token();
+      bool is_invoke = false;
+      std::list<std::unique_ptr<ast::expression>> args;
+      if(p_parser.lookahead_token().type == token_type::tok_left_paren)
+      {
+        p_parser.advance(); // skip to the paren
+        args = parse_arguments_list(p_parser, token_type::tok_right_paren);
+        is_invoke = true;
+      }
+      return std::make_unique<ast::super_expression>(
+          p_tok,
+          std::make_unique<ast::identifier_expression>(method_tok, method_tok.raw_literal),
+          std::move(args),
+          is_invoke);
     }
   };
 
@@ -144,6 +206,55 @@ namespace ok
     bool m_is_right;
   };
 
+  struct access_parser : public infix_parser_base
+  {
+    access_parser(int p_precedence, bool p_is_right) : m_precedence(p_precedence), m_is_right(p_is_right)
+    {
+    }
+
+    std::unique_ptr<ast::expression>
+    parse(parser& p_parser, token p_tok, std::unique_ptr<ast::expression> p_left) const override
+    {
+      p_parser.advance();
+      auto name_tok = p_parser.current_token();
+      if(name_tok.type != token_type::tok_identifier)
+      {
+        p_parser.parse_error(parser::error::code::expected_identifier,
+                             "expected property name after '.' access operator");
+        return nullptr;
+      }
+
+      auto property_expr = std::make_unique<ast::identifier_expression>(name_tok, name_tok.raw_literal);
+      std::unique_ptr<ast::expression> val_expr = nullptr;
+      std::list<std::unique_ptr<ast::expression>> args = {};
+      bool is_invoke = false;
+
+      if(p_parser.lookahead_token().type == token_type::tok_assign)
+      {
+        p_parser.advance(); // skip identifier
+        p_parser.advance(); // skip =
+        val_expr = p_parser.parse_expression(precedence::prec_assignment - 1);
+      }
+      else if(p_parser.lookahead_token().type == token_type::tok_left_paren)
+      {
+        p_parser.advance(); // skip to the paren
+        args = parse_arguments_list(p_parser, token_type::tok_right_paren);
+        is_invoke = true;
+      }
+      return std::make_unique<ast::access_expression>(
+          name_tok, std::move(p_left), std::move(property_expr), std::move(val_expr), std::move(args), is_invoke);
+    }
+
+    int get_precedence() const override
+    {
+      return m_precedence;
+    }
+
+  private:
+    int m_precedence;
+    bool m_is_right;
+  };
+
   struct conditional_parser : public infix_parser_base
   {
     std::unique_ptr<ast::expression>
@@ -171,28 +282,8 @@ namespace ok
     std::unique_ptr<ast::expression>
     parse(parser& p_parser, token p_tok, std::unique_ptr<ast::expression> p_left) const override
     {
-      std::list<std::unique_ptr<ast::expression>> args;
-      token_type expected_end;
-      if(p_tok.type == token_type::tok_left_paren) // is this good enough!?, yes for now, later when you have something
-                                                   // else that needs expr list parse abstract to another function
-        expected_end = token_type::tok_right_paren;
+      auto args = parse_arguments_list(p_parser, token_type::tok_right_paren);
 
-      if(p_parser.lookahead_token().type == expected_end)
-      {
-        p_parser.advance();
-        return std::make_unique<ast::call_expression>(p_tok, std::move(p_left), std::move(args));
-      }
-
-      p_parser.advance();
-      args.push_back(p_parser.parse_expression());
-      while(p_parser.lookahead_token().type == token_type::tok_comma)
-      {
-        // skip comma
-        p_parser.advance();
-        p_parser.advance();
-        args.push_back(p_parser.parse_expression());
-      }
-      p_parser.expect_next(expected_end);
       // return nullptr; // TODO(Qais): error handling for god sake!
       // this is wrong in cases of a(b)(c) this will allow cursed syntax like a(b);c to be parsed just fine lol
       // if(p_parser.current_token().type == token_type::tok_semicolon)

@@ -2,6 +2,7 @@
 #define OK_INTERNED_STRING_HPP
 
 #include "object.hpp"
+#include "vm_stack.hpp"
 #include <cassert>
 
 namespace ok
@@ -25,13 +26,14 @@ namespace ok
       auto it = interned_strings.find(hs);
       if(interned_strings.end() != it)
         return nullptr;
-      auto* real = new string_object{p_str};
+      auto* real = new string_object{p_str}; // exception to the creation rule
+      // get_vm_gc().increment_used_memory(sizeof(string_object));
       assert(real->hash_code == hs);
       interned_strings[hs] = real;
       return real;
     }
 
-    // TODO(Qais): hash compare, thus take an string_object instead of std::string_view,
+    // TODO(Qais): hash compare, thus take a string_object instead of std::string_view,
     // or support both [slow_path, hot_path]
     string_object* get(const std::string_view p_str)
     {
@@ -39,6 +41,11 @@ namespace ok
       if(interned_strings.end() == it)
         return nullptr;
       return it->second;
+    }
+
+    std::unordered_map<hashed_string, string_object*>& underlying()
+    {
+      return interned_strings;
     }
 
   private:

@@ -1,6 +1,7 @@
 #ifndef OK_VALUE_HPP
 #define OK_VALUE_HPP
 
+#include "copy.hpp"
 #include "operator.hpp"
 #include "utility.hpp"
 #include <cstdint>
@@ -12,6 +13,7 @@ namespace ok
   class object;
   class function_object;
   class closure_object;
+  class string_object;
   struct value_t;
   typedef value_t (*native_function)(uint8_t argc, value_t* argv);
 
@@ -28,6 +30,8 @@ namespace ok
     undefined_operation,
     division_by_zero,
     arguments_mismatch,
+    call_error,
+    internal_propagated_error
   };
 
   struct value_t
@@ -45,13 +49,18 @@ namespace ok
     explicit value_t(double p_number);
     explicit value_t();
 
-    explicit value_t(object* p_object);
+    // explicit value_t(object* p_object);
     explicit value_t(const char* p_str, size_t p_length);
     explicit value_t(std::string_view p_str);
 
-    explicit value_t(function_object* p_function);
+    explicit value_t(uint8_t p_arity, string_object* p_name);
     explicit value_t(native_function p_native_function);
-    explicit value_t(closure_object* p_closure);
+
+    // "copy" constructors wont invoke new allocation, rather they use existing one and wrap it in a value_t
+    explicit value_t(copy<object*> p_object);
+    // explicit value_t(copy<function_object*> p_function);
+    // explicit value_t(copy<closure_object*> p_closure);
+    // explicit value_t
   };
 
   using value_array = std::vector<value_t>;

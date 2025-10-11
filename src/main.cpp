@@ -95,18 +95,25 @@ int main(int argc, char** argv)
   // error either.
   // the problem comes from the individual expression parsers doesnt propagate errors, so fix that asap
 
-  auto res = vm.interpret(R"SRC(
-    fu __main()
-    {
-      let x= 'value';
-      let y;
-      let z;
-      fu set(_x) { x = _x; print x; }
-      return set;
-    }
-    let set = __main();
-    set("x");
-    )SRC");
+  auto res = vm.interpret(R"SRC( 
+    //let x = 0;
+    
+    // for let x = 0; x < 10; x = x+1 ->{
+    //   if x > 5 -> continue;
+    //   print x;
+    // }
+  
+    let x = 0;
+    while x < 10 -> {
+      x = x +1;
+    let c = 1;
+
+      if x > 5 -> { continue; }
+
+      print x;
+      }
+
+  )SRC");
 
   // auto res = vm.interpret("{let x = 'hello world'; print x; { x = 'foo'; print x; x = 34; { print x; }; }}");
   switch(res)

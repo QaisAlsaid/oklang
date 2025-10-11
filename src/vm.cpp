@@ -1,6 +1,7 @@
 #include "vm.hpp"
 #include "chunk.hpp"
 #include "compiler.hpp"
+#include "copy.hpp"
 #include "debug.hpp"
 #include "log.hpp"
 #include "macros.hpp"
@@ -14,11 +15,19 @@
 #include <ctime>
 #include <expected>
 #include <print>
+#include <string>
 #include <string_view>
 #include <vector>
 
 // TODO(Qais): access to stack should be like c style arrays but is a dynamic vector
 //  so overload the [] operator and make a vector wrapper cuz this isnt working out fine
+// Update: its kind of done, but i dislike how the api and its useage turned out so i think it should be rewritten
+
+#if defined(PARANOID)
+#define LOG_LEVEL log_level::paranoid
+#else
+define LOG_LEVEL log_level::error
+#endif
 
 namespace ok
 {
@@ -28,7 +37,7 @@ namespace ok
   static value_t srand_native(uint8_t argc, value_t* argv);
   static value_t rand_native(uint8_t argc, value_t* argv);
 
-  vm::vm() : m_logger(log_level::paranoid), m_stack(stack_base_size)
+  vm::vm() : m_logger(LOG_LEVEL), m_stack(stack_base_size)
   {
     // keep id will need that for logger (yes logger will be globally accessible and requires indirection but its mostly
     // fine because its either debug only on on error where you dont even need fast code)
@@ -56,8 +65,9 @@ namespace ok
 
   auto vm::interpret(const std::string_view p_source) -> interpret_result
   {
+    m_statics.init();
     m_compiler = compiler{}; // reinitialize and clear previous state
-    auto compile_result = m_compiler.compile(p_source, string_object::create<string_object>("__main"), m_id);
+    auto compile_result = m_compiler.compile(p_source, new_tobject<string_object>("main"), m_id);
     if(!compile_result)
     {
       if(m_compiler.get_parse_errors().errs.empty())
@@ -70,7 +80,7 @@ namespace ok
     define_native_function("time", time_native);
     define_native_function("srand", srand_native);
     define_native_function("rand", rand_native);
-    m_stack.push(value_t{compile_result});
+    m_stack.push(value_t{copy{(object*)compile_result}});
     // call_frame frame;
     // frame.closure = compile_result;
     // frame.ip = compile_result->associated_chunk.code.data();
@@ -78,9 +88,8 @@ namespace ok
     // auto cfr = push_call_frame(frame);
     // if(!cfr.has_value())
     //   return cfr.error();
-    auto closure = closure_object::create<closure_object>(compile_result);
-    m_stack.pop();
-    m_stack.push(value_t{closure});
+    auto closure = new_tobject<closure_object>(compile_result);
+    m_stack.top() = value_t{copy{(object*)closure}};
     // auto call_result = call_value(0, m_stack.top());
     auto call_result = push_call_frame(call_frame{closure, closure->function->associated_chunk.code.data(), 0, 0});
     if(!call_result.has_value())
@@ -100,14 +109,14 @@ namespace ok
     while(true)
     {
 #ifdef PARANOID
-      TRACE("    ");
+      TRACE("  [stack view]:  [");
       for(auto e : m_stack)
       {
         TRACE("[");
         print_value(e);
         TRACE("]");
       }
-      TRACELN("");
+      TRACELN("]");
       // FIXME(Qais): offset isnt being calculated properly, Update: i think its fixed, keeping this if it broke
       debug::disassembler::disassemble_instruction(
           frame->closure->function->associated_chunk,
@@ -124,6 +133,16 @@ namespace ok
         pop_call_frame();
         if(m_call_frames.size() == 0)
         {
+#ifdef PARANOID // one last dance
+          TRACE("  [stack view]:  [");
+          for(auto e : m_stack)
+          {
+            TRACE("[");
+            print_value(e);
+            TRACE("]");
+          }
+          TRACELN("]");
+#endif
           return interpret_result::ok;
         }
         frame = &m_call_frames.back();
@@ -251,16 +270,14 @@ namespace ok
       case to_utype(opcode::op_print):
       {
         auto back = m_stack.top();
-        m_stack.pop();
         print_value(back);
+        m_stack.pop();
         break;
       }
       case to_utype(opcode::op_define_global):
       case to_utype(opcode::op_define_global_long):
       {
-        auto name = read_global_definition(static_cast<opcode>(instruction) == opcode::op_define_global_long);
-        ASSERT(name.type == value_type::object_val);
-        ASSERT(name.as.obj->type == object_type::obj_string);
+        auto name = read_variable_definition(static_cast<opcode>(instruction) == opcode::op_define_global_long);
         auto name_str = (string_object*)name.as.obj;
         auto it = m_globals.find(name_str);
         if(m_globals.end() != it)
@@ -275,9 +292,7 @@ namespace ok
       case to_utype(opcode::op_get_global):
       case to_utype(opcode::op_get_global_long):
       {
-        auto name = read_global_definition(static_cast<opcode>(instruction) == opcode::op_get_global_long);
-        ASSERT(name.type == value_type::object_val);
-        ASSERT(name.as.obj->type == object_type::obj_string);
+        auto name = read_variable_definition(static_cast<opcode>(instruction) == opcode::op_get_global_long);
         auto name_str = (string_object*)name.as.obj;
         auto it = m_globals.find(name_str);
         if(m_globals.end() == it)
@@ -291,9 +306,7 @@ namespace ok
       case to_utype(opcode::op_set_global):
       case to_utype(opcode::op_set_global_long):
       {
-        auto name = read_global_definition(static_cast<opcode>(instruction) == opcode::op_set_global_long);
-        ASSERT(name.type == value_type::object_val);
-        ASSERT(name.as.obj->type == object_type::obj_string);
+        auto name = read_variable_definition(static_cast<opcode>(instruction) == opcode::op_set_global_long);
         auto name_str = (string_object*)name.as.obj;
         auto it = m_globals.find(name_str);
         if(m_globals.end() == it)
@@ -322,8 +335,8 @@ namespace ok
       case to_utype(opcode::op_conditional_truthy_jump):
       {
         auto jump = decode_int<uint32_t, 3>(read_bytes<3>(), 0);
-        auto cond = static_cast<opcode>(instruction) == opcode::op_conditional_jump ? is_value_falsy(m_stack.top())
-                                                                                    : is_value_falsy(m_stack.top());
+        auto cond = static_cast<opcode>(instruction) == opcode::op_conditional_jump ? is_value_falsy(m_stack.pop())
+                                                                                    : is_value_falsy(m_stack.pop());
         if(cond)
           frame->ip += jump;
         int x = jump;
@@ -346,8 +359,8 @@ namespace ok
         auto argc = read_byte();
         auto peek = m_stack[m_stack.size() - argc - 1];
         auto res = call_value(argc, peek);
-        if(!res.has_value())
-          return res.error();
+        if(!res)
+          return interpret_result::runtime_error;
         frame = &m_call_frames.back();
         break;
       }
@@ -356,7 +369,9 @@ namespace ok
         auto const_inst = *frame->ip++;
         auto function = read_constant((opcode)const_inst);
         auto closure = closure_object::create<closure_object>((function_object*)function.as.obj);
-        m_stack.push(value_t{closure});
+        auto fu = (function_object*)function.as.obj;
+        auto val = value_t{copy{(object*)closure}};
+        m_stack.push(val);
         for(uint32_t i = 0; i < closure->function->upvalues; ++i)
         {
           uint8_t is_local = read_byte();
@@ -396,6 +411,131 @@ namespace ok
       {
         close_upvalue(m_stack.value_ptr_top());
         // dont pop because it will be handled later by op_pop_n
+        break;
+      }
+      case to_utype(opcode::op_class):
+      case to_utype(opcode::op_class_long):
+      {
+        auto name = read_variable_definition(static_cast<opcode>(instruction) == opcode::op_class_long);
+        auto name_str = (string_object*)name.as.obj;
+        auto cls = new_object<class_object>(name_str);
+        m_stack.push(value_t{copy{cls}});
+        break;
+      }
+      case to_utype(opcode::op_get_property):
+      case to_utype(opcode::op_get_property_long):
+      {
+        // TODO(Qais): now it assumes instance objects only, but you should expand it to support dot access on built in
+        // types via a table in the vm
+        if(m_stack.top().type != value_type::object_val ||
+           m_stack.top().as.obj->get_type() != object_type::obj_instance)
+        {
+          runtime_error("only instances have properties");
+          return interpret_result::runtime_error;
+        }
+        auto instance = (instance_object*)m_stack.top().as.obj;
+        auto name = read_variable_definition(static_cast<opcode>(instruction) == opcode::op_get_property_long);
+        auto name_str = (string_object*)name.as.obj;
+        const auto it = instance->fields.find(name_str);
+        if(instance->fields.end() != it)
+        {
+          m_stack.top() = it->second;
+          break;
+        }
+        if(!bind_a_method(instance->class_, name_str))
+        {
+          return interpret_result::runtime_error;
+        }
+        break;
+      }
+      case to_utype(opcode::op_set_property):
+      case to_utype(opcode::op_set_property_long):
+      {
+        // TODO(Qais): now it assumes instance objects only, but you should expand it to support dot access on built in
+        // types via a table in the vm
+        if(m_stack.top(1).type != value_type::object_val ||
+           m_stack.top(1).as.obj->get_type() != object_type::obj_instance)
+        {
+          runtime_error("only instances can have properties");
+          return interpret_result::runtime_error;
+        }
+        const auto instance = (instance_object*)m_stack.top(1).as.obj;
+        const auto name = read_variable_definition(static_cast<opcode>(instruction) == opcode::op_get_property_long);
+        const auto name_str = (string_object*)name.as.obj;
+        instance->fields[name_str] = m_stack.top();
+        const auto v = m_stack.pop();
+        m_stack.pop();
+        m_stack.push(v);
+        break;
+      }
+      case to_utype(opcode::op_method):
+      case to_utype(opcode::op_method_long):
+      {
+        const auto name = read_variable_definition(static_cast<opcode>(instruction) == opcode::op_method_long);
+        const auto name_str = (string_object*)name.as.obj;
+        define_method(name_str);
+        break;
+      }
+      case to_utype(opcode::op_invoke):
+      case to_utype(opcode::op_invoke_long):
+      {
+        const auto method = read_variable_definition(static_cast<opcode>(instruction) == opcode::op_invoke_long);
+        const auto argc = read_byte();
+        if(!invoke((string_object*)method.as.obj, argc))
+        {
+          return interpret_result::runtime_error;
+        }
+        frame = &m_call_frames.back();
+        break;
+      }
+      case to_utype(opcode::op_inherit):
+      {
+        auto super = m_stack.top(1);
+        auto sub = m_stack.top();
+
+        if(super.type != value_type::object_val || super.as.obj->get_type() != object_type::obj_class)
+        {
+          runtime_error("superclass must be a class");
+          return interpret_result::runtime_error;
+        }
+
+        auto super_class = (class_object*)super.as.obj;
+        auto sub_class = (class_object*)sub.as.obj;
+
+        sub_class->methods.insert_range(super_class->methods);
+        m_stack.pop();
+
+        break;
+      }
+      case to_utype(opcode::op_get_super):
+      case to_utype(opcode::op_get_super_long):
+      {
+        auto method_name =
+            (string_object*)read_variable_definition(static_cast<opcode>(instruction) == opcode::op_get_super_long)
+                .as.obj;
+        auto superclass = (class_object*)m_stack.pop().as.obj;
+        m_gc.guard_value(value_t{copy{(object*)superclass}});
+        if(!bind_a_method(superclass, method_name))
+        {
+          m_gc.letgo_value();
+          return interpret_result::runtime_error;
+        }
+        m_gc.letgo_value();
+        break;
+      }
+      case to_utype(opcode::op_invoke_super):
+      case to_utype(opcode::op_invoke_super_long):
+      {
+        auto method_name =
+            (string_object*)read_variable_definition(static_cast<opcode>(instruction) == opcode::op_invoke_super_long)
+                .as.obj;
+        auto argc = read_byte();
+        auto superclass = (class_object*)m_stack.pop().as.obj;
+        if(!invoke_from_class(superclass, method_name, argc))
+        {
+          return interpret_result::runtime_error;
+        }
+        frame = &m_call_frames.back();
         break;
       }
       }
@@ -447,8 +587,7 @@ namespace ok
     return frame->closure->function->associated_chunk.constants[index];
   }
 
-  // i know its just a copy from the previous function, but this method is temporary so its ok-ish
-  value_t vm::read_global_definition(bool p_is_long)
+  value_t vm::read_variable_definition(bool p_is_long)
   {
     auto* frame = &m_call_frames.back();
 
@@ -474,6 +613,8 @@ namespace ok
     if(!ret.has_value())
     {
       runtime_error("invalid operation"); // TODO(Qais): atleast check error type
+
+      m_stack.pop(); // remove the orphan value, since we wont be overwriting it
       return std::unexpected(interpret_result::runtime_error);
     }
     m_stack.top() = ret.value();
@@ -483,14 +624,15 @@ namespace ok
   auto vm::perform_binary_infix(const operator_type p_operator) -> std::expected<void, interpret_result>
   {
     auto b = m_stack.top();
-    m_stack.pop();
-    auto a = m_stack.top();
+    auto a = m_stack.top(1);
 
     auto ret = perform_binary_infix_real(a, p_operator, b); // a.operator_infix_binary(p_operator, b);
+    m_stack.pop();
     if(!ret.has_value())
     {
       // TODO(Qais): check error type at least
       runtime_error("invalid operation");
+      m_stack.pop(); // remove the orphan value, since we wont be overwriting it
       return std::unexpected(interpret_result::runtime_error);
     }
     m_stack.top() = ret.value();
@@ -501,28 +643,31 @@ namespace ok
   {
   }
 
-  auto vm::call_value(uint8_t argc, value_t callee) -> std::expected<void, interpret_result>
+  auto vm::call_value(uint8_t argc, value_t callee) -> bool
   {
     TRACELN("call value: argc: {}, callee: {}", argc, (uint32_t)callee.type);
     if(callee.type != value_type::object_val)
     {
-      runtime_error("bad call: callee isnt of type object");
-      return std::unexpected(interpret_result::runtime_error);
+      runtime_error("bad call: callee isn't of type object");
+      return false;
     }
 
-    auto it = m_objects_operations.find(callee.as.obj->type);
+    auto it = m_objects_operations.find(callee.as.obj->get_type());
     if(it == m_objects_operations.end())
     {
-      runtime_error("bad call: callee doesnt implement call");
-      return std::unexpected(interpret_result::runtime_error);
+      runtime_error("bad call: callee doesn't implement call");
+      return false;
     }
 
     update_call_frame_top_index();
     auto res = it->second.call_function(callee.as.obj, argc);
     if(!res.has_value())
     {
-      runtime_error("argument mismatch");
-      return std::unexpected(interpret_result::runtime_error);
+      if(res.error() != value_error::internal_propagated_error)
+      {
+        runtime_error("" + std::to_string(to_utype(res.error())));
+      }
+      return false;
     }
     else
     {
@@ -530,11 +675,43 @@ namespace ok
       if(opt.has_value())
       {
         auto f_res = push_call_frame(opt.value());
-        if(!f_res.has_value())
-          return std::unexpected(interpret_result::runtime_error);
+        return f_res.has_value();
       }
     }
-    return {};
+    return true;
+  }
+
+  bool vm::call(uint8_t p_argc, closure_object* p_callee)
+  {
+  }
+
+  bool vm::invoke(string_object* p_method_name, uint8_t p_argc)
+  {
+    auto receiver = m_stack.top(p_argc);
+    if(receiver.type != value_type::object_val || receiver.as.obj->get_type() != object_type::obj_instance)
+    {
+      runtime_error("can't invoke a non existing method");
+      return false;
+    }
+    auto instance = (instance_object*)receiver.as.obj;
+    const auto it = instance->fields.find(p_method_name);
+    if(instance->fields.end() != it)
+    {
+      m_stack.top(p_argc) = it->second;
+      return call_value(p_argc, it->second);
+    }
+    return invoke_from_class(instance->class_, p_method_name, p_argc);
+  }
+
+  bool vm::invoke_from_class(class_object* p_class, string_object* p_method_name, uint8_t p_argc)
+  {
+    auto it = p_class->methods.find(p_method_name);
+    if(p_class->methods.end() == it)
+    {
+      runtime_error("undefined property: "); // TODO(Qais): runtime error is shit
+      return false;
+    }
+    return call_value(p_argc, it->second);
   }
 
   upvalue_object* vm::capture_value(size_t p_slot)
@@ -549,7 +726,7 @@ namespace ok
     }
     if(upval != nullptr && upval->location == slot_ptr)
       return upval;
-    auto* new_upval = upvalue_object::create<upvalue_object>(slot_ptr);
+    auto* new_upval = new_tobject<upvalue_object>(slot_ptr);
     new_upval->next = upval;
     if(pre == nullptr)
       m_open_upvalues = new_upval;
@@ -567,6 +744,27 @@ namespace ok
       upval->location = &upval->closed;
       m_open_upvalues = upval->next;
     }
+  }
+
+  void vm::define_method(string_object* p_name)
+  {
+    auto method = m_stack.top();
+    auto class_ = (class_object*)m_stack.top(1).as.obj;
+    class_->methods[p_name] = method;
+    m_stack.pop();
+  }
+
+  bool vm::bind_a_method(class_object* p_class, string_object* p_name)
+  {
+    auto it = p_class->methods.find(p_name);
+    if(p_class->methods.end() == it)
+    {
+      runtime_error("undefined property: " + std::string{std::string_view{p_name->chars, p_name->length}});
+      return false;
+    }
+    auto bound = new_object<bound_method_object>(m_stack.top(), (closure_object*)it->second.as.obj);
+    m_stack.top() = value_t{copy{bound}};
+    return true;
   }
 
   std::expected<value_t, value_error>
@@ -630,13 +828,13 @@ namespace ok
   std::expected<value_t, value_error>
   vm::perform_binary_infix_real_object(object* p_this, operator_type p_operator, value_t p_other)
   {
-    auto op_it = m_objects_operations.find(p_this->type);
+    auto op_it = m_objects_operations.find(p_this->get_type());
     if(m_objects_operations.end() == op_it)
       return std::unexpected(value_error::undefined_operation);
     auto ret = op_it->second.binary_infix.call_operation(
         _make_object_key(p_operator,
                          p_other.type,
-                         p_other.type == value_type::object_val ? p_other.as.obj->type : object_type::none),
+                         p_other.type == value_type::object_val ? p_other.as.obj->get_type() : object_type::none),
         std::move(p_this),
         std::move(p_other));
     if(!ret.has_value())
@@ -670,8 +868,7 @@ namespace ok
 
   bool vm::is_value_falsy(value_t p_value) const
   {
-    return p_value.type == value_type::null_val || (p_value.type == value_type::bool_val && !p_value.as.boolean) ||
-           (p_value.type == value_type::number_val && p_value.as.number == 0);
+    return p_value.type == value_type::null_val || (p_value.type == value_type::bool_val && !p_value.as.boolean);
   }
 
   void vm::print_value(value_t p_value)
@@ -691,16 +888,19 @@ namespace ok
       print_object(p_value.as.obj);
       break;
     default:
-      std::print("{}", (uintptr_t)(uint8_t*)p_value.as.obj); // TODO(Qais): print as pointer
+      std::print("{}", (void*)p_value.as.obj);
       break;
     }
   }
 
   void vm::print_object(object* p_object)
   {
-    auto op_it = m_objects_operations.find(p_object->type);
+    const auto tp = p_object->get_type();
+    auto op_it = m_objects_operations.find(tp);
     if(m_objects_operations.end() == op_it)
-      runtime_error("invalid print");
+    {
+      ASSERT(false);
+    }
     op_it->second.print_function(p_object);
   }
 
@@ -735,27 +935,7 @@ namespace ok
     while(m_objects_list != nullptr)
     {
       auto next = m_objects_list->next;
-      switch(m_objects_list->type)
-      {
-      case object_type::obj_string:
-        delete(string_object*)m_objects_list;
-        break;
-      case object_type::obj_function:
-        delete(function_object*)m_objects_list;
-        break;
-      case object_type::obj_native_function:
-        delete(native_function_object*)m_objects_list;
-        break;
-      case object_type::obj_closure:
-        delete(closure_object*)m_objects_list;
-        break;
-      case object_type::obj_upvalue:
-        delete(upvalue_object*)m_objects_list;
-        break;
-      default:
-        ASSERT(false);
-        break; // TODO(Qais): error
-      }
+      delete_object(m_objects_list);
       m_objects_list = next;
     }
   }

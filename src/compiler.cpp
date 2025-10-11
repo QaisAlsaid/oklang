@@ -1,6 +1,8 @@
 #include "compiler.hpp"
 #include "ast.hpp"
 #include "chunk.hpp"
+#include "constants.hpp"
+#include "copy.hpp"
 #include "debug.hpp"
 #include "lexer.hpp"
 #include "macros.hpp"
@@ -15,6 +17,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <iostream>
 #include <string>
 #include <vector>
 
@@ -56,11 +59,14 @@ namespace ok
       return nullptr;
     TRACELN("{}", root->to_string());
     // top level script function
-    push_function_context(
-        {function_object::create<function_object>(0, p_function_name), compile_function::type::script});
-    compile(root.get());
-    current_chunk()->write(opcode::op_null, 0);
-    current_chunk()->write(opcode::op_return, 0);
+    {
+      get_vm_gc().guard_value(value_t{copy{(object*)p_function_name}});
+      push_function_context({new_tobject<function_object>(0, p_function_name), compile_function::type::script});
+      get_vm_gc().letgo_value();
+      scope_guard<compiler> guard{&compiler::being_scope, &compiler::end_scope, this};
+      compile(root.get());
+      emit_return(0);
+    }
 #ifdef PARANOID
     debug::disassembler::disassemble_chunk(*current_chunk(), current_function().function->name->chars);
 #endif
@@ -95,6 +101,12 @@ namespace ok
       return;
     case ast::node_type::nt_null_expr:
       compile((ast::null_expression*)p_node);
+      return;
+    case ast::node_type::nt_this_expr:
+      compile((ast::this_expression*)p_node);
+      return;
+    case ast::node_type::nt_super_expr:
+      compile((ast::super_expression*)p_node);
       return;
     case ast::node_type::nt_print_stmt:
       compile((ast::print_statement*)p_node);
@@ -131,6 +143,12 @@ namespace ok
       return;
     case ast::node_type::nt_return_stmt:
       compile((ast::return_statement*)p_node);
+      return;
+    case ast::node_type::nt_class_decl:
+      compile((ast::class_declaration*)p_node);
+      return;
+    case ast::node_type::nt_access_expr:
+      compile((ast::access_expression*)p_node);
       return;
     default:
       // TODO(Qais): node_type_to_string
@@ -241,22 +259,6 @@ namespace ok
     compile((ast::node*)p_let_decl->get_value().get());
     auto offset = p_let_decl->get_offset();
     declare_variable(str_ident, offset);
-    // auto opt = declare_variable(str_ident, offset);
-    // if(opt.has_value())
-    // {
-    //   auto res = opt.value();
-    //   if(res.first)
-    //   {
-    //     current_chunk()->write(opcode::op_define_global_long, offset);
-    //     const auto span = encode_int<size_t, 3>(res.second);
-    //     current_chunk()->write(span, offset);
-    //   }
-    //   else
-    //   {
-    //     current_chunk()->write(opcode::op_define_global, offset);
-    //     current_chunk()->write(res.second, offset);
-    //   }
-    // }
   }
 
   void compiler::compile(ast::function_declaration* p_function_declaration)
@@ -272,50 +274,7 @@ namespace ok
     auto opt = declare_variable_late(str_name, ident->get_offset());
     // auto opt = declare_variable(str_name, ident->get_offset());
 
-    auto& params = p_function_declaration->get_parameters();
-    // TODO(Qais): move this into own function
-    push_function_context(
-        {function_object::create<function_object>(params.size(), string_object::create<string_object>(str_name)),
-         compile_function::type::function});
-    scope_guard<compiler> guard{&compiler::being_scope, &compiler::end_scope, this};
-
-    for(const auto& param : params)
-    {
-      declare_variable(param->get_value(), param->get_offset());
-      // auto opt = declare_variable(param->get_value(), param->get_offset());
-
-      // if(opt.has_value())
-      // {
-      //   auto res = opt.value();
-      //   if(res.first)
-      //   {
-      //     current_chunk()->write(opcode::op_define_global_long, offset);
-      //     const auto span = encode_int<size_t, 3>(res.second);
-      //     current_chunk()->write(span, offset);
-      //   }
-      //   else
-      //   {
-      //     current_chunk()->write(opcode::op_define_global, offset);
-      //     current_chunk()->write(res.second, offset);
-      //   }
-      // }
-    }
-    compile(p_function_declaration->get_body().get());
-    current_chunk()->write(opcode::op_null, p_function_declaration->get_body()->get_offset());
-    current_chunk()->write(opcode::op_return, p_function_declaration->get_body()->get_offset());
-    auto fun = current_function();
-    fun.function->arity = params.size();
-    auto ups = m_function_contexts.back().upvalues;
-    pop_function_context();
-    current_chunk()->write(opcode::op_closure, ident->get_offset());
-    current_chunk()->write_constant(value_t{fun.function}, ident->get_offset());
-    auto& ctx = m_function_contexts.back();
-    for(uint32_t i = 0; i < fun.function->upvalues; ++i)
-    {
-      current_chunk()->write(ups[i].is_local() ? 1 : 0, p_function_declaration->get_body()->get_offset());
-      const auto idx = encode_int<uint32_t, 3>(ups[i].get_index());
-      current_chunk()->write(idx, p_function_declaration->get_body()->get_offset());
-    }
+    do_compile_function(p_function_declaration, compile_function::type::function);
 
     if(opt.has_value())
     {
@@ -334,12 +293,195 @@ namespace ok
     }
   }
 
+  void compiler::do_compile_function(ast::function_declaration* p_function_declaration, compile_function::type p_type)
+  {
+    auto& ident = p_function_declaration->get_identifier();
+    if(ident == nullptr)
+    {
+      return; // TODO(Qais): warning declaration doesnt declare anything
+    }
+    const auto& str_name = ident->get_value();
+    auto& params = p_function_declaration->get_parameters();
+    // TODO(Qais): move this into own function
+    auto str = new_tobject<string_object>(str_name);
+    get_vm_gc().guard_value(value_t{copy{(object*)str}});
+    push_function_context({new_tobject<function_object>(params.size(), str), p_type});
+    get_vm_gc().letgo_value();
+    scope_guard<compiler> guard{&compiler::being_scope, &compiler::end_scope, this};
+
+    for(const auto& param : params)
+    {
+      declare_variable(param->get_value(), param->get_offset());
+    }
+    compile(p_function_declaration->get_body().get());
+    emit_return(p_function_declaration->get_offset());
+    auto fun = current_function();
+    fun.function->arity = params.size();
+    auto ups = m_function_contexts.back().upvalues;
+    pop_function_context();
+    current_chunk()->write(opcode::op_closure, ident->get_offset());
+    current_chunk()->write_constant(value_t{copy{(object*)fun.function}}, ident->get_offset());
+    auto& ctx = m_function_contexts.back();
+    for(uint32_t i = 0; i < fun.function->upvalues; ++i)
+    {
+      current_chunk()->write(ups[i].is_local() ? 1 : 0, p_function_declaration->get_body()->get_offset());
+      const auto idx = encode_int<uint32_t, 3>(ups[i].get_index());
+      current_chunk()->write(idx, p_function_declaration->get_body()->get_offset());
+    }
+  }
+
+  void compiler::compile(ast::class_declaration* p_class_declaration)
+  {
+    auto& ident = p_class_declaration->get_identifier();
+    if(ident == nullptr)
+    {
+      return; // TODO(Qais): warning declaration doesnt declare anything
+    }
+    const auto& str_name = ident->get_value();
+    auto offset = ident->get_offset();
+    auto str = new_tobject<string_object>(str_name);
+    get_vm_gc().guard_value(value_t{copy{(object*)str}});
+    auto idx = current_chunk()->add_identifier(value_t{copy((object*)str)}, offset);
+    get_vm_gc().letgo_value();
+    auto opt = declare_variable_late(str_name, ident->get_offset(), idx);
+
+    push_class_context({p_class_declaration->get_super() != nullptr});
+
+    if(is_long(idx))
+    {
+      current_chunk()->write(opcode::op_class_long, offset);
+      current_chunk()->write(encode_int<uint32_t, 3>(idx), offset);
+    }
+    else
+    {
+      current_chunk()->write(opcode::op_class, offset);
+      current_chunk()->write(idx, offset);
+    }
+
+    if(opt.has_value())
+    {
+      auto res = opt.value();
+      if(res > UINT8_MAX)
+      {
+        current_chunk()->write(opcode::op_define_global_long, offset);
+        const auto span = encode_int<size_t, 3>(res);
+        current_chunk()->write(span, offset);
+      }
+      else
+      {
+        current_chunk()->write(opcode::op_define_global, offset);
+        current_chunk()->write(res, offset);
+      }
+    }
+
+    if(p_class_declaration->get_super() != nullptr)
+    {
+      const auto& super = p_class_declaration->get_super();
+      const auto& super_name = super->get_value();
+      if(str_name == super_name)
+      {
+        compile_error(error::code::self_inheritance, "class '{}', can't inherit from itself", str_name);
+      }
+      compiler::being_scope();
+      named_variable(super_name, super->get_offset(), variable_operation::vo_get);
+      named_variable(str_name, offset, variable_operation::vo_get);
+      declare_variable("super", offset);
+      current_chunk()->write(opcode::op_inherit, super->get_offset());
+    }
+
+    named_variable(str_name, offset, variable_operation::vo_get);
+    for(const auto& method : p_class_declaration->get_methods())
+    {
+      const auto offset = method->get_offset();
+      const auto& ident = method->get_identifier()->get_value();
+      const auto str = current_chunk()->add_identifier(value_t{ident}, offset);
+
+      auto type = ident == constants::init_string_literal ? compile_function::type::initializer
+                                                          : compile_function::type::method;
+
+      do_compile_function(method.get(), type);
+
+      current_chunk()->write(opcode::op_method, offset);
+      if(str < op_constant_max_count)
+      {
+        current_chunk()->write(str, offset);
+      }
+      else
+      {
+        current_chunk()->write(encode_int<uint32_t, 3>(str), offset);
+      }
+    }
+
+    // pop class pushed using named_variable call
+    current_chunk()->write(opcode::op_pop, offset);
+    if(p_class_declaration->get_super() != nullptr)
+    {
+      end_scope();
+    }
+    pop_class_context();
+  }
+
   void compiler::compile(ast::call_expression* p_call_expression)
   {
     compile(p_call_expression->get_callable().get());
     auto i = compile_arguments_list(p_call_expression->get_arguments());
     current_chunk()->write(opcode::op_call, p_call_expression->get_offset());
     current_chunk()->write(i, p_call_expression->get_offset());
+  }
+
+  void compiler::compile(ast::access_expression* p_access_expression)
+  {
+    compile(p_access_expression->get_target().get());
+    auto property_name = current_chunk()->add_identifier(value_t{p_access_expression->get_property()->get_value()},
+                                                         p_access_expression->get_property()->get_offset());
+    auto is_long = !(property_name < op__global_max_count + 1);
+    auto offset = p_access_expression->get_offset();
+    if(p_access_expression->get_value() == nullptr) // get
+    {
+      if(p_access_expression->is_invoke())
+      {
+        auto argc = compile_arguments_list(p_access_expression->get_arguments_list());
+        if(is_long)
+        {
+          current_chunk()->write(opcode::op_invoke_long, offset);
+          current_chunk()->write(encode_int<uint32_t, 3>(property_name), offset);
+          current_chunk()->write(argc, offset);
+        }
+        else
+        {
+          current_chunk()->write(opcode::op_invoke, offset);
+          current_chunk()->write(property_name, offset);
+          current_chunk()->write(argc, offset);
+        }
+      }
+      else
+      {
+        if(is_long)
+        {
+          current_chunk()->write(opcode::op_get_property_long, offset);
+          current_chunk()->write(encode_int<uint32_t, 3>(property_name), offset);
+        }
+        else
+        {
+          current_chunk()->write(opcode::op_get_property, offset);
+          current_chunk()->write(property_name, offset);
+        }
+      }
+    }
+    else // set
+    {
+      compile(p_access_expression->get_value().get());
+      if(is_long)
+      {
+        current_chunk()->write(opcode::op_set_property_long, offset);
+        current_chunk()->write(encode_int<uint32_t, 3>(property_name), offset);
+      }
+      else
+      {
+        current_chunk()->write(opcode::op_set_property, offset);
+        current_chunk()->write(property_name, offset);
+      }
+    }
   }
 
   void compiler::compile(ast::block_statement* p_block_stmt)
@@ -356,10 +498,10 @@ namespace ok
     compile(p_if_statement->get_expression().get());
     auto offset = p_if_statement->get_offset();
 
-    if(!m_loop_stack.empty())
-    {
-      m_loop_stack.back().pops_required++;
-    }
+    // if(!m_loop_stack.empty())
+    // {
+    //   m_loop_stack.back().pops_required++;
+    // }
 
     auto if_jump = emit_jump(opcode::op_conditional_jump, offset);
     compile(p_if_statement->get_consequence().get());
@@ -371,7 +513,7 @@ namespace ok
       compile(alt.get());
     }
     patch_jump(else_jump, current_chunk()->code.size());
-    current_chunk()->write(opcode::op_pop, offset);
+    // current_chunk()->write(opcode::op_pop, offset);
   }
 
   void compiler::compile(ast::while_statement* p_while_statement)
@@ -382,13 +524,13 @@ namespace ok
     compile(p_while_statement->get_expression().get());
     auto offset = p_while_statement->get_offset();
     auto exit_jump = emit_jump(opcode::op_conditional_jump, offset);
-    current_chunk()->write(opcode::op_pop, offset); // pop expression on first path
+    // current_chunk()->write(opcode::op_pop, offset); // pop expression on first path
     auto body_start = current_chunk()->code.size();
     compile(p_while_statement->get_body().get());
     emit_loop(loop_start, offset);
     m_loop_stack.back().break_target = current_chunk()->code.size();
     patch_jump(exit_jump, current_chunk()->code.size());
-    current_chunk()->write(opcode::op_pop, offset); // pop expression second path
+    // current_chunk()->write(opcode::op_pop, offset); // pop expression on second path
     m_loop_stack.back().continue_target = loop_start;
     patch_loop_context();
     m_loop_stack.pop_back();
@@ -396,7 +538,9 @@ namespace ok
 
   void compiler::compile(ast::for_statement* p_for_statement)
   {
+    auto prev_scope_depth = m_scope_depth;
     scope_guard<compiler> guard{&compiler::being_scope, &compiler::end_scope, this};
+
     {
       const auto& init = p_for_statement->get_initializer();
       if(init != nullptr)
@@ -414,7 +558,7 @@ namespace ok
       {
         compile(cond.get());
         exit_jump = emit_jump(opcode::op_conditional_jump, offset);
-        current_chunk()->write(opcode::op_pop, offset);
+        // current_chunk()->write(opcode::op_pop, offset);
       }
     }
 
@@ -423,31 +567,35 @@ namespace ok
     // do so
     if(inc != nullptr)
       m_loop_stack.back().continue_forward = true;
-
-    compile(p_for_statement->get_body().get());
-    m_loop_stack.back().continue_target = loop_start;
     {
-      if(inc != nullptr)
+      scope_guard<compiler> bguard{&compiler::being_scope, &compiler::end_scope, this};
+      compile(p_for_statement->get_body().get());
+
+      m_loop_stack.back().continue_target = loop_start;
       {
-        m_loop_stack.back().continue_target = current_chunk()->code.size();
-        compile(inc.get());
-        current_chunk()->write(opcode::op_pop, offset);
+        if(inc != nullptr)
+        {
+          m_loop_stack.back().continue_target = current_chunk()->code.size();
+          compile(inc.get());
+          current_chunk()->write(opcode::op_pop, offset);
+        }
       }
+      emit_loop(loop_start, offset);
+      m_loop_stack.back().break_target = current_chunk()->code.size();
     }
-    emit_loop(loop_start, offset);
-    m_loop_stack.back().break_target = current_chunk()->code.size();
+
     if(exit_jump != -1)
     {
       patch_jump(exit_jump, current_chunk()->code.size());
-      current_chunk()->write(opcode::op_pop, offset);
+      // current_chunk()->write(opcode::op_pop, offset);
     }
+
     patch_loop_context();
     m_loop_stack.pop_back();
   }
 
   void compiler::compile(ast::control_flow_statement* p_control_flow_statement)
   {
-    ASSERT(false); // control flow statements arent supported yet!
     auto cft = p_control_flow_statement->get_control_flow_type();
     ASSERT(cft != ast::control_flow_statement::cftype::cf_invalid);
     if(m_loop_stack.empty())
@@ -465,7 +613,8 @@ namespace ok
     {
       auto prev_scope_depth = m_scope_depth;
       m_scope_depth = loop_ctx.scope_depth;
-      clean_scope_garbage();
+      // clean_scope_garbage();
+      pop_locals();
       m_scope_depth = prev_scope_depth;
     }
 
@@ -476,8 +625,8 @@ namespace ok
     }
     else
     {
-      emit_pops(loop_ctx.pops_required);
-      loop_ctx.pops_required = 0;
+      // emit_pops(loop_ctx.pops_required);
+      // loop_ctx.pops_required = 0;
       auto jump = emit_jump(loop_ctx.continue_forward ? opcode::op_jump : opcode::op_loop, offset);
       loop_ctx.continues.push_back(jump);
     }
@@ -487,13 +636,16 @@ namespace ok
   {
     if(p_return_statement->get_expression() == nullptr)
     {
-      current_chunk()->write(opcode::op_null, p_return_statement->get_offset());
+      emit_return(p_return_statement->get_offset());
+    }
+    else if(current_function().function_type != compile_function::type::initializer)
+    {
+      compile(p_return_statement->get_expression().get());
       current_chunk()->write(opcode::op_return, p_return_statement->get_offset());
     }
     else
     {
-      compile(p_return_statement->get_expression().get());
-      current_chunk()->write(opcode::op_return, p_return_statement->get_offset());
+      compile_error(error::code::invalid_return_from_non_returning_method, "invalid return from initializer");
     }
   }
 
@@ -664,6 +816,66 @@ namespace ok
     current_chunk()->write(opcode::op_null, p_null->get_offset());
   }
 
+  void compiler::compile(ast::this_expression* p_this)
+  {
+    if(current_class_context() == nullptr)
+    {
+      compile_error(error::code::invalid_usage_of_this_outside_of_class, "invalid usage of 'this' outside of a class");
+      return;
+    }
+    named_variable("this", p_this->get_offset(), variable_operation::vo_get);
+  }
+
+  void compiler::compile(ast::super_expression* p_super)
+  {
+    if(current_class_context() == nullptr)
+    {
+      compile_error(error::code::invalid_usage_of_super_outside_of_class,
+                    "invalid usage of 'super' outside of a class");
+      return;
+    }
+    else if(!current_class_context()->has_super)
+    {
+      compile_error(error::code::invalid_usage_of_super_in_non_inherited_class,
+                    "invalid usage of 'super' in non inherited class");
+      return;
+    }
+    auto offset = p_super->get_offset();
+    auto name_str = new_object<string_object>(p_super->get_method()->get_value());
+    auto name = current_chunk()->add_identifier(value_t{copy{name_str}}, offset);
+    named_variable("this", offset, variable_operation::vo_get);
+    named_variable("super", offset, variable_operation::vo_get);
+    if(p_super->is_invoke())
+    {
+      auto invoke_offset = p_super->get_method()->get_offset();
+      auto argc = compile_arguments_list(p_super->get_arguments());
+      if(name < op_constant_max_count)
+      {
+        current_chunk()->write(opcode::op_invoke_super, invoke_offset);
+        current_chunk()->write(name, offset);
+      }
+      else if(name < op_constant_long_max_count)
+      {
+        current_chunk()->write(opcode::op_invoke_super_long, invoke_offset);
+        current_chunk()->write(encode_int<uint32_t, 3>(name), offset);
+      }
+      current_chunk()->write(argc, invoke_offset);
+    }
+    else
+    {
+      if(name < op_constant_max_count)
+      {
+        current_chunk()->write(opcode::op_get_super, offset);
+        current_chunk()->write(name, offset);
+      }
+      else if(name < op_constant_long_max_count)
+      {
+        current_chunk()->write(opcode::op_get_super_long, offset);
+        current_chunk()->write(encode_int<uint32_t, 3>(name), offset);
+      }
+    }
+  }
+
   void compiler::compile(ast::print_statement* p_print_stmt)
   {
     compile(p_print_stmt->get_expression().get());
@@ -677,7 +889,7 @@ namespace ok
     auto jump_inst = p_logical_operator->get_operator() == operator_type::op_and ? opcode::op_conditional_jump
                                                                                  : opcode::op_conditional_truthy_jump;
     auto jump = emit_jump(jump_inst, offset);
-    current_chunk()->write(opcode::op_pop, offset);
+    // current_chunk()->write(opcode::op_pop, offset);
     compile(p_logical_operator->get_right().get());
     patch_jump(jump, current_chunk()->code.size());
   }
@@ -702,7 +914,7 @@ namespace ok
     function_context ctx;
     ctx.function = p_function;
     m_function_contexts.push_back(ctx);
-    get_locals().push_back(local{"", 0});
+    get_locals().push_back(local{p_function.function_type != compile_function::type::function ? "this" : "", 0});
   }
 
   void compiler::pop_function_context()
@@ -721,6 +933,23 @@ namespace ok
   {
     ASSERT(!m_function_contexts.empty());
     return m_function_contexts.back();
+  }
+
+  void compiler::push_class_context(class_context p_ctx)
+  {
+    m_class_contexts.push_back(p_ctx);
+  }
+
+  void compiler::pop_class_context()
+  {
+    m_class_contexts.pop_back();
+  }
+
+  auto compiler::current_class_context() -> class_context*
+  {
+    if(!m_class_contexts.empty())
+      return &m_class_contexts.back();
+    return nullptr;
   }
 
   void compiler::being_scope()
@@ -752,7 +981,27 @@ namespace ok
         current_chunk()->write(opcode::op_close_upvalue, 0);
       curr_locals.pop_back();
     }
-    emit_pops(removed_count);
+    if(removed_count != 0)
+    {
+      emit_pops(removed_count);
+    }
+  }
+
+  void compiler::pop_locals()
+  {
+    uint32_t removed_count = 0;
+    auto& curr_locals = get_locals();
+    for(auto local = curr_locals.rbegin(); local != curr_locals.rend(); ++local)
+    {
+      if(local->depth > m_scope_depth)
+      {
+        removed_count++;
+      }
+    }
+    if(removed_count != 0)
+    {
+      emit_pops(removed_count);
+    }
   }
 
   void compiler::emit_pops(uint32_t p_count)
@@ -860,23 +1109,27 @@ namespace ok
     }
     // global
     auto glob = add_global(value_t{p_str_ident.c_str(), p_str_ident.size()}, p_offset);
-    if(glob > UINT8_MAX)
+    if(glob < op__global_max_count)
+    {
+      current_chunk()->write(opcode::op_define_global, p_offset);
+      current_chunk()->write(glob, p_offset);
+    }
+    else if(glob < op__global_long_max_count)
     {
       current_chunk()->write(opcode::op_define_global_long, p_offset);
       const auto span = encode_int<size_t, 3>(glob);
       current_chunk()->write(span, p_offset);
     }
-    else if(glob < UINT8_MAX + 1)
-    {
-      current_chunk()->write(opcode::op_define_global, p_offset);
-      current_chunk()->write(glob, p_offset);
-    }
     else
-    { // error
+    {
+      compile_error(
+          error::code::global_count_exceeds_limit, "too many global variables, exceeds limit which is: {}", uint24_max);
+      return;
     }
   }
 
-  std::optional<uint32_t> compiler::declare_variable_late(const std::string& p_str_ident, size_t p_offset)
+  std::optional<uint32_t>
+  compiler::declare_variable_late(const std::string& p_str_ident, size_t p_offset, uint32_t identifiers_table_index)
   {
     // local
     if(m_scope_depth > 0)
@@ -978,7 +1231,7 @@ namespace ok
 
   uint32_t compiler::get_or_add_global(value_t p_global, size_t p_offset)
   {
-    ASSERT(p_global.type == value_type::object_val && p_global.as.obj->type == object_type::obj_string);
+    ASSERT(p_global.type == value_type::object_val && p_global.as.obj->get_type() == object_type::obj_string);
     auto* str_glob = (string_object*)p_global.as.obj;
     auto it = m_globals.find(str_glob);
     if(m_globals.end() == it)
@@ -1002,13 +1255,18 @@ namespace ok
     return it->second;
   }
 
-  uint32_t compiler::add_global(value_t p_global, size_t p_offset)
+  uint32_t compiler::add_global(value_t p_global, size_t p_offset, uint32_t p_identifiers_table_index)
   {
-    ASSERT(p_global.type == value_type::object_val && p_global.as.obj->type == object_type::obj_string);
+    auto glob = p_identifiers_table_index;
     auto* str_glob = (string_object*)p_global.as.obj;
-    auto glob = current_chunk()->add_global(p_global, p_offset);
+    if(p_identifiers_table_index == UINT32_MAX)
+    {
+      const auto tp = p_global.as.obj->get_type();
+      ASSERT(p_global.type == value_type::object_val && tp == object_type::obj_string);
+      glob = current_chunk()->add_identifier(p_global, p_offset);
+    }
     m_globals[str_glob] = glob;
-    if(glob >= uint24_max)
+    if(glob > op__global_long_max_count)
       compile_error(
           error::code::global_count_exceeds_limit, "too many global variables, exceeds limit which is: {}", uint24_max);
     return glob;
@@ -1038,6 +1296,20 @@ namespace ok
   //   }
   //   return opcode::op_invalid;
   // }
+
+  void compiler::emit_return(size_t p_offset)
+  {
+    if(current_function().function_type == compile_function::type::initializer)
+    {
+      current_chunk()->write(opcode::op_get_local, p_offset);
+      current_chunk()->write(0, p_offset);
+    }
+    else
+    {
+      current_chunk()->write(opcode::op_null, p_offset);
+    }
+    current_chunk()->write(opcode::op_return, p_offset);
+  }
 
   void compiler::emit_loop(size_t p_loop_start, size_t p_offset)
   {

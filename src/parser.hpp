@@ -46,6 +46,7 @@ namespace ok
         invalid_expression,
         expected_statement,
         expected_expression,
+        unexpected_token,
       };
       code error_code;
       std::string message;
@@ -106,6 +107,9 @@ namespace ok
     std::unique_ptr<ast::control_flow_statement> parse_control_flow_statement();
     std::unique_ptr<ast::function_declaration> parse_function_declaration();
     std::unique_ptr<ast::return_statement> parse_return_statement();
+    std::unique_ptr<ast::class_declaration> parse_class_declaration();
+    std::unique_ptr<ast::function_declaration> parse_function_declaration_impl(token p_trigger,
+                                                                               std::string_view p_callit = "function");
 
     void sync_state();
     void munch_extra_semicolons();
