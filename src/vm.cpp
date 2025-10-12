@@ -55,11 +55,11 @@ namespace ok
 
     auto ret = m_value_operations.add_operations.call_operation(
         combine_value_type_with_object_type(p_lhs, p_rhs), std::move(p_lhs), std::move(p_rhs));
-    if(!ret->has_value())
+    if(!ret.has_value())
     {
       return std::unexpected{value_error::undefined_operation};
     }
-    return ret->value();
+    return ret.value();
   }
 
   template <>
@@ -68,11 +68,11 @@ namespace ok
   {
     auto ret = m_value_operations.subtract_operations.call_operation(
         combine_value_type_with_object_type(p_lhs, p_rhs), std::move(p_lhs), std::move(p_rhs));
-    if(!ret->has_value())
+    if(!ret.has_value())
     {
       return std::unexpected{value_error::undefined_operation};
     }
-    return ret->value();
+    return ret.value();
   }
 
   template <>
@@ -81,11 +81,11 @@ namespace ok
   {
     auto ret = m_value_operations.multiply_operations.call_operation(
         combine_value_type_with_object_type(p_lhs, p_rhs), std::move(p_lhs), std::move(p_rhs));
-    if(!ret->has_value())
+    if(!ret.has_value())
     {
       return std::unexpected{value_error::undefined_operation};
     }
-    return ret->value();
+    return ret.value();
   }
 
   template <>
@@ -94,11 +94,11 @@ namespace ok
   {
     auto ret = m_value_operations.divide_operations.call_operation(
         combine_value_type_with_object_type(p_lhs, p_rhs), std::move(p_lhs), std::move(p_rhs));
-    if(!ret->has_value())
+    if(!ret.has_value())
     {
       return std::unexpected{value_error::undefined_operation};
     }
-    return ret->value();
+    return ret.value();
   }
 
   template <>
@@ -112,11 +112,11 @@ namespace ok
 
     auto ret = m_value_operations.equal_operations.call_operation(
         combine_value_type_with_object_type(p_lhs, p_rhs), std::move(p_lhs), std::move(p_rhs));
-    if(!ret->has_value())
+    if(!ret.has_value())
     {
       return std::unexpected{value_error::undefined_operation};
     }
-    return ret->value();
+    return ret.value();
   }
 
   template <>
@@ -130,11 +130,11 @@ namespace ok
 
     auto ret = m_value_operations.bang_equal_operations.call_operation(
         combine_value_type_with_object_type(p_lhs, p_rhs), std::move(p_lhs), std::move(p_rhs));
-    if(!ret->has_value())
+    if(!ret.has_value())
     {
       return std::unexpected{value_error::undefined_operation};
     }
-    return ret->value();
+    return ret.value();
   }
 
   template <>
@@ -149,11 +149,11 @@ namespace ok
 
     auto ret = m_value_operations.greater_operations.call_operation(
         combine_value_type_with_object_type(p_lhs, p_rhs), std::move(p_lhs), std::move(p_rhs));
-    if(!ret->has_value())
+    if(!ret.has_value())
     {
       return std::unexpected{value_error::undefined_operation};
     }
-    return ret->value();
+    return ret.value();
   }
 
   template <>
@@ -168,11 +168,11 @@ namespace ok
 
     auto ret = m_value_operations.greater_equal_operations.call_operation(
         combine_value_type_with_object_type(p_lhs, p_rhs), std::move(p_lhs), std::move(p_rhs));
-    if(!ret->has_value())
+    if(!ret.has_value())
     {
       return std::unexpected{value_error::undefined_operation};
     }
-    return ret->value();
+    return ret.value();
   }
 
   template <>
@@ -187,11 +187,11 @@ namespace ok
 
     auto ret = m_value_operations.less_operations.call_operation(
         combine_value_type_with_object_type(p_lhs, p_rhs), std::move(p_lhs), std::move(p_rhs));
-    if(!ret->has_value())
+    if(!ret.has_value())
     {
       return std::unexpected{value_error::undefined_operation};
     }
-    return ret->value();
+    return ret.value();
   }
 
   template <>
@@ -206,11 +206,11 @@ namespace ok
 
     auto ret = m_value_operations.less_equal_operations.call_operation(
         combine_value_type_with_object_type(p_lhs, p_rhs), std::move(p_lhs), std::move(p_rhs));
-    if(!ret->has_value())
+    if(!ret.has_value())
     {
       return std::unexpected{value_error::undefined_operation};
     }
-    return ret->value();
+    return ret.value();
   }
 
   template <operator_type>
@@ -224,7 +224,7 @@ namespace ok
   {
     if(OK_IS_VALUE_NUMBER(p_lhs) && OK_IS_VALUE_NUMBER(p_rhs))
     {
-      return value_t{p_lhs.as.number + p_lhs.as.number};
+      return value_t{OK_VALUE_AS_NUMBER(p_lhs) + OK_VALUE_AS_NUMBER(p_rhs)};
     }
     else if(OK_IS_VALUE_OBJECT(p_lhs) || OK_IS_VALUE_OBJECT(p_rhs))
     {
@@ -238,7 +238,7 @@ namespace ok
   {
     if(OK_IS_VALUE_NUMBER(p_lhs) && OK_IS_VALUE_NUMBER(p_rhs))
     {
-      return value_t{p_lhs.as.number - p_lhs.as.number};
+      return value_t{OK_VALUE_AS_NUMBER(p_lhs) - OK_VALUE_AS_NUMBER(p_rhs)};
     }
     else if(OK_IS_VALUE_OBJECT(p_lhs) || OK_IS_VALUE_OBJECT(p_rhs))
     {
@@ -252,7 +252,7 @@ namespace ok
   {
     if(OK_IS_VALUE_NUMBER(p_lhs) && OK_IS_VALUE_NUMBER(p_rhs))
     {
-      return value_t{p_lhs.as.number * p_lhs.as.number};
+      return value_t{OK_VALUE_AS_NUMBER(p_lhs) * OK_VALUE_AS_NUMBER(p_rhs)};
     }
     else if(OK_IS_VALUE_OBJECT(p_lhs) || OK_IS_VALUE_OBJECT(p_rhs))
     {
@@ -266,7 +266,7 @@ namespace ok
   {
     if(OK_IS_VALUE_NUMBER(p_lhs) && OK_IS_VALUE_NUMBER(p_rhs))
     {
-      return value_t{p_lhs.as.number / p_lhs.as.number};
+      return value_t{OK_VALUE_AS_NUMBER(p_lhs) / OK_VALUE_AS_NUMBER(p_rhs)};
     }
     else if(OK_IS_VALUE_OBJECT(p_lhs) || OK_IS_VALUE_OBJECT(p_rhs))
     {
@@ -280,7 +280,7 @@ namespace ok
   {
     if(OK_IS_VALUE_NUMBER(p_lhs) && OK_IS_VALUE_NUMBER(p_rhs))
     {
-      return value_t{p_lhs.as.number == p_lhs.as.number};
+      return value_t{OK_VALUE_AS_NUMBER(p_lhs) == OK_VALUE_AS_NUMBER(p_rhs)};
     }
     else if(OK_IS_VALUE_OBJECT(p_lhs) || OK_IS_VALUE_OBJECT(p_rhs))
     {
@@ -295,7 +295,7 @@ namespace ok
   {
     if(OK_IS_VALUE_NUMBER(p_lhs) && OK_IS_VALUE_NUMBER(p_rhs))
     {
-      return value_t{p_lhs.as.number != p_lhs.as.number};
+      return value_t{OK_VALUE_AS_NUMBER(p_lhs) != OK_VALUE_AS_NUMBER(p_rhs)};
     }
     else if(OK_IS_VALUE_OBJECT(p_lhs) || OK_IS_VALUE_OBJECT(p_rhs))
     {
@@ -309,7 +309,7 @@ namespace ok
   {
     if(OK_IS_VALUE_NUMBER(p_lhs) && OK_IS_VALUE_NUMBER(p_rhs))
     {
-      return value_t{p_lhs.as.number > p_lhs.as.number};
+      return value_t{OK_VALUE_AS_NUMBER(p_lhs) > OK_VALUE_AS_NUMBER(p_rhs)};
     }
     else if(OK_IS_VALUE_OBJECT(p_lhs) || OK_IS_VALUE_OBJECT(p_rhs))
     {
@@ -338,7 +338,7 @@ namespace ok
   {
     if(OK_IS_VALUE_NUMBER(p_lhs) && OK_IS_VALUE_NUMBER(p_rhs))
     {
-      return value_t{p_lhs.as.number < p_lhs.as.number};
+      return value_t{OK_VALUE_AS_NUMBER(p_lhs) < OK_VALUE_AS_NUMBER(p_rhs)};
     }
     else if(OK_IS_VALUE_OBJECT(p_lhs) || OK_IS_VALUE_OBJECT(p_rhs))
     {
@@ -353,7 +353,7 @@ namespace ok
   {
     if(OK_IS_VALUE_NUMBER(p_lhs) && OK_IS_VALUE_NUMBER(p_rhs))
     {
-      return value_t{p_lhs.as.number <= p_lhs.as.number};
+      return value_t{OK_VALUE_AS_NUMBER(p_lhs) <= OK_VALUE_AS_NUMBER(p_rhs)};
     }
     else if(OK_IS_VALUE_OBJECT(p_lhs) || OK_IS_VALUE_OBJECT(p_rhs))
     {
@@ -373,11 +373,74 @@ namespace ok
   {
     const auto res =
         m_value_operations.negate_operations.call_operation(OK_VALUE_AS_OBJECT(p_this)->get_type(), std::move(p_this));
-    if(!res->has_value())
+    if(!res.has_value())
     {
       return std::unexpected{value_error::undefined_operation};
     }
-    return res->value();
+    return res.value();
+  }
+
+  template <>
+  auto vm::perform_unary_prefix_others<operator_type::op_plus>(value_t p_this) -> operations_return_type
+  {
+    const auto res = m_value_operations.unary_plus_operations.call_operation(OK_VALUE_AS_OBJECT(p_this)->get_type(),
+                                                                             std::move(p_this));
+    if(!res.has_value())
+    {
+      return std::unexpected{value_error::undefined_operation};
+    }
+    return res.value();
+  }
+
+  template <>
+  auto vm::perform_unary_prefix_others<operator_type::op_bool>(value_t p_this) -> operations_return_type
+  {
+    const auto res =
+        m_value_operations.bang_operations.call_operation(OK_VALUE_AS_OBJECT(p_this)->get_type(), std::move(p_this));
+    if(!res.has_value())
+    {
+      return value_t{!is_value_falsy(p_this)};
+    }
+
+    const auto val = res.value();
+    if(val.has_value() && !OK_IS_VALUE_BOOL(val.value()))
+    {
+      return std::unexpected{value_error::invalid_return_type};
+    }
+
+    return val;
+  }
+
+  template <>
+  auto vm::perform_unary_prefix<operator_type::op_bool>(value_t p_this) -> operations_return_type
+  {
+    const auto res = is_builtin_falsy(p_this);
+    if(res.has_value())
+    {
+      return value_t{!res.value()};
+    }
+    else if(OK_IS_VALUE_OBJECT(p_this))
+    {
+      return perform_unary_prefix_others<operator_type::op_bool>(p_this);
+    }
+    return std::unexpected{value_error::undefined_operation};
+  }
+
+  template <>
+  auto vm::perform_unary_prefix_others<operator_type::op_bang>(value_t p_this) -> operations_return_type
+  {
+    const auto res =
+        m_value_operations.bang_operations.call_operation(OK_VALUE_AS_OBJECT(p_this)->get_type(), std::move(p_this));
+    if(!res.has_value())
+    {
+      const auto boolform = perform_unary_prefix<operator_type::op_bool>(p_this);
+      if(boolform.has_value())
+      {
+        return value_t{OK_VALUE_AS_BOOL(boolform.value())};
+      }
+      return value_t{is_value_falsy(p_this)}; // fallback!
+    }
+    return res.value();
   }
 
   template <operator_type>
@@ -396,6 +459,35 @@ namespace ok
     else if(OK_IS_VALUE_OBJECT(p_this))
     {
       return perform_unary_prefix_others<operator_type::op_minus>(p_this);
+    }
+    return std::unexpected{value_error::undefined_operation};
+  }
+
+  template <>
+  auto vm::perform_unary_prefix<operator_type::op_plus>(value_t p_this) -> operations_return_type
+  {
+    if(OK_IS_VALUE_NUMBER(p_this))
+    {
+      return value_t{+OK_VALUE_AS_NUMBER(p_this)};
+    }
+    else if(OK_IS_VALUE_OBJECT(p_this))
+    {
+      return perform_unary_prefix_others<operator_type::op_plus>(p_this);
+    }
+    return std::unexpected{value_error::undefined_operation};
+  }
+
+  template <>
+  auto vm::perform_unary_prefix<operator_type::op_bang>(value_t p_this) -> operations_return_type
+  {
+    const auto ret = is_builtin_falsy(p_this);
+    if(ret.has_value())
+    {
+      return value_t{ret.value()};
+    }
+    else if(OK_IS_VALUE_OBJECT(p_this))
+    {
+      return perform_unary_prefix_others<operator_type::op_bang>(p_this);
     }
     return std::unexpected{value_error::undefined_operation};
   }
@@ -728,6 +820,7 @@ namespace ok
         }
         m_stack.pop();
         m_stack.push(ret.value());
+        break;
         // if(!ret.has_value())
         //   return ret.error();
         // break;
@@ -825,8 +918,18 @@ namespace ok
       }
       case to_utype(opcode::op_not):
       {
-        m_stack.top() = value_t{is_value_falsy(m_stack.top())};
+        auto back = m_stack.top();
+        auto ret = perform_unary_prefix<operator_type::op_bang>(back);
+        if(!ret.has_value())
+        {
+          runtime_error("bad !");
+          return interpret_result::runtime_error;
+        }
+        m_stack.pop();
+        m_stack.push(ret.value());
         break;
+        // m_stack.top() = value_t{is_value_falsy(m_stack.top())};
+        // break;
       }
       case to_utype(opcode::op_equal):
       {
@@ -1015,12 +1118,47 @@ namespace ok
       case to_utype(opcode::op_conditional_jump):
       case to_utype(opcode::op_conditional_truthy_jump):
       {
-        auto jump = decode_int<uint32_t, 3>(read_bytes<3>(), 0);
-        auto cond = static_cast<opcode>(instruction) == opcode::op_conditional_jump ? is_value_falsy(m_stack.pop())
-                                                                                    : is_value_falsy(m_stack.pop());
+        const auto jump = decode_int<uint32_t, 3>(read_bytes<3>(), 0);
+        const auto res = perform_unary_prefix<operator_type::op_bool>(
+            m_stack.pop()); // always take bool and bang it if necessary, because ! operation does not guarantee boolean
+                            // return type, while bool operation always guarantee boolean return type
+        if(!res.has_value())
+        {
+          runtime_error("invalid boolean conversion");
+          return interpret_result::runtime_error;
+        }
+        const auto cond = static_cast<opcode>(instruction) == opcode::op_conditional_jump
+                              ? !OK_VALUE_AS_BOOL(res.value())
+                              : OK_VALUE_AS_BOOL(res.value());
         if(cond)
-          frame->ip += jump;
-        int x = jump;
+        {
+          frame->ip += jump; //* cond;
+        }
+        break;
+      }
+      case to_utype(opcode::op_conditional_jump_leave):
+      case to_utype(opcode::op_conditional_truthy_jump_leave):
+      {
+        const auto jump = decode_int<uint32_t, 3>(read_bytes<3>(), 0);
+        const auto res = perform_unary_prefix<operator_type::op_bool>(
+            m_stack.top()); // always take bool and bang it if necessary, because ! operation does not guarantee boolean
+                            // return type, while bool operation always guarantee boolean return type
+        if(!res.has_value())
+        {
+          runtime_error("invalid boolean conversion");
+          return interpret_result::runtime_error;
+        }
+        const auto cond = static_cast<opcode>(instruction) == opcode::op_conditional_jump_leave
+                              ? !OK_VALUE_AS_BOOL(res.value())
+                              : OK_VALUE_AS_BOOL(res.value());
+        if(cond)
+        {
+          frame->ip += jump; //* cond;
+        }
+        else
+        {
+          m_stack.pop();
+        }
         break;
       }
       case to_utype(opcode::op_jump):
@@ -1703,7 +1841,14 @@ namespace ok
 
   bool vm::is_value_falsy(value_t p_value) const
   {
-    return p_value.type == value_type::null_val || (p_value.type == value_type::bool_val && !p_value.as.boolean);
+    return OK_IS_VALUE_NULL(p_value) || (OK_IS_VALUE_BOOL(p_value) && !OK_VALUE_AS_BOOL(p_value));
+  }
+
+  std::optional<bool> vm::is_builtin_falsy(value_t p_value) const
+  {
+    if(OK_IS_VALUE_OBJECT(p_value))
+      return {};
+    return OK_IS_VALUE_NULL(p_value) || (OK_IS_VALUE_BOOL(p_value) && !OK_VALUE_AS_BOOL(p_value));
   }
 
   void vm::print_value(value_t p_value)

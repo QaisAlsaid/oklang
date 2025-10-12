@@ -160,6 +160,10 @@ namespace ok
     struct value_operations
     {
       value_operations_prefix_unary negate_operations;
+      value_operations_prefix_unary unary_plus_operations;
+      value_operations_prefix_unary bang_operations;
+      value_operations_prefix_unary bool_operations;
+
       value_operations_infix_binary add_operations;
       value_operations_infix_binary subtract_operations;
       value_operations_infix_binary multiply_operations;
@@ -241,13 +245,13 @@ namespace ok
       }
 
       template <>
-      inline auto& get_value_operation<operator_type::call>()
+      inline auto& get_value_operation<operator_type::op_call>()
       {
         return call_operations;
       }
 
       template <>
-      inline auto& get_value_operation<operator_type::print>()
+      inline auto& get_value_operation<operator_type::op_print>()
       {
         return print_operations;
       }
@@ -323,11 +327,11 @@ namespace ok
     {
       if constexpr(std::is_same_v<CollisionPolicy, value_operations_call::collision_policy_skip>)
       {
-        return m_value_operations.get_value_operation<operator_type::call>().register_operation(p_key, p_function);
+        return m_value_operations.get_value_operation<operator_type::op_call>().register_operation(p_key, p_function);
       }
       else
       {
-        m_value_operations.get_value_operation<operator_type::call>().register_operation(p_key, p_function);
+        m_value_operations.get_value_operation<operator_type::op_call>().register_operation(p_key, p_function);
       }
     }
 
@@ -338,11 +342,11 @@ namespace ok
       if constexpr(std::is_same_v<CollisionPolicy, value_operations_print::collision_policy_skip>)
       {
 
-        return m_value_operations.get_value_operation<operator_type::print>().register_operation(p_key, p_function);
+        return m_value_operations.get_value_operation<operator_type::op_print>().register_operation(p_key, p_function);
       }
       else
       {
-        m_value_operations.get_value_operation<operator_type::print>().register_operation(p_key, p_function);
+        m_value_operations.get_value_operation<operator_type::op_print>().register_operation(p_key, p_function);
       }
     }
 
@@ -483,6 +487,7 @@ namespace ok
     perform_binary_infix_real_object(object* p_this, operator_type p_operator, value_t p_other);
     void print_object(object* p_object);
     bool is_value_falsy(value_t p_value) const;
+    std::optional<bool> is_builtin_falsy(value_t p_value) const;
     upvalue_object* capture_value(size_t p_slot);
     void close_upvalue(value_t* p_value);
 

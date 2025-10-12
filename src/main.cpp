@@ -96,12 +96,49 @@ int main(int argc, char** argv)
   // the problem comes from the individual expression parsers doesnt propagate errors, so fix that asap
 
   auto res = vm.interpret(R"SRC( 
-    fu x(a) {
-      print a;
-    }
-    x("hi");
-  )SRC");
+    if true and true -> print "[[pass]: true and true]";
+    if true and false -> print "[[fail]: true and false]";
+    if false and true -> print "[[fail]: false and true]";
+    if false and false -> print "[[fail]: false and false]";
+    if true or true -> print "[[pass]: true or true]";
+    if true or false -> print "[[pass]: true or false]";
+    if false or true -> print "[[pass]: false or true]";
+    if false or false -> print "[[fail]: false or false]";
 
+    for let i = 0; i < 10; i = i + 1 -> {
+      if i == 5  -> { 
+        continue;
+      }   
+      print i;
+    }
+
+    for let i = 0; i < 10; i = i + 1 -> {
+      if i == 5  -> { 
+        break;
+      }   
+      print i;
+    }
+
+    let x = -1;
+    while x < 10 -> {
+      x = x + 1;
+      if x == 5 -> {
+        break;
+      }  
+      print x;
+    }
+
+    x = -1;
+    while x < 10 -> {
+      x = x +1;
+      if x == 5 -> {
+        continue;
+      }
+      print x;
+    }
+
+
+  )SRC");
   // auto res = vm.interpret("{let x = 'hello world'; print x; { x = 'foo'; print x; x = 34; { print x; }; }}");
   switch(res)
   {

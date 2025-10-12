@@ -22,12 +22,13 @@ namespace ok
     op_less,
     op_greater_equal,
     op_less_equal,
-    call,
+    op_call,
 
     // special operators
+    op_bool,
     op_and,
     op_or,
-    print,
+    op_print,
 
   };
 

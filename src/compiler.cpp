@@ -886,8 +886,9 @@ namespace ok
   {
     auto offset = p_logical_operator->get_offset();
     compile(p_logical_operator->get_left().get());
-    auto jump_inst = p_logical_operator->get_operator() == operator_type::op_and ? opcode::op_conditional_jump
-                                                                                 : opcode::op_conditional_truthy_jump;
+    auto jump_inst = p_logical_operator->get_operator() == operator_type::op_and
+                         ? opcode::op_conditional_jump_leave
+                         : opcode::op_conditional_truthy_jump_leave;
     auto jump = emit_jump(jump_inst, offset);
     // current_chunk()->write(opcode::op_pop, offset);
     compile(p_logical_operator->get_right().get());

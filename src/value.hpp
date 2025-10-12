@@ -8,10 +8,10 @@
 #include <string_view>
 #include <vector>
 
-#define OK_IS_VALUE_BOOL(v) v.type == value_type::bool_val
-#define OK_IS_VALUE_NULL(v) v.type == value_type::null_val
-#define OK_IS_VALUE_NUMBER(v) v.type == value_type::number_val
-#define OK_IS_VALUE_OBJECT(v) v.type == value_type::object_val
+#define OK_IS_VALUE_BOOL(v) (v.type == value_type::bool_val)
+#define OK_IS_VALUE_NULL(v) (v.type == value_type::null_val)
+#define OK_IS_VALUE_NUMBER(v) (v.type == value_type::number_val)
+#define OK_IS_VALUE_OBJECT(v) (v.type == value_type::object_val)
 
 #define OK_VALUE_AS_BOOL(v) v.as.boolean
 #define OK_VALUE_AS_NUMBER(v) v.as.number
@@ -42,6 +42,7 @@ namespace ok
     call_error,
     internal_propagated_error,
     unknown_type,
+    invalid_return_type,
   };
 
   struct value_t

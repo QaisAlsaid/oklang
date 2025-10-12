@@ -29,8 +29,15 @@ namespace ok
     op_pop_n, // no long version, max is 255 pops. other than that emit more than one of these
     op_constant,
     op_constant_long,
+
+    // normal jump cleans the stack
     op_conditional_jump, // jumps are long by default (24bit) integer operator
     op_conditional_truthy_jump,
+
+    // those leaves values on stack if the condition was not met
+    op_conditional_jump_leave,
+    op_conditional_truthy_jump_leave,
+
     op_jump,
     op_loop,
     op_call, // kinda operator!
