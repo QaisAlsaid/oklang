@@ -18,16 +18,30 @@
 
 // TODO(Qais): each object type in separate header file and they all share same implementation file
 
+// clang-format off
+#define OK_IS_VALUE_STRING_OBJECT(v) (OK_IS_VALUE_OBJECT(v) && v.as.obj->get_type() == object_type::obj_string)
+#define OK_IS_VALUE_FUNCTION_OBJECT(v) (OK_IS_VALUE_OBJECT(v) && v.as.obj->get_type() == object_type::obj_function)
+#define OK_IS_VALUE_NATIVE_FUNCTION_OBJECT(v) (OK_IS_VALUE_OBJECT(v) && v.as.obj->get_type() == object_type::obj_native_function)
+#define OK_IS_VALUE_CLOSURE_OBJECT(v) (OK_IS_VALUE_OBJECT(v) && v.as.obj->get_type() == object_type::obj_closure)
+#define OK_IS_VALUE_UPVALUE_OBJECT(v) (OK_IS_VALUE_OBJECT(v) && v.as.obj->get_type() == object_type::obj_upvalue)
+#define OK_IS_VALUE_CLASS_OBJECT(v) (OK_IS_VALUE_OBJECT(v) && v.as.obj->get_type() == object_type::obj_class)
+#define OK_IS_VALUE_INSTANCE_OBJECT(v) (OK_IS_VALUE_OBJECT(v) && v.as.obj->get_type() == object_type::obj_instance)
+#define OK_IS_VALUE_BOUND_METHOD_OBJECT(v) (OK_IS_VALUE_OBJECT(v) && v.as.obj->get_type() == object_type::obj_bound_method)
+
+
+
+#define OK_VALUE_AS_STRING_OBJECT(v) ((string_object*)v.as.obj)
+#define OK_VALUE_AS_FUNCTION_OBJECT(v) ((function_object*)v.as.obj)
+#define OK_VALUE_AS_NATIVE_FUNCTION_OBJECT(v) ((native_function_object*)v.as.obj)
+#define OK_VALUE_AS_CLOSURE_OBJECT(v) ((closure_object*)v.as.obj)
+#define OK_VALUE_AS_UPVALUE_OBJECT(v) ((upvalue_object*)v.as.obj)
+#define OK_VALUE_AS_CLASS_OBJECT(v) ((class_object*)v.as.obj)
+#define OK_VALUE_AS_INSTANCE_OBJECT(v) ((instance_object*)v.as.obj)
+#define OK_VALUE_AS_BOUND_METHOD_OBJECT(v) ((bound_method_object*)v.as.obj)
+// clang-format on
+
 namespace ok
 {
-  // enum class object_type : uint8_t // TODO(Qais): for now its uint8_t and enum class, you should do this refactor
-  // asap
-  //  before its too hard
-  //{
-  //  none, // compatiblity with _make_object_key
-  //  obj_string,
-  // };
-
   namespace object_type
   {
     enum
@@ -114,13 +128,14 @@ namespace ok
     size_t length;
     char* chars;
 
-  private:
-    string_object();
+    static std::expected<value_t, value_error> equal(value_t p_this, value_t p_other);
+    static std::expected<value_t, value_error> bang_equal(value_t p_this, value_t p_other);
 
-  private:
-    static std::expected<value_t, value_error> equal(object* p_this, value_t p_sure_is_string);
-    static std::expected<value_t, value_error> plus(object* p_this, value_t p_sure_is_string);
-    static void print(object* p_this);
+    static std::expected<value_t, value_error> plus(value_t p_this, value_t p_other);
+    static std::expected<void, value_error> print(value_t p_this);
+
+    // private:
+    //   string_object();
   };
 } // namespace ok
 
@@ -160,13 +175,19 @@ namespace ok
     uint32_t upvalues = 0;
     uint8_t arity = 0;
 
+    static std::expected<value_t, value_error> equal(value_t p_this, value_t p_other);
+    static std::expected<value_t, value_error> bang_equal(value_t p_this, value_t p_other);
+    static std::expected<void, value_error> print(value_t p_this);
+
+    // static std::expected<std::optional<call_frame>, value_error> call(value_t* p_this, uint8_t p_argc);
+
   private:
-    function_object();
-    static std::expected<value_t, value_error> equal(object* p_this, value_t p_sure_is_function);
-    static std::expected<value_t, value_error> equal_impl(function_object* p_this, function_object* p_other);
-    static void print(object* p_this);
-    static std::expected<std::optional<call_frame>, value_error> call(object* p_this, uint8_t p_argc);
+    static std::expected<value_t, value_error>
+    equal_impl(function_object* p_this, function_object* p_other, bool p_equal = true);
     friend struct closure_object;
+    // private:
+    //   function_object();
+    //   friend struct closure_object;
   };
 
   typedef value_t (*native_function)(uint8_t argc, value_t* argv);
@@ -182,11 +203,20 @@ namespace ok
     object up;
     native_function function;
 
-  private:
-    native_function_object();
-    static std::expected<value_t, value_error> equal(object* p_this, value_t p_sure_is_native_function);
-    static void print(object* p_this);
-    static std::expected<std::optional<call_frame>, value_error> call(object* p_this, uint8_t p_argc);
+    static std::expected<value_t, value_error> equal(value_t p_this, value_t p_other);
+    static std::expected<value_t, value_error> bang_equal(value_t p_this, value_t p_other);
+
+    static std::expected<value_t, value_error> equal_bound_method(value_t p_this, value_t p_bound_method);
+    static std::expected<value_t, value_error> bang_equal_bound_method(value_t p_this, value_t p_bound_method);
+
+    static std::expected<value_t, value_error> equal_closure(value_t p_this, value_t p_closure);
+    static std::expected<value_t, value_error> bang_equal_closure(value_t p_this, value_t p_closure);
+
+    static std::expected<std::optional<call_frame>, value_error> call(value_t p_this, uint8_t p_argc);
+    static std::expected<void, value_error> print(value_t p_this);
+
+    // private:
+    //   native_function_object();
   };
 
   struct upvalue_object
@@ -202,9 +232,9 @@ namespace ok
     upvalue_object* next = nullptr;
     value_t closed{};
 
-  private:
-    upvalue_object();
-    static void print(object* p_this);
+    static std::expected<void, value_error> print(value_t p_this);
+    // private:
+    //   upvalue_object();
   };
 
   struct closure_object
@@ -219,12 +249,21 @@ namespace ok
     function_object* function;
     std::vector<upvalue_object*> upvalues;
 
-  private:
-    closure_object();
-    static std::expected<value_t, value_error> equal(object* p_this, value_t p_sure_is_closure);
-    static void print(object* p_this);
-    static std::expected<std::optional<call_frame>, value_error> call(object* p_this, uint8_t p_argc);
-    friend struct bound_method_object;
+    static std::expected<value_t, value_error> equal(value_t p_this, value_t p_other);
+    static std::expected<value_t, value_error> bang_equal(value_t p_this, value_t p_other);
+
+    static std::expected<value_t, value_error> equal_native_function(value_t p_this, value_t p_native_function);
+    static std::expected<value_t, value_error> bang_equal_native_function(value_t p_this, value_t p_native_function);
+
+    static std::expected<value_t, value_error> equal_bound_method(value_t p_this, value_t p_bound_method);
+    static std::expected<value_t, value_error> bang_equal_bound_method(value_t p_this, value_t p_bound_method);
+
+    static std::expected<std::optional<call_frame>, value_error> call(value_t p_this, uint8_t p_argc);
+    static std::expected<void, value_error> print(value_t p_this);
+
+    // private:
+    //   closure_object();
+    //   friend struct bound_method_object;
   };
 
   struct class_object
@@ -239,11 +278,13 @@ namespace ok
     string_object* name;
     std::unordered_map<string_object*, value_t> methods;
 
-  private:
-    class_object();
-    static std::expected<value_t, value_error> equal(object* p_this, value_t p_sure_is_class);
-    static void print(object* p_this);
-    static std::expected<std::optional<call_frame>, value_error> call(object* p_this, uint8_t p_argc);
+    static std::expected<value_t, value_error> equal(value_t p_this, value_t p_other);
+    static std::expected<value_t, value_error> bang_equal(value_t p_this, value_t p_other);
+    static std::expected<std::optional<call_frame>, value_error> call(value_t p_this, uint8_t p_argc);
+    static std::expected<void, value_error> print(value_t p_this);
+
+    // private:
+    //   class_object();
   };
 
   struct instance_object
@@ -258,9 +299,10 @@ namespace ok
     class_object* class_;
     std::unordered_map<string_object*, value_t> fields;
 
-  private:
-    instance_object();
-    static void print(object* p_this);
+    static std::expected<void, value_error> print(value_t p_this);
+
+    // private:
+    //   instance_object();
     // static std::expected<value_t, value_error> equal(object* p_this, value_t p_sure_is_instance);
     // static std::expected<std::optional<call_frame>, value_error> call(object* p_this, uint8_t p_argc);
   };
@@ -277,11 +319,20 @@ namespace ok
     value_t receiver;
     closure_object* method;
 
-  private:
-    bound_method_object();
-    static void print(object* p_this);
-    static std::expected<value_t, value_error> equal(object* p_this, value_t p_sure_is_bound_method);
-    static std::expected<std::optional<call_frame>, value_error> call(object* p_this, uint8_t p_argc);
+    static std::expected<value_t, value_error> equal(value_t p_this, value_t p_other);
+    static std::expected<value_t, value_error> bang_equal(value_t p_this, value_t p_other);
+
+    static std::expected<value_t, value_error> equal_closure(value_t p_this, value_t p_closure);
+    static std::expected<value_t, value_error> bang_equal_closure(value_t p_this, value_t p_closure);
+
+    static std::expected<value_t, value_error> equal_native_function(value_t p_this, value_t p_native_function);
+    static std::expected<value_t, value_error> bang_equal_native_function(value_t p_this, value_t p_native_function);
+
+    static std::expected<std::optional<call_frame>, value_error> call(value_t p_this, uint8_t p_argc);
+    static std::expected<void, value_error> print(value_t p_this);
+
+    // private:
+    //   bound_method_object();
   };
 
   template <typename T, typename... Args>
@@ -315,6 +366,40 @@ namespace ok
     {
       return static_cast<uint32_t>(to_utype(p_operator)) << 24 | (p_other_object_type);
     }
+  }
+
+  constexpr uint8_t get_value_type(const value_t& p_val)
+  {
+    return to_utype(p_val.type);
+  }
+
+  constexpr uint64_t combine_value_type_with_object_type(value_type lhs_value_type,
+                                                         value_type rhs_value_type,
+                                                         uint32_t lhs_object_type,
+                                                         uint32_t rhs_object_type)
+  {
+    return (static_cast<uint64_t>(lhs_object_type << 8 | to_utype(lhs_value_type)) << 32) |
+           static_cast<uint64_t>(rhs_object_type << 8 | to_utype(rhs_value_type));
+  }
+
+  constexpr uint64_t combine_value_type_with_object_type(const value_t& p_lhs, const value_t& p_rhs)
+  {
+    const uint8_t lhs_value_type = get_value_type(p_lhs);
+    const uint8_t rhs_value_type = get_value_type(p_rhs);
+
+    const uint32_t lhs_object_type =
+        OK_IS_VALUE_OBJECT(p_lhs) ? OK_VALUE_AS_OBJECT(p_lhs)->get_type() : object_type::none;
+    const uint32_t rhs_object_type =
+        OK_IS_VALUE_OBJECT(p_rhs) ? OK_VALUE_AS_OBJECT(p_rhs)->get_type() : object_type::none;
+
+    return (static_cast<uint64_t>(lhs_object_type << 8 | lhs_value_type) << 32) |
+           static_cast<uint64_t>(rhs_object_type << 8 | rhs_value_type);
+  }
+
+  constexpr uint32_t make_callable_key(const value_t& p_callable, uint8_t p_argc)
+  {
+    const uint32_t callable_type = OK_VALUE_AS_OBJECT(p_callable)->get_type();
+    return callable_type;
   }
 } // namespace ok
 #endif // OK_OBJECT_HPP

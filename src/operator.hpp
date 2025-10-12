@@ -22,10 +22,13 @@ namespace ok
     op_less,
     op_greater_equal,
     op_less_equal,
+    call,
 
     // special operators
     op_and,
-    op_or
+    op_or,
+    print,
+
   };
 
   constexpr std::string_view operator_type_to_string(const operator_type p_operator)

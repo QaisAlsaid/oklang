@@ -17,6 +17,7 @@
 #include <print>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 // TODO(Qais): access to stack should be like c style arrays but is a dynamic vector
@@ -26,7 +27,7 @@
 #if defined(PARANOID)
 #define LOG_LEVEL log_level::paranoid
 #else
-define LOG_LEVEL log_level::error
+#define LOG_LEVEL log_level::error
 #endif
 
 namespace ok
@@ -36,6 +37,368 @@ namespace ok
   static value_t time_native(uint8_t argc, value_t* argv);
   static value_t srand_native(uint8_t argc, value_t* argv);
   static value_t rand_native(uint8_t argc, value_t* argv);
+
+  template <operator_type>
+  std::expected<value_t, value_error> vm::perform_binary_infix_others(value_t p_lhs, value_t p_rhs)
+  {
+    static_assert(false, "unsupported operation");
+  }
+
+  template <>
+  std::expected<value_t, value_error> vm::perform_binary_infix_others<operator_type::op_plus>(value_t p_lhs,
+                                                                                              value_t p_rhs)
+  {
+    if(OK_IS_VALUE_STRING_OBJECT(p_lhs) && OK_IS_VALUE_STRING_OBJECT(p_rhs))
+    {
+      return string_object::plus(p_lhs, p_rhs);
+    }
+
+    auto ret = m_value_operations.add_operations.call_operation(
+        combine_value_type_with_object_type(p_lhs, p_rhs), std::move(p_lhs), std::move(p_rhs));
+    if(!ret->has_value())
+    {
+      return std::unexpected{value_error::undefined_operation};
+    }
+    return ret->value();
+  }
+
+  template <>
+  std::expected<value_t, value_error> vm::perform_binary_infix_others<operator_type::op_minus>(value_t p_lhs,
+                                                                                               value_t p_rhs)
+  {
+    auto ret = m_value_operations.subtract_operations.call_operation(
+        combine_value_type_with_object_type(p_lhs, p_rhs), std::move(p_lhs), std::move(p_rhs));
+    if(!ret->has_value())
+    {
+      return std::unexpected{value_error::undefined_operation};
+    }
+    return ret->value();
+  }
+
+  template <>
+  std::expected<value_t, value_error> vm::perform_binary_infix_others<operator_type::op_asterisk>(value_t p_lhs,
+                                                                                                  value_t p_rhs)
+  {
+    auto ret = m_value_operations.multiply_operations.call_operation(
+        combine_value_type_with_object_type(p_lhs, p_rhs), std::move(p_lhs), std::move(p_rhs));
+    if(!ret->has_value())
+    {
+      return std::unexpected{value_error::undefined_operation};
+    }
+    return ret->value();
+  }
+
+  template <>
+  std::expected<value_t, value_error> vm::perform_binary_infix_others<operator_type::op_slash>(value_t p_lhs,
+                                                                                               value_t p_rhs)
+  {
+    auto ret = m_value_operations.divide_operations.call_operation(
+        combine_value_type_with_object_type(p_lhs, p_rhs), std::move(p_lhs), std::move(p_rhs));
+    if(!ret->has_value())
+    {
+      return std::unexpected{value_error::undefined_operation};
+    }
+    return ret->value();
+  }
+
+  template <>
+  std::expected<value_t, value_error> vm::perform_binary_infix_others<operator_type::op_equal>(value_t p_lhs,
+                                                                                               value_t p_rhs)
+  {
+    if(OK_IS_VALUE_STRING_OBJECT(p_lhs) && OK_IS_VALUE_STRING_OBJECT(p_rhs))
+    {
+      return string_object::equal(p_lhs, p_rhs);
+    }
+
+    auto ret = m_value_operations.equal_operations.call_operation(
+        combine_value_type_with_object_type(p_lhs, p_rhs), std::move(p_lhs), std::move(p_rhs));
+    if(!ret->has_value())
+    {
+      return std::unexpected{value_error::undefined_operation};
+    }
+    return ret->value();
+  }
+
+  template <>
+  std::expected<value_t, value_error> vm::perform_binary_infix_others<operator_type::op_bang_equal>(value_t p_lhs,
+                                                                                                    value_t p_rhs)
+  {
+    if(OK_IS_VALUE_STRING_OBJECT(p_lhs) && OK_IS_VALUE_STRING_OBJECT(p_rhs))
+    {
+      return string_object::equal(p_lhs, p_rhs);
+    }
+
+    auto ret = m_value_operations.bang_equal_operations.call_operation(
+        combine_value_type_with_object_type(p_lhs, p_rhs), std::move(p_lhs), std::move(p_rhs));
+    if(!ret->has_value())
+    {
+      return std::unexpected{value_error::undefined_operation};
+    }
+    return ret->value();
+  }
+
+  template <>
+  std::expected<value_t, value_error> vm::perform_binary_infix_others<operator_type::op_greater>(value_t p_lhs,
+                                                                                                 value_t p_rhs)
+  {
+    // TODO(Qais):
+    //  if(OK_IS_VALUE_STRING_OBJECT(p_lhs) && OK_IS_VALUE_STRING_OBJECT(p_rhs))
+    //  {
+    //    return string_object::plus(OK_VALUE_AS_OBJECT(p_lhs), p_rhs);
+    //  }
+
+    auto ret = m_value_operations.greater_operations.call_operation(
+        combine_value_type_with_object_type(p_lhs, p_rhs), std::move(p_lhs), std::move(p_rhs));
+    if(!ret->has_value())
+    {
+      return std::unexpected{value_error::undefined_operation};
+    }
+    return ret->value();
+  }
+
+  template <>
+  std::expected<value_t, value_error> vm::perform_binary_infix_others<operator_type::op_greater_equal>(value_t p_lhs,
+                                                                                                       value_t p_rhs)
+  {
+    // TODO(Qais):
+    //  if(OK_IS_VALUE_STRING_OBJECT(p_lhs) && OK_IS_VALUE_STRING_OBJECT(p_rhs))
+    //  {
+    //    return string_object::plus(OK_VALUE_AS_OBJECT(p_lhs), p_rhs);
+    //  }
+
+    auto ret = m_value_operations.greater_equal_operations.call_operation(
+        combine_value_type_with_object_type(p_lhs, p_rhs), std::move(p_lhs), std::move(p_rhs));
+    if(!ret->has_value())
+    {
+      return std::unexpected{value_error::undefined_operation};
+    }
+    return ret->value();
+  }
+
+  template <>
+  std::expected<value_t, value_error> vm::perform_binary_infix_others<operator_type::op_less>(value_t p_lhs,
+                                                                                              value_t p_rhs)
+  {
+    // TODO(Qais):
+    //  if(OK_IS_VALUE_STRING_OBJECT(p_lhs) && OK_IS_VALUE_STRING_OBJECT(p_rhs))
+    //  {
+    //    return string_object::plus(OK_VALUE_AS_OBJECT(p_lhs), p_rhs);
+    //  }
+
+    auto ret = m_value_operations.less_operations.call_operation(
+        combine_value_type_with_object_type(p_lhs, p_rhs), std::move(p_lhs), std::move(p_rhs));
+    if(!ret->has_value())
+    {
+      return std::unexpected{value_error::undefined_operation};
+    }
+    return ret->value();
+  }
+
+  template <>
+  std::expected<value_t, value_error> vm::perform_binary_infix_others<operator_type::op_less_equal>(value_t p_lhs,
+                                                                                                    value_t p_rhs)
+  {
+    // TODO(Qais):
+    //  if(OK_IS_VALUE_STRING_OBJECT(p_lhs) && OK_IS_VALUE_STRING_OBJECT(p_rhs))
+    //  {
+    //    return string_object::plus(OK_VALUE_AS_OBJECT(p_lhs), p_rhs);
+    //  }
+
+    auto ret = m_value_operations.less_equal_operations.call_operation(
+        combine_value_type_with_object_type(p_lhs, p_rhs), std::move(p_lhs), std::move(p_rhs));
+    if(!ret->has_value())
+    {
+      return std::unexpected{value_error::undefined_operation};
+    }
+    return ret->value();
+  }
+
+  template <operator_type>
+  std::expected<value_t, value_error> vm::perform_binary_infix(value_t p_lhs, value_t p_rhs)
+  {
+    static_assert(false, "unsupported operation");
+  }
+
+  template <>
+  std::expected<value_t, value_error> vm::perform_binary_infix<operator_type::op_plus>(value_t p_lhs, value_t p_rhs)
+  {
+    if(OK_IS_VALUE_NUMBER(p_lhs) && OK_IS_VALUE_NUMBER(p_rhs))
+    {
+      return value_t{p_lhs.as.number + p_lhs.as.number};
+    }
+    else if(OK_IS_VALUE_OBJECT(p_lhs) || OK_IS_VALUE_OBJECT(p_rhs))
+    {
+      return perform_binary_infix_others<operator_type::op_plus>(p_lhs, p_rhs);
+    }
+    return std::unexpected{value_error::undefined_operation};
+  }
+
+  template <>
+  std::expected<value_t, value_error> vm::perform_binary_infix<operator_type::op_minus>(value_t p_lhs, value_t p_rhs)
+  {
+    if(OK_IS_VALUE_NUMBER(p_lhs) && OK_IS_VALUE_NUMBER(p_rhs))
+    {
+      return value_t{p_lhs.as.number - p_lhs.as.number};
+    }
+    else if(OK_IS_VALUE_OBJECT(p_lhs) || OK_IS_VALUE_OBJECT(p_rhs))
+    {
+      return perform_binary_infix_others<operator_type::op_minus>(p_lhs, p_rhs);
+    }
+    return std::unexpected{value_error::undefined_operation};
+  }
+
+  template <>
+  std::expected<value_t, value_error> vm::perform_binary_infix<operator_type::op_asterisk>(value_t p_lhs, value_t p_rhs)
+  {
+    if(OK_IS_VALUE_NUMBER(p_lhs) && OK_IS_VALUE_NUMBER(p_rhs))
+    {
+      return value_t{p_lhs.as.number * p_lhs.as.number};
+    }
+    else if(OK_IS_VALUE_OBJECT(p_lhs) || OK_IS_VALUE_OBJECT(p_rhs))
+    {
+      return perform_binary_infix_others<operator_type::op_asterisk>(p_lhs, p_rhs);
+    }
+    return std::unexpected{value_error::undefined_operation};
+  }
+
+  template <>
+  std::expected<value_t, value_error> vm::perform_binary_infix<operator_type::op_slash>(value_t p_lhs, value_t p_rhs)
+  {
+    if(OK_IS_VALUE_NUMBER(p_lhs) && OK_IS_VALUE_NUMBER(p_rhs))
+    {
+      return value_t{p_lhs.as.number / p_lhs.as.number};
+    }
+    else if(OK_IS_VALUE_OBJECT(p_lhs) || OK_IS_VALUE_OBJECT(p_rhs))
+    {
+      return perform_binary_infix_others<operator_type::op_slash>(p_lhs, p_rhs);
+    }
+    return std::unexpected{value_error::undefined_operation};
+  }
+
+  template <>
+  std::expected<value_t, value_error> vm::perform_binary_infix<operator_type::op_equal>(value_t p_lhs, value_t p_rhs)
+  {
+    if(OK_IS_VALUE_NUMBER(p_lhs) && OK_IS_VALUE_NUMBER(p_rhs))
+    {
+      return value_t{p_lhs.as.number == p_lhs.as.number};
+    }
+    else if(OK_IS_VALUE_OBJECT(p_lhs) || OK_IS_VALUE_OBJECT(p_rhs))
+    {
+      return perform_binary_infix_others<operator_type::op_equal>(p_lhs, p_rhs);
+    }
+    return std::unexpected{value_error::undefined_operation};
+  }
+
+  template <>
+  std::expected<value_t, value_error> vm::perform_binary_infix<operator_type::op_bang_equal>(value_t p_lhs,
+                                                                                             value_t p_rhs)
+  {
+    if(OK_IS_VALUE_NUMBER(p_lhs) && OK_IS_VALUE_NUMBER(p_rhs))
+    {
+      return value_t{p_lhs.as.number != p_lhs.as.number};
+    }
+    else if(OK_IS_VALUE_OBJECT(p_lhs) || OK_IS_VALUE_OBJECT(p_rhs))
+    {
+      return perform_binary_infix_others<operator_type::op_bang_equal>(p_lhs, p_rhs);
+    }
+    return std::unexpected{value_error::undefined_operation};
+  }
+
+  template <>
+  std::expected<value_t, value_error> vm::perform_binary_infix<operator_type::op_greater>(value_t p_lhs, value_t p_rhs)
+  {
+    if(OK_IS_VALUE_NUMBER(p_lhs) && OK_IS_VALUE_NUMBER(p_rhs))
+    {
+      return value_t{p_lhs.as.number > p_lhs.as.number};
+    }
+    else if(OK_IS_VALUE_OBJECT(p_lhs) || OK_IS_VALUE_OBJECT(p_rhs))
+    {
+      return perform_binary_infix_others<operator_type::op_greater>(p_lhs, p_rhs);
+    }
+    return std::unexpected{value_error::undefined_operation};
+  }
+
+  template <>
+  std::expected<value_t, value_error> vm::perform_binary_infix<operator_type::op_greater_equal>(value_t p_lhs,
+                                                                                                value_t p_rhs)
+  {
+    if(OK_IS_VALUE_NUMBER(p_lhs) && OK_IS_VALUE_NUMBER(p_rhs))
+    {
+      return value_t{p_lhs.as.number >= p_lhs.as.number};
+    }
+    else if(OK_IS_VALUE_OBJECT(p_lhs) || OK_IS_VALUE_OBJECT(p_rhs))
+    {
+      return perform_binary_infix_others<operator_type::op_greater_equal>(p_lhs, p_rhs);
+    }
+    return std::unexpected{value_error::undefined_operation};
+  }
+
+  template <>
+  std::expected<value_t, value_error> vm::perform_binary_infix<operator_type::op_less>(value_t p_lhs, value_t p_rhs)
+  {
+    if(OK_IS_VALUE_NUMBER(p_lhs) && OK_IS_VALUE_NUMBER(p_rhs))
+    {
+      return value_t{p_lhs.as.number < p_lhs.as.number};
+    }
+    else if(OK_IS_VALUE_OBJECT(p_lhs) || OK_IS_VALUE_OBJECT(p_rhs))
+    {
+      return perform_binary_infix_others<operator_type::op_less>(p_lhs, p_rhs);
+    }
+    return std::unexpected{value_error::undefined_operation};
+  }
+
+  template <>
+  std::expected<value_t, value_error> vm::perform_binary_infix<operator_type::op_less_equal>(value_t p_lhs,
+                                                                                             value_t p_rhs)
+  {
+    if(OK_IS_VALUE_NUMBER(p_lhs) && OK_IS_VALUE_NUMBER(p_rhs))
+    {
+      return value_t{p_lhs.as.number <= p_lhs.as.number};
+    }
+    else if(OK_IS_VALUE_OBJECT(p_lhs) || OK_IS_VALUE_OBJECT(p_rhs))
+    {
+      return perform_binary_infix_others<operator_type::op_less_equal>(p_lhs, p_rhs);
+    }
+    return std::unexpected{value_error::undefined_operation};
+  }
+
+  template <operator_type>
+  auto vm::perform_unary_prefix_others(value_t p_this) -> operations_return_type
+  {
+    static_assert(false, "unsupported operation");
+  }
+
+  template <>
+  auto vm::perform_unary_prefix_others<operator_type::op_minus>(value_t p_this) -> operations_return_type
+  {
+    const auto res =
+        m_value_operations.negate_operations.call_operation(OK_VALUE_AS_OBJECT(p_this)->get_type(), std::move(p_this));
+    if(!res->has_value())
+    {
+      return std::unexpected{value_error::undefined_operation};
+    }
+    return res->value();
+  }
+
+  template <operator_type>
+  auto vm::perform_unary_prefix(value_t p_this) -> operations_return_type
+  {
+    static_assert(false, "unsupported operation");
+  }
+
+  template <>
+  auto vm::perform_unary_prefix<operator_type::op_minus>(value_t p_this) -> operations_return_type
+  {
+    if(OK_IS_VALUE_NUMBER(p_this))
+    {
+      return value_t{-OK_VALUE_AS_NUMBER(p_this)};
+    }
+    else if(OK_IS_VALUE_OBJECT(p_this))
+    {
+      return perform_unary_prefix_others<operator_type::op_minus>(p_this);
+    }
+    return std::unexpected{value_error::undefined_operation};
+  }
 
   vm::vm() : m_logger(LOG_LEVEL), m_stack(stack_base_size)
   {
@@ -67,6 +430,7 @@ namespace ok
   {
     m_statics.init();
     m_compiler = compiler{}; // reinitialize and clear previous state
+    m_globals = {};
     auto compile_result = m_compiler.compile(p_source, new_tobject<string_object>("main"), m_id);
     if(!compile_result)
     {
@@ -74,6 +438,9 @@ namespace ok
         return interpret_result::compile_error;
       return interpret_result::parse_error;
     }
+
+    register_builtin_objects();
+
     // m_ip = m_chunk->code.data();
     // compile_result->associated_chunk.write(opcode::op_return, 123); // TODO(Qais): remove!
     define_native_function("clock", clock_native);
@@ -96,6 +463,186 @@ namespace ok
       return call_result.error();
     auto res = run();
     return res;
+  }
+
+  bool vm::register_builtin_objects()
+  {
+    // string
+    register_value_operation_binary_infix<operator_type::op_equal,
+                                          value_operations_infix_binary::collision_policy_overwrite>(
+        combine_value_type_with_object_type(
+            value_type::object_val, value_type::object_val, object_type::obj_string, object_type::obj_string),
+        string_object::equal);
+    register_value_operation_binary_infix<operator_type::op_bang_equal,
+                                          value_operations_infix_binary::collision_policy_overwrite>(
+        combine_value_type_with_object_type(
+            value_type::object_val, value_type::object_val, object_type::obj_string, object_type::obj_string),
+        string_object::bang_equal);
+    register_value_operation_binary_infix<operator_type::op_plus,
+                                          value_operations_infix_binary::collision_policy_overwrite>(
+        combine_value_type_with_object_type(
+            value_type::object_val, value_type::object_val, object_type::obj_string, object_type::obj_string),
+        string_object::plus);
+    register_value_operation_print<value_operations_print::collision_policy_overwrite>(object_type::obj_string,
+                                                                                       string_object::print);
+
+    // functions
+    register_value_operation_binary_infix<operator_type::op_equal,
+                                          value_operations_infix_binary::collision_policy_overwrite>(
+        combine_value_type_with_object_type(
+            value_type::object_val, value_type::object_val, object_type::obj_function, object_type::obj_function),
+        function_object::equal);
+    register_value_operation_binary_infix<operator_type::op_bang_equal,
+                                          value_operations_infix_binary::collision_policy_overwrite>(
+        combine_value_type_with_object_type(
+            value_type::object_val, value_type::object_val, object_type::obj_function, object_type::obj_function),
+        function_object::bang_equal);
+    register_value_operation_print<value_operations_print::collision_policy_overwrite>(object_type::obj_function,
+                                                                                       function_object::print);
+
+    // native functions
+    register_value_operation_binary_infix<operator_type::op_equal,
+                                          value_operations_infix_binary::collision_policy_overwrite>(
+        combine_value_type_with_object_type(value_type::object_val,
+                                            value_type::object_val,
+                                            object_type::obj_native_function,
+                                            object_type::obj_native_function),
+        native_function_object::equal);
+    register_value_operation_binary_infix<operator_type::op_bang_equal,
+                                          value_operations_infix_binary::collision_policy_overwrite>(
+        combine_value_type_with_object_type(value_type::object_val,
+                                            value_type::object_val,
+                                            object_type::obj_native_function,
+                                            object_type::obj_native_function),
+        native_function_object::bang_equal);
+    register_value_operation_binary_infix<operator_type::op_equal,
+                                          value_operations_infix_binary::collision_policy_overwrite>(
+        combine_value_type_with_object_type(
+            value_type::object_val, value_type::object_val, object_type::obj_native_function, object_type::obj_closure),
+        native_function_object::equal_closure);
+    register_value_operation_binary_infix<operator_type::op_bang_equal,
+                                          value_operations_infix_binary::collision_policy_overwrite>(
+        combine_value_type_with_object_type(
+            value_type::object_val, value_type::object_val, object_type::obj_native_function, object_type::obj_closure),
+        native_function_object::bang_equal_closure);
+    register_value_operation_binary_infix<operator_type::op_equal,
+                                          value_operations_infix_binary::collision_policy_overwrite>(
+        combine_value_type_with_object_type(value_type::object_val,
+                                            value_type::object_val,
+                                            object_type::obj_native_function,
+                                            object_type::obj_bound_method),
+        native_function_object::equal_bound_method);
+    register_value_operation_binary_infix<operator_type::op_bang_equal,
+                                          value_operations_infix_binary::collision_policy_overwrite>(
+        combine_value_type_with_object_type(value_type::object_val,
+                                            value_type::object_val,
+                                            object_type::obj_native_function,
+                                            object_type::obj_bound_method),
+        native_function_object::bang_equal_bound_method);
+    register_value_operation_call(object_type::obj_native_function, native_function_object::call);
+    register_value_operation_print<value_operations_print::collision_policy_overwrite>(object_type::obj_native_function,
+                                                                                       native_function_object::print);
+
+    // closure
+    register_value_operation_binary_infix<operator_type::op_equal,
+                                          value_operations_infix_binary::collision_policy_overwrite>(
+        combine_value_type_with_object_type(
+            value_type::object_val, value_type::object_val, object_type::obj_closure, object_type::obj_closure),
+        closure_object::equal);
+    register_value_operation_binary_infix<operator_type::op_bang_equal,
+                                          value_operations_infix_binary::collision_policy_overwrite>(
+        combine_value_type_with_object_type(
+            value_type::object_val, value_type::object_val, object_type::obj_closure, object_type::obj_closure),
+        closure_object::bang_equal);
+    register_value_operation_binary_infix<operator_type::op_equal,
+                                          value_operations_infix_binary::collision_policy_overwrite>(
+        combine_value_type_with_object_type(
+            value_type::object_val, value_type::object_val, object_type::obj_closure, object_type::obj_native_function),
+        closure_object::equal_native_function);
+    register_value_operation_binary_infix<operator_type::op_bang_equal,
+                                          value_operations_infix_binary::collision_policy_overwrite>(
+        combine_value_type_with_object_type(
+            value_type::object_val, value_type::object_val, object_type::obj_closure, object_type::obj_native_function),
+        closure_object::bang_equal_native_function);
+    register_value_operation_binary_infix<operator_type::op_equal,
+                                          value_operations_infix_binary::collision_policy_overwrite>(
+        combine_value_type_with_object_type(
+            value_type::object_val, value_type::object_val, object_type::obj_closure, object_type::obj_bound_method),
+        closure_object::equal_bound_method);
+    register_value_operation_binary_infix<operator_type::op_bang_equal,
+                                          value_operations_infix_binary::collision_policy_overwrite>(
+        combine_value_type_with_object_type(
+            value_type::object_val, value_type::object_val, object_type::obj_closure, object_type::obj_bound_method),
+        closure_object::bang_equal_bound_method);
+    register_value_operation_call(object_type::obj_closure, closure_object::call);
+    register_value_operation_print<value_operations_print::collision_policy_overwrite>(object_type::obj_closure,
+                                                                                       closure_object::print);
+
+    // upvalue
+    register_value_operation_print(object_type::obj_upvalue, upvalue_object::print);
+
+    // class
+    register_value_operation_binary_infix<operator_type::op_equal,
+                                          value_operations_infix_binary::collision_policy_overwrite>(
+        combine_value_type_with_object_type(
+            value_type::object_val, value_type::object_val, object_type::obj_class, object_type::obj_class),
+        class_object::equal);
+    register_value_operation_binary_infix<operator_type::op_bang_equal,
+                                          value_operations_infix_binary::collision_policy_overwrite>(
+        combine_value_type_with_object_type(
+            value_type::object_val, value_type::object_val, object_type::obj_class, object_type::obj_class),
+        class_object::bang_equal);
+    register_value_operation_call(object_type::obj_class, class_object::call);
+    register_value_operation_print<value_operations_print::collision_policy_overwrite>(object_type::obj_class,
+                                                                                       class_object::print);
+
+    // instance
+    register_value_operation_print<value_operations_print::collision_policy_overwrite>(object_type::obj_instance,
+                                                                                       instance_object::print);
+
+    // bound method
+    register_value_operation_binary_infix<operator_type::op_equal,
+                                          value_operations_infix_binary::collision_policy_overwrite>(
+        combine_value_type_with_object_type(value_type::object_val,
+                                            value_type::object_val,
+                                            object_type::obj_bound_method,
+                                            object_type::obj_bound_method),
+        bound_method_object::equal);
+    register_value_operation_binary_infix<operator_type::op_bang_equal,
+                                          value_operations_infix_binary::collision_policy_overwrite>(
+        combine_value_type_with_object_type(value_type::object_val,
+                                            value_type::object_val,
+                                            object_type::obj_bound_method,
+                                            object_type::obj_bound_method),
+        bound_method_object::bang_equal);
+    register_value_operation_binary_infix<operator_type::op_equal,
+                                          value_operations_infix_binary::collision_policy_overwrite>(
+        combine_value_type_with_object_type(value_type::object_val,
+                                            value_type::object_val,
+                                            object_type::obj_bound_method,
+                                            object_type::obj_native_function),
+        bound_method_object::equal_native_function);
+    register_value_operation_binary_infix<operator_type::op_bang_equal,
+                                          value_operations_infix_binary::collision_policy_overwrite>(
+        combine_value_type_with_object_type(value_type::object_val,
+                                            value_type::object_val,
+                                            object_type::obj_bound_method,
+                                            object_type::obj_native_function),
+        bound_method_object::bang_equal_native_function);
+    register_value_operation_binary_infix<operator_type::op_equal,
+                                          value_operations_infix_binary::collision_policy_overwrite>(
+        combine_value_type_with_object_type(
+            value_type::object_val, value_type::object_val, object_type::obj_bound_method, object_type::obj_closure),
+        bound_method_object::equal_closure);
+    register_value_operation_binary_infix<operator_type::op_bang_equal,
+                                          value_operations_infix_binary::collision_policy_overwrite>(
+        combine_value_type_with_object_type(
+            value_type::object_val, value_type::object_val, object_type::obj_bound_method, object_type::obj_closure),
+        bound_method_object::bang_equal_closure);
+    register_value_operation_call(object_type::obj_bound_method, bound_method_object::call);
+    register_value_operation_print<value_operations_print::collision_policy_overwrite>(object_type::obj_bound_method,
+                                                                                       bound_method_object::print);
+    return true;
   }
 
   auto vm::run() -> interpret_result
@@ -172,38 +719,94 @@ namespace ok
       }
       case to_utype(opcode::op_negate):
       {
-        auto ret = perform_unary_prefix(operator_type::op_minus);
+        auto back = m_stack.top();
+        auto ret = perform_unary_prefix<operator_type::op_minus>(back);
         if(!ret.has_value())
-          return ret.error();
-        break;
+        {
+          runtime_error("bad -");
+          return interpret_result::runtime_error;
+        }
+        m_stack.pop();
+        m_stack.push(ret.value());
+        // if(!ret.has_value())
+        //   return ret.error();
+        // break;
       }
       case to_utype(opcode::op_add):
       {
-        auto ret = perform_binary_infix(operator_type::op_plus);
+        auto b = m_stack.top();
+        auto a = m_stack.top(1);
+        auto ret = perform_binary_infix<operator_type::op_plus>(a, b);
+        m_stack.pop();
+        m_stack.pop();
         if(!ret.has_value())
-          return ret.error();
+        {
+          runtime_error("bad +"); // TODO(Qais): fix stupid runtime errors
+          return interpret_result::runtime_error;
+        }
+        m_stack.push(ret.value());
         break;
+        // auto ret = perform_binary_infix(operator_type::op_plus);
+        // if(!ret.has_value())
+        //   return ret.error();
+        // break;
       }
       case to_utype(opcode::op_subtract):
       {
-        auto ret = perform_binary_infix(operator_type::op_minus);
+        auto b = m_stack.top();
+        auto a = m_stack.top(1);
+        auto ret = perform_binary_infix<operator_type::op_minus>(a, b);
+        m_stack.pop();
+        m_stack.pop();
         if(!ret.has_value())
-          return ret.error();
+        {
+          runtime_error("bad -"); // TODO(Qais): fix stupid runtime errors
+          return interpret_result::runtime_error;
+        }
+        m_stack.push(ret.value());
         break;
+        // auto ret = perform_binary_infix(operator_type::op_minus);
+        // if(!ret.has_value())
+        //   return ret.error();
+        // break;
       }
       case to_utype(opcode::op_multiply):
       {
-        auto ret = perform_binary_infix(operator_type::op_asterisk);
+        auto b = m_stack.top();
+        auto a = m_stack.top(1);
+        auto ret = perform_binary_infix<operator_type::op_asterisk>(a, b);
+        m_stack.pop();
+        m_stack.pop();
         if(!ret.has_value())
-          return ret.error();
+        {
+          runtime_error("bad *"); // TODO(Qais): fix stupid runtime errors
+          return interpret_result::runtime_error;
+        }
+        m_stack.push(ret.value());
         break;
+        // auto ret = perform_binary_infix(operator_type::op_asterisk);
+        // if(!ret.has_value())
+        //   return ret.error();
+        // break;
       }
       case to_utype(opcode::op_divide):
       {
-        auto ret = perform_binary_infix(operator_type::op_slash);
+        auto b = m_stack.top();
+        auto a = m_stack.top(1);
+        auto ret = perform_binary_infix<operator_type::op_slash>(a, b);
+        m_stack.pop();
+        m_stack.pop();
         if(!ret.has_value())
-          return ret.error();
+        {
+          runtime_error("bad /"); // TODO(Qais): fix stupid runtime errors
+          return interpret_result::runtime_error;
+        }
+        m_stack.push(ret.value());
         break;
+        // auto ret = perform_binary_infix(operator_type::op_slash);
+        // if(!ret.has_value())
+        //   return ret.error();
+        // break;
       }
       case to_utype(opcode::op_true):
       {
@@ -227,50 +830,128 @@ namespace ok
       }
       case to_utype(opcode::op_equal):
       {
-        auto ret = perform_binary_infix(operator_type::op_equal);
+        auto b = m_stack.top();
+        auto a = m_stack.top(1);
+        auto ret = perform_binary_infix<operator_type::op_equal>(a, b);
+        m_stack.pop();
+        m_stack.pop();
         if(!ret.has_value())
-          return ret.error();
+        {
+          runtime_error("bad =="); // TODO(Qais): fix stupid runtime errors
+          return interpret_result::runtime_error;
+        }
+        m_stack.push(ret.value());
         break;
+        // auto ret = perform_binary_infix<operator_type::op_equal>();
+        // if(!ret.has_value())
+        //   return ret.error();
+        // break;
       }
       case to_utype(opcode::op_not_equal):
       {
-        auto ret = perform_binary_infix(operator_type::op_bang_equal);
+        auto b = m_stack.top();
+        auto a = m_stack.top(1);
+        auto ret = perform_binary_infix<operator_type::op_bang_equal>(a, b);
+        m_stack.pop();
+        m_stack.pop();
         if(!ret.has_value())
-          return ret.error();
+        {
+          runtime_error("bad !="); // TODO(Qais): fix stupid runtime errors
+          return interpret_result::runtime_error;
+        }
+        m_stack.push(ret.value());
         break;
-      }
-      case to_utype(opcode::op_less):
-      {
-        auto ret = perform_binary_infix(operator_type::op_less);
-        if(!ret.has_value())
-          return ret.error();
-        break;
+        // auto ret = perform_binary_infix(operator_type::op_bang_equal);
+        // if(!ret.has_value())
+        //   return ret.error();
+        // break;
       }
       case to_utype(opcode::op_greater):
       {
-        auto ret = perform_binary_infix(operator_type::op_greater);
+        auto b = m_stack.top();
+        auto a = m_stack.top(1);
+        auto ret = perform_binary_infix<operator_type::op_greater>(a, b);
+        m_stack.pop();
+        m_stack.pop();
         if(!ret.has_value())
-          return ret.error();
+        {
+          runtime_error("bad >"); // TODO(Qais): fix stupid runtime errors
+          return interpret_result::runtime_error;
+        }
+        m_stack.push(ret.value());
         break;
-      }
-      case to_utype(opcode::op_less_equal):
-      {
-        auto ret = perform_binary_infix(operator_type::op_less_equal);
-        if(!ret.has_value())
-          return ret.error();
-        break;
+        // auto ret = perform_binary_infix(operator_type::op_greater);
+        // if(!ret.has_value())
+        //   return ret.error();
+        // break;
       }
       case to_utype(opcode::op_greater_equal):
       {
-        auto ret = perform_binary_infix(operator_type::op_greater_equal);
+        auto b = m_stack.top();
+        auto a = m_stack.top(1);
+        auto ret = perform_binary_infix<operator_type::op_greater_equal>(a, b);
+        m_stack.pop();
+        m_stack.pop();
         if(!ret.has_value())
-          return ret.error();
+        {
+          runtime_error("bad >="); // TODO(Qais): fix stupid runtime errors
+          return interpret_result::runtime_error;
+        }
+        m_stack.push(ret.value());
         break;
+        // auto ret = perform_binary_infix(operator_type::op_greater_equal);
+        // if(!ret.has_value())
+        //   return ret.error();
+        // break;
+      }
+      case to_utype(opcode::op_less):
+      {
+        auto b = m_stack.top();
+        auto a = m_stack.top(1);
+        auto ret = perform_binary_infix<operator_type::op_less>(a, b);
+        m_stack.pop();
+        m_stack.pop();
+        if(!ret.has_value())
+        {
+          runtime_error("bad <"); // TODO(Qais): fix stupid runtime errors
+          return interpret_result::runtime_error;
+        }
+        m_stack.push(ret.value());
+        break;
+        // auto ret = perform_binary_infix(operator_type::op_less);
+        // if(!ret.has_value())
+        //   return ret.error();
+        // break;
+      }
+      case to_utype(opcode::op_less_equal):
+      {
+        auto b = m_stack.top();
+        auto a = m_stack.top(1);
+        auto ret = perform_binary_infix<operator_type::op_less_equal>(a, b);
+        m_stack.pop();
+        m_stack.pop();
+        if(!ret.has_value())
+        {
+          runtime_error("bad <="); // TODO(Qais): fix stupid runtime errors
+          return interpret_result::runtime_error;
+        }
+        m_stack.push(ret.value());
+        break;
+        // auto ret = perform_binary_infix(operator_type::op_less_equal);
+        // if(!ret.has_value())
+        //   return ret.error();
+        // break;
       }
       case to_utype(opcode::op_print):
       {
         auto back = m_stack.top();
-        print_value(back);
+        auto ret = perform_print(back);
+        if(!ret.has_value())
+        {
+          runtime_error("bad print");
+          return interpret_result::runtime_error;
+        }
+        // print_value(back);
         m_stack.pop();
         break;
       }
@@ -607,41 +1288,79 @@ namespace ok
     return frame->closure->function->associated_chunk.identifiers[index];
   }
 
-  auto vm::perform_unary_prefix(const operator_type p_operator) -> std::expected<void, interpret_result>
-  {
-    auto ret = perform_unary_prefix_real(p_operator, m_stack.top());
-    if(!ret.has_value())
-    {
-      runtime_error("invalid operation"); // TODO(Qais): atleast check error type
+  // auto vm::perform_unary_prefix(const operator_type p_operator) -> std::expected<void, interpret_result>
+  // {
+  //   auto ret = perform_unary_prefix_real(p_operator, m_stack.top());
+  //   if(!ret.has_value())
+  //   {
+  //     runtime_error("invalid operation"); // TODO(Qais): atleast check error type
 
-      m_stack.pop(); // remove the orphan value, since we wont be overwriting it
-      return std::unexpected(interpret_result::runtime_error);
-    }
-    m_stack.top() = ret.value();
-    return {};
-  }
+  //     m_stack.pop(); // remove the orphan value, since we wont be overwriting it
+  //     return std::unexpected(interpret_result::runtime_error);
+  //   }
+  //   m_stack.top() = ret.value();
+  //   return {};
+  // }
 
-  auto vm::perform_binary_infix(const operator_type p_operator) -> std::expected<void, interpret_result>
-  {
-    auto b = m_stack.top();
-    auto a = m_stack.top(1);
+  // auto vm::perform_binary_infix(const operator_type p_operator) -> std::expected<void, interpret_result>
+  // {
+  //   auto b = m_stack.top();
+  //   auto a = m_stack.top(1);
 
-    auto ret = perform_binary_infix_real(a, p_operator, b); // a.operator_infix_binary(p_operator, b);
-    m_stack.pop();
-    if(!ret.has_value())
-    {
-      // TODO(Qais): check error type at least
-      runtime_error("invalid operation");
-      m_stack.pop(); // remove the orphan value, since we wont be overwriting it
-      return std::unexpected(interpret_result::runtime_error);
-    }
-    m_stack.top() = ret.value();
-    return {};
-  }
+  //   auto ret = perform_binary_infix_real(a, p_operator, b); // a.operator_infix_binary(p_operator, b);
+  //   m_stack.pop();
+  //   if(!ret.has_value())
+  //   {
+  //     // TODO(Qais): check error type at least
+  //     runtime_error("invalid operation");
+  //     m_stack.pop(); // remove the orphan value, since we wont be overwriting it
+  //     return std::unexpected(interpret_result::runtime_error);
+  //   }
+  //   m_stack.top() = ret.value();
+  //   return {};
+  // }
 
-  auto vm::perform_unary_infix(const operator_type p_operator) -> std::expected<void, interpret_result>
-  {
-  }
+  // auto vm::perform_unary_infix(const operator_type p_operator) -> std::expected<void, interpret_result>
+  // {
+  // }
+
+  // auto vm::call_value(uint8_t argc, value_t callee) -> bool
+  // {
+  //   TRACELN("call value: argc: {}, callee: {}", argc, (uint32_t)callee.type);
+  //   if(callee.type != value_type::object_val)
+  //   {
+  //     runtime_error("bad call: callee isn't of type object");
+  //     return false;
+  //   }
+
+  //   // auto it = m_objects_operations.find(callee.as.obj->get_type());
+  //   // if(it == m_objects_operations.end())
+  //   {
+  //     runtime_error("bad call: callee doesn't implement call");
+  //     return false;
+  //   }
+
+  //   update_call_frame_top_index();
+  //   // auto res = it->second.call_function(callee.as.obj, argc);
+  //   // if(!res.has_value())
+  //   {
+  //     // if(res.error() != value_error::internal_propagated_error)
+  //     {
+  //       // runtime_error("" + std::to_string(to_utype(res.error())));
+  //     }
+  //     return false;
+  //   }
+  //   // else
+  //   {
+  //     // auto opt = res.value();
+  //     // if(opt.has_value())
+  //     {
+  //       // auto f_res = push_call_frame(opt.value());
+  //       // return f_res.has_value();
+  //     }
+  //   }
+  //   return true;
+  // }
 
   auto vm::call_value(uint8_t argc, value_t callee) -> bool
   {
@@ -652,15 +1371,16 @@ namespace ok
       return false;
     }
 
-    auto it = m_objects_operations.find(callee.as.obj->get_type());
-    if(it == m_objects_operations.end())
+    update_call_frame_top_index();
+    const auto res = perform_call(callee, argc);
+
+    if(!res->has_value())
     {
-      runtime_error("bad call: callee doesn't implement call");
+      runtime_error("bad call");
       return false;
     }
 
-    update_call_frame_top_index();
-    auto res = it->second.call_function(callee.as.obj, argc);
+    // auto res = it->second.call_function(callee.as.obj, argc);
     if(!res.has_value())
     {
       if(res.error() != value_error::internal_propagated_error)
@@ -679,6 +1399,20 @@ namespace ok
       }
     }
     return true;
+  }
+
+  auto vm::perform_call(value_t p_this, uint8_t p_argc) -> operation_function_call_return_type
+  {
+    // this function shall not be called before checking the value_type
+    ASSERT(OK_IS_VALUE_OBJECT(p_this));
+
+    const auto key = make_callable_key(p_this, p_argc);
+    const auto res = m_value_operations.call_operations.call_operation(key, std::move(p_this), std::move(p_argc));
+    if(!res->has_value())
+    {
+      return std::unexpected{value_error::undefined_operation};
+    }
+    return res->value();
   }
 
   bool vm::call(uint8_t p_argc, closure_object* p_callee)
@@ -767,104 +1501,205 @@ namespace ok
     return true;
   }
 
-  std::expected<value_t, value_error>
-  vm::perform_binary_infix_real(const value_t& p_this, const operator_type p_operator, const value_t& p_other)
-  {
-    auto key = _make_value_key(p_this.type, p_operator, p_other.type);
-    switch(key)
-    {
-    case _make_value_key(value_type::number_val, operator_type::op_plus, value_type::number_val):
-      return value_t{p_this.as.number + p_other.as.number};
-    case _make_value_key(value_type::number_val, operator_type::op_minus, value_type::number_val):
-      return value_t{p_this.as.number - p_other.as.number};
-    case _make_value_key(value_type::number_val, operator_type::op_asterisk, value_type::number_val):
-      return value_t{p_this.as.number * p_other.as.number};
-    case _make_value_key(value_type::number_val, operator_type::op_slash, value_type::number_val):
-    {
-      if(p_other.as.number == 0)
-        return std::unexpected(value_error::division_by_zero);
-      return value_t{p_this.as.number / p_other.as.number};
-    }
-    case _make_value_key(value_type::number_val, operator_type::op_equal, value_type::number_val):
-      return value_t{p_this.as.number == p_other.as.number};
-    case _make_value_key(value_type::number_val, operator_type::op_bang_equal, value_type::number_val):
-      return value_t{p_this.as.number != p_other.as.number};
-    case _make_value_key(value_type::number_val, operator_type::op_less, value_type::number_val):
-      return value_t{p_this.as.number < p_other.as.number};
-    case _make_value_key(value_type::number_val, operator_type::op_greater, value_type::number_val):
-      return value_t{p_this.as.number > p_other.as.number};
-    case _make_value_key(value_type::number_val, operator_type::op_less_equal, value_type::number_val):
-      return value_t{p_this.as.number <= p_other.as.number};
-    case _make_value_key(value_type::number_val, operator_type::op_greater_equal, value_type::number_val):
-      return value_t{p_this.as.number >= p_other.as.number};
-    case _make_value_key(value_type::bool_val, operator_type::op_equal, value_type::bool_val):
-      return value_t{p_this.as.boolean == p_other.as.boolean};
-    case _make_value_key(value_type::bool_val, operator_type::op_bang_equal, value_type::bool_val):
-      return value_t{p_this.as.boolean != p_other.as.boolean};
-    case _make_value_key(value_type::null_val, operator_type::op_equal, value_type::null_val):
-      return value_t{true};
-    case _make_value_key(value_type::null_val, operator_type::op_bang_equal, value_type::null_val):
-      return value_t{false};
-    default:
-    {
-      if(p_this.type == value_type::object_val)
-      {
-        return perform_binary_infix_real_object(p_this.as.obj, p_operator, p_other);
-        // try lookup the operation in the object table
-      }
-      if(p_operator == operator_type::op_equal)
-      {
-        return value_t{is_value_falsy(p_this) == is_value_falsy(p_other)};
-      }
-      else if(p_operator == operator_type::op_bang_equal)
-      {
-        return value_t{is_value_falsy(p_this) != is_value_falsy(p_other)};
-      }
-      return std::unexpected(value_error::undefined_operation);
-    }
-    }
-  }
+  // std::expected<value_t, value_error>
+  // vm::perform_binary_infix_real(const value_t& p_this, const operator_type p_operator, const value_t& p_other)
+  // {
+  //   auto key = _make_value_key(p_this.type, p_operator, p_other.type);
+  //   switch(key)
+  //   {
+  //   case _make_value_key(value_type::number_val, operator_type::op_plus, value_type::number_val):
+  //     return value_t{p_this.as.number + p_other.as.number};
+  //   case _make_value_key(value_type::number_val, operator_type::op_minus, value_type::number_val):
+  //     return value_t{p_this.as.number - p_other.as.number};
+  //   case _make_value_key(value_type::number_val, operator_type::op_asterisk, value_type::number_val):
+  //     return value_t{p_this.as.number * p_other.as.number};
+  //   case _make_value_key(value_type::number_val, operator_type::op_slash, value_type::number_val):
+  //   {
+  //     if(p_other.as.number == 0)
+  //       return std::unexpected(value_error::division_by_zero);
+  //     return value_t{p_this.as.number / p_other.as.number};
+  //   }
+  //   case _make_value_key(value_type::number_val, operator_type::op_equal, value_type::number_val):
+  //     return value_t{p_this.as.number == p_other.as.number};
+  //   case _make_value_key(value_type::number_val, operator_type::op_bang_equal, value_type::number_val):
+  //     return value_t{p_this.as.number != p_other.as.number};
+  //   case _make_value_key(value_type::number_val, operator_type::op_less, value_type::number_val):
+  //     return value_t{p_this.as.number < p_other.as.number};
+  //   case _make_value_key(value_type::number_val, operator_type::op_greater, value_type::number_val):
+  //     return value_t{p_this.as.number > p_other.as.number};
+  //   case _make_value_key(value_type::number_val, operator_type::op_less_equal, value_type::number_val):
+  //     return value_t{p_this.as.number <= p_other.as.number};
+  //   case _make_value_key(value_type::number_val, operator_type::op_greater_equal, value_type::number_val):
+  //     return value_t{p_this.as.number >= p_other.as.number};
+  //   case _make_value_key(value_type::bool_val, operator_type::op_equal, value_type::bool_val):
+  //     return value_t{p_this.as.boolean == p_other.as.boolean};
+  //   case _make_value_key(value_type::bool_val, operator_type::op_bang_equal, value_type::bool_val):
+  //     return value_t{p_this.as.boolean != p_other.as.boolean};
+  //   case _make_value_key(value_type::null_val, operator_type::op_equal, value_type::null_val):
+  //     return value_t{true};
+  //   case _make_value_key(value_type::null_val, operator_type::op_bang_equal, value_type::null_val):
+  //     return value_t{false};
+  //   default:
+  //   {
+  //     if(p_this.type == value_type::object_val)
+  //     {
+  //       return perform_binary_infix_real_object(p_this.as.obj, p_operator, p_other);
+  //       // try lookup the operation in the object table
+  //     }
+  //     if(p_operator == operator_type::op_equal)
+  //     {
+  //       return value_t{is_value_falsy(p_this) == is_value_falsy(p_other)};
+  //     }
+  //     else if(p_operator == operator_type::op_bang_equal)
+  //     {
+  //       return value_t{is_value_falsy(p_this) != is_value_falsy(p_other)};
+  //     }
+  //     return std::unexpected(value_error::undefined_operation);
+  //   }
+  //   }
+  // }
 
-  std::expected<value_t, value_error>
-  vm::perform_binary_infix_real_object(object* p_this, operator_type p_operator, value_t p_other)
-  {
-    auto op_it = m_objects_operations.find(p_this->get_type());
-    if(m_objects_operations.end() == op_it)
-      return std::unexpected(value_error::undefined_operation);
-    auto ret = op_it->second.binary_infix.call_operation(
-        _make_object_key(p_operator,
-                         p_other.type,
-                         p_other.type == value_type::object_val ? p_other.as.obj->get_type() : object_type::none),
-        std::move(p_this),
-        std::move(p_other));
-    if(!ret.has_value())
-      return std::unexpected(value_error::undefined_operation);
-    return ret.value();
-  }
+  // std::expected<value_t, value_error>
+  // vm::perform_binary_infix_real_object(object* p_this, operator_type p_operator, value_t p_other)
+  // {
+  //   auto op_it = m_objects_operations.find(p_this->get_type());
+  //   if(m_objects_operations.end() == op_it)
+  //     return std::unexpected(value_error::undefined_operation);
+  //   auto ret = op_it->second.binary_infix.call_operation(
+  //       _make_object_key(p_operator,
+  //                        p_other.type,
+  //                        p_other.type == value_type::object_val ? p_other.as.obj->get_type() : object_type::none),
+  //       std::move(p_this),
+  //       std::move(p_other));
+  //   if(!ret.has_value())
+  //     return std::unexpected(value_error::undefined_operation);
+  //   return ret.value();
+  // }
 
-  std::expected<value_t, value_error> vm::perform_unary_prefix_real(const operator_type p_operator,
-                                                                    const value_t p_this)
-  {
-    auto key = _make_value_key(p_operator, p_this.type);
-    switch(key)
-    {
-      // is this ok??
-    case _make_value_key(operator_type::op_plus, value_type::number_val):
-      return p_this;
-    case _make_value_key(operator_type::op_minus, value_type::number_val):
-      return value_t{-p_this.as.number};
-    case _make_value_key(operator_type::op_bang, value_type::bool_val):
-      return value_t{!p_this.as.boolean};
-    default:
-      if(p_operator == operator_type::op_bang)
-        return value_t{is_value_falsy(p_this)};
-      return std::unexpected(value_error::undefined_operation);
-    }
-  }
+  // std::expected<value_t, value_error> vm::perform_unary_prefix_real(const operator_type p_operator,
+  //                                                                   const value_t p_this)
+  // {
+  //   auto key = _make_value_key(p_operator, p_this.type);
+  //   switch(key)
+  //   {
+  //     // is this ok??
+  //   case _make_value_key(operator_type::op_plus, value_type::number_val):
+  //     return p_this;
+  //   case _make_value_key(operator_type::op_minus, value_type::number_val):
+  //     return value_t{-p_this.as.number};
+  //   case _make_value_key(operator_type::op_bang, value_type::bool_val):
+  //     return value_t{!p_this.as.boolean};
+  //   default:
+  //     if(p_operator == operator_type::op_bang)
+  //       return value_t{is_value_falsy(p_this)};
+  //     return std::unexpected(value_error::undefined_operation);
+  //   }
+  // }
 
-  std::expected<value_t, value_error> vm::perform_unary_prefix_real_object(operator_type p_operator, value_t p_this)
-  {
-  }
+  // std::expected<value_t, value_error> vm::perform_unary_prefix_real_object(operator_type p_operator, value_t p_this)
+  // {
+  // }
+
+  // std::expected<value_t, value_error> vm::perform_add(value_t p_lhs, value_t p_rhs)
+  // {
+  //   if(OK_IS_VALUE_NUMBER(p_lhs) && OK_IS_VALUE_NUMBER(p_rhs))
+  //   {
+  //     return value_t{p_lhs.as.number + p_lhs.as.number};
+  //   }
+  //   else if(OK_IS_VALUE_OBJECT(p_lhs) || OK_IS_VALUE_OBJECT(p_rhs))
+  //   {
+  //     return perform_add_others(p_lhs, p_rhs);
+  //   }
+  //   return std::unexpected{value_error::undefined_operation};
+  // }
+
+  // std::expected<value_t, value_error> vm::perform_add_others(value_t p_lhs, value_t p_rhs)
+  // {
+  //   if(OK_IS_VALUE_STRING_OBJECT(p_lhs) && OK_IS_VALUE_STRING_OBJECT(p_rhs))
+  //   {
+  //     return string_object::plus(OK_VALUE_AS_OBJECT(p_lhs), p_rhs);
+  //   }
+
+  //   auto ret = m_value_operations.add_operations.call_operation(
+  //       combine_value_type_with_object_type(p_lhs, p_rhs), std::move(p_lhs), std::move(p_rhs));
+  //   if(!ret->has_value())
+  //   {
+  //     return std::unexpected{value_error::undefined_operation};
+  //   }
+  //   return ret->value();
+  // }
+
+  // std::expected<value_t, value_error> vm::perform_subtract(value_t p_lhs, value_t p_rhs)
+  // {
+  //   if(OK_IS_VALUE_NUMBER(p_lhs) && OK_IS_VALUE_NUMBER(p_rhs))
+  //   {
+  //     return value_t{p_lhs.as.number - p_lhs.as.number};
+  //   }
+  //   else if(OK_IS_VALUE_OBJECT(p_lhs) || OK_IS_VALUE_OBJECT(p_rhs))
+  //   {
+  //     return perform_add_others(p_lhs, p_rhs);
+  //   }
+  //   return std::unexpected{value_error::undefined_operation};
+  // }
+
+  // std::expected<value_t, value_error> vm::perform_subtract_others(value_t p_lhs, value_t p_rhs)
+  // {
+  //   auto ret = m_value_operations.subtract_operations.call_operation(
+  //       combine_value_type_with_object_type(p_lhs, p_rhs), std::move(p_lhs), std::move(p_rhs));
+  //   if(!ret->has_value())
+  //   {
+  //     return std::unexpected{value_error::undefined_operation};
+  //   }
+  //   return ret->value();
+  // }
+
+  // std::expected<value_t, value_error> vm::perform_multiply(value_t p_lhs, value_t p_rhs)
+  // {
+  //   if(OK_IS_VALUE_NUMBER(p_lhs) && OK_IS_VALUE_NUMBER(p_rhs))
+  //   {
+  //     return value_t{p_lhs.as.number * p_lhs.as.number};
+  //   }
+  //   else if(OK_IS_VALUE_OBJECT(p_lhs) || OK_IS_VALUE_OBJECT(p_rhs))
+  //   {
+  //     return perform_add_others(p_lhs, p_rhs);
+  //   }
+  //   return std::unexpected{value_error::undefined_operation};
+  // }
+
+  // std::expected<value_t, value_error> vm::perform_multiply_others(value_t p_lhs, value_t p_rhs)
+  // {
+  //   auto ret = m_value_operations.multiply_operations.call_operation(
+  //       combine_value_type_with_object_type(p_lhs, p_rhs), std::move(p_lhs), std::move(p_rhs));
+  //   if(!ret->has_value())
+  //   {
+  //     return std::unexpected{value_error::undefined_operation};
+  //   }
+  //   return ret->value();
+  // }
+
+  // std::expected<value_t, value_error> vm::perform_divide(value_t p_lhs, value_t p_rhs)
+  // {
+  //   if(OK_IS_VALUE_NUMBER(p_lhs) && OK_IS_VALUE_NUMBER(p_rhs))
+  //   {
+  //     return value_t{p_lhs.as.number / p_lhs.as.number};
+  //   }
+  //   else if(OK_IS_VALUE_OBJECT(p_lhs) || OK_IS_VALUE_OBJECT(p_rhs))
+  //   {
+  //     return perform_add_others(p_lhs, p_rhs);
+  //   }
+  //   return std::unexpected{value_error::undefined_operation};
+  // }
+
+  // std::expected<value_t, value_error> vm::perform_divide_others(value_t p_lhs, value_t p_rhs)
+  // {
+  //   auto ret = m_value_operations.divide_operations.call_operation(
+  //       combine_value_type_with_object_type(p_lhs, p_rhs), std::move(p_lhs), std::move(p_rhs));
+  //   if(!ret->has_value())
+  //   {
+  //     return std::unexpected{value_error::undefined_operation};
+  //   }
+  //   return ret->value();
+  // }
 
   bool vm::is_value_falsy(value_t p_value) const
   {
@@ -873,36 +1708,79 @@ namespace ok
 
   void vm::print_value(value_t p_value)
   {
-    switch(p_value.type)
-    {
-    case value_type::number_val:
-      std::print("{}", p_value.as.number);
-      break;
-    case value_type::bool_val:
-      std::print("{}", p_value.as.boolean ? "true" : "false");
-      break;
-    case value_type::null_val:
-      std::print("null");
-      break;
-    case value_type::object_val:
-      print_object(p_value.as.obj);
-      break;
-    default:
-      std::print("{}", (void*)p_value.as.obj);
-      break;
-    }
+    if(!perform_print(p_value))
+      ASSERT(false); // TODO(Qais): find a workaround for this situation
   }
 
-  void vm::print_object(object* p_object)
+  auto vm::perform_print(value_t p_this) -> operation_print_return_type
   {
-    const auto tp = p_object->get_type();
-    auto op_it = m_objects_operations.find(tp);
-    if(m_objects_operations.end() == op_it)
+    if(OK_IS_VALUE_NUMBER(p_this))
     {
-      ASSERT(false);
+      std::print("{}", OK_VALUE_AS_NUMBER(p_this));
+      return {};
     }
-    op_it->second.print_function(p_object);
+    if(OK_IS_VALUE_BOOL(p_this))
+    {
+      std::print("{}", OK_VALUE_AS_BOOL(p_this));
+      return {};
+    }
+    if(OK_IS_VALUE_NULL(p_this))
+    {
+      std::print("null");
+      return {};
+    }
+    if(OK_IS_VALUE_OBJECT(p_this))
+    {
+      return perform_print_others(p_this);
+    }
+    ASSERT(false);
+    return std::unexpected{value_error::unknown_type};
   }
+
+  auto vm::perform_print_others(value_t p_this) -> operation_print_return_type
+  {
+    ASSERT(OK_IS_VALUE_OBJECT(p_this));
+    const auto res =
+        m_value_operations.print_operations.call_operation(OK_VALUE_AS_OBJECT(p_this)->get_type(), std::move(p_this));
+    if(!res.has_value())
+    {
+      return std::unexpected{value_error::undefined_operation};
+    }
+    return {};
+  }
+
+  // void vm::print_value(value_t p_value)
+  // {
+  //   switch(p_value.type)
+  //   {
+  //   case value_type::number_val:
+  //     std::print("{}", p_value.as.number);
+  //     break;
+  //   case value_type::bool_val:
+  //     std::print("{}", p_value.as.boolean ? "true" : "false");
+  //     break;
+  //   case value_type::null_val:
+  //     std::print("null");
+  //     break;
+  //   case value_type::object_val:
+  //     print_object(p_value.as.obj);
+  //     break;
+  //   default:
+  //     std::print("{}", (void*)p_value.as.obj);
+  //     break;
+  //   }
+  // }
+
+  // void vm::print_object(object* p_object)
+  // {
+  //   const auto tp = p_object->get_type();
+  //   auto op_it = m_objects_operations.find(tp);
+  //   if(m_objects_operations.end() == op_it)
+  //   {
+  //     ASSERT(false);
+  //   }
+  //   op_it->second.print_function(p_object);
+  // }
 
   void vm::runtime_error(const std::string& err)
   {
@@ -979,5 +1857,11 @@ namespace ok
     if(argc != 0)
       return value_t{};
     return value_t{(double)rand()};
+  }
+
+  template <operator_type>
+  auto& vm::value_operations::get_value_operation()
+  {
+    static_assert(false, "unsupported operation");
   }
 } // namespace ok

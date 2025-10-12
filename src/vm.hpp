@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <expected>
 #include <string_view>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -136,22 +137,120 @@ namespace ok
     };
 
     using operations_return_type = std::expected<value_t, value_error>;
-    using operation_function_infix_binary = std::function<operations_return_type(object* lhs, value_t rhs)>;
-    using operation_function_prefix_unary = std::function<operations_return_type(object* _this)>;
-    using operation_function_print = std::function<void(object* _this)>;
-    using operation_function_call =
-        std::function<std::expected<std::optional<call_frame>, value_error>(object* _this, uint8_t argc)>;
-    using object_value_operations_infix_binary =
-        value_operations_base<uint32_t, operation_function_infix_binary, operations_return_type, object*, value_t>;
-    using object_value_operations_prefix_unary =
-        value_operations_base<uint16_t, operation_function_prefix_unary, operations_return_type, object*>;
+    using operation_function_infix_binary = std::function<operations_return_type(value_t lhs, value_t rhs)>;
+    using operation_function_prefix_unary = std::function<operations_return_type(value_t _this)>;
 
-    struct object_value_operations
+    using operation_print_return_type = std::expected<void, value_error>;
+    using operation_function_print = std::function<operation_print_return_type(value_t _this)>;
+
+    using operation_function_call_return_type = std::expected<std::optional<call_frame>, value_error>;
+    using operation_function_call = std::function<operation_function_call_return_type(value_t _this, uint8_t argc)>;
+
+    using value_operations_infix_binary =
+        value_operations_base<uint64_t, operation_function_infix_binary, operations_return_type, value_t, value_t>;
+    using value_operations_prefix_unary =
+        value_operations_base<uint32_t, operation_function_prefix_unary, operations_return_type, value_t>;
+
+    using value_operations_print =
+        value_operations_base<uint32_t, operation_function_print, operation_print_return_type, value_t>;
+
+    using value_operations_call =
+        value_operations_base<uint32_t, operation_function_call, operation_function_call_return_type, value_t, uint8_t>;
+
+    struct value_operations
     {
-      object_value_operations_infix_binary binary_infix;
-      object_value_operations_prefix_unary unray_prefix;
-      operation_function_print print_function;
-      operation_function_call call_function;
+      value_operations_prefix_unary negate_operations;
+      value_operations_infix_binary add_operations;
+      value_operations_infix_binary subtract_operations;
+      value_operations_infix_binary multiply_operations;
+      value_operations_infix_binary divide_operations;
+      value_operations_infix_binary equal_operations;
+      value_operations_infix_binary bang_equal_operations;
+      value_operations_infix_binary greater_operations;
+      value_operations_infix_binary greater_equal_operations;
+      value_operations_infix_binary less_operations;
+      value_operations_infix_binary less_equal_operations;
+
+      value_operations_call call_operations;
+      value_operations_print print_operations;
+
+      // template <operator_type>
+      // auto& get_value_operation();
+
+      template <operator_type>
+      auto& get_value_operation();
+
+      template <>
+      inline auto& get_value_operation<operator_type::op_plus>()
+      {
+        return add_operations;
+      }
+
+      template <>
+      inline auto& get_value_operation<operator_type::op_minus>()
+      {
+        return subtract_operations;
+      }
+
+      template <>
+      inline auto& get_value_operation<operator_type::op_asterisk>()
+      {
+        return multiply_operations;
+      }
+
+      template <>
+      inline auto& get_value_operation<operator_type::op_slash>()
+      {
+        return divide_operations;
+      }
+
+      template <>
+      inline auto& get_value_operation<operator_type::op_equal>()
+      {
+        return equal_operations;
+      }
+
+      template <>
+      inline auto& get_value_operation<operator_type::op_bang_equal>()
+      {
+        return equal_operations;
+      }
+
+      template <>
+      inline auto& get_value_operation<operator_type::op_greater>()
+      {
+        return greater_operations;
+      }
+
+      template <>
+      inline auto& get_value_operation<operator_type::op_greater_equal>()
+      {
+        return greater_equal_operations;
+      }
+
+      template <>
+      inline auto& get_value_operation<operator_type::op_less>()
+      {
+        return less_operations;
+      }
+
+      template <>
+      inline auto& get_value_operation<operator_type::op_less_equal>()
+      {
+        return less_equal_operations;
+      }
+
+      template <>
+      inline auto& get_value_operation<operator_type::call>()
+      {
+        return call_operations;
+      }
+
+      template <>
+      inline auto& get_value_operation<operator_type::print>()
+      {
+        return print_operations;
+      }
     };
 
     struct statics
@@ -181,19 +280,70 @@ namespace ok
       return m_interned_strings;
     }
 
-    inline object_value_operations* get_object_operations(uint32_t type)
-    {
-      const auto& it = m_objects_operations.find(type);
-      if(m_objects_operations.end() == it)
-        return nullptr;
-      return &it->second;
-    }
+    // inline value_operations* get_object_operations(uint32_t type)
+    // {
+    //   const auto& it = m_objects_operations.find(type);
+    //   if(m_objects_operations.end() == it)
+    //     return nullptr;
+    //   return &it->second;
+    // }
 
     // overwrites current if exists
-    inline object_value_operations& register_object_operations(uint32_t type)
+    template <operator_type Operator, typename CollisionPolicy = value_operations_infix_binary::collision_policy_skip>
+    inline CollisionPolicy::return_type
+    register_value_operation_binary_infix(uint64_t p_key, operation_function_infix_binary p_function)
     {
-      m_objects_operations[type] = {};
-      return m_objects_operations[type];
+      if constexpr(std::is_same_v<CollisionPolicy, value_operations_infix_binary::collision_policy_skip>)
+      {
+        return m_value_operations.get_value_operation<Operator>().register_operation(p_key, p_function);
+      }
+      else
+      {
+        m_value_operations.get_value_operation<Operator>().register_operation(p_key, p_function);
+      }
+    }
+
+    template <operator_type Operator, typename CollisionPolicy = value_operations_prefix_unary::collision_policy_skip>
+    inline CollisionPolicy::return_type
+    register_value_operation_unary_prefix(uint32_t p_key, operation_function_prefix_unary p_function)
+    {
+      if constexpr(std::is_same_v<CollisionPolicy, value_operations_prefix_unary::collision_policy_skip>)
+      {
+        return m_value_operations.get_value_operation<Operator>().register_operation(p_key, p_function);
+      }
+      else
+      {
+        m_value_operations.get_value_operation<Operator>().register_operation(p_key, p_function);
+      }
+    }
+
+    template <typename CollisionPolicy = value_operations_call::collision_policy_skip>
+    inline CollisionPolicy::return_type register_value_operation_call(uint32_t p_key,
+                                                                      operation_function_call p_function)
+    {
+      if constexpr(std::is_same_v<CollisionPolicy, value_operations_call::collision_policy_skip>)
+      {
+        return m_value_operations.get_value_operation<operator_type::call>().register_operation(p_key, p_function);
+      }
+      else
+      {
+        m_value_operations.get_value_operation<operator_type::call>().register_operation(p_key, p_function);
+      }
+    }
+
+    template <typename CollisionPolicy = value_operations_print::collision_policy_skip>
+    inline CollisionPolicy::return_type register_value_operation_print(uint32_t p_key,
+                                                                       operation_function_print p_function)
+    {
+      if constexpr(std::is_same_v<CollisionPolicy, value_operations_print::collision_policy_skip>)
+      {
+
+        return m_value_operations.get_value_operation<operator_type::print>().register_operation(p_key, p_function);
+      }
+      else
+      {
+        m_value_operations.get_value_operation<operator_type::print>().register_operation(p_key, p_function);
+      }
     }
 
     inline logger& get_logger()
@@ -319,8 +469,8 @@ namespace ok
     }
 
     void reset_stack();
-    std::expected<void, interpret_result> perform_unary_prefix(const operator_type p_operator);
-    std::expected<void, interpret_result> perform_binary_infix(const operator_type p_operator);
+    // std::expected<void, interpret_result> perform_unary_prefix(const operator_type p_operator);
+    // std::expected<void, interpret_result> perform_binary_infix(const operator_type p_operator);
     std::expected<void, interpret_result> perform_unary_infix(const operator_type p_operator);
 
     std::expected<value_t, value_error> perform_unary_prefix_real(const operator_type p_operator, const value_t p_this);
@@ -348,6 +498,31 @@ namespace ok
       m_call_frames.pop_back();
     }
 
+    bool register_builtin_objects();
+
+  private: // operators
+    template <operator_type>
+    operations_return_type perform_binary_infix(value_t p_lhs, value_t p_rhs);
+    template <operator_type>
+    operations_return_type perform_binary_infix_others(value_t p_lhs, value_t p_rhs);
+
+    template <operator_type>
+    operations_return_type perform_unary_prefix(value_t p_this);
+    template <operator_type>
+    operations_return_type perform_unary_prefix_others(value_t p_this);
+
+    operation_print_return_type perform_print(value_t p_this);
+    operation_print_return_type perform_print_others(value_t p_this);
+
+    operation_function_call_return_type perform_call(value_t p_this, uint8_t p_argc);
+
+    // std::expected<value_t, value_error> perform_subtract(value_t p_lhs, value_t p_rhs);
+    // std::expected<value_t, value_error> perform_subtract_others(value_t p_lhs, value_t p_rhs);
+    // std::expected<value_t, value_error> perform_multiply(value_t p_lhs, value_t p_rhs);
+    // std::expected<value_t, value_error> perform_multiply_others(value_t p_lhs, value_t p_rhs);
+    // std::expected<value_t, value_error> perform_divide(value_t p_lhs, value_t p_rhs);
+    // std::expected<value_t, value_error> perform_divide_others(value_t p_lhs, value_t p_rhs);
+
   private:
     // chunk* m_chunk;
     // byte* m_ip; // TODO(Qais): move this to local storage
@@ -362,8 +537,8 @@ namespace ok
     // TODO(Qais): integer based globals, with the compiler defining those ints, is much faster than hash map lookup.
     // maybe do it when adding optimization pass
     std::unordered_map<string_object*, value_t> m_globals;
-    // yes another indirection, shutup you cant eliminate all indirections
-    std::unordered_map<uint32_t, object_value_operations> m_objects_operations;
+
+    value_operations m_value_operations;
     logger m_logger;
     compiler m_compiler; // temporary
     statics m_statics;

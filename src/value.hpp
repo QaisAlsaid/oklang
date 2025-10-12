@@ -8,6 +8,15 @@
 #include <string_view>
 #include <vector>
 
+#define OK_IS_VALUE_BOOL(v) v.type == value_type::bool_val
+#define OK_IS_VALUE_NULL(v) v.type == value_type::null_val
+#define OK_IS_VALUE_NUMBER(v) v.type == value_type::number_val
+#define OK_IS_VALUE_OBJECT(v) v.type == value_type::object_val
+
+#define OK_VALUE_AS_BOOL(v) v.as.boolean
+#define OK_VALUE_AS_NUMBER(v) v.as.number
+#define OK_VALUE_AS_OBJECT(v) v.as.obj
+
 namespace ok
 {
   class object;
@@ -31,7 +40,8 @@ namespace ok
     division_by_zero,
     arguments_mismatch,
     call_error,
-    internal_propagated_error
+    internal_propagated_error,
+    unknown_type,
   };
 
   struct value_t
@@ -65,10 +75,9 @@ namespace ok
 
   using value_array = std::vector<value_t>;
 
-  constexpr uint32_t _make_value_key(const value_type p_lhs, const operator_type p_operator, const value_type p_rhs)
+  constexpr uint64_t _make_value_key(uint32_t p_lhs_all, uint32_t p_rhs_all)
   {
-    return static_cast<uint32_t>(to_utype(p_lhs)) << 16 | static_cast<uint32_t>(to_utype(p_operator)) << 8 |
-           static_cast<uint32_t>(to_utype(p_rhs));
+    return static_cast<uint32_t>(p_lhs_all) << 32 | static_cast<uint32_t>(p_rhs_all);
   }
 
   constexpr uint32_t _make_value_key(const operator_type p_operator, const value_type p_operand)
