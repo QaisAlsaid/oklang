@@ -13,13 +13,26 @@
 
 namespace ok
 {
-  struct local
+  enum class variable_declaration_flags : uint8_t
+  {
+    vdf_none = 0,
+    vdf_mutable = 1 << 0,
+    vdf_module = 1 << 1,
+  };
+
+  struct variable_declaration
   {
     std::string name;
-    int depth;
-    bool is_captured = false;
-    bool is_imported_module = false;
+    variable_declaration_flags flags = variable_declaration_flags::vdf_none;
   };
+
+  struct local
+  {
+    variable_declaration decl;
+    bool is_captured = false;
+    int depth;
+  };
+
   using byte = uint8_t;
   enum class opcode : byte
   {

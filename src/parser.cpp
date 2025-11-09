@@ -1,6 +1,7 @@
 #include "parser.hpp"
 #include "ast.hpp"
 #include "macros.hpp"
+#include "operator.hpp"
 #include "parsers.hpp"
 #include "token.hpp"
 #include "vm_stack.hpp"
@@ -27,6 +28,8 @@ namespace ok
     s_prefix_parse_map.emplace(token_type::tok_null, std::make_unique<null_parser>());
     s_prefix_parse_map.emplace(token_type::tok_this, std::make_unique<this_parser>());
     s_prefix_parse_map.emplace(token_type::tok_super, std::make_unique<super_parser>());
+    s_prefix_parse_map.emplace(token_type::tok_left_bracket, std::make_unique<array_parser>());
+    s_prefix_parse_map.emplace(token_type::tok_left_brace, std::make_unique<map_parser>());
     return true;
   }();
 
@@ -59,6 +62,8 @@ namespace ok
     s_infix_parse_map.emplace(token_type::tok_greater_equal,
                               std::make_unique<infix_parser_binary>(precedence::prec_comparision, false));
     s_infix_parse_map.emplace(token_type::tok_dot, std::make_unique<access_parser>(precedence::prec_call, false));
+    s_infix_parse_map.emplace(token_type::tok_left_bracket,
+                              std::make_unique<subscript_parser>(precedence::prec_subscript, false));
     return true;
   }();
 
@@ -127,33 +132,147 @@ namespace ok
   std::unique_ptr<ast::statement> parser::parse_declaration()
   {
     std::unique_ptr<ast::statement> ret;
+    const auto mods = parse_declaration_modifiers();
+
     switch(current_token().type)
     {
     case token_type::tok_let:
-      ret = parse_let_declaration();
+    {
+      if((mods & ~let_declmods) != ast::declaration_modifier::dm_none)
+      {
+        parse_error(error::code::illegal_declaration_modifier, "illegal modifier in 'let' declaration");
+      }
+      ret = parse_let_declaration(mods);
       // if(current_token().type != token_type::tok_semicolon)
       //   parse_error(error::code::expected_token, "expected ';', after: {}", ret->token_literal());
       // munch_extra_semicolons();
       break;
+    }
     case token_type::tok_fu:
-      ret = parse_function_declaration();
+    {
+      if((mods & ~function_declmods) != ast::declaration_modifier::dm_none)
+      {
+        parse_error(error::code::illegal_declaration_modifier, "illegal modifier in 'fu' declaration");
+      }
+      ret = parse_function_declaration(mods);
       break;
+    }
     case token_type::tok_class:
-      ret = parse_class_declaration();
+    {
+      if((mods & ~class_declmods) != ast::declaration_modifier::dm_none)
+      {
+        parse_error(error::code::illegal_declaration_modifier, "illegal modifier in 'class' declaration");
+      }
+      ret = parse_class_declaration(mods);
       break;
+    }
     default:
+    {
+      if(mods != ast::declaration_modifier::dm_none)
+      {
+        parse_error(error::code::illegal_declaration_modifier, "declaration modifiers can only apper in declarations");
+      }
       ret = parse_statement();
       break;
+    }
     }
     if(m_paranoia)
       sync_state();
     return ret;
   }
 
+  ast::declaration_modifier parser::parse_declaration_modifiers()
+  {
+    ast::declaration_modifier mods = ast::declaration_modifier::dm_none;
+
+    while(current_token().type != token_type::tok_eof)
+    {
+      const auto declmod = parse_declaration_modifier(current_token().type);
+      if(declmod == ast::declaration_modifier::dm_none)
+      {
+        goto OUT;
+      }
+      else
+      {
+        mods |= declmod;
+      }
+      advance();
+    }
+  OUT:
+    return mods;
+  }
+
+  ast::declaration_modifier parser::parse_declaration_modifier(token_type p_tok) const
+  {
+    switch(p_tok)
+    {
+    case token_type::tok_glob:
+    {
+      return ast::declaration_modifier::dm_global;
+    }
+    case token_type::tok_export:
+    {
+      return ast::declaration_modifier::dm_export;
+    }
+    case token_type::tok_static:
+    {
+      return ast::declaration_modifier::dm_static;
+    }
+    case token_type::tok_async:
+    {
+      return ast::declaration_modifier::dm_async;
+    }
+    default:
+      return ast::declaration_modifier::dm_none;
+    }
+  }
+
+  bool parser::is_declaration_modifier(token_type p_tok) const
+  {
+    return parse_declaration_modifier(p_tok) != ast::declaration_modifier::dm_none;
+  }
+
+  ast::binding_modifier parser::parse_binding_modifiers()
+  {
+    ast::binding_modifier mods = ast::binding_modifier::bm_none;
+
+    while(current_token().type != token_type::tok_eof)
+    {
+      const auto bindmod = parse_binding_modifier(current_token().type);
+      if(bindmod == ast::binding_modifier::bm_none)
+      {
+        goto OUT;
+      }
+      else
+      {
+        mods |= bindmod;
+      }
+      advance();
+    }
+  OUT:
+    return mods;
+  }
+
+  ast::binding_modifier parser::parse_binding_modifier(token_type p_tok) const
+  {
+    switch(p_tok)
+    {
+    case token_type::tok_mut:
+    {
+      return ast::binding_modifier::bm_mut;
+    }
+    default:
+      return ast::binding_modifier::bm_none;
+    }
+  }
+
+  bool parser::is_binding_modifier(token_type p_tok) const
+  {
+    return parse_binding_modifier(p_tok) != ast::binding_modifier::bm_none;
+  }
+
   std::unique_ptr<ast::statement> parser::parse_statement()
   {
-    while(current_token().type == token_type::tok_semicolon)
-      advance();
     switch(current_token().type)
     {
     case token_type::tok_print:
@@ -171,6 +290,12 @@ namespace ok
       return parse_control_flow_statement();
     case token_type::tok_return:
       return parse_return_statement();
+    case token_type::tok_semicolon:
+    {
+      const auto semicolon = current_token();
+      advance();
+      return std::make_unique<ast::empty_statement>(semicolon);
+    }
     case token_type::tok_eof:
       return nullptr;
     default:
@@ -326,9 +451,24 @@ namespace ok
     {
       // stays nullptr
     }
+    else if(is_declaration_modifier(current_token().type))
+    {
+      // for better error messages!
+      const auto mods = parse_declaration_modifiers();
+      if(lookahead_token().type != token_type::tok_let)
+      {
+        parse_error(error::code::expected_token, "expected 'let' after declaration modifiers in for initializer");
+      }
+      advance();
+      {
+        parse_error(error::code::illegal_declaration_modifier,
+                    "illegal usage of declaration modifiers in for loop initializer");
+      }
+      init = parse_let_declaration(mods); // checks semicolon
+    }
     else if(current_token().type == token_type::tok_let)
     {
-      init = parse_let_declaration(); // checks semicolon
+      init = parse_let_declaration(ast::declaration_modifier::dm_none); // checks semicolon
     }
     else
     {
@@ -377,21 +517,31 @@ namespace ok
         for_token, std::move(body), std::move(init), std::move(cond), std::move(inc));
   }
 
-  std::unique_ptr<ast::let_declaration> parser::parse_let_declaration()
+  std::unique_ptr<ast::let_declaration> parser::parse_let_declaration(ast::declaration_modifier p_mods)
   {
     // ugly ugly ugly
     auto let_tok = current_token();
     advance();
+    const auto mods = parse_binding_modifiers();
     std::unique_ptr<ast::assign_expression> assign;
     auto ident = parse_expression();
     if(ident->get_type() == ast::node_type::nt_assign_expr)
+    {
       assign = std::unique_ptr<ast::assign_expression>((ast::assign_expression*)ident.release());
+      // TODO(Qais): ?!!
+      assign = std::make_unique<ast::assign_expression>(
+          assign->get_token(),
+          std::make_unique<ast::binding>(assign->get_binding()->get_token(), assign->get_binding()->get_name(), mods),
+          std::move(assign->get_right()));
+    }
     else if(ident->get_type() == ast::node_type::nt_identifier_expr)
     {
-      auto ident_identifier = std::unique_ptr<ast::identifier_expression>((ast::identifier_expression*)ident.release());
-      const auto& tok = ident_identifier->get_token();
+      const auto& tok = ident->get_token();
+      // advance();
+      auto binding =
+          std::make_unique<ast::binding>(tok, static_cast<ast::identifier_expression*>(ident.get())->get_value(), mods);
       assign = std::make_unique<ast::assign_expression>(
-          tok, ident_identifier->get_value(), std::make_unique<ast::null_expression>(tok));
+          tok, std::move(binding), std::make_unique<ast::null_expression>(tok));
     }
     else
       parse_error(error::code::expected_identifier, "expected identifier before: {}", ident->token_literal());
@@ -407,14 +557,17 @@ namespace ok
     //// move outside for compatibility with for initializer not requiring ';'
     if(current_token().type != token_type::tok_semicolon)
       parse_error(error::code::expected_token, "expected ';', after: {}", assign->token_literal());
-    munch_extra_semicolons();
+
+    if((assign->get_binding()->get_modifiers() & ~let_bindmods) != ast::binding_modifier::bm_none)
+    {
+      parse_error(error::code::illegal_binding_modifier, "illegal binding modifiers in let declaration binding");
+    }
+
     return std::make_unique<ast::let_declaration>(
-        let_tok,
-        std::make_unique<ast::identifier_expression>(let_tok, assign->get_identifier()),
-        std::move(assign->get_right()));
+        let_tok, std::move(assign->get_binding()), std::move(assign->get_right()), p_mods);
   }
 
-  std::unique_ptr<ast::function_declaration> parser::parse_function_declaration()
+  std::unique_ptr<ast::function_declaration> parser::parse_function_declaration(ast::declaration_modifier p_mods)
   {
     // fu do_stuff() -> {  } // optional arrow when body is block
     // fu do_stuff() {  } // notmal stuff
@@ -423,71 +576,143 @@ namespace ok
     //// work when the functions are statements rather than expressions
     auto fu_token = current_token();
     advance();
-    return parse_function_declaration_impl(fu_token);
+    return parse_function_declaration_impl(fu_token, p_mods, function_bindmods, "function");
   }
 
-  std::unique_ptr<ast::function_declaration> parser::parse_function_declaration_impl(token p_trigger,
-                                                                                     std::string_view callit)
+  std::unique_ptr<ast::function_declaration>
+  parser::parse_function_declaration_impl(token p_trigger,
+                                          ast::declaration_modifier p_mods,
+                                          ast::binding_modifier p_allowed_binding_mods,
+                                          std::string_view callit)
   {
-    std::unique_ptr<ast::identifier_expression>
-        ident; // TODO(Qais): take as optional parameter for function declared using let
-    if(current_token().type == token_type::tok_identifier && ident == nullptr) // no identifier supplied
+    std::unique_ptr<ast::binding> binding;
+    const auto mods = parse_binding_modifiers();
+    if(current_token().type == token_type::tok_identifier)
     {
-      auto t = current_token();
-      ident = std::make_unique<ast::identifier_expression>(t, t.raw_literal);
+      auto tok = current_token();
+      if((mods & ~p_allowed_binding_mods) != ast::binding_modifier::bm_none)
+      {
+        parse_error(
+            error::code::illegal_binding_modifier, "illegal binding modifiers in {} declaration binding", callit);
+      }
       advance();
+      binding = std::make_unique<ast::binding>(tok, tok.raw_literal, mods);
     }
-    else if(ident != nullptr)
-    {
-      // ident = ident;
-    }
-    // else // not in let context and no name provided parser doesnt care but it will be a compile error
+    // else keep it null, because mods doesnt affect anything, compiler will worn about this situation
     if(current_token().type != token_type::tok_left_paren)
       parse_error(error::code::expected_token, "expected '(' in {} declaration", callit);
     advance();
-    std::list<std::unique_ptr<ast::identifier_expression>> params;
+    std::list<std::unique_ptr<ast::binding>> params;
     if(current_token().type != token_type::tok_right_paren)
     {
-      auto tok = current_token();
-      params.push_back(std::make_unique<ast::identifier_expression>(tok, tok.raw_literal));
-      while(lookahead_token().type == token_type::tok_comma)
+      while(current_token().type != token_type::tok_right_paren && current_token().type != token_type::tok_eof)
+      {
+        const auto mods = parse_binding_modifiers();
+        if((mods & ~function_param_bindmods) != ast::binding_modifier::bm_none)
+        {
+          parse_error(error::code::illegal_binding_modifier,
+                      "illegal binding modifiers in {} parameters declaration binding",
+                      callit);
+        }
+        auto tok = current_token();
+        advance();
+        params.push_back(std::make_unique<ast::binding>(tok, tok.raw_literal, mods));
+        if(current_token().type == token_type::tok_comma)
+        {
+          advance();
+        }
+        else if(current_token().type != token_type::tok_right_paren)
+        {
+          parse_error(parser::error::code::expected_token, "expected ')', after parameters list");
+          break;
+        }
+      }
+      if(current_token().type != token_type::tok_right_paren) // eof
+      {
+        parse_error(parser::error::code::expected_token, "expected ')', after parameters list");
+      }
+      else
       {
         advance();
-        advance();
-        auto tok = current_token();
-        if(tok.type != token_type::tok_identifier)
-        {
-          parse_error(error::code::expected_identifier, "expected identifier as {} parameter", callit);
-        }
-        params.push_back(std::make_unique<ast::identifier_expression>(tok, tok.raw_literal));
       }
+
+      // const auto mods = parse_binding_modifiers();
+      // if((mods & ~function_param_bindmods) != ast::binding_modifier::bm_none)
+      // {
+      //   parse_error(error::code::illegal_binding_modifier,
+      //               "illegal binding modifiers in {} parameters declaration binding",
+      //               callit);
+      // }
+      // auto tok = current_token();
+      // if(tok.type != token_type::tok_identifier)
+      // {
+      //   parse_error(error::code::expected_identifier, "expected identifier as {} parameter", callit);
+      // }
+      // params.push_back(std::make_unique<ast::binding>(tok, tok.raw_literal(), mods));
+      // advance();
+      // while(current_token().type == token_type::tok_comma)
+      // {
+      //   advance();
+      //   advance();
+      //   const auto mods = parse_binding_modifiers();
+      //   if((mods & ~function_param_bindmods) != ast::binding_modifier::bm_none)
+      //   {
+      //     parse_error(error::code::illegal_binding_modifier,
+      //                 "illegal binding modifiers in {} parameters declaration binding",
+      //                 callit);
+      //   }
+      //   auto tok = current_token();
+      //   if(tok.type != token_type::tok_identifier)
+      //   {
+      //     parse_error(error::code::expected_identifier, "expected identifier as {} parameter", callit);
+      //   }
+      //   params.push_back(std::make_unique<ast::binding>(tok, tok.raw_literal(), mods));
+      // }
+      // auto tok = current_token();
+      // params.push_back(std::make_unique<ast::identifier_expression>(tok, tok.raw_literal));
+      // while(lookahead_token().type == token_type::tok_comma)
+      // {
+      //   advance();
+      //   advance();
+      //   auto tok = current_token();
+      //   if(tok.type != token_type::tok_identifier)
+      //   {
+      //     parse_error(error::code::expected_identifier, "expected identifier as {} parameter", callit);
+      //   }
+      //   params.push_back(std::make_unique<ast::identifier_expression>(tok, tok.raw_literal));
+      // }
+      // advance();
+    }
+    else
+    {
       advance();
     }
 
-    if(current_token().type != token_type::tok_right_paren)
-      parse_error(error::code::expected_token, "expected ')' after {} parameters", callit);
+    // if(current_token().type != token_type::tok_right_paren)
+    //   parse_error(error::code::expected_token, "expected ')' after {} parameters", callit);
 
     // if next is arrow we skip and set had arrow to true, if next is brace we dont do anything, but if next is other
     // stateent we check arrow first if not we error if its there we dont do anything and parse normally
 
     bool had_arrow = false;
-    if(lookahead_token().type == token_type::tok_arrow)
+    if(current_token().type == token_type::tok_arrow)
     {
       advance();
       had_arrow = true;
     }
 
-    if(lookahead_token().type != token_type::tok_left_brace && !had_arrow)
+    if(current_token().type != token_type::tok_left_brace && !had_arrow)
       parse_error(error::code::expected_token, "expected '->' in one-liner {} declaration", callit);
 
-    advance();
+    // advance();
 
     auto body = parse_statement();
 
-    return std::make_unique<ast::function_declaration>(p_trigger, std::move(body), std::move(ident), std::move(params));
+    return std::make_unique<ast::function_declaration>(
+        p_trigger, std::move(body), std::move(binding), std::move(params), p_mods);
   }
 
-  std::unique_ptr<ast::class_declaration> parser::parse_class_declaration()
+  std::unique_ptr<ast::class_declaration> parser::parse_class_declaration(ast::declaration_modifier p_mods)
   {
     auto cls_token = current_token();
     advance();
@@ -495,10 +720,16 @@ namespace ok
     {
       parse_error(error::code::expected_identifier, "expected class name");
     }
-    auto t = current_token();
-    auto ident = std::make_unique<ast::identifier_expression>(t, t.raw_literal);
-    std::unique_ptr<ast::identifier_expression> super = nullptr;
+    const auto mods = parse_binding_modifiers();
+    if((mods & ~class_bindmods) != ast::binding_modifier::bm_none)
+    {
+      parse_error(error::code::illegal_binding_modifier, "illegal binding modifiers in class declaration binding");
+    }
+    auto tok = current_token();
     advance();
+    auto binding = std::make_unique<ast::binding>(tok, tok.raw_literal, mods);
+    std::unique_ptr<ast::identifier_expression> super = nullptr;
+    // advance();
 
     if(current_token().type == token_type::tok_inherits)
     {
@@ -518,17 +749,48 @@ namespace ok
     }
     advance();
 
-    std::list<std::unique_ptr<ast::function_declaration>> methods;
+    std::list<ast::class_declaration::method_declaration> methods;
     while(current_token().type != token_type::tok_right_brace && current_token().type != token_type::tok_eof)
     {
+      const auto mods = parse_declaration_modifiers();
       auto tok = current_token();
-      // TODO(Qais): support fields in class
       switch(tok.type)
       {
-      case token_type::tok_identifier:
-        methods.push_back(parse_function_declaration_impl(tok, "method"));
+      case token_type::tok_fu:
+      {
+        if((mods & ~method_declmods) != ast::declaration_modifier::dm_none)
+        {
+          parse_error(error::code::illegal_declaration_modifier, "illegal modifier in 'method' declaration");
+        }
+        method_type mt = method_type::mt_method;
+        if(tok.raw_literal == "ctor")
+          mt = method_type::mt_ctor;
+        else if(tok.raw_literal == "dtor")
+          mt = method_type::mt_dtor;
+        methods.push_back(ast::class_declaration::method_declaration{
+            parse_function_declaration_impl(
+                tok, ast::declaration_modifier::dm_none, ast::binding_modifier::bm_none, "method"),
+            mt});
         advance(); // the function's right brace
         break;
+      }
+      case token_type::tok_let:
+      {
+        if((mods & ~field_declmods) != ast::declaration_modifier::dm_none)
+        {
+          parse_error(error::code::illegal_declaration_modifier, "illegal modifier in 'field' declaration");
+        }
+        // TODO(Qais):
+      }
+      case token_type::tok_operator:
+      {
+        if((mods & ~method_declmods) != ast::declaration_modifier::dm_none)
+        {
+          parse_error(error::code::illegal_declaration_modifier, "illegal modifier in 'method' declaration");
+        }
+        methods.push_back(parse_operator_overload());
+        break;
+      }
       default:
         parse_error(error::code::unexpected_token, "unexpected token: '{}' in class body", tok.raw_literal);
         goto OUT;
@@ -541,7 +803,13 @@ namespace ok
     }
     // advance();
 
-    return std::make_unique<ast::class_declaration>(cls_token, std::move(ident), std::move(methods), std::move(super));
+    return std::make_unique<ast::class_declaration>(
+        cls_token, std::move(binding), std::move(methods), std::move(super), p_mods);
+  }
+
+  ast::class_declaration::method_declaration parser::parse_operator_overload()
+  {
+    advance();
   }
 
   bool parser::advance()

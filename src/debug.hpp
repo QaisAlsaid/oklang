@@ -33,6 +33,12 @@ namespace ok::debug
     static int closure_instruction(const std::string_view p_name, const chunk& p_chunk, int p_offset);
     static int invoke_instruction(std::string_view p_name, const chunk& p_chunk, int p_offset);
     static int invoke_long_instruction(std::string_view p_name, const chunk& p_chunk, int p_offset);
+    static int method_instruction(std::string_view p_name, const chunk& p_chunk, int p_offset);
+    static int method_long_instruction(std::string_view p_name, const chunk& p_chunk, int p_offset);
+    static int class_instruction(std::string_view p_name, const chunk& p_chunk, int p_offset);
+    static int class_long_instruction(std::string_view p_name, const chunk& p_chunk, int p_offset);
+    static int define_global_instruction(std::string_view p_name, const chunk& p_chunk, int p_offset);
+    static int define_global_long_instruction(std::string_view p_name, const chunk& p_chunk, int p_offset);
   };
 } // namespace ok::debug
 

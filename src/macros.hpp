@@ -23,6 +23,7 @@
 #define ERROR(...) get_vm_logger().error(__VA_ARGS__)
 #define ERRORLN(...) get_vm_logger().errorln(__VA_ARGS__)
 
+#define ENABLE_ASSERT
 #if defined(ENABLE_ASSERT)
 #define ASSERT(x)                                                                                                      \
   do                                                                                                                   \
@@ -41,5 +42,6 @@
 // #define OK_STRESS_GC
 // #define OK_LOG_GC
 #endif
+#define OK_NOT_GARBAGE_COLLECTED
 
 #endif // OK_MACROS_HPP

@@ -32,6 +32,114 @@ namespace ok
 
   };
 
+  namespace overridable_operator_type
+  {
+    enum overridable_operator_type : uint8_t
+    {
+      oot_unary_prefix_plus = 0,    // +x
+      oot_unary_prefix_minus,       // -x
+      oot_unary_prefix_bang,        // !x
+      oot_unary_prefix_tiled,       // ~x
+      oot_unary_prefix_plus_plus,   // ++x
+      oot_unary_prefix_minus_minus, // --x
+
+      oot_unary_postfix_plus_plus,   // x++
+      oot_unary_postfix_minus_minus, // x--
+
+      oot_unary_postfix_call,      // x()
+      oot_unary_postfix_subscript, // x[]
+
+      oot_binary_infix_plus,        // x + y
+      oot_binary_infix_minus,       // x - y
+      oot_binary_infix_asterisk,    // x * y
+      oot_binary_infix_slash,       // x / y
+      oot_binary_infix_caret,       // x ^ y
+      oot_binary_infix_modulo,      // x % y
+      oot_binary_infix_bitwise_and, // x & y
+      oot_binary_infix_bitwise_or,  // x | y
+
+      oot_binary_infix_greater,       // x > y
+      oot_binary_infix_less,          // x < y
+      oot_binary_infix_equal,         // x == y
+      oot_binary_infix_bang_equal,    // x != y
+      oot_binary_infix_greater_equal, // x >= u
+      oot_binary_infix_less_equal,    // x <= y
+
+      oot_binary_infix_plus_equal,        // x += y
+      oot_binary_infix_minus_equal,       // x -= y
+      oot_binary_infix_asterisk_equal,    // x *= y
+      oot_binary_infix_slash_equal,       // x /= y
+      oot_binary_infix_caret_equal,       // x ^= y
+      oot_binary_infix_modulo_equal,      // x %= y
+      oot_binary_infix_bitwise_and_equal, // x &= y
+      oot_binary_infix_bitwise_or_equal,  // x |= y
+
+      oot_binary_infix_shift_left,  // x << y
+      oot_binary_infix_shift_right, // x >> y
+
+      oot_binary_infix_equal_raw,      // x ==? y
+      oot_binary_infix_bang_equal_raw, // x !=? y
+
+      oot_ctor,
+      oot_dtor,
+
+      oot_print,
+      oot_count,
+    };
+  }
+
+  enum class method_type
+  {
+    mt_method = 0,
+    mt_unary_prefix_plus,        // +x
+    mt_unary_prefix_minus,       // -x
+    mt_unary_prefix_bang,        // !x
+    mt_unary_prefix_tiled,       // ~x
+    mt_unary_prefix_plus_plus,   // ++x
+    mt_unary_prefix_minus_minus, // --x
+
+    mt_unary_postfix_plus_plus,   // x++
+    mt_unary_postfix_minus_minus, // x--
+
+    mt_unary_postfix_call,      // x()
+    mt_unary_postfix_subscript, // x[]
+
+    mt_binary_infix_plus,        // x + y
+    mt_binary_infix_minus,       // x - y
+    mt_binary_infix_asterisk,    // x * y
+    mt_binary_infix_slash,       // x / y
+    mt_binary_infix_caret,       // x ^ y
+    mt_binary_infix_modulo,      // x % y
+    mt_binary_infix_bitwise_and, // x & y
+    mt_binary_infix_bitwise_or,  // x | y
+
+    mt_binary_infix_greater,       // x > y
+    mt_binary_infix_less,          // x < y
+    mt_binary_infix_equal,         // x == y
+    mt_binary_infix_bang_equal,    // x != y
+    mt_binary_infix_greater_equal, // x >= u
+    mt_binary_infix_less_equal,    // x <= y
+
+    mt_binary_infix_plus_equal,        // x += y
+    mt_binary_infix_minus_equal,       // x -= y
+    mt_binary_infix_asterisk_equal,    // x *= y
+    mt_binary_infix_slash_equal,       // x /= y
+    mt_binary_infix_caret_equal,       // x ^= y
+    mt_binary_infix_modulo_equal,      // x %= y
+    mt_binary_infix_bitwise_and_equal, // x &= y
+    mt_binary_infix_bitwise_or_equal,  // x |= y
+
+    mt_binary_infix_shift_left,  // x << y
+    mt_binary_infix_shift_right, // x >> y
+
+    mt_binary_infix_equal_raw,      // x ==? y
+    mt_binary_infix_bang_equal_raw, // x !=? y
+
+    mt_ctor,
+    mt_dtor,
+    mt_print,
+  };
+
   constexpr std::string_view operator_type_to_string(const operator_type p_operator)
   {
     using namespace std::string_view_literals;

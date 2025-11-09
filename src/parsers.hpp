@@ -8,31 +8,40 @@
 #include <cstdlib>
 #include <list>
 #include <memory>
+#include <unordered_map>
 
 // is the ood best fit here? or just plain parse functions will do?
 namespace ok
 {
-  inline std::list<std::unique_ptr<ast::expression>> parse_arguments_list(parser& p_parser, token_type expected_end)
+  inline std::list<std::unique_ptr<ast::expression>> parse_expression_list(parser& p_parser, token expected_end)
   {
-    if(p_parser.lookahead_token().type == expected_end)
-    {
-      p_parser.advance();
-      return {};
-    }
-
-    p_parser.advance();
     std::list<std::unique_ptr<ast::expression>> args;
-    args.push_back(p_parser.parse_expression()); // TODO(Qais): bad!
-    while(p_parser.lookahead_token().type == token_type::tok_comma)
+    while(p_parser.lookahead_token().type != expected_end.type &&
+          p_parser.lookahead_token().type != token_type::tok_eof)
     {
-      // skip comma
-      p_parser.advance();
       p_parser.advance();
       args.push_back(p_parser.parse_expression());
+      if(p_parser.lookahead_token().type == token_type::tok_comma)
+      {
+        p_parser.advance();
+      }
+      else if(p_parser.lookahead_token().type != expected_end.type)
+      {
+        p_parser.parse_error(
+            parser::error::code::expected_token, "expected '{}', after expression list", expected_end.raw_literal);
+        break;
+      }
     }
-    if(p_parser.expect_next(expected_end))
-      return std::move(args);
-    return {};
+    if(p_parser.lookahead_token().type != expected_end.type) // account for eof
+    {
+      p_parser.parse_error(
+          parser::error::code::expected_token, "expected '{}', after expression list", expected_end.raw_literal);
+    }
+    else // not strictleay necessary since advance on eof produces eof
+    {
+      p_parser.advance();
+    }
+    return std::move(args);
   }
 
   // TODO(Qais): since we are not using exceptions, then parse function should be of type std::expected<up<expr>, error>
@@ -118,7 +127,7 @@ namespace ok
       if(p_parser.lookahead_token().type == token_type::tok_left_paren)
       {
         p_parser.advance(); // skip to the paren
-        args = parse_arguments_list(p_parser, token_type::tok_right_paren);
+        args = parse_expression_list(p_parser, {token_type::tok_right_paren, "("});
         is_invoke = true;
       }
       return std::make_unique<ast::super_expression>(
@@ -126,6 +135,55 @@ namespace ok
           std::make_unique<ast::identifier_expression>(method_tok, method_tok.raw_literal),
           std::move(args),
           is_invoke);
+    }
+  };
+
+  struct array_parser : public prefix_parser_base
+  {
+    std::unique_ptr<ast::expression> parse(parser& p_parser, token p_tok) const override
+    {
+      auto elements = parse_expression_list(p_parser, {token_type::tok_right_bracket, "["});
+      return std::make_unique<ast::array_expression>(p_tok, std::move(elements));
+    }
+  };
+
+  struct map_parser : public prefix_parser_base
+  {
+    std::unique_ptr<ast::expression> parse(parser& p_parser, token p_tok) const override
+    {
+      std::unordered_map<std::unique_ptr<ast::expression>, std::unique_ptr<ast::expression>> entries;
+      while(p_parser.lookahead_token().type != token_type::tok_right_brace &&
+            p_parser.lookahead_token().type != token_type::tok_eof)
+      {
+        p_parser.advance();
+        auto key = p_parser.parse_expression();
+        if(p_parser.lookahead_token().type != token_type::tok_colon)
+        {
+          p_parser.parse_error(parser::error::code::expected_token, "expected ':', after map key");
+        }
+        p_parser.advance();
+        p_parser.advance();
+        auto value = p_parser.parse_expression();
+        entries[std::move(key)] = std::move(value);
+        if(p_parser.lookahead_token().type == token_type::tok_comma)
+        {
+          p_parser.advance();
+        }
+        else if(p_parser.lookahead_token().type != token_type::tok_right_brace)
+        {
+          p_parser.parse_error(parser::error::code::expected_token, "expected '}}', after map entries");
+          break;
+        }
+      }
+      if(p_parser.lookahead_token().type != token_type::tok_right_brace) // account for eof
+      {
+        p_parser.parse_error(parser::error::code::expected_token, "expected '}}', after map entries");
+      }
+      else // not strictleay necessary since advance on eof produces eof
+      {
+        p_parser.advance();
+      }
+      return std::make_unique<ast::map_expression>(p_tok, std::move(entries));
     }
   };
 
@@ -238,7 +296,7 @@ namespace ok
       else if(p_parser.lookahead_token().type == token_type::tok_left_paren)
       {
         p_parser.advance(); // skip to the paren
-        args = parse_arguments_list(p_parser, token_type::tok_right_paren);
+        args = parse_expression_list(p_parser, {token_type::tok_right_paren, "("});
         is_invoke = true;
       }
       return std::make_unique<ast::access_expression>(
@@ -248,6 +306,35 @@ namespace ok
     int get_precedence() const override
     {
       return m_precedence;
+    }
+
+  private:
+    int m_precedence;
+    bool m_is_right;
+  };
+
+  struct subscript_parser : public infix_parser_base
+  {
+    subscript_parser(int p_precedence, bool p_is_right) : m_precedence(p_precedence), m_is_right(p_is_right)
+    {
+    }
+
+    std::unique_ptr<ast::expression>
+    parse(parser& p_parser, token p_tok, std::unique_ptr<ast::expression> p_left) const override
+    {
+      p_parser.advance();
+      auto right = p_parser.parse_expression();
+      if(p_parser.lookahead_token().type != token_type::tok_right_bracket)
+      {
+        p_parser.parse_error(parser::error::code::expected_token, "expected ']' after subscript operator expression");
+      }
+      p_parser.advance();
+      return std::make_unique<ast::subscript_expression>(p_tok, std::move(p_left), std::move(right));
+    }
+
+    int get_precedence() const override
+    {
+      return precedence::prec_subscript;
     }
 
   private:
@@ -282,7 +369,7 @@ namespace ok
     std::unique_ptr<ast::expression>
     parse(parser& p_parser, token p_tok, std::unique_ptr<ast::expression> p_left) const override
     {
-      auto args = parse_arguments_list(p_parser, token_type::tok_right_paren);
+      auto args = parse_expression_list(p_parser, {token_type::tok_right_paren, "("});
 
       // return nullptr; // TODO(Qais): error handling for god sake!
       // this is wrong in cases of a(b)(c) this will allow cursed syntax like a(b);c to be parsed just fine lol
@@ -302,8 +389,8 @@ namespace ok
     virtual std::unique_ptr<ast::expression>
     parse(parser& p_parser, token p_tok, std::unique_ptr<ast::expression> p_left) const
     {
-      // TODO(Qais): expect valid assignment target not only identifiers
       p_parser.advance();
+      const auto mods = p_parser.parse_binding_modifiers();
       auto right =
           p_parser.parse_expression(precedence::prec_assignment - 1); // always right associative, to allow a=b=c
       if(p_left->get_type() != ast::node_type::nt_identifier_expr)
@@ -312,7 +399,9 @@ namespace ok
       // return nullptr; // TODO(Qais): bitch, error handling aghhh!
       auto real_lhs = static_cast<ast::identifier_expression*>(p_left.get());
       return std::make_unique<ast::assign_expression>(
-          ast::assign_expression(p_tok, real_lhs->token_literal(), std::move(right)));
+          ast::assign_expression(p_tok,
+                                 std::make_unique<ast::binding>(real_lhs->get_token(), real_lhs->token_literal(), mods),
+                                 std::move(right)));
     }
 
     virtual int get_precedence() const

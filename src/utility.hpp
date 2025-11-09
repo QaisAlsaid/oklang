@@ -7,11 +7,48 @@
 #include <vector>
 namespace ok
 {
-  template <typename scoped_enum>
-    requires std::is_scoped_enum_v<scoped_enum>
-  constexpr auto to_utype(scoped_enum e)
+  template <typename ScopedEnum>
+    requires std::is_scoped_enum_v<ScopedEnum>
+  constexpr inline auto to_utype(ScopedEnum e)
   {
-    return static_cast<std::underlying_type_t<scoped_enum>>(e);
+    return static_cast<std::underlying_type_t<ScopedEnum>>(e);
+  }
+
+  template <typename ScopedEnum>
+    requires std::is_scoped_enum_v<ScopedEnum>
+  constexpr inline ScopedEnum operator|(ScopedEnum p_lhs, ScopedEnum p_rhs)
+  {
+    return static_cast<ScopedEnum>(to_utype(p_lhs) | to_utype(p_rhs));
+  }
+
+  template <typename ScopedEnum>
+    requires std::is_scoped_enum_v<ScopedEnum>
+  constexpr inline ScopedEnum& operator|=(ScopedEnum& p_lhs, ScopedEnum p_rhs)
+  {
+    return p_lhs = static_cast<ScopedEnum>(to_utype(p_lhs) | to_utype(p_rhs));
+    return p_lhs;
+  }
+
+  template <typename ScopedEnum>
+    requires std::is_scoped_enum_v<ScopedEnum>
+  constexpr inline ScopedEnum operator&(ScopedEnum p_lhs, ScopedEnum p_rhs)
+  {
+    return static_cast<ScopedEnum>(to_utype(p_lhs) & to_utype(p_rhs));
+  }
+
+  template <typename ScopedEnum>
+    requires std::is_scoped_enum_v<ScopedEnum>
+  constexpr inline ScopedEnum& operator&=(ScopedEnum& p_lhs, ScopedEnum p_rhs)
+  {
+    return p_lhs = static_cast<ScopedEnum>(to_utype(p_lhs) & to_utype(p_rhs));
+    return p_lhs;
+  }
+
+  template <typename ScopedEnum>
+    requires std::is_scoped_enum_v<ScopedEnum>
+  constexpr inline ScopedEnum operator~(ScopedEnum p_mod)
+  {
+    return static_cast<ScopedEnum>(~to_utype(p_mod));
   }
 
   template <typename T, size_t N>

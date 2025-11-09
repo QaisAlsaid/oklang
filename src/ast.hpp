@@ -3,10 +3,13 @@
 
 #include "operator.hpp"
 #include "token.hpp"
+#include "utility.hpp"
 #include <list>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 
 namespace ok::ast
 {
@@ -21,6 +24,9 @@ namespace ok::ast
 
     // program root
     nt_program,
+
+    // binding
+    nt_binding,
 
     // expressions
     nt_identifier_expr,
@@ -38,8 +44,12 @@ namespace ok::ast
     nt_access_expr,
     nt_this_expr,
     nt_super_expr,
+    nt_array_expr,
+    nt_map_expr,
+    nt_subscript_expr,
 
     // statements
+    nt_empty_stmt,
     nt_expression_statement_stmt,
     nt_print_stmt,
     nt_block_stmt,
@@ -125,16 +135,90 @@ namespace ok::ast
     }
   };
 
+  enum class declaration_modifier : uint8_t
+  {
+    dm_none = 0,
+    dm_global = 1 << 0,
+    dm_export = 1 << 1,
+    dm_static = 1 << 2,
+    dm_async = 1 << 3,
+  };
+
+  constexpr auto declaration_modifiers_count = 5;
+
+  inline constexpr std::string_view declaration_modifier_to_string(declaration_modifier p_mod)
+  {
+    switch(p_mod)
+    {
+    case declaration_modifier::dm_global:
+      return "glob";
+    case declaration_modifier::dm_export:
+      return "export";
+    case declaration_modifier::dm_static:
+      return "static";
+    case declaration_modifier::dm_async:
+      return "async";
+    }
+    return "";
+  }
+
+  inline constexpr std::string declaration_modifiers_to_string(declaration_modifier p_mod)
+  {
+    std::stringstream ss;
+    for(auto i = 0; i < declaration_modifiers_count; i++)
+    {
+      ss << declaration_modifier_to_string(static_cast<declaration_modifier>(i * (1 << i)));
+    }
+    return ss.str();
+  }
+
+  enum class binding_modifier : uint8_t
+  {
+    bm_none = 0,
+    bm_mut = 1 << 0,
+  };
+
+  constexpr auto binding_modifiers_count = 2;
+
+  inline constexpr std::string_view binding_modifier_to_string(binding_modifier p_mod)
+  {
+    switch(p_mod)
+    {
+    case binding_modifier::bm_mut:
+      return "mut";
+    }
+    return "";
+  }
+
+  inline constexpr std::string binding_modifiers_to_string(binding_modifier p_mod)
+  {
+    std::stringstream ss;
+    for(auto i = 0; i < binding_modifiers_count; i++)
+    {
+      ss << binding_modifier_to_string(static_cast<binding_modifier>(i * (1 << i)));
+    }
+    return ss.str();
+  }
+
   class declaration : public statement
   {
   public:
-    declaration(token p_tok) : statement(node_type::nt_declaration, p_tok)
+    declaration(token p_tok, declaration_modifier p_mods)
+        : statement(node_type::nt_declaration, p_tok), m_modifiers(p_mods)
     {
     }
 
-    declaration(node_type p_nt, token p_tok) : statement(p_nt, p_tok)
+    declaration(node_type p_nt, token p_tok, declaration_modifier p_mods) : statement(p_nt, p_tok), m_modifiers(p_mods)
     {
     }
+
+    declaration_modifier get_modifiers() const
+    {
+      return m_modifiers;
+    }
+
+  private:
+    declaration_modifier m_modifiers;
   };
 
   /**
@@ -169,6 +253,38 @@ namespace ok::ast
 
   private:
     std::list<std::unique_ptr<statement>> m_statements;
+  };
+
+  /**
+   * bindings
+   **/
+
+  class binding : public node
+  {
+  public:
+    binding(token p_tok, const std::string& p_name, binding_modifier p_modifiers = binding_modifier::bm_none)
+        : node(node_type::nt_node, p_tok), m_name(p_name), m_modifiers(p_modifiers)
+    {
+    }
+
+    std::string to_string() override
+    {
+      return binding_modifiers_to_string(m_modifiers);
+    }
+
+    binding_modifier get_modifiers() const
+    {
+      return m_modifiers;
+    }
+
+    std::string get_name() const
+    {
+      return m_name;
+    }
+
+  private:
+    binding_modifier m_modifiers;
+    std::string m_name;
   };
 
   /**
@@ -371,7 +487,6 @@ namespace ok::ast
       return m_right;
     }
 
-    // TODO(Qais): operators not strings!
     operator_type get_operator() const
     {
       return m_operator;
@@ -387,21 +502,21 @@ namespace ok::ast
   class assign_expression : public expression
   {
   public:
-    assign_expression(token p_tok, const std::string& p_ident, std::unique_ptr<expression> p_right)
-        : expression(node_type::nt_assign_expr, p_tok), m_identifier(p_ident), m_right(std::move(p_right))
+    assign_expression(token p_tok, std::unique_ptr<binding> p_binding, std::unique_ptr<expression> p_right)
+        : expression(node_type::nt_assign_expr, p_tok), m_binding(std::move(p_binding)), m_right(std::move(p_right))
     {
     }
 
     std::string to_string() override
     {
       std::stringstream ss;
-      ss << "(" << m_identifier << "=" << m_right->to_string() << ")";
+      ss << "(" << m_binding->to_string() << " = " << m_right->to_string() << ")";
       return ss.str();
     }
 
-    const std::string& get_identifier() const
+    std::unique_ptr<binding>& get_binding()
     {
-      return m_identifier;
+      return m_binding;
     }
 
     std::unique_ptr<expression>& get_right()
@@ -410,7 +525,7 @@ namespace ok::ast
     }
 
   private:
-    std::string m_identifier;
+    std::unique_ptr<binding> m_binding;
     std::unique_ptr<expression> m_right;
   };
 
@@ -608,9 +723,105 @@ namespace ok::ast
     bool m_is_invoke = false;
   };
 
+  class array_expression : public expression
+  {
+  public:
+    array_expression(token p_tok, std::list<std::unique_ptr<expression>>&& p_elements)
+        : expression(node_type::nt_array_expr, p_tok), m_elements(std::move(p_elements))
+    {
+    }
+
+    std::string to_string() override
+    {
+      std::stringstream ss;
+      ss << "[";
+      for(size_t ctr = 0; const auto& elem : m_elements)
+      {
+        ss << elem->to_string();
+        if(m_elements.size() > 1 && ctr++ < m_elements.size() - 1)
+          ss << ", ";
+      }
+      ss << "]";
+      return ss.str();
+    }
+
+    const std::list<std::unique_ptr<expression>>& get_elements() const
+    {
+      return m_elements;
+    }
+
+  private:
+    std::list<std::unique_ptr<expression>> m_elements;
+  };
+
+  class map_expression : public expression
+  {
+  public:
+    map_expression(token p_tok,
+                   std::unordered_map<std::unique_ptr<expression>, std::unique_ptr<expression>>&& p_entries)
+        : expression(node_type::nt_map_expr, p_tok), m_entries(std::move(p_entries))
+    {
+    }
+
+    std::string to_string() override
+    {
+      std::stringstream ss;
+      ss << "{";
+      for(size_t ctr = 0; const auto& entry : m_entries)
+      {
+        ss << entry.first->to_string() << ": " << entry.second->to_string();
+        if(m_entries.size() > 1 && ctr++ < m_entries.size() - 1)
+          ss << ", ";
+      }
+      ss << "}";
+      return ss.str();
+    }
+
+    const std::unordered_map<std::unique_ptr<expression>, std::unique_ptr<expression>>& get_entries() const
+    {
+      return m_entries;
+    }
+
+  private:
+    std::unordered_map<std::unique_ptr<expression>, std::unique_ptr<expression>> m_entries;
+  };
+
+  class subscript_expression : public expression
+  {
+  public:
+    subscript_expression(token p_tok, std::unique_ptr<expression> p_left, std::unique_ptr<expression> p_right)
+        : expression(node_type::nt_subscript_expr, p_tok)
+    {
+    }
+
+    std::string to_string() override
+    {
+      std::stringstream ss;
+      ss << m_left->to_string() << "[" << m_right->to_string() << "]";
+      return ss.str();
+    }
+
+  private:
+    std::unique_ptr<expression> m_left;
+    std::unique_ptr<expression> m_right;
+  };
+
   /**
    * statements
    **/
+
+  class empty_statement : public statement
+  {
+  public:
+    empty_statement(token p_tok) : statement(node_type::nt_empty_stmt, p_tok)
+    {
+    }
+
+    std::string to_string() override
+    {
+      return "";
+    }
+  };
 
   class expression_statement : public statement
   {
@@ -898,15 +1109,19 @@ namespace ok::ast
   class let_declaration : public declaration
   {
   public:
-    let_declaration(token p_tok, std::unique_ptr<identifier_expression> p_ident, std::unique_ptr<expression> p_value)
-        : declaration(node_type::nt_let_decl, p_tok), m_identifier(std::move(p_ident)), m_value(std::move(p_value))
+    let_declaration(token p_tok,
+                    std::unique_ptr<binding> p_binding,
+                    std::unique_ptr<expression> p_value,
+                    declaration_modifier p_mods = declaration_modifier::dm_none)
+        : declaration(node_type::nt_let_decl, p_tok, p_mods), m_binding(std::move(p_binding)),
+          m_value(std::move(p_value))
     {
     }
 
     std::string to_string() override
     {
       std::stringstream ss;
-      ss << "let " + m_identifier->to_string() << " " << m_value->to_string();
+      ss << "let " + m_binding->to_string() << " " << m_value->to_string();
       return ss.str();
     }
 
@@ -915,13 +1130,13 @@ namespace ok::ast
       return m_value;
     }
 
-    const std::unique_ptr<identifier_expression>& get_identifier() const
+    const std::unique_ptr<binding>& get_binding() const
     {
-      return m_identifier;
+      return m_binding;
     }
 
   private:
-    std::unique_ptr<identifier_expression> m_identifier;
+    std::unique_ptr<binding> m_binding;
     std::unique_ptr<expression> m_value;
   };
 
@@ -930,9 +1145,10 @@ namespace ok::ast
   public:
     function_declaration(token p_tok,
                          std::unique_ptr<statement> p_body,
-                         std::unique_ptr<identifier_expression> p_identifier = nullptr,
-                         std::list<std::unique_ptr<identifier_expression>>&& p_parameatres = {})
-        : declaration(node_type::nt_function_decl, p_tok), m_identifier(std::move(p_identifier)),
+                         std::unique_ptr<binding> p_binding = nullptr,
+                         std::list<std::unique_ptr<binding>>&& p_parameatres = {},
+                         declaration_modifier p_mods = declaration_modifier::dm_none)
+        : declaration(node_type::nt_function_decl, p_tok, p_mods), m_binding(std::move(p_binding)),
           m_parameters(std::move(p_parameatres)), m_body(std::move(p_body))
     {
     }
@@ -941,7 +1157,7 @@ namespace ok::ast
     {
       std::stringstream ss;
       ss << "fu ";
-      ss << (m_identifier == nullptr ? "" : m_identifier->to_string());
+      ss << (m_binding == nullptr ? "" : m_binding->to_string());
       ss << "(";
       for(auto i = 0; const auto& p : m_parameters)
       {
@@ -954,12 +1170,12 @@ namespace ok::ast
       return ss.str();
     }
 
-    const std::unique_ptr<identifier_expression>& get_identifier() const
+    const std::unique_ptr<binding>& get_binding() const
     {
-      return m_identifier;
+      return m_binding;
     }
 
-    const std::list<std::unique_ptr<identifier_expression>>& get_parameters() const
+    const std::list<std::unique_ptr<binding>>& get_parameters() const
     {
       return m_parameters;
     }
@@ -970,19 +1186,27 @@ namespace ok::ast
     }
 
   private:
-    std::unique_ptr<identifier_expression> m_identifier;
-    std::list<std::unique_ptr<identifier_expression>> m_parameters;
+    std::unique_ptr<binding> m_binding;
+    std::list<std::unique_ptr<binding>> m_parameters;
     std::unique_ptr<statement> m_body;
   };
 
   class class_declaration : public declaration
   {
   public:
+    struct method_declaration
+    {
+      std::unique_ptr<function_declaration> function;
+      method_type type;
+    };
+
+  public:
     class_declaration(token p_tok,
-                      std::unique_ptr<identifier_expression> p_identifier,
-                      std::list<std::unique_ptr<function_declaration>>&& p_methods,
-                      std::unique_ptr<identifier_expression> p_super = nullptr)
-        : declaration(node_type::nt_class_decl, p_tok), m_identifier(std::move(p_identifier)),
+                      std::unique_ptr<binding> p_identifier,
+                      std::list<method_declaration>&& p_methods,
+                      std::unique_ptr<identifier_expression> p_super = nullptr,
+                      declaration_modifier p_mods = declaration_modifier::dm_none)
+        : declaration(node_type::nt_class_decl, p_tok, p_mods), m_binding(std::move(p_identifier)),
           m_methods(std::move(p_methods)), m_super(std::move(p_super))
     {
     }
@@ -991,23 +1215,23 @@ namespace ok::ast
     {
       std::stringstream ss;
       ss << "class ";
-      ss << m_identifier->to_string();
+      ss << m_binding->to_string();
       ss << (m_super == nullptr ? "" : "inherits " + m_super->to_string());
       ss << " {\n";
       for(auto i = 0; const auto& m : m_methods)
       {
-        ss << m->to_string() << "\n";
+        ss << m.function->to_string() << "\n";
       }
       ss << "}\n";
       return ss.str();
     }
 
-    const std::unique_ptr<identifier_expression>& get_identifier() const
+    const std::unique_ptr<binding>& get_binding() const
     {
-      return m_identifier;
+      return m_binding;
     }
 
-    const std::list<std::unique_ptr<function_declaration>>& get_methods() const
+    const std::list<method_declaration>& get_methods() const
     {
       return m_methods;
     }
@@ -1018,8 +1242,8 @@ namespace ok::ast
     }
 
   private:
-    std::unique_ptr<identifier_expression> m_identifier;
-    std::list<std::unique_ptr<function_declaration>> m_methods;
+    std::unique_ptr<binding> m_binding;
+    std::list<method_declaration> m_methods;
     std::unique_ptr<identifier_expression> m_super;
   };
 

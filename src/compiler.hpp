@@ -35,6 +35,8 @@ namespace ok
         invalid_return_from_non_returning_method,
         self_inheritance,
         invalid_usage_of_super_in_non_inherited_class,
+        immutable_mutation,
+        illegal_binding_modifier,
       };
       code error_code;
       std::string message;
@@ -119,7 +121,7 @@ namespace ok
 
   public:
     // type is always string the name will determine the script being ran and the future namespace also the main
-    function_object* compile(const std::string_view p_src, string_object* p_function_name, uint32_t p_vm_id);
+    function_object* compile(vm* p_vm, const std::string_view p_src, string_object* p_function_name);
     chunk* current_chunk() const
     {
       ASSERT(m_compiled);
@@ -247,14 +249,17 @@ namespace ok
 
     void write_variable(opcode p_op, uint32_t p_value, size_t p_offset);
     void named_variable(const std::string& str_ident, size_t offset, variable_operation op);
-    void declare_variable(const std::string& str_ident, size_t offset);
-    std::optional<uint32_t>
-    declare_variable_late(const std::string& str_ident, size_t offset, uint32_t p_identifiers_table_index = UINT32_MAX);
+    void declare_variable(variable_declaration p_decl, size_t offset, bool bypass_local);
+    std::optional<uint32_t> declare_variable_late(variable_declaration p_decl,
+                                                  size_t offset,
+                                                  bool bypass_local,
+                                                  uint32_t p_identifiers_table_index = UINT32_MAX);
+    void declare_global(uint32_t p_global, variable_declaration_flags p_flags, size_t p_offset);
     uint32_t resolve_local(const std::string& str_ident, size_t offset, const function_context& p_context);
     uint32_t resolve_upvalue(const std::string& str_ident, size_t offset, int64_t p_function_context_reverse_index);
     uint32_t add_upvalue(uint32_t p_local, bool p_is_local, size_t offset, function_context& p_context);
 
-    void being_scope();
+    void begin_scope();
     void end_scope();
     void clean_scope_garbage();
 
@@ -289,7 +294,7 @@ namespace ok
     }
 
   private:
-    uint32_t m_vm_id;
+    vm* m_vm = nullptr;
     std::vector<function_context> m_function_contexts;
     std::vector<class_context> m_class_contexts;
 
@@ -300,6 +305,7 @@ namespace ok
     bool m_compiled = false;
     size_t m_locals_count = 0;
     size_t m_scope_depth = 0;
+    uint32_t m_class_id = object_type::obj_last;
 
   private:
     friend class gc;

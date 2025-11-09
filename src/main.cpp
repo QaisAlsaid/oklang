@@ -1,3 +1,4 @@
+/*
 #include "chunk.hpp"
 #include "lexer.hpp"
 #include "parser.hpp"
@@ -95,60 +96,27 @@ int main(int argc, char** argv)
   // error either.
   // the problem comes from the individual expression parsers doesnt propagate errors, so fix that asap
 
-  auto res = vm.interpret(R"SRC( 
-    if true and true -> print "[[pass]: true and true]";
-    if true and false -> print "[[fail]: true and false]";
-    if false and true -> print "[[fail]: false and true]";
-    if false and false -> print "[[fail]: false and false]";
-    if true or true -> print "[[pass]: true or true]";
-    if true or false -> print "[[pass]: true or false]";
-    if false or true -> print "[[pass]: false or true]";
-    if false or false -> print "[[fail]: false or false]";
 
-    for let i = 0; i < 10; i = i + 1 -> {
-      if i == 5  -> { 
-        continue;
-      }   
-      print i;
-    }
-
-    for let i = 0; i < 10; i = i + 1 -> {
-      if i == 5  -> { 
-        break;
-      }   
-      print i;
-    }
-
-    let x = -1;
-    while x < 10 -> {
-      x = x + 1;
-      if x == 5 -> {
-        break;
-      }  
-      print x;
-    }
-
-    x = -1;
-    while x < 10 -> {
-      x = x +1;
-      if x == 5 -> {
-        continue;
+  auto res = vm.interpret(R"SRC(
+    class cls{
+      meth() {
+        this.foo = "bar";
       }
-      print x;
     }
-
-
+    let i = cls();
+    i.meth();
+    print i.foo;
   )SRC");
   // auto res = vm.interpret("{let x = 'hello world'; print x; { x = 'foo'; print x; x = 34; { print x; }; }}");
   switch(res)
   {
   case ok::vm::interpret_result::ok:
     break;
-  case ok::vm::interpret_result::compile_error:
-    vm.get_compile_errors().show();
-    break;
   case ok::vm::interpret_result::parse_error:
     vm.get_parse_errors().show();
+    break;
+  case ok::vm::interpret_result::compile_error:
+    vm.get_compile_errors().show();
     break;
   case ok::vm::interpret_result::runtime_error:
     break;
@@ -188,4 +156,57 @@ static tests_progress test(const std::string_view src, const std::string_view ex
     std::println("}}");
   }
   return {tests_tot, tests_pass, tests_fail};
+}
+*/
+
+#include "repl.hpp"
+#include "runner.hpp"
+#include "utility.hpp"
+#include "vm.hpp"
+#include <filesystem>
+#include <print>
+
+#define FILE_ERROR (ok::to_utype(ok::vm::interpret_result::count))
+#define UNKNOWN_ERROR (FILE_ERROR + 1)
+
+int main(int argc, char** argv)
+{
+  ok::vm::interpret_result res = ok::vm::interpret_result::ok;
+  if(argc == 1)
+  {
+    ok::repl::start();
+  }
+  else if(argc == 2)
+  {
+    std::filesystem::path file = argv[1];
+    auto ret = ok::runner::start(file);
+    if(!ret.has_value())
+    {
+      switch(ret.error())
+      {
+      case ok::runner::error::file_not_found:
+      {
+        std::println(stderr, "can't open file: '{}', reason: no such file or directory", file.string());
+        return FILE_ERROR;
+      }
+      case ok::runner::error::no_permission:
+      {
+        std::println(stderr, "can't open file: '{}', reason: permission denied", file.string());
+        return FILE_ERROR;
+      }
+      case ok::runner::error::not_a_file:
+      {
+        std::println(stderr, "can't open file: '{}', reason: not a file", file.string());
+        return FILE_ERROR;
+      }
+      default:
+      {
+        return UNKNOWN_ERROR;
+      }
+      }
+    }
+    res = ret.value();
+  }
+
+  return ok::to_utype(res);
 }

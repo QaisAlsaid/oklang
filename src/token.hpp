@@ -68,6 +68,12 @@ namespace ok
     tok_return,
     tok_not,
     tok_ok,
+    tok_operator,
+    tok_glob,
+    tok_export,
+    tok_mut,
+    tok_static,
+    tok_async,
   };
   struct token
   {
@@ -197,6 +203,18 @@ namespace ok
       return "not"sv;
     case token_type::tok_ok:
       return "ok"sv;
+    case token_type::tok_operator:
+      return "operator"sv;
+    case token_type::tok_glob:
+      return "glob"sv;
+    case token_type::tok_export:
+      return "export"sv;
+    case token_type::tok_mut:
+      return "mut"sv;
+    case token_type::tok_static:
+      return "static"sv;
+    case token_type::tok_async:
+      return "async"sv;
     }
     return "unknown"sv;
   }

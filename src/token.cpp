@@ -18,7 +18,10 @@ namespace ok
       {"this"sv, token_type::tok_this},     {"null"sv, token_type::tok_null},
       {"true"sv, token_type::tok_true},     {"false"sv, token_type::tok_false},
       {"return"sv, token_type::tok_return}, {"not", token_type::tok_not},
-      {"ok"sv, token_type::tok_ok}};
+      {"ok"sv, token_type::tok_ok},         {"operator"sv, token_type::tok_operator},
+      {"glob"sv, token_type::tok_glob},     {"export"sv, token_type::tok_export},
+      {"mut"sv, token_type::tok_mut},       {"static"sv, token_type::tok_static},
+      {"async"sv, token_type::tok_async}};
 
   token_type lookup_identifier(const std::string_view p_raw)
   {

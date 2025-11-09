@@ -12,10 +12,12 @@ namespace ok
   {
     m_used_memory += p_by;
 #ifndef OK_STRESS_GC
-    if(m_used_memory > m_next)
+    if(m_used_memory > m_next && !m_is_paused)
 #endif
     {
+#if !defined(OK_NOT_GARBAGE_COLLECTED)
       collect();
+#endif
     }
   }
 
@@ -38,6 +40,18 @@ namespace ok
 #endif
   }
 
+  // TODO(Qais): fix this asap
+  static void mark_hashtable(std::function<void(object*)> mark_object,
+                             std::function<void(value_t)> mark_value,
+                             const std::unordered_map<string_object*, vm::global_entry>& p_table)
+  {
+    for(auto pair : p_table)
+    {
+      mark_object((object*)pair.first);
+      mark_value(pair.second.global);
+    }
+  }
+
   void gc::mark_roots()
   {
     auto _vm = get_g_vm();
@@ -57,7 +71,8 @@ namespace ok
     {
       mark_value(val);
     }
-    mark_hashtable(_vm->m_globals);
+    ok::mark_hashtable(
+        [this](auto* obj) { this->mark_object(obj); }, [this](auto val) { this->mark_value(val); }, _vm->m_globals);
     mark_compiler_roots();
     auto& vm_statics = _vm->get_statics();
     mark_object((object*)vm_statics.init_string);
@@ -96,7 +111,7 @@ namespace ok
     TRACELN("");
 #endif
     if(p_value.type == value_type::object_val)
-      mark_object(p_value.as.obj);
+      mark_object(OK_VALUE_AS_OBJECT(p_value));
   }
 
   void gc::mark_object(object* p_object)
@@ -127,10 +142,10 @@ namespace ok
     _vm->print_object(p_object);
     TRACELN("");
 #endif
+    mark_object((object*)p_object->class_);
     switch(p_object->get_type())
     {
     case object_type::obj_string:
-    case object_type::obj_native_function:
       break;
     case object_type::obj_upvalue:
     {
@@ -158,22 +173,35 @@ namespace ok
     {
       auto class_ = (class_object*)p_object;
       mark_object((object*)class_->name);
-      mark_hashtable(class_->methods);
+      for(auto method : class_->methods)
+      {
+        mark_object((object*)method.first);
+        mark_value(method.second);
+      }
       break;
     }
-    case object_type::obj_instance:
-    {
-      auto instance = (instance_object*)p_object;
-      mark_object((object*)instance->class_);
-      mark_hashtable(instance->fields);
-      break;
-    }
+    // case object_type::obj_instance:
+    // {
+    //   auto instance = (instance_object*)p_object;
+    //   mark_object((object*)instance->class_);
+    //   mark_hashtable(instance->fields);
+    //   break;
+    // }
     case object_type::obj_bound_method:
     {
       auto bm = (bound_method_object*)p_object;
       mark_value(bm->receiver);
-      mark_object((object*)bm->method);
+      mark_value(bm->method);
       break;
+    }
+    default:
+    {
+      if(p_object->is_instance())
+      {
+        auto instance = (instance_object*)p_object;
+        mark_hashtable(instance->fields);
+        break;
+      }
     }
     }
   }

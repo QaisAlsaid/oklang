@@ -32,6 +32,16 @@ namespace ok
       m_keep.pop_back();
     }
 
+    void pause()
+    {
+      m_is_paused = true;
+    }
+
+    void resume()
+    {
+      m_is_paused = false;
+    }
+
   private:
     void mark_roots();
     void mark_compiler_roots();
@@ -48,6 +58,7 @@ namespace ok
   private:
     size_t m_used_memory = 0;
     size_t m_next = 1024 * 1024; // 1mb
+    bool m_is_paused = false;
     std::vector<object*> m_gray;
     std::vector<value_t> m_keep;
     static constexpr size_t s_grow_factor = 2;
