@@ -5,6 +5,7 @@
 #include "chunk.hpp"
 #include "macros.hpp"
 #include "object.hpp"
+#include "operator.hpp"
 #include "parser.hpp"
 #include <cstdint>
 #include <format>
@@ -16,10 +17,12 @@ namespace ok
   class compiler
   {
   public:
+    typedef bool (*compare_function)(value_t p_stack_top);
     struct error
     {
       enum class code
       {
+        internal_error,
         invalid_compilation_target,
         local_redefinition,
         variable_in_own_initializer,
@@ -37,6 +40,8 @@ namespace ok
         invalid_usage_of_super_in_non_inherited_class,
         immutable_mutation,
         illegal_binding_modifier,
+        insufficent_parameters_count,
+        illegal_lvalue,
       };
       code error_code;
       std::string message;
@@ -88,10 +93,26 @@ namespace ok
         function,
         method,
         initializer,
-        deinitializer
+        deinitializer,
+        operator_overload,
       };
       function_object* function;
       type function_type;
+
+      constexpr static inline type type_from_uoot(unique_overridable_operator_type p_mt)
+      {
+        switch(p_mt)
+        {
+        case unique_overridable_operator_type::uoot_ctor:
+          return type::initializer;
+        case unique_overridable_operator_type::uoot_dtor:
+          return type::deinitializer;
+        case unique_overridable_operator_type::uoot_method:
+          return type::method;
+        default:
+          return type::operator_overload;
+        }
+      }
     };
 
     struct upvalue
@@ -171,20 +192,11 @@ namespace ok
     }
 
   private:
-    enum class variable_operation : bool
+    enum class variable_operation
     {
       vo_set,
-      vo_get
-    };
-    enum class variable_type : bool
-    {
-      vt_local,
-      vt_global
-    };
-    enum class variable_width : bool
-    {
-      vw_long,
-      vw_short
+      vo_get,
+      vo_set_if,
     };
 
     struct function_context
@@ -207,6 +219,7 @@ namespace ok
     void compile(ast::expression_statement* p_expr_stmt);
     void compile(ast::number_expression* p_number);
     void compile(ast::prefix_unary_expression* p_unary);
+    void compile(ast::postfix_unary_expression* p_unary);
     void compile(ast::infix_binary_expression* p_binary);
     void compile(ast::boolean_expression* p_boolean);
     void compile(ast::null_expression* p_null);
@@ -216,7 +229,6 @@ namespace ok
     void compile(ast::print_statement* p_print_stmt);
     void compile(ast::let_declaration* p_let_decl);
     void compile(ast::identifier_expression* p_ident_expr);
-    void compile(ast::assign_expression* p_assignment_expr);
     void compile(ast::block_statement* p_block_stmt);
     void compile(ast::if_statement* p_if_statement);
     void compile(ast::while_statement* p_while_statement);
@@ -226,7 +238,12 @@ namespace ok
     void compile(ast::call_expression* p_call_expression);
     void compile(ast::return_statement* p_return_statement);
     void compile(ast::class_declaration* p_class_declaration);
+    void compile(ast::assign_expression* p_assignment_expr);
+
+    // only compiles invocation, set is handled in the assignment expr compile function!
     void compile(ast::access_expression* p_access_expression);
+
+    void compile_method(const ast::class_declaration::method_declaration& p_method);
 
     void do_compile_function(ast::function_declaration* p_function_declaration, compile_function::type p_type);
     void push_function_context(compile_function p_function);
@@ -247,8 +264,9 @@ namespace ok
     // write_variable(variable_operation p_op, variable_type p_t, variable_width p_w, uint32_t p_value, size_t
     // p_offset); opcode get_variable_opcode(variable_operation p_op, variable_type p_t, variable_width p_w);
 
-    void write_variable(opcode p_op, uint32_t p_value, size_t p_offset);
-    void named_variable(const std::string& str_ident, size_t offset, variable_operation op);
+    void write_variable(opcode p_op, uint32_t p_value, size_t p_offset, uint64_t p_set_if_compare);
+    void
+    named_variable(const std::string& str_ident, size_t offset, variable_operation op, uint64_t p_set_if_compare = 0);
     void declare_variable(variable_declaration p_decl, size_t offset, bool bypass_local);
     std::optional<uint32_t> declare_variable_late(variable_declaration p_decl,
                                                   size_t offset,
@@ -256,7 +274,10 @@ namespace ok
                                                   uint32_t p_identifiers_table_index = UINT32_MAX);
     void declare_global(uint32_t p_global, variable_declaration_flags p_flags, size_t p_offset);
     uint32_t resolve_local(const std::string& str_ident, size_t offset, const function_context& p_context);
-    uint32_t resolve_upvalue(const std::string& str_ident, size_t offset, int64_t p_function_context_reverse_index);
+    uint32_t resolve_upvalue(const std::string& str_ident,
+                             size_t offset,
+                             int64_t p_function_context_reverse_index,
+                             local* loc = nullptr);
     uint32_t add_upvalue(uint32_t p_local, bool p_is_local, size_t offset, function_context& p_context);
 
     void begin_scope();
@@ -274,8 +295,27 @@ namespace ok
 
     void patch_loop_context();
 
+    void patch_ambiguation(unique_overridable_operator_type& p_uoot, uint8_t parity);
+
     void compile_logical_operator(ast::infix_binary_expression* p_logical_operator);
     uint8_t compile_arguments_list(const std::list<std::unique_ptr<ast::expression>>& p_list);
+
+    // requires class to be precompiled, doesnt handle invoke
+    void get_property(uint32_t p_property_name, size_t p_offset);
+    void set_property(uint32_t p_property_name, size_t p_offset, uint64_t p_set_if_compare = 0);
+    void invoke_property(uint32_t p_property_name,
+                         const std::list<std::unique_ptr<ast::expression>>& p_argslist,
+                         size_t p_offset);
+
+    void get_variable(uint32_t p_variable_name);
+
+    void get_lvalue(ast::expression* p_expr);
+    void set_lvalue(ast::expression* p_expr,
+                    const std::function<void(ast::expression* p_expr)> p_custom_target = nullptr,
+                    uint64_t p_set_if_compare = 0);
+    void set_lvalue_from_stack(ast::expression* p_expr);
+
+    // void lvalue_operation(ast::expression* p_expr, variable_operation p_op);
 
     template <typename... Args>
     void compile_error(error::code code, std::format_string<Args...> fmt, Args&&... args)
@@ -283,10 +323,10 @@ namespace ok
       m_errors.errs.emplace_back(code, std::format(fmt, std::forward<Args>(args)...));
     }
 
-    static constexpr uint8_t _make_variable_key(variable_operation p_op, variable_type p_t, variable_width p_w)
-    {
-      return static_cast<uint8_t>(p_op) << 2 | static_cast<uint8_t>(p_t) << 1 | static_cast<uint8_t>(p_w);
-    }
+    // static constexpr uint8_t _make_variable_key(variable_operation p_op, variable_type p_t, variable_width p_w)
+    // {
+    //   return static_cast<uint8_t>(p_op) << 2 | static_cast<uint8_t>(p_t) << 1 | static_cast<uint8_t>(p_w);
+    // }
 
     static constexpr bool is_long(uint32_t p_index)
     {

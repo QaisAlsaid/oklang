@@ -1,0 +1,60 @@
+fu test_0() {
+  print 0;
+}
+
+fu test_1(_1) {
+  print _1;
+}
+
+fu test_2(_1, _2) {
+  print _1;
+  print _2;
+}
+
+fu trilling_comma(_,) {
+  print "trilling,";
+}
+
+{
+  glob fu global() {
+    print "global";
+  }
+}
+
+fu mut mutable() {
+  print "mutable";
+}
+
+{
+  glob fu mut global_mutable() {
+    print "global_mutable";
+  }
+} 
+
+fu mutable_param(mut _) {
+  print _;
+  _ = 69;
+  print _;
+}
+
+fu returning() {
+  return "ok";
+}
+
+test_0(); // expect: 0
+test_1(1); // expect: 1
+test_2(1, 2); 
+// expect: 1
+// expect: 2
+trilling_comma(""); // expect: trilling,
+global(); // expect: global
+mutable(); // expect: mutable
+mutable = 69;
+print mutable; // expect: 69
+global_mutable(); // expect: global_mutable
+global_mutable = 69;
+print global_mutable; // expect: 69
+mutable_param("mutable_param"); 
+// expect: mutable_param
+// expect: 69
+print returning(); // expect: ok

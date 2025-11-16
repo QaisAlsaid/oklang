@@ -51,6 +51,13 @@ namespace ok
     return static_cast<ScopedEnum>(~to_utype(p_mod));
   }
 
+  template <typename ScopedEnum>
+    requires std::is_scoped_enum_v<ScopedEnum>
+  constexpr inline bool is_in_group(ScopedEnum p_val, ScopedEnum p_comp)
+  {
+    return to_utype(p_val & p_comp) != 0;
+  }
+
   template <typename T, size_t N>
     requires std::is_integral_v<T> && (N <= sizeof(T))
   constexpr auto encode_int(T value)

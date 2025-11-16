@@ -14,6 +14,7 @@ namespace ok
     byte* ip;
     size_t slots = 0;
     size_t top = 0;
+    value_t saved_slot{};
   };
 
 } // namespace ok

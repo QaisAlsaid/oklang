@@ -1,0 +1,1 @@
+async let x = 2; // expect error 

@@ -28,9 +28,15 @@ namespace ok
 
   struct local
   {
+    local() = default;
+    local(const variable_declaration& p_decl, int p_depth, bool p_is_captured = false)
+        : decl(p_decl), depth(p_depth), is_captured(p_is_captured)
+    {
+    }
+
     variable_declaration decl;
-    bool is_captured = false;
     int depth;
+    bool is_captured = false;
   };
 
   using byte = uint8_t;
@@ -59,6 +65,8 @@ namespace ok
     op_class_long,
     op_method,
     op_method_long,
+    op_special_method,
+    op_convert_method,
     op_invoke,
     op_invoke_long,
     op_inherit,
@@ -66,19 +74,45 @@ namespace ok
     op_get_super_long,
     op_invoke_super,
     op_invoke_super_long,
+    op_save_slot,
+    op_push_saved_slot,
     // operators
+    op_not,
+    op_additive,
     op_negate,
     op_add,
+    op_tiled,
+    op_preincrement,
+    op_predecrement,
+    op_postincrement,
+    op_postdecrement,
     op_subtract,
     op_multiply,
     op_divide,
-    op_not,
+    op_modulo,
+    op_xor,
+    op_or,
+    op_and,
+    op_shift_left,
+    op_shift_right,
     op_equal,
     op_not_equal,
     op_greater,
     op_less,
     op_greater_equal,
     op_less_equal,
+
+    op_add_assign,
+    op_subtract_assign,
+    op_multiply_assign,
+    op_divide_assign,
+    op_modulo_assign,
+    op_and_assign,
+    op_xor_assign,
+    op_or_assign,
+    op_shift_left_assign,
+    op_shift_right_assign,
+    op_as,
     // idk name
     op_null,
     op_true,
@@ -94,6 +128,8 @@ namespace ok
     op_get_global_long,
     op_set_global,
     op_set_global_long,
+    op_set_if_global,
+    op_set_if_global_long,
 
     // locals
     // no define cuz there is nothing to do since its stack based operation
@@ -101,12 +137,16 @@ namespace ok
     op_get_local_long,
     op_set_local,
     op_set_local_long,
+    op_set_if_local,
+    op_set_if_local_long,
 
     // upvalues
     op_get_upvalue,
     op_get_upvalue_long,
-    op_set_up_value,
+    op_set_upvalue,
     op_set_upvalue_long,
+    op_set_if_upvalue,
+    op_set_if_upvalue_long,
     op_close_upvalue,
 
     // properties
@@ -114,6 +154,8 @@ namespace ok
     op_get_property_long,
     op_set_property,
     op_set_property_long,
+    op_set_if_property,
+    op_set_if_property_long,
   };
   constexpr uint32_t op_constant_max_count = UINT8_MAX;
   constexpr uint32_t uint24_max = (1 << 24) - 1;

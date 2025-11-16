@@ -1,0 +1,2 @@
+let x = 104;
+x = 69; // expect error

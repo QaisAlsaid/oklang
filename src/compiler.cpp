@@ -24,6 +24,15 @@
 
 namespace ok
 {
+  static bool is_primitive(value_t p_stack_top)
+  {
+    if(OK_IS_VALUE_OBJECT(p_stack_top))
+    {
+      return false;
+    }
+    return true;
+  }
+
   template <typename Class>
   struct scope_guard
   {
@@ -85,14 +94,17 @@ namespace ok
     case ast::node_type::nt_program:
       compile((ast::program*)(p_node));
       return;
+    case ast::node_type::nt_postfix_unary_expr:
+      compile((ast::postfix_unary_expression*)p_node);
+      return;
     case ast::node_type::nt_infix_binary_expr:
-      compile((ast::infix_binary_expression*)(p_node));
+      compile((ast::infix_binary_expression*)p_node);
       return;
     case ast::node_type::nt_prefix_expr:
-      compile((ast::prefix_unary_expression*)(p_node));
+      compile((ast::prefix_unary_expression*)p_node);
       return;
     case ast::node_type::nt_number_expr:
-      compile((ast::number_expression*)(p_node));
+      compile((ast::number_expression*)p_node);
       return;
     case ast::node_type::nt_string_expr:
       compile((ast::string_expression*)p_node);
@@ -186,16 +198,76 @@ namespace ok
     switch(p_unary->get_operator())
     {
     case operator_type::op_plus:
-      return; // TODO(Qais): vm supports this but not opcode!
-    case operator_type::op_minus:
-      current_chunk()->write(opcode::op_negate, p_unary->get_offset());
-      return;
-    case operator_type::op_bang:
-      current_chunk()->write(opcode::op_not, p_unary->get_offset());
-      return;
-    default:
+    {
+      current_chunk()->write(opcode::op_additive, p_unary->get_offset());
       return;
     }
+    case operator_type::op_minus:
+    {
+      current_chunk()->write(opcode::op_negate, p_unary->get_offset());
+      return;
+    }
+    case operator_type::op_bang:
+    {
+      current_chunk()->write(opcode::op_not, p_unary->get_offset());
+      return;
+    }
+    case operator_type::op_tiled:
+    {
+      current_chunk()->write(opcode::op_tiled, p_unary->get_offset());
+      return;
+    }
+    case operator_type::op_plus_plus:
+    {
+      current_chunk()->write(opcode::op_preincrement, p_unary->get_offset());
+      current_chunk()->write(opcode::op_save_slot, p_unary->get_offset());
+      set_lvalue(
+          p_unary->get_right().get(),
+          [this](ast::expression* p_expr) { current_chunk()->write(opcode::op_push_saved_slot, p_expr->get_offset()); },
+          (uint64_t)is_primitive);
+      return;
+    }
+    case operator_type::op_minus_minus:
+    {
+      current_chunk()->write(opcode::op_predecrement, p_unary->get_offset());
+      current_chunk()->write(opcode::op_save_slot, p_unary->get_offset());
+      set_lvalue(
+          p_unary->get_right().get(),
+          [this](ast::expression* p_expr) { current_chunk()->write(opcode::op_push_saved_slot, p_expr->get_offset()); },
+          (uint64_t)is_primitive);
+      return;
+    }
+    default:
+      break;
+    }
+    ASSERT(false); // parser bug
+  }
+
+  void compiler::compile(ast::postfix_unary_expression* p_unary)
+  {
+    compile(p_unary->get_left().get());
+    switch(p_unary->get_operator())
+    {
+    case operator_type::op_plus_plus:
+    {
+      current_chunk()->write(opcode::op_save_slot, p_unary->get_offset());
+      current_chunk()->write(opcode::op_postincrement, p_unary->get_offset());
+      set_lvalue(p_unary->get_left().get(), [this](ast::expression* p_expr) {}, (uint64_t)is_primitive);
+      current_chunk()->write(opcode::op_push_saved_slot, p_unary->get_offset());
+      return;
+    }
+    case operator_type::op_minus_minus:
+    {
+      current_chunk()->write(opcode::op_save_slot, p_unary->get_offset());
+      current_chunk()->write(opcode::op_postdecrement, p_unary->get_offset());
+      set_lvalue(p_unary->get_left().get(), [this](ast::expression* p_expr) {}, (uint64_t)is_primitive);
+      current_chunk()->write(opcode::op_push_saved_slot, p_unary->get_offset());
+      return;
+    }
+    default:
+      break;
+    }
+    ASSERT(false); // parser bug
   }
 
   void compiler::compile(ast::infix_binary_expression* p_binary)
@@ -214,42 +286,149 @@ namespace ok
     switch(p_binary->get_operator())
     {
     case operator_type::op_plus:
+    {
       current->write(opcode::op_add, p_binary->get_offset());
-      break;
+      return;
+    }
     case operator_type::op_minus:
+    {
       current->write(opcode::op_subtract, p_binary->get_offset());
-      break;
+      return;
+    }
     case operator_type::op_asterisk:
+    {
       current->write(opcode::op_multiply, p_binary->get_offset());
-      break;
+      return;
+    }
     case operator_type::op_slash:
+    {
       current->write(opcode::op_divide, p_binary->get_offset());
-      break;
+      return;
+    }
+    case operator_type::op_modulo:
+    {
+      current->write(opcode::op_modulo, p_binary->get_offset());
+      return;
+    }
+    case operator_type::op_ampersand:
+    {
+      current->write(opcode::op_and, p_binary->get_offset());
+      return;
+    }
+    case operator_type::op_caret:
+    {
+      current->write(opcode::op_modulo, p_binary->get_offset());
+      return;
+    }
+    case operator_type::op_bar:
+    {
+      current->write(opcode::op_or, p_binary->get_offset());
+      return;
+    }
+    case operator_type::op_shift_left:
+    {
+      current->write(opcode::op_shift_left, p_binary->get_offset());
+      return;
+    }
+    case operator_type::op_shift_right:
+    {
+      current->write(opcode::op_shift_right, p_binary->get_offset());
+      return;
+    }
     case operator_type::op_equal:
+    {
       current->write(opcode::op_equal, p_binary->get_offset());
-      break;
+      return;
+    }
     case operator_type::op_bang_equal:
+    {
       current->write(opcode::op_not_equal, p_binary->get_offset());
-      break;
+      return;
+    }
     case operator_type::op_less:
+    {
       current->write(opcode::op_less, p_binary->get_offset());
-      break;
+      return;
+    }
     case operator_type::op_greater:
+    {
       current->write(opcode::op_greater, p_binary->get_offset());
-      break;
+      return;
+    }
     case operator_type::op_less_equal:
     {
       current->write(opcode::op_less_equal, p_binary->get_offset());
-      break;
+      return;
     }
     case operator_type::op_greater_equal:
     {
       current->write(opcode::op_greater_equal, p_binary->get_offset());
+      return;
+    }
+    case operator_type::op_as:
+    {
+      current->write(opcode::op_as, p_binary->get_offset());
+      return;
+    }
+    case operator_type::op_plus_equal:
+    {
+      current->write(opcode::op_add_assign, p_binary->get_offset());
+      break;
+    }
+    case operator_type::op_minus_equal:
+    {
+      current->write(opcode::op_subtract_assign, p_binary->get_offset());
+      break;
+    }
+    case operator_type::op_asterisk_equal:
+    {
+      current->write(opcode::op_multiply_assign, p_binary->get_offset());
+      break;
+    }
+    case operator_type::op_slash_equal:
+    {
+      current->write(opcode::op_divide_assign, p_binary->get_offset());
+      break;
+    }
+    case operator_type::op_modulo_equal:
+    {
+      current->write(opcode::op_modulo_assign, p_binary->get_offset());
+      break;
+    }
+    case operator_type::op_bitwise_and_equal:
+    {
+      current->write(opcode::op_and_assign, p_binary->get_offset());
+      break;
+    }
+    case operator_type::op_caret_equal:
+    {
+      current->write(opcode::op_xor_assign, p_binary->get_offset());
+      break;
+    }
+    case operator_type::op_bitwise_or_equal:
+    {
+      current->write(opcode::op_or_assign, p_binary->get_offset());
+      break;
+    }
+    case operator_type::op_shift_left_equal:
+    {
+      current->write(opcode::op_shift_left_assign, p_binary->get_offset());
+      break;
+    }
+    case operator_type::op_shift_right_equal:
+    {
+      current->write(opcode::op_shift_right_assign, p_binary->get_offset());
       break;
     }
     default:
+      ASSERT(false); // parser bug
       return;
     }
+    current->write(opcode::op_save_slot, p_binary->get_offset());
+    set_lvalue(
+        p_binary->get_left().get(),
+        [this](ast::expression* p_expr) { current_chunk()->write(opcode::op_push_saved_slot, p_expr->get_offset()); },
+        (uint64_t)is_primitive);
   }
 
   // TODO(Qais): find a better place for this func
@@ -439,25 +618,7 @@ namespace ok
     named_variable(str_name, offset, variable_operation::vo_get);
     for(const auto& method : p_class_declaration->get_methods())
     {
-      const auto offset = method.function->get_offset();
-      const auto& ident = method.function->get_binding()->get_name();
-      const auto str = current_chunk()->add_identifier(value_t{ident}, offset);
-
-      auto type = ident == constants::init_string_literal ? compile_function::type::initializer
-                                                          : compile_function::type::method;
-
-      do_compile_function(method.function.get(), type);
-
-      current_chunk()->write(opcode::op_method, offset);
-      if(str < op_constant_max_count)
-      {
-        current_chunk()->write(str, offset);
-      }
-      else
-      {
-        current_chunk()->write(encode_int<uint32_t, 3>(str), offset);
-      }
-      current_chunk()->write(method.function->get_parameters().size(), offset);
+      compile_method(method);
     }
 
     // pop class pushed using named_variable call
@@ -467,6 +628,139 @@ namespace ok
       end_scope();
     }
     pop_class_context();
+  }
+
+  void compiler::patch_ambiguation(unique_overridable_operator_type& p_uoot, uint8_t p_arity)
+  {
+    if(is_in_group(p_uoot, unique_overridable_operator_type::uoot_group_ambiguous))
+    {
+      if(is_in_group(p_uoot, unique_overridable_operator_type::uoot_group_ambiguous_plus))
+      {
+        if(p_arity == 0)
+        {
+          p_uoot = unique_overridable_operator_type::uoot_unary_prefix_plus;
+        }
+        else if(p_arity == 1)
+        {
+          p_uoot = unique_overridable_operator_type::uoot_binary_infix_plus;
+        }
+      }
+      else if(is_in_group(p_uoot, unique_overridable_operator_type::uoot_group_ambiguous_minus))
+      {
+        if(p_arity == 0)
+        {
+          p_uoot = unique_overridable_operator_type::uoot_unary_prefix_minus;
+        }
+        else if(p_arity == 1)
+        {
+          p_uoot = unique_overridable_operator_type::uoot_binary_infix_minus;
+        }
+      }
+      else if(is_in_group(p_uoot, unique_overridable_operator_type::uoot_group_ambiguous_plus_plus))
+      {
+        if(p_arity == 0)
+        {
+          p_uoot = unique_overridable_operator_type::uoot_unary_prefix_plus_plus;
+        }
+        else if(p_arity == 1)
+        {
+          p_uoot = unique_overridable_operator_type::uoot_unary_postfix_plus_plus;
+        }
+      }
+      else if(is_in_group(p_uoot, unique_overridable_operator_type::uoot_group_ambiguous_minus_minus))
+      {
+        if(p_arity == 0)
+        {
+          p_uoot = unique_overridable_operator_type::uoot_unary_prefix_minus_minus;
+        }
+        else if(p_arity == 1)
+        {
+          p_uoot = unique_overridable_operator_type::uoot_unary_postfix_minus_minus;
+        }
+      }
+    }
+  }
+
+  void compiler::compile_method(const ast::class_declaration::method_declaration& p_method)
+  {
+    const auto offset = p_method.function->get_offset();
+    const auto& ident = p_method.function->get_binding()->get_name();
+    const auto str = current_chunk()->add_identifier(value_t{ident}, offset);
+    auto param_count = (uint8_t)p_method.function->get_parameters().size();
+    auto cftype = compile_function::type_from_uoot(p_method.type);
+
+    do_compile_function(p_method.function.get(), cftype);
+
+    auto type = p_method.type;
+    patch_ambiguation(type, param_count);
+    switch(type)
+    {
+    case unique_overridable_operator_type::uoot_method:
+    {
+      if(str < op_constant_max_count)
+      {
+        current_chunk()->write(opcode::op_method, offset);
+        current_chunk()->write(str, offset);
+      }
+      else
+      {
+        current_chunk()->write(opcode::op_method_long, offset);
+        current_chunk()->write(encode_int<uint32_t, 3>(str), offset);
+      }
+      break;
+    }
+    case unique_overridable_operator_type::uoot_convert:
+    {
+      if(param_count != 0)
+      {
+        compile_error(
+            error::code::insufficent_parameters_count, "expected 0 parameters in convert method, got: {}", param_count);
+      }
+      const auto& convertee_name = p_method.function->get_binding()->get_name();
+      named_variable(convertee_name, offset, variable_operation::vo_get);
+      current_chunk()->write(opcode::op_convert_method, offset);
+      break;
+    }
+    case unique_overridable_operator_type::uoot_none:
+    {
+      compile_error(error::code::internal_error, "unexpected error occurred");
+      break;
+    }
+    default:
+    {
+      if(is_in_group(type, unique_overridable_operator_type::uoot_group_single_param))
+      {
+        if(param_count != 1)
+        {
+          compile_error(error::code::insufficent_parameters_count,
+                        "expected 1 parameter in binary operator overload, got: {}",
+                        param_count);
+        }
+      }
+      else if(is_in_group(type, unique_overridable_operator_type::uoot_group_zero_param))
+      {
+        if(param_count != 0)
+        {
+          compile_error(error::code::insufficent_parameters_count,
+                        "expected 0 parameters in unary operator overload, got: {}",
+                        param_count);
+        }
+      }
+      current_chunk()->write(opcode::op_special_method, offset);
+      current_chunk()->write(unique_overridable_operator_type_to_method_type(type), offset);
+    }
+    }
+
+    // current_chunk()->write(opcode::op_method, offset);
+    // if(str < op_constant_max_count)
+    // {
+    //   current_chunk()->write(str, offset);
+    // }
+    // else
+    // {
+    //   current_chunk()->write(encode_int<uint32_t, 3>(str), offset);
+    // }
+    current_chunk()->write(param_count, offset);
   }
 
   void compiler::compile(ast::call_expression* p_call_expression)
@@ -480,55 +774,16 @@ namespace ok
   void compiler::compile(ast::access_expression* p_access_expression)
   {
     compile(p_access_expression->get_target().get());
-    auto property_name = current_chunk()->add_identifier(value_t{p_access_expression->get_property()->get_value()},
-                                                         p_access_expression->get_property()->get_offset());
-    auto is_long = !(property_name < op__global_max_count + 1);
-    auto offset = p_access_expression->get_offset();
-    if(p_access_expression->get_value() == nullptr) // get
+    const auto property_name = current_chunk()->add_identifier(
+        value_t{p_access_expression->get_property()->get_value()}, p_access_expression->get_property()->get_offset());
+    const auto offset = p_access_expression->get_offset();
+    if(p_access_expression->is_invoke())
     {
-      if(p_access_expression->is_invoke())
-      {
-        auto argc = compile_arguments_list(p_access_expression->get_arguments_list());
-        if(is_long)
-        {
-          current_chunk()->write(opcode::op_invoke_long, offset);
-          current_chunk()->write(encode_int<uint32_t, 3>(property_name), offset);
-          current_chunk()->write(argc, offset);
-        }
-        else
-        {
-          current_chunk()->write(opcode::op_invoke, offset);
-          current_chunk()->write(property_name, offset);
-          current_chunk()->write(argc, offset);
-        }
-      }
-      else
-      {
-        if(is_long)
-        {
-          current_chunk()->write(opcode::op_get_property_long, offset);
-          current_chunk()->write(encode_int<uint32_t, 3>(property_name), offset);
-        }
-        else
-        {
-          current_chunk()->write(opcode::op_get_property, offset);
-          current_chunk()->write(property_name, offset);
-        }
-      }
+      invoke_property(property_name, p_access_expression->get_arguments_list(), offset);
     }
-    else // set
+    else
     {
-      compile(p_access_expression->get_value().get());
-      if(is_long)
-      {
-        current_chunk()->write(opcode::op_set_property_long, offset);
-        current_chunk()->write(encode_int<uint32_t, 3>(property_name), offset);
-      }
-      else
-      {
-        current_chunk()->write(opcode::op_set_property, offset);
-        current_chunk()->write(property_name, offset);
-      }
+      get_property(property_name, offset);
     }
   }
 
@@ -700,48 +955,80 @@ namespace ok
   void compiler::compile(ast::identifier_expression* p_ident_expr)
   {
     const auto& str_val = p_ident_expr->get_value();
-    auto offset = p_ident_expr->get_offset();
-    // auto opt = resolve_variable(str_val, offset);
+    const auto offset = p_ident_expr->get_offset();
     named_variable(str_val, offset, variable_operation::vo_get);
-    // const auto op = variable_operation::vo_get;
-    // const auto tp = opt.first.has_value() ? variable_type::vt_global : variable_type::vt_local;
-    // const auto w = tp == variable_type::vt_global
-    //                    ? opt.first.value().first ? variable_width::vw_long : variable_width::vw_short
-    //                : opt.second.value() > UINT8_MAX ? variable_width::vw_long
-    //                                                 : variable_width::vw_short;
-    // const auto value = tp == variable_type::vt_global ? opt.first.value().second : opt.second.value();
-    // write_variable(op, tp, w, value, p_ident_expr->get_offset());
   }
 
   void compiler::compile(ast::assign_expression* p_assignment_expr)
   {
-    compile(p_assignment_expr->get_right().get());
-    const auto& str_val = p_assignment_expr->get_binding()->get_name();
-    if(p_assignment_expr->get_binding()->get_modifiers() != ast::binding_modifier::bm_none)
-    {
-      compile_error(error::code::illegal_binding_modifier, "illegal binding modifiers in assignment expression");
-    }
-    auto offset = p_assignment_expr->get_offset();
-    named_variable(str_val, offset, variable_operation::vo_set);
-    // auto opt = resolve_variable(str_val, offset);
+    ASSERT(p_assignment_expr->get_left()->is_lvalue());
 
-    // const auto op = variable_operation::vo_set;
-    // const auto tp = opt.first.has_value() ? variable_type::vt_global : variable_type::vt_local;
-    // const auto w = tp == variable_type::vt_global
-    //                    ? opt.first.value().first ? variable_width::vw_long : variable_width::vw_short
-    //                : opt.second.value() > UINT8_MAX ? variable_width::vw_long
-    //                                                 : variable_width::vw_short;
-    // const auto value = tp == variable_type::vt_global ? opt.first.value().second : opt.second.value();
-    // write_variable(op, tp, w, value, p_assignment_expr->get_offset());
+    switch(p_assignment_expr->get_left()->get_type())
+    {
+    case ast::node_type::nt_identifier_expr:
+    {
+      compile(p_assignment_expr->get_right().get());
+      const auto ident_expr = (ast::identifier_expression*)p_assignment_expr->get_left().get();
+      set_lvalue(ident_expr);
+      break;
+    }
+    case ast::node_type::nt_access_expr:
+    {
+      auto access_expr = (ast::access_expression*)p_assignment_expr->get_left().get();
+      set_lvalue(access_expr,
+                 [this, p_assignment_expr](ast::expression*) { compile(p_assignment_expr->get_right().get()); });
+      // ASSERT(!access_expr->is_invoke());
+      // compile(access_expr->get_target().get());
+      // auto property_name = current_chunk()->add_identifier(value_t{access_expr->get_property()->get_value()},
+      //                                                      access_expr->get_property()->get_offset());
+      // auto is_long = !(property_name < op__global_max_count + 1);
+      // auto offset = access_expr->get_offset();
+      // compile(p_assignment_expr->get_right().get());
+      // if(is_long)
+      // {
+      //   current_chunk()->write(opcode::op_set_property_long, offset);
+      //   current_chunk()->write(encode_int<uint32_t, 3>(property_name), offset);
+      // }
+      // else
+      // {
+      //   current_chunk()->write(opcode::op_set_property, offset);
+      //   current_chunk()->write(property_name, offset);
+      // }
+      break;
+    }
+    default:
+    {
+      compile_error(error::code::illegal_lvalue,
+                    "illegal assignment target: {}",
+                    ast::node_type_to_string(p_assignment_expr->get_left()->get_type()));
+    }
+    }
   }
 
-  void compiler::named_variable(const std::string& str_ident, size_t offset, variable_operation op)
+  void compile(ast::compound_assign_expression* p_compound_assign_expression)
+  {
+    switch(p_compound_assign_expression->get_assign_type())
+    {
+    case operator_type::op_plus_equal:
+    {
+    }
+    case operator_type::op_minus_equal:
+    }
+  }
+
+  void compiler::named_variable(const std::string& str_ident,
+                                size_t offset,
+                                variable_operation op,
+                                uint64_t p_set_if_compare)
   {
     uint32_t arg;
     uint32_t value;
     opcode get_op;
     opcode set_op;
+    opcode set_if_op;
     bool is_local = false;
+    bool is_upvalue = false;
+    local upvalue_loc;
     if((arg = resolve_local(str_ident, offset, m_function_contexts.back())) != UINT32_MAX) // local
     {
       auto& curr_locals = get_locals();
@@ -754,11 +1041,13 @@ namespace ok
           {
             get_op = opcode::op_get_local_long;
             set_op = opcode::op_set_local_long;
+            set_if_op = opcode::op_set_if_local_long;
           }
           else
           {
             get_op = opcode::op_get_local;
             set_op = opcode::op_set_local;
+            set_if_op = opcode::op_set_if_local;
           }
           is_local = true;
           break;
@@ -766,19 +1055,22 @@ namespace ok
       }
       value = arg;
     }
-    else if((arg = resolve_upvalue(str_ident, offset, 0)) != UINT32_MAX)
+    else if((arg = resolve_upvalue(str_ident, offset, 0, &upvalue_loc)) != UINT32_MAX)
     {
       if(arg > UINT8_MAX)
       {
         get_op = opcode::op_get_upvalue_long;
         set_op = opcode::op_set_upvalue_long;
+        set_if_op = opcode::op_set_if_upvalue_long;
       }
       else
       {
         get_op = opcode::op_get_upvalue;
-        set_op = opcode::op_set_up_value;
+        set_op = opcode::op_set_upvalue;
+        set_if_op = opcode::op_set_if_upvalue;
       }
       value = arg;
+      is_upvalue = true;
     }
     else
     {
@@ -787,11 +1079,13 @@ namespace ok
       {
         get_op = opcode::op_get_global;
         set_op = opcode::op_set_global;
+        set_if_op = opcode::op_set_if_global;
       }
       else if(glob >= UINT8_MAX && glob <= uint24_max)
       {
         get_op = opcode::op_get_global_long;
         set_op = opcode::op_set_global_long;
+        set_if_op = opcode::op_set_if_global_long;
       }
       else
       { // error
@@ -799,13 +1093,35 @@ namespace ok
       value = glob;
     }
     // TODO(Qais): dirty!
-    if(op == variable_operation::vo_set && is_local &&
-       !is_mutable(get_locals()[value].decl.flags)) // check if its mutable
+    if(op != variable_operation::vo_get)
     {
-      compile_error(error::code::immutable_mutation,
-                    "attempting to mutate an immutable local variable. did you forget to declare it 'mut'?");
+      if(is_local && !is_mutable(get_locals()[value].decl.flags))
+      {
+        compile_error(error::code::immutable_mutation,
+                      "attempting to mutate an immutable local variable. did you forget to declare it 'mut'?");
+      }
+      else if(is_upvalue && !is_mutable(upvalue_loc.decl.flags))
+      {
+        compile_error(error::code::immutable_mutation,
+                      "attempting to mutate an immutable upvalue variable '{}'. did you forget to declare it 'mut'?",
+                      str_ident);
+      }
     }
-    write_variable(op == variable_operation::vo_get ? get_op : set_op, value, offset);
+
+    opcode winner;
+    if(op == variable_operation::vo_set_if)
+    {
+      winner = set_if_op;
+    }
+    else if(op == variable_operation::vo_set)
+    {
+      winner = set_op;
+    }
+    else
+    {
+      winner = get_op;
+    }
+    write_variable(winner, value, offset, p_set_if_compare);
   }
 
   void compiler::compile(ast::number_expression* p_number)
@@ -972,6 +1288,146 @@ namespace ok
     return p_list.size();
   }
 
+  void compiler::get_property(uint32_t p_property_name, size_t p_offset)
+  {
+    if(is_long(p_property_name))
+    {
+      current_chunk()->write(opcode::op_get_property_long, p_offset);
+      current_chunk()->write(encode_int<uint32_t, 3>(p_property_name), p_offset);
+    }
+    else
+    {
+      current_chunk()->write(opcode::op_get_property, p_offset);
+      current_chunk()->write(p_property_name, p_offset);
+    }
+  }
+
+  void compiler::set_property(uint32_t p_property_name, size_t p_offset, uint64_t p_set_if_compare)
+  {
+    if(p_set_if_compare == 0)
+    {
+      if(is_long(p_property_name))
+      {
+        current_chunk()->write(opcode::op_set_property_long, p_offset);
+        current_chunk()->write(encode_int<uint32_t, 3>(p_property_name), p_offset);
+      }
+      else
+      {
+        current_chunk()->write(opcode::op_set_property, p_offset);
+        current_chunk()->write(p_property_name, p_offset);
+      }
+    }
+    else
+    {
+      if(is_long(p_property_name))
+      {
+        current_chunk()->write(opcode::op_set_if_property_long, p_offset);
+        current_chunk()->write(encode_int<uint32_t, 3>(p_property_name), p_offset);
+      }
+      else
+      {
+        current_chunk()->write(opcode::op_set_if_property, p_offset);
+        current_chunk()->write(p_property_name, p_offset);
+      }
+      current_chunk()->write(encode_int<uint64_t, 8>(p_set_if_compare), p_offset);
+    }
+  }
+
+  void compiler::invoke_property(uint32_t p_property_name,
+                                 const std::list<std::unique_ptr<ast::expression>>& p_argslist,
+                                 size_t p_offset)
+  {
+    const auto argc = compile_arguments_list(p_argslist);
+    if(is_long(p_property_name))
+    {
+      current_chunk()->write(opcode::op_invoke_long, p_offset);
+      current_chunk()->write(encode_int<uint32_t, 3>(p_property_name), p_offset);
+      current_chunk()->write(argc, p_offset);
+    }
+    else
+    {
+      current_chunk()->write(opcode::op_invoke, p_offset);
+      current_chunk()->write(p_property_name, p_offset);
+      current_chunk()->write(argc, p_offset);
+    }
+  }
+
+  void compiler::get_lvalue(ast::expression* p_expr)
+  {
+    switch(p_expr->get_type())
+    {
+    case ast::node_type::nt_access_expr:
+    {
+      const auto access_expr = (ast::access_expression*)p_expr;
+      compile(access_expr->get_target().get());
+      const auto property_name = current_chunk()->add_identifier(value_t{access_expr->get_property()->get_value()},
+                                                                 access_expr->get_property()->get_offset());
+      const auto is_long = !(property_name < op__global_max_count + 1);
+      const auto offset = access_expr->get_offset();
+      get_property(property_name, offset);
+      break;
+    }
+    case ast::node_type::nt_identifier_expr:
+    {
+      const auto ident_expr = (ast::identifier_expression*)p_expr;
+      named_variable(ident_expr->get_value(), ident_expr->get_offset(), variable_operation::vo_get);
+      break;
+    }
+    }
+  }
+
+  void compiler::set_lvalue(ast::expression* p_expr,
+                            const std::function<void(ast::expression* p_expr)> p_custom_target,
+                            uint64_t p_set_if_compare)
+  {
+    switch(p_expr->get_type())
+    {
+    case ast::node_type::nt_access_expr:
+    {
+      const auto access_expr = (ast::access_expression*)p_expr;
+      compile(access_expr->get_target().get());
+      if(p_custom_target)
+      {
+        p_custom_target(p_expr);
+      }
+      const auto property_name = current_chunk()->add_identifier(value_t{access_expr->get_property()->get_value()},
+                                                                 access_expr->get_property()->get_offset());
+      const auto offset = access_expr->get_offset();
+      set_property(property_name, offset, p_set_if_compare);
+      return;
+    }
+    case ast::node_type::nt_identifier_expr:
+    {
+      const auto ident_expr = (ast::identifier_expression*)p_expr;
+      const auto& str_val = ident_expr->get_value();
+      if(p_custom_target)
+      {
+        p_custom_target(p_expr);
+      }
+      if(p_set_if_compare == 0)
+      {
+        named_variable(str_val, p_expr->get_offset(), variable_operation::vo_set);
+      }
+      else
+      {
+        named_variable(str_val, p_expr->get_offset(), variable_operation::vo_set_if, p_set_if_compare);
+      }
+      return;
+    }
+    default:
+      break;
+    }
+    compile_error(error::code::illegal_lvalue, "illegal lvalue");
+  }
+
+  void compiler::set_lvalue_from_stack(ast::expression* p_expr)
+  {
+    current_chunk()->write(opcode::op_save_slot, p_expr->get_offset());
+    set_lvalue(p_expr,
+               [this](ast::expression* p_expr)
+               { current_chunk()->write(opcode::op_push_saved_slot, p_expr->get_offset()); });
+  }
+
   void compiler::push_function_context(compile_function p_function)
   {
     function_context ctx;
@@ -1027,12 +1483,14 @@ namespace ok
   }
 
   // we separate end_scope, from clean_scope_garbage, because end_scope always decrements the scope_depth on compile
-  // time even when executing a jump instruction while the clean up is runtime dependant and it might get skipped by the
-  // jump instruction so we need to call it once again in other execution paths think of continue -> we compile the body
+  // time even when executing a jump instruction while the clean up is runtime dependant and it might get skipped by
+  // the jump instruction so we need to call it once again in other execution paths think of continue -> we compile
+  // the body
   // -> body on exit indeed calls end scope which decrements the scope_depth on compile time and it emits pop
-  // instructions, then continue call skips those pop instructions so we try to compensate for that by calling end_scope
-  // again in compile_control_flow_statement but that would result in another decrement to the m_scope_depth, and then
-  // it will emit wrong pop instructions that will clean the target scope and yet another scope above it.
+  // instructions, then continue call skips those pop instructions so we try to compensate for that by calling
+  // end_scope again in compile_control_flow_statement but that would result in another decrement to the
+  // m_scope_depth, and then it will emit wrong pop instructions that will clean the target scope and yet another
+  // scope above it.
   void compiler::clean_scope_garbage()
   {
     uint32_t removed_count = 0;
@@ -1262,8 +1720,10 @@ namespace ok
     return UINT32_MAX;
   }
 
-  uint32_t
-  compiler::resolve_upvalue(const std::string& str_ident, size_t offset, int64_t p_function_context_reverse_index)
+  uint32_t compiler::resolve_upvalue(const std::string& str_ident,
+                                     size_t offset,
+                                     int64_t p_function_context_reverse_index,
+                                     local* p_loc)
   {
     if(p_function_context_reverse_index < 0 || m_function_contexts.size() < 2 ||
        int(m_function_contexts.size() - p_function_context_reverse_index - 2) < 0)
@@ -1275,6 +1735,8 @@ namespace ok
     if(loc != UINT32_MAX)
     {
       up_ctx.locals[loc].is_captured = true;
+      if(p_loc)
+        *p_loc = up_ctx.locals[loc];
       return add_upvalue(loc, true, offset, ctx);
     }
     auto up = resolve_upvalue(str_ident, offset, p_function_context_reverse_index + 1);
@@ -1307,7 +1769,7 @@ namespace ok
     return sz - 1; // TODO(Qais): validate
   }
 
-  void compiler::write_variable(opcode p_op, uint32_t p_value, size_t p_offset)
+  void compiler::write_variable(opcode p_op, uint32_t p_value, size_t p_offset, uint64_t p_set_if_compare)
   {
     if(p_value > UINT8_MAX)
     {
@@ -1319,6 +1781,10 @@ namespace ok
     {
       current_chunk()->write(p_op, p_offset);
       current_chunk()->write(p_value, p_offset);
+    }
+    if(p_set_if_compare != 0)
+    {
+      current_chunk()->write(encode_int<uint64_t, 8>(p_set_if_compare), p_offset);
     }
   }
 

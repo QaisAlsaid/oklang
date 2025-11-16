@@ -2,6 +2,7 @@
 #define OK_PARSER_HPP
 
 #include "ast.hpp"
+#include "operator.hpp"
 #include "token.hpp"
 #include "utility.hpp"
 #include <memory>
@@ -16,18 +17,24 @@ namespace ok
     {
       prec_lowest = 0,
       prec_assignment,  // x = 1
+      prec_conditional, // y = x == null ? 1 : 2
       prec_or,          // false or true
       prec_and,         // true and false
-      prec_conditional, // y = x == null ? 1 : 2
+      prec_bitwise_or,  // x | y
+      prec_bitwise_xor, // x ^ y
+      prec_bitwise_and, // x & y
       prec_equality,    // x == y
       prec_comparision, // x < y, x > y, x <= y, x >= y
-      prec_sum,         // 2 + 2
-      prec_product,     // 3 * 3
-      prec_exponent,    // 2 ^ 6
-      prec_prefix,      // !x
-      prec_infix,       // x -= 1
-      prec_call,        // x()
-      prec_subscript,   // x[]
+      prec_shift,       // x << y, x >> y
+      prec_as,
+      prec_sum,       // 2 + 2
+      prec_product,   // 3 * 3
+      prec_exponent,  // 2 ** 6
+      prec_prefix,    // !x
+      prec_postfix,   // x++
+      prec_call,      // x()
+      prec_member,    // foo.bar
+      prec_subscript, // x[]
     };
   };
 
@@ -48,6 +55,7 @@ namespace ok
         unexpected_token,
         illegal_declaration_modifier,
         illegal_binding_modifier,
+        illegal_operator_override,
       };
       code error_code;
       std::string message;
@@ -107,16 +115,19 @@ namespace ok
     std::unique_ptr<ast::for_statement> parse_for_statement();
     std::unique_ptr<ast::control_flow_statement> parse_control_flow_statement();
     std::unique_ptr<ast::return_statement> parse_return_statement();
-    ast::class_declaration::method_declaration parse_operator_overload();
+
+    ast::class_declaration::method_declaration parse_operator_overload(ast::declaration_modifier p_dm);
 
     std::unique_ptr<ast::let_declaration> parse_let_declaration(ast::declaration_modifier p_modifiers);
     std::unique_ptr<ast::function_declaration> parse_function_declaration(ast::declaration_modifier p_modifiers);
     std::unique_ptr<ast::class_declaration> parse_class_declaration(ast::declaration_modifier p_modifiers);
-    std::unique_ptr<ast::function_declaration>
-    parse_function_declaration_impl(token p_trigger,
-                                    ast::declaration_modifier p_modifiers,
-                                    ast::binding_modifier p_allowed_binding_mods,
-                                    std::string_view p_callit = "function");
+    std::unique_ptr<ast::function_declaration> parse_function_declaration_impl(
+        token p_trigger,
+        ast::declaration_modifier p_modifiers,
+        ast::binding_modifier p_allowed_binding_mods,
+        std::string_view p_callit = "function",
+        unique_overridable_operator_type p_allowed_overrides = unique_overridable_operator_type::uoot_none,
+        unique_overridable_operator_type* p_out_op_type = nullptr);
 
     void sync_state();
     void munch_extra_semicolons();

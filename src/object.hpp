@@ -55,8 +55,10 @@ namespace ok
     typedef enum
     {
       none = 0,
+      obj_object,
       obj_meta_class,
       obj_class,
+      obj_instance,
       obj_string,
       obj_callable,
       obj_function,
@@ -81,9 +83,9 @@ namespace ok
     // 24bit integer
     inline uint32_t get_type() const
     {
-#if defined(PARANOID)
-      return type;
-#endif
+      // #if defined(PARANOID)
+      // return type;
+      // #endif
       return type & 0x00ffffff;
     }
 
@@ -91,7 +93,6 @@ namespace ok
     {
 #if defined(PARANOID)
       ASSERT(p_type <= uint24_max);
-      type = p_type;
 #endif
       type = (type & 0xff000000) | (p_type & 0x00ffffff);
     }
@@ -110,7 +111,7 @@ namespace ok
 #if defined(PARANOID)
       _is_instance = p_instance;
 #endif
-      p_instance ? type != (1u << 24) : type &= ~(1u << 24);
+      p_instance ? type |= (1u << 24) : type &= ~(1u << 24);
     }
 
     inline bool is_class() const
@@ -200,10 +201,7 @@ namespace ok
   {
     // create a string object (allocates char buffer on heap)
     string_object(const std::string_view p_src, class_object* p_string_class, object*& p_objects_list);
-    // not implemented!
-    [[deprecated("not implemented yet!")]] string_object(std::span<std::string_view> p_srcs,
-                                                         class_object* p_string_class,
-                                                         object*& p_objects_list);
+    string_object(std::span<std::string_view> p_srcs, class_object* p_string_class, object*& p_objects_list);
 
     ~string_object();
 
@@ -294,8 +292,8 @@ namespace ok
 
   struct special_methods
   {
-    std::array<value_t, overridable_operator_type::oot_count>
-        operations; // no other type, or this and other are of the same type
+    std::array<value_t, method_type::mt_count> operations;
+    std::unordered_map<uint32_t, value_t> conversions;
     // arraymap<value_t, 16, uint8_t> call;     // based on arity (in most cases won't exceed 16, but it may
     //  grow up to 255 (based on the highest arity overload)
     // arraymap<value_t, 8, uint8_t> subscript; // just like call (but this most of the time it only has 1 operand)
@@ -382,12 +380,19 @@ namespace ok
 
   struct class_object
   {
-    class_object(string_object* p_name, uint32_t p_class_type, class_object* p_class_class, object*& p_objects_list);
+    class_object(string_object* p_name,
+                 uint32_t p_class_type,
+                 class_object* p_meta,
+                 class_object* p_super,
+                 object*& p_objects_list);
     ~class_object();
 
     template <typename Obj = object>
-    static Obj*
-    create(string_object* p_name, uint32_t p_class_type, class_object* p_class_class, object*& p_objects_list);
+    static Obj* create(string_object* p_name,
+                       uint32_t p_class_type,
+                       class_object* p_meta,
+                       class_object* p_super,
+                       object*& p_objects_list);
     object up;
     string_object* name;
     special_methods specials;

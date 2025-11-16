@@ -9,38 +9,56 @@ namespace ok
   enum class token_type
   {
     // idk
-    tok_error = 0,     // error message
-    tok_illegal,       // not allowed (invalid utf8 sequences)
-    tok_eof,           // \0
-    tok_assign,        // =
-    tok_plus,          // +
-    tok_minus,         // -
-    tok_asterisk,      // *
-    tok_slash,         // /
-    tok_comma,         // ,
-    tok_colon,         // :
-    tok_semicolon,     // ;
-    tok_dot,           // .
-    tok_question,      // ?
-    tok_bang,          // !
-    tok_bang_equal,    // !=
-    tok_equal,         // ==
-    tok_less_equal,    // <=
-    tok_greater_equal, // >=
-    tok_less,          // <
-    tok_greater,       // >
-    tok_left_paren,    // (
-    tok_right_paren,   // )
-    tok_left_brace,    // {
-    tok_right_brace,   // }
-    tok_left_bracket,  // [
-    tok_right_bracket, // ]
-    tok_arrow,         // ->
+    tok_error = 0,         // error message
+    tok_illegal,           // not allowed (invalid utf8 sequences)
+    tok_eof,               // \0
+    tok_assign,            // =
+    tok_plus,              // +
+    tok_minus,             // -
+    tok_asterisk,          // *
+    tok_slash,             // /
+    tok_modulo,            // %
+    tok_caret,             // ^
+    tok_ampersand,         // &
+    tok_bar,               // |
+    tok_plus_plus,         // ++
+    tok_minus_minus,       // --
+    tok_plus_equal,        // +=
+    tok_minus_equal,       // -=
+    tok_asterisk_equal,    // *=
+    tok_slash_equal,       // /=
+    tok_modulo_equal,      // %=
+    tok_caret_equal,       // ^=
+    tok_ampersand_equal,   // &=
+    tok_bar_equal,         // |=
+    tok_shift_left_equal,  // <<=
+    tok_shift_right_equal, // >>=
+    tok_shift_left,        // <<
+    tok_shift_right,       // >>
+    tok_comma,             // ,
+    tok_colon,             // :
+    tok_semicolon,         // ;
+    tok_dot,               // .
+    tok_question,          // ?
+    tok_bang,              // !
+    tok_bang_equal,        // !=
+    tok_equal,             // ==
+    tok_less_equal,        // <=
+    tok_greater_equal,     // >=
+    tok_less,              // <
+    tok_greater,           // >
+    tok_left_paren,        // (
+    tok_right_paren,       // )
+    tok_left_brace,        // {
+    tok_right_brace,       // }
+    tok_left_bracket,      // [
+    tok_right_bracket,     // ]
+    tok_arrow,             // ->
 
     // literals
     tok_identifier, // oklang
     tok_number,     // 15
-    tok_string,     // "detected to all human beings"
+    tok_string,     // "oklang"
 
     // keywords
     tok_import,
@@ -48,7 +66,6 @@ namespace ok
     tok_fu,
     tok_print,
     tok_let,
-    tok_letdown,
     tok_while,
     tok_for,
     tok_break,
@@ -75,6 +92,7 @@ namespace ok
     tok_static,
     tok_async,
   };
+
   struct token
   {
     token_type type;
@@ -102,57 +120,93 @@ namespace ok
     case token_type::tok_assign:
       return "assign"sv;
     case token_type::tok_plus:
-      return "plus"sv;
+      return "+"sv;
     case token_type::tok_minus:
-      return "minus"sv;
+      return "-"sv;
     case token_type::tok_asterisk:
-      return "asterisk"sv;
+      return "*"sv;
     case token_type::tok_slash:
-      return "slash"sv;
+      return "/"sv;
+    case token_type::tok_caret:
+      return "^"sv;
+    case token_type::tok_modulo:
+      return "%"sv;
+    case token_type::tok_ampersand:
+      return "&"sv;
+    case token_type::tok_bar:
+      return "|"sv;
+    case token_type::tok_shift_left:
+      return "<<"sv;
+    case token_type::tok_shift_right:
+      return ">>"sv;
+    case token_type::tok_plus_plus:
+      return "++"sv;
+    case token_type::tok_minus_minus:
+      return "--"sv;
+    case token_type::tok_plus_equal:
+      return "+="sv;
+    case token_type::tok_minus_equal:
+      return "-="sv;
+    case token_type::tok_asterisk_equal:
+      return "*="sv;
+    case token_type::tok_slash_equal:
+      return "/="sv;
+    case token_type::tok_caret_equal:
+      return "^="sv;
+    case token_type::tok_modulo_equal:
+      return "%="sv;
+    case token_type::tok_ampersand_equal:
+      return "&="sv;
+    case token_type::tok_bar_equal:
+      return "|="sv;
+    case token_type::tok_shift_left_equal:
+      return "<<="sv;
+    case token_type::tok_shift_right_equal:
+      return ">>="sv;
     case token_type::tok_comma:
-      return "comma"sv;
+      return ","sv;
     case token_type::tok_colon:
-      return "colon"sv;
+      return ":"sv;
     case token_type::tok_semicolon:
-      return "semicolon"sv;
+      return ";"sv;
     case token_type::tok_dot:
-      return "dot"sv;
+      return "."sv;
     case token_type::tok_question:
-      return "question"sv;
+      return "?"sv;
     case token_type::tok_bang:
-      return "bang"sv;
+      return "!"sv;
     case token_type::tok_bang_equal:
-      return "bang_equal"sv;
+      return "!="sv;
     case token_type::tok_equal:
-      return "equal"sv;
+      return "="sv;
     case token_type::tok_less_equal:
-      return "less_equal"sv;
+      return "<="sv;
     case token_type::tok_greater_equal:
-      return "greater_equal"sv;
+      return ">="sv;
     case token_type::tok_less:
-      return "less"sv;
+      return "<"sv;
     case token_type::tok_greater:
-      return "greater"sv;
+      return ">"sv;
     case token_type::tok_left_paren:
-      return "left_paren"sv;
+      return "("sv;
     case token_type::tok_right_paren:
-      return "right_paren"sv;
+      return ")"sv;
     case token_type::tok_left_brace:
-      return "left_brace"sv;
+      return "{"sv;
     case token_type::tok_right_brace:
-      return "right_brace"sv;
+      return "}"sv;
     case token_type::tok_left_bracket:
-      return "left_bracket"sv;
+      return "["sv;
     case token_type::tok_right_bracket:
-      return "right_bracket"sv;
+      return "]"sv;
     case token_type::tok_arrow:
-      return "arrow"sv;
+      return "->"sv;
     case token_type::tok_identifier:
       return "identifier"sv;
     case token_type::tok_number:
       return "number"sv;
     case token_type::tok_string:
-      return "string"sv;
+      return "\""sv;
     case token_type::tok_import:
       return "import"sv;
     case token_type::tok_as:
@@ -163,8 +217,6 @@ namespace ok
       return "print"sv;
     case token_type::tok_let:
       return "let"sv;
-    case token_type::tok_letdown:
-      return "letdown"sv;
     case token_type::tok_while:
       return "while"sv;
     case token_type::tok_for:

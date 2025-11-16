@@ -1,0 +1,31 @@
+{
+  fu outer()
+  {
+    let _ = 69;
+    fu inner() {
+      print _;
+    }
+    return inner;
+  }
+
+  outer()(); // expect: 69
+}
+
+{
+  let mut set_var;
+  let mut get_var;
+
+  fu main() {
+    let mut a = "initial";
+
+    fu set() { a = "updated"; }
+    fu get() { print a; }
+
+    set_var = set;
+    get_var = get;
+  }
+
+  main();
+  set_var();
+  get_var(); // expect: updated
+}

@@ -69,13 +69,42 @@ namespace ok
         emplace_token(arr, token_type::tok_dot);
         break;
       case '+':
-        emplace_token(arr, token_type::tok_plus);
+        if(match('+'))
+        {
+          emplace_token(arr, token_type::tok_plus_plus);
+        }
+        else if(match('='))
+        {
+          emplace_token(arr, token_type::tok_plus_equal);
+        }
+        else
+        {
+          emplace_token(arr, token_type::tok_plus);
+        }
         break;
       case '-':
-        emplace_token(arr, match('>') ? token_type::tok_arrow : token_type::tok_minus);
+        if(match('-'))
+        {
+          emplace_token(arr, token_type::tok_minus_minus);
+        }
+        else if(match('='))
+        {
+          emplace_token(arr, token_type::tok_minus_equal);
+        }
+        else
+        {
+          emplace_token(arr, match('>') ? token_type::tok_arrow : token_type::tok_minus);
+        }
         break;
       case '*':
-        emplace_token(arr, token_type::tok_asterisk);
+        if(match('='))
+        {
+          emplace_token(arr, token_type::tok_asterisk_equal);
+        }
+        else
+        {
+          emplace_token(arr, token_type::tok_asterisk);
+        }
         break;
       case '/':
         // TODO(Qais): validate comment logic
@@ -89,8 +118,32 @@ namespace ok
           while(*m_current_position != '*' && *utf8::peek(m_current_position, 1) != '/' && !is_end())
             advance();
         }
+        else if(match('='))
+        {
+          emplace_token(arr, token_type::tok_slash_equal);
+        }
         else
+        {
           emplace_token(arr, token_type::tok_slash);
+        }
+        break;
+      case '%':
+        emplace_token(arr, match('=') ? token_type::tok_modulo_equal : token_type::tok_modulo);
+        break;
+      case '&':
+        emplace_token(arr, match('=') ? token_type::tok_ampersand_equal : token_type::tok_ampersand);
+        break;
+      case '^':
+        emplace_token(arr, match('=') ? token_type::tok_caret_equal : token_type::tok_caret);
+        break;
+      case '|':
+        emplace_token(arr, match('=') ? token_type::tok_bar_equal : token_type::tok_bar);
+        break;
+      case '<<':
+        emplace_token(arr, match('=') ? token_type::tok_shift_left_equal : token_type::tok_shift_left);
+        break;
+      case '>>':
+        emplace_token(arr, match('=') ? token_type::tok_shift_right_equal : token_type::tok_shift_right);
         break;
       case '!':
         emplace_token(arr, match('=') ? token_type::tok_bang_equal : token_type::tok_bang);
@@ -137,7 +190,10 @@ namespace ok
       advance();
     }
     if(is_end())
+    {
       error(p_array, "unterminated string");
+      return;
+    }
     // close
     advance();
     p_array.emplace_back(token_type::tok_string,

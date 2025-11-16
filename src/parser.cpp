@@ -4,6 +4,7 @@
 #include "operator.hpp"
 #include "parsers.hpp"
 #include "token.hpp"
+#include "utility.hpp"
 #include "vm_stack.hpp"
 #include <memory>
 #include <unordered_map>
@@ -11,7 +12,7 @@
 namespace ok
 {
   using prefix_parse_map = std::unordered_map<token_type, std::unique_ptr<prefix_parser_base>>;
-  using infix_parse_map = std::unordered_map<token_type, std::unique_ptr<infix_parser_base>>;
+  using infix_parse_map = std::unordered_map<token_type, std::unique_ptr<postfix_parser_base>>;
 
   static prefix_parse_map s_prefix_parse_map;
   static const auto _prefix_dummy = [] -> bool
@@ -22,6 +23,8 @@ namespace ok
     s_prefix_parse_map.emplace(token_type::tok_plus, std::make_unique<prefix_unary_parser>());
     s_prefix_parse_map.emplace(token_type::tok_minus, std::make_unique<prefix_unary_parser>());
     s_prefix_parse_map.emplace(token_type::tok_bang, std::make_unique<prefix_unary_parser>());
+    s_prefix_parse_map.emplace(token_type::tok_plus_plus, std::make_unique<prefix_unary_parser>());
+    s_prefix_parse_map.emplace(token_type::tok_minus_minus, std::make_unique<prefix_unary_parser>());
     s_prefix_parse_map.emplace(token_type::tok_left_paren, std::make_unique<group_parser>());
     s_prefix_parse_map.emplace(token_type::tok_true, std::make_unique<boolean_parser>());
     s_prefix_parse_map.emplace(token_type::tok_false, std::make_unique<boolean_parser>());
@@ -40,6 +43,10 @@ namespace ok
     s_infix_parse_map.emplace(token_type::tok_left_paren, std::make_unique<call_parser>());
     s_infix_parse_map.emplace(token_type::tok_and, std::make_unique<infix_parser_binary>(precedence::prec_and, false));
     s_infix_parse_map.emplace(token_type::tok_or, std::make_unique<infix_parser_binary>(precedence::prec_or, false));
+    s_infix_parse_map.emplace(token_type::tok_plus_plus,
+                              std::make_unique<postfix_parser_unary>(precedence::prec_postfix));
+    s_infix_parse_map.emplace(token_type::tok_minus_minus,
+                              std::make_unique<postfix_parser_unary>(precedence::prec_postfix));
     s_infix_parse_map.emplace(token_type::tok_plus, std::make_unique<infix_parser_binary>(precedence::prec_sum, false));
     s_infix_parse_map.emplace(token_type::tok_minus,
                               std::make_unique<infix_parser_binary>(precedence::prec_sum, false));
@@ -47,8 +54,47 @@ namespace ok
                               std::make_unique<infix_parser_binary>(precedence::prec_product, false));
     s_infix_parse_map.emplace(token_type::tok_slash,
                               std::make_unique<infix_parser_binary>(precedence::prec_product, false));
+    s_infix_parse_map.emplace(token_type::tok_modulo,
+                              std::make_unique<infix_parser_binary>(precedence::prec_product, false));
+
+    s_infix_parse_map.emplace(token_type::tok_bar,
+                              std::make_unique<infix_parser_binary>(precedence::prec_bitwise_or, false));
+    s_infix_parse_map.emplace(token_type::tok_caret,
+                              std::make_unique<infix_parser_binary>(precedence::prec_bitwise_xor, false));
+    s_infix_parse_map.emplace(token_type::tok_ampersand,
+                              std::make_unique<infix_parser_binary>(precedence::prec_bitwise_and, false));
+
+    s_infix_parse_map.emplace(token_type::tok_as, std::make_unique<infix_parser_binary>(precedence::prec_as, false));
+
+    s_infix_parse_map.emplace(token_type::tok_shift_left,
+                              std::make_unique<infix_parser_binary>(precedence::prec_shift, false));
+    s_infix_parse_map.emplace(token_type::tok_shift_right,
+                              std::make_unique<infix_parser_binary>(precedence::prec_shift, false));
+
     s_infix_parse_map.emplace(token_type::tok_question, std::make_unique<conditional_parser>());
-    s_infix_parse_map.emplace(token_type::tok_assign, std::make_unique<assign_parser>());
+
+    s_infix_parse_map.emplace(token_type::tok_assign, std::make_unique<assign_parser<ast::assign_expression>>());
+    s_infix_parse_map.emplace(token_type::tok_plus_equal,
+                              std::make_unique<infix_parser_binary>(precedence::prec_assignment, true));
+    s_infix_parse_map.emplace(token_type::tok_minus_equal,
+                              std::make_unique<infix_parser_binary>(precedence::prec_assignment, true));
+    s_infix_parse_map.emplace(token_type::tok_asterisk_equal,
+                              std::make_unique<infix_parser_binary>(precedence::prec_assignment, true));
+    s_infix_parse_map.emplace(token_type::tok_slash_equal,
+                              std::make_unique<infix_parser_binary>(precedence::prec_assignment, true));
+    s_infix_parse_map.emplace(token_type::tok_modulo_equal,
+                              std::make_unique<infix_parser_binary>(precedence::prec_assignment, true));
+    s_infix_parse_map.emplace(token_type::tok_caret_equal,
+                              std::make_unique<infix_parser_binary>(precedence::prec_assignment, true));
+    s_infix_parse_map.emplace(token_type::tok_bar_equal,
+                              std::make_unique<infix_parser_binary>(precedence::prec_assignment, true));
+    s_infix_parse_map.emplace(token_type::tok_ampersand_equal,
+                              std::make_unique<infix_parser_binary>(precedence::prec_assignment, true));
+    s_infix_parse_map.emplace(token_type::tok_shift_left_equal,
+                              std::make_unique<infix_parser_binary>(precedence::prec_assignment, true));
+    s_infix_parse_map.emplace(token_type::tok_shift_right_equal,
+                              std::make_unique<infix_parser_binary>(precedence::prec_assignment, true));
+
     s_infix_parse_map.emplace(token_type::tok_equal,
                               std::make_unique<infix_parser_binary>(precedence::prec_equality, false));
     s_infix_parse_map.emplace(token_type::tok_bang_equal,
@@ -61,7 +107,7 @@ namespace ok
                               std::make_unique<infix_parser_binary>(precedence::prec_comparision, false));
     s_infix_parse_map.emplace(token_type::tok_greater_equal,
                               std::make_unique<infix_parser_binary>(precedence::prec_comparision, false));
-    s_infix_parse_map.emplace(token_type::tok_dot, std::make_unique<access_parser>(precedence::prec_call, false));
+    s_infix_parse_map.emplace(token_type::tok_dot, std::make_unique<access_parser>(precedence::prec_member, false));
     s_infix_parse_map.emplace(token_type::tok_left_bracket,
                               std::make_unique<subscript_parser>(precedence::prec_subscript, false));
     return true;
@@ -293,7 +339,6 @@ namespace ok
     case token_type::tok_semicolon:
     {
       const auto semicolon = current_token();
-      advance();
       return std::make_unique<ast::empty_statement>(semicolon);
     }
     case token_type::tok_eof:
@@ -517,55 +562,46 @@ namespace ok
         for_token, std::move(body), std::move(init), std::move(cond), std::move(inc));
   }
 
-  std::unique_ptr<ast::let_declaration> parser::parse_let_declaration(ast::declaration_modifier p_mods)
+  std::unique_ptr<ast::let_declaration> parser::parse_let_declaration(ast::declaration_modifier p_declmods)
   {
-    // ugly ugly ugly
     auto let_tok = current_token();
     advance();
-    const auto mods = parse_binding_modifiers();
-    std::unique_ptr<ast::assign_expression> assign;
-    auto ident = parse_expression();
-    if(ident->get_type() == ast::node_type::nt_assign_expr)
-    {
-      assign = std::unique_ptr<ast::assign_expression>((ast::assign_expression*)ident.release());
-      // TODO(Qais): ?!!
-      assign = std::make_unique<ast::assign_expression>(
-          assign->get_token(),
-          std::make_unique<ast::binding>(assign->get_binding()->get_token(), assign->get_binding()->get_name(), mods),
-          std::move(assign->get_right()));
-    }
-    else if(ident->get_type() == ast::node_type::nt_identifier_expr)
-    {
-      const auto& tok = ident->get_token();
-      // advance();
-      auto binding =
-          std::make_unique<ast::binding>(tok, static_cast<ast::identifier_expression*>(ident.get())->get_value(), mods);
-      assign = std::make_unique<ast::assign_expression>(
-          tok, std::move(binding), std::make_unique<ast::null_expression>(tok));
-    }
-    else
-      parse_error(error::code::expected_identifier, "expected identifier before: {}", ident->token_literal());
-
-    // std::unique_ptr<ast::expression> expr;
-    // advance();
-    // if(current_token().type == token_type::tok_equal)
-    // {
-    //   expr = parse_expression();
-    //   advance();
-    // }
-    advance();
-    //// move outside for compatibility with for initializer not requiring ';'
-    if(current_token().type != token_type::tok_semicolon)
-      parse_error(error::code::expected_token, "expected ';', after: {}", assign->token_literal());
-
-    if((assign->get_binding()->get_modifiers() & ~let_bindmods) != ast::binding_modifier::bm_none)
+    const auto bindmods = parse_binding_modifiers();
+    if((bindmods & ~let_bindmods) != ast::binding_modifier::bm_none)
     {
       parse_error(error::code::illegal_binding_modifier, "illegal binding modifiers in let declaration binding");
     }
 
-    return std::make_unique<ast::let_declaration>(
-        let_tok, std::move(assign->get_binding()), std::move(assign->get_right()), p_mods);
-  }
+    std::unique_ptr<ast::binding> binding;
+    std::unique_ptr<ast::expression> value = std::make_unique<ast::null_expression>(let_tok);
+
+    auto expr = parse_expression();
+    if(expr->get_type() == ast::node_type::nt_assign_expr)
+    {
+      auto assign = std::unique_ptr<ast::assign_expression>((ast::assign_expression*)expr.release());
+      auto& left = assign->get_left();
+      value = std::move(assign->get_right());
+      if(left->get_type() != ast::node_type::nt_identifier_expr)
+      {
+        parse_error(error::code::expected_identifier, "expected identifier in let declaration");
+      }
+      auto left_ident = (ast::identifier_expression*)left.release();
+      binding = std::make_unique<ast::binding>(left_ident->get_token(), left_ident->get_value(), bindmods);
+    }
+    else if(expr->get_type() == ast::node_type::nt_identifier_expr)
+    {
+      auto ident = (ast::identifier_expression*)expr.release();
+      binding = std::make_unique<ast::binding>(ident->get_token(), ident->get_value(), bindmods);
+    }
+    else
+      parse_error(error::code::expected_identifier, "expected identifier in let declaration");
+
+    advance();
+    if(current_token().type != token_type::tok_semicolon)
+      parse_error(error::code::expected_token, "expected ';', after: let declaration");
+
+    return std::make_unique<ast::let_declaration>(let_tok, std::move(binding), std::move(value), p_declmods);
+  } // glob let inst_1 = cls(); glob let inst_2 = cls(); inst_1.value = 69; inst_2.value = 1;
 
   std::unique_ptr<ast::function_declaration> parser::parse_function_declaration(ast::declaration_modifier p_mods)
   {
@@ -583,21 +619,77 @@ namespace ok
   parser::parse_function_declaration_impl(token p_trigger,
                                           ast::declaration_modifier p_mods,
                                           ast::binding_modifier p_allowed_binding_mods,
-                                          std::string_view callit)
+                                          std::string_view callit,
+                                          unique_overridable_operator_type p_allowed_overrides,
+                                          unique_overridable_operator_type* p_out_op_type)
   {
     std::unique_ptr<ast::binding> binding;
     const auto mods = parse_binding_modifiers();
+    token tok;
     if(current_token().type == token_type::tok_identifier)
     {
-      auto tok = current_token();
-      if((mods & ~p_allowed_binding_mods) != ast::binding_modifier::bm_none)
-      {
-        parse_error(
-            error::code::illegal_binding_modifier, "illegal binding modifiers in {} declaration binding", callit);
-      }
-      advance();
-      binding = std::make_unique<ast::binding>(tok, tok.raw_literal, mods);
+      tok = current_token();
     }
+    else if(current_token().type == token_type::tok_operator)
+    {
+      advance();
+      tok = current_token();
+      unique_overridable_operator_type uoot = unique_overridable_operator_type::uoot_none;
+      if(unique_overridable_operator_type_from_string(tok.raw_literal).second != 0)
+      {
+        auto ootp = unique_overridable_operator_type_from_string(tok.raw_literal);
+        uoot = ootp.first;
+        if(ootp.second == 2)
+        {
+          advance();
+          advance();
+          token_type expect;
+          if(ootp.first == unique_overridable_operator_type::uoot_unary_postfix_call)
+          {
+            expect = token_type::tok_right_paren;
+          }
+          else
+          {
+            expect = token_type::tok_right_bracket;
+          }
+
+          if(lookahead_token().type != expect)
+          {
+            parse_error(error::code::expected_token,
+                        "expected '{}', in operator overload, in {} declaration",
+                        token_type_to_string(expect),
+                        callit);
+          }
+          else
+          {
+            advance();
+            tok.raw_literal += current_token().raw_literal;
+          }
+        }
+      }
+      else if(current_token().type == token_type::tok_identifier)
+      {
+        uoot = unique_overridable_operator_type::uoot_convert;
+      }
+      if(p_out_op_type)
+        *p_out_op_type = uoot;
+
+      if(!is_in_group(uoot, p_allowed_overrides))
+      {
+        parse_error(error::code::illegal_operator_override,
+                    "illegal operator overload '{}', in {} declaration",
+                    tok.raw_literal,
+                    callit);
+      }
+    }
+
+    if((mods & ~p_allowed_binding_mods) != ast::binding_modifier::bm_none)
+    {
+      parse_error(error::code::illegal_binding_modifier, "illegal binding modifiers in {} declaration binding", callit);
+    }
+    binding = std::make_unique<ast::binding>(tok, tok.raw_literal, mods);
+    advance();
+
     // else keep it null, because mods doesnt affect anything, compiler will worn about this situation
     if(current_token().type != token_type::tok_left_paren)
       parse_error(error::code::expected_token, "expected '(' in {} declaration", callit);
@@ -762,15 +854,15 @@ namespace ok
         {
           parse_error(error::code::illegal_declaration_modifier, "illegal modifier in 'method' declaration");
         }
-        method_type mt = method_type::mt_method;
-        if(tok.raw_literal == "ctor")
-          mt = method_type::mt_ctor;
-        else if(tok.raw_literal == "dtor")
-          mt = method_type::mt_dtor;
-        methods.push_back(ast::class_declaration::method_declaration{
-            parse_function_declaration_impl(
-                tok, ast::declaration_modifier::dm_none, ast::binding_modifier::bm_none, "method"),
-            mt});
+        auto op = unique_overridable_operator_type::uoot_method;
+        advance();
+        auto md = parse_function_declaration_impl(
+            tok, ast::declaration_modifier::dm_none, ast::binding_modifier::bm_none, "method");
+        if(md->get_binding()->get_name() == "ctor")
+          op = unique_overridable_operator_type::uoot_ctor;
+        else if(md->get_binding()->get_name() == "dtor")
+          op = unique_overridable_operator_type::uoot_dtor;
+        methods.push_back(ast::class_declaration::method_declaration{std::move(md), op});
         advance(); // the function's right brace
         break;
       }
@@ -781,6 +873,7 @@ namespace ok
           parse_error(error::code::illegal_declaration_modifier, "illegal modifier in 'field' declaration");
         }
         // TODO(Qais):
+        break;
       }
       case token_type::tok_operator:
       {
@@ -788,7 +881,7 @@ namespace ok
         {
           parse_error(error::code::illegal_declaration_modifier, "illegal modifier in 'method' declaration");
         }
-        methods.push_back(parse_operator_overload());
+        methods.push_back(parse_operator_overload(mods));
         break;
       }
       default:
@@ -807,9 +900,19 @@ namespace ok
         cls_token, std::move(binding), std::move(methods), std::move(super), p_mods);
   }
 
-  ast::class_declaration::method_declaration parser::parse_operator_overload()
+  ast::class_declaration::method_declaration parser::parse_operator_overload(ast::declaration_modifier p_dm)
   {
-    advance();
+    unique_overridable_operator_type op;
+    auto fd = parse_function_declaration_impl(current_token(),
+                                              p_dm,
+                                              ast::binding_modifier::bm_none,
+                                              "method",
+                                              unique_overridable_operator_type::uoot_group_all_operator |
+                                                  unique_overridable_operator_type::uoot_convert,
+                                              &op);
+    advance(); // }
+
+    return {std::move(fd), op};
   }
 
   bool parser::advance()
@@ -868,7 +971,6 @@ namespace ok
       case token_type::tok_class:
       case token_type::tok_fu:
       case token_type::tok_let:
-      case token_type::tok_letdown:
       case token_type::tok_for:
       case token_type::tok_if:
       case token_type::tok_while:

@@ -474,10 +474,15 @@ namespace ok
     void print_value(value_t p_value);
     bool call_value(uint8_t p_argc, value_t p_callee);
     void runtime_error(const std::string& err); // TODO(Qais): error types and format strings
-    void register_builtin(object* p_obj, int idx, string_object* p_name)
+    void register_api_builtin(object* p_obj, int idx, string_object* p_name)
+    {
+      register_builtin(p_obj, idx);
+      m_globals[p_name] = {value_t{copy{p_obj}}}; // immutable
+    }
+
+    void register_builtin(object* p_obj, int idx)
     {
       m_builtins[idx] = p_obj;
-      m_globals[p_name] = {value_t{copy{p_obj}}}; // immutable
     }
 
     class_object* get_builtin_class(int idx)
@@ -526,10 +531,12 @@ namespace ok
     void close_upvalue(value_t* p_value);
 
     void define_method(string_object* p_name, uint8_t p_arity);
+    void define_special_method(uint8_t p_type, uint8_t p_arity);
+    bool define_convert_method();
+
     bool bind_a_method(class_object* p_class, string_object* p_name);
     bool invoke(string_object* p_method_name, uint8_t p_argc);
     bool invoke_from_class(class_object* p_class, string_object* p_method_name, uint8_t p_argc);
-    bool call(uint8_t p_argc, closure_object* p_callee);
     value_error call_native_function(value_t p_native, uint8_t p_argc);
     value_error call_native_method(value_t p_native, value_t p_receiver, uint8_t p_argc);
 
@@ -545,22 +552,28 @@ namespace ok
     template <operator_type>
     operations_return_type perform_binary_infix();
     template <operator_type>
-    operations_return_type perform_binary_infix_others();
+    operations_return_type perform_binary_infix_others(value_t p_this, value_t p_other);
 
     void setup_stack_for_binary_infix_others();
-    operations_return_type call_native_binary_infix(native_function native, vm* p_vm, value_t p_this, uint8_t p_argc);
+    operations_return_type call_value_op(value_t p_native, value_t p_receiver, uint8_t p_argc);
 
     bool perform_equality_builtins(value_t lhs, value_t rhs, bool p_equals);
 
     template <operator_type>
     operations_return_type perform_unary_prefix();
     template <operator_type>
-    operations_return_type perform_unary_prefix_others();
+    operations_return_type perform_unary_prefix_others(value_t p_this);
+
+    template <operator_type>
+    operations_return_type perform_unary_postfix();
+    template <operator_type>
+    operations_return_type perform_unary_postfix_others(value_t p_this);
 
     operation_print_return_type perform_print(value_t p_printable);
     operation_print_return_type perform_print_others(value_t p_printable);
 
     value_error perform_call(uint8_t p_argc, value_t p_callee);
+    std::expected<bool, bool> set_if();
 
   private:
     // chunk* m_chunk;

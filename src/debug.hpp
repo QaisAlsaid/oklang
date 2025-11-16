@@ -39,6 +39,9 @@ namespace ok::debug
     static int class_long_instruction(std::string_view p_name, const chunk& p_chunk, int p_offset);
     static int define_global_instruction(std::string_view p_name, const chunk& p_chunk, int p_offset);
     static int define_global_long_instruction(std::string_view p_name, const chunk& p_chunk, int p_offset);
+    static int special_method_instruction(std::string_view p_name, const chunk& p_chunk, int p_offset);
+    static int convert_method_instruction(std::string_view p_name, const chunk& p_chunk, int p_offset);
+    static int set_if_instruction(const chunk& p_chunk, int p_offset);
   };
 } // namespace ok::debug
 

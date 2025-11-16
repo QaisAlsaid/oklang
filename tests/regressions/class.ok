@@ -1,0 +1,18 @@
+class cls {}
+
+
+class cls_ctor {
+  fu ctor() {
+    print "ctor";
+  }
+}
+
+cls_ctor(); // expect: ctor
+
+class cls_dtor {
+  fu dtor() {
+    print "dtor";
+  }
+}
+cls_dtor();
+// expect: dtor

@@ -33,10 +33,11 @@ namespace ok::ast
     nt_number_expr,
     nt_string_expr,
     nt_prefix_expr,
+    nt_postfix_unary_expr,
     nt_infix_binary_expr,
-    nt_infix_unary_expr,
     nt_call_expr,
     nt_assign_expr,
+    nt_compound_assign_expr,
     nt_operator_expr,
     nt_conditional_expr,
     nt_boolean_expr,
@@ -105,10 +106,11 @@ namespace ok::ast
     {
     }
 
-  protected:
-    token m_token; // forgive the usage of m_ here
   private:
     node_type m_type = node_type::nt_node;
+
+  protected:
+    token m_token; // forgive the usage of m_ here
   };
 
   class expression : public node
@@ -120,6 +122,11 @@ namespace ok::ast
 
     expression(node_type p_nt, token p_tok) : node(p_nt, p_tok)
     {
+    }
+
+    virtual bool is_lvalue() const
+    {
+      return false;
     }
   };
 
@@ -263,7 +270,7 @@ namespace ok::ast
   {
   public:
     binding(token p_tok, const std::string& p_name, binding_modifier p_modifiers = binding_modifier::bm_none)
-        : node(node_type::nt_node, p_tok), m_name(p_name), m_modifiers(p_modifiers)
+        : node(node_type::nt_binding, p_tok), m_name(p_name), m_modifiers(p_modifiers)
     {
     }
 
@@ -283,8 +290,8 @@ namespace ok::ast
     }
 
   private:
-    binding_modifier m_modifiers;
     std::string m_name;
+    binding_modifier m_modifiers;
   };
 
   /**
@@ -294,7 +301,6 @@ namespace ok::ast
   class identifier_expression : public expression
   {
   public:
-    identifier_expression() = default;
     identifier_expression(token p_tok, const std::string& p_value)
         : expression(node_type::nt_identifier_expr, p_tok), m_value(p_value)
     {
@@ -314,6 +320,11 @@ namespace ok::ast
     const std::string& get_value() const
     {
       return m_value;
+    }
+
+    bool is_lvalue() const override
+    {
+      return true;
     }
 
   private:
@@ -407,7 +418,8 @@ namespace ok::ast
   {
   public:
     prefix_unary_expression(token p_tok, const operator_type& p_operator, std::unique_ptr<expression> p_right)
-        : expression(node_type::nt_prefix_expr, p_tok), m_operator(p_operator), m_right(std::move(p_right))
+        : expression(node_type::nt_prefix_expr, p_tok), m_operator(validate_unary_prefix_operator(p_operator)),
+          m_right(std::move(p_right))
     {
     }
 
@@ -431,13 +443,32 @@ namespace ok::ast
   private:
     operator_type m_operator;
     std::unique_ptr<expression> m_right;
+
+  private:
+    static inline operator_type validate_unary_prefix_operator(operator_type p_op)
+    {
+      switch(p_op)
+      {
+      case operator_type::op_plus_plus:
+      case operator_type::op_minus_minus:
+      case operator_type::op_bang:
+      case operator_type::op_tiled:
+      case operator_type::op_plus:
+      case operator_type::op_minus:
+        return p_op;
+      default:
+        break;
+      }
+      return operator_type::op_undefined;
+    }
   };
 
-  class infix_unary_expression : public expression
+  class postfix_unary_expression : public expression
   {
   public:
-    infix_unary_expression(token p_tok, const operator_type p_operator, std::unique_ptr<expression> p_left)
-        : expression(node_type::nt_infix_unary_expr, p_tok), m_operator(p_operator), m_left(std::move(p_left))
+    postfix_unary_expression(token p_tok, const operator_type p_operator, std::unique_ptr<expression> p_left)
+        : expression(node_type::nt_postfix_unary_expr, p_tok), m_operator(validate_unary_postfix_operator(p_operator)),
+          m_left(std::move(p_left))
     {
     }
 
@@ -448,6 +479,11 @@ namespace ok::ast
       return ss.str();
     }
 
+    const std::unique_ptr<expression>& get_left() const
+    {
+      return m_left;
+    }
+
     inline operator_type get_operator() const
     {
       return m_operator;
@@ -456,6 +492,20 @@ namespace ok::ast
   private:
     operator_type m_operator;
     std::unique_ptr<expression> m_left;
+
+  private:
+    static inline operator_type validate_unary_postfix_operator(operator_type p_op)
+    {
+      switch(p_op)
+      {
+      case operator_type::op_plus_plus:
+      case operator_type::op_minus_minus:
+        return p_op;
+      default:
+        break;
+      }
+      return operator_type::op_undefined;
+    }
   };
 
   class infix_binary_expression : public expression
@@ -496,27 +546,52 @@ namespace ok::ast
     operator_type m_operator;
     std::unique_ptr<expression> m_left;
     std::unique_ptr<expression> m_right;
+
+  private:
+    static inline operator_type validate_binary_infix_operator(operator_type p_op)
+    {
+      switch(p_op)
+      {
+      case operator_type::op_bang:
+      case operator_type::op_tiled:
+      case operator_type::op_assign:
+      case operator_type::op_plus_equal:
+      case operator_type::op_minus_equal:
+      case operator_type::op_asterisk_equal:
+      case operator_type::op_slash_equal:
+      case operator_type::op_caret_equal:
+      case operator_type::op_modulo_equal:
+      case operator_type::op_bitwise_or_equal:
+      case operator_type::op_bitwise_and_equal:
+        return operator_type::op_undefined;
+      default:
+        break;
+      }
+      return p_op;
+    }
   };
 
-  // TODO(Qais): why is assign expr expecting left to be an identifier only!?
   class assign_expression : public expression
   {
   public:
-    assign_expression(token p_tok, std::unique_ptr<binding> p_binding, std::unique_ptr<expression> p_right)
-        : expression(node_type::nt_assign_expr, p_tok), m_binding(std::move(p_binding)), m_right(std::move(p_right))
+    assign_expression(token p_tok,
+                      operator_type p_assign_type,
+                      std::unique_ptr<expression> p_left,
+                      std::unique_ptr<expression> p_right)
+        : expression(node_type::nt_assign_expr, p_tok), m_left(std::move(p_left)), m_right(std::move(p_right))
     {
     }
 
     std::string to_string() override
     {
       std::stringstream ss;
-      ss << "(" << m_binding->to_string() << " = " << m_right->to_string() << ")";
+      ss << "(" << m_left->to_string() << " = " << m_right->to_string() << ")";
       return ss.str();
     }
 
-    std::unique_ptr<binding>& get_binding()
+    std::unique_ptr<expression>& get_left()
     {
-      return m_binding;
+      return m_left;
     }
 
     std::unique_ptr<expression>& get_right()
@@ -525,8 +600,57 @@ namespace ok::ast
     }
 
   private:
-    std::unique_ptr<binding> m_binding;
+    std::unique_ptr<expression> m_left;
     std::unique_ptr<expression> m_right;
+
+  protected:
+    assign_expression(node_type p_nt,
+                      token p_tok,
+                      std::unique_ptr<expression> p_left,
+                      std::unique_ptr<expression> p_right)
+        : expression(p_nt, p_tok), m_left(std::move(p_left)), m_right(std::move(p_right))
+    {
+    }
+  };
+
+  class compound_assign_expression : public assign_expression
+  {
+  public:
+    compound_assign_expression(token p_tok,
+                               operator_type p_assign_type,
+                               std::unique_ptr<expression> p_left,
+                               std::unique_ptr<expression> p_right)
+        : assign_expression(node_type::nt_compound_assign_expr, p_tok, std::move(p_left), std::move(p_right))
+    {
+    }
+
+    operator_type get_assign_type() const
+    {
+      return m_assign_type;
+    }
+
+  public:
+    static inline operator_type validate_assignment_operator(operator_type p_op)
+    {
+      switch(p_op)
+      {
+      case operator_type::op_plus_equal:
+      case operator_type::op_minus_equal:
+      case operator_type::op_asterisk_equal:
+      case operator_type::op_slash_equal:
+      case operator_type::op_caret_equal:
+      case operator_type::op_modulo_equal:
+      case operator_type::op_bitwise_or_equal:
+      case operator_type::op_bitwise_and_equal:
+        return p_op;
+      default:
+        break;
+      }
+      return operator_type::op_undefined;
+    }
+
+  private:
+    operator_type m_assign_type;
   };
 
   class call_expression : public expression
@@ -617,12 +741,10 @@ namespace ok::ast
     access_expression(token p_tok,
                       std::unique_ptr<expression> p_target,
                       std::unique_ptr<identifier_expression> p_property,
-                      std::unique_ptr<expression> p_value = nullptr,
                       std::list<std::unique_ptr<expression>>&& p_args = {},
                       bool p_is_invoke = false)
         : expression(node_type::nt_access_expr, p_tok), m_target(std::move(p_target)),
-          m_property(std::move(p_property)), m_value(std::move(p_value)), m_arguments(std::move(p_args)),
-          m_is_invoke(p_is_invoke)
+          m_property(std::move(p_property)), m_arguments(std::move(p_args)), m_is_invoke(p_is_invoke)
     {
     }
 
@@ -630,10 +752,6 @@ namespace ok::ast
     {
       std::stringstream ss;
       ss << m_target->to_string() << "." << m_property->to_string();
-      if(m_value)
-      {
-        ss << " = " << m_value->to_string();
-      }
       return ss.str();
     }
 
@@ -647,12 +765,7 @@ namespace ok::ast
       return m_property;
     }
 
-    const std::unique_ptr<expression>& get_value() const
-    {
-      return m_value;
-    }
-
-    const bool is_invoke() const
+    bool is_invoke() const
     {
       return m_is_invoke;
     }
@@ -662,10 +775,15 @@ namespace ok::ast
       return m_arguments;
     }
 
+    bool is_lvalue() const override
+    {
+      return !m_is_invoke;
+    }
+
   private:
     std::unique_ptr<expression> m_target;
     std::unique_ptr<identifier_expression> m_property;
-    std::unique_ptr<expression> m_value;
+    // std::unique_ptr<expression> m_value;
     std::list<std::unique_ptr<expression>> m_arguments;
     bool m_is_invoke = false;
   };
@@ -1197,7 +1315,7 @@ namespace ok::ast
     struct method_declaration
     {
       std::unique_ptr<function_declaration> function;
-      method_type type;
+      unique_overridable_operator_type type;
     };
 
   public:
@@ -1276,7 +1394,7 @@ namespace ok::ast
       return "prefix_expression"sv;
     case node_type::nt_infix_binary_expr:
       return "infix_binary_expression"sv;
-    case node_type::nt_infix_unary_expr:
+    case node_type::nt_postfix_unary_expr:
       return "infix_unary_expression"sv;
     case node_type::nt_call_expr:
       return "call_expression"sv;

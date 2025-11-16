@@ -1,0 +1,15 @@
+// let 
+// global declaration modifier
+{
+  {
+    glob let _glob_immutable_var = "global_immutable";
+  }
+  print _glob_immutable_var; // expect: global_immutable
+}
+
+// mutable binding modifier
+{
+  let mut _local_mutable = "local_mutable";
+  _local_mutable = "mutated";
+  print _local_mutable; // expect: mutated
+}

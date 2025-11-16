@@ -208,25 +208,25 @@ namespace ok
     }
   };
 
-  struct infix_parser_base
+  struct postfix_parser_base
   {
-    infix_parser_base() = default;
-    virtual ~infix_parser_base() = default;
+    postfix_parser_base() = default;
+    virtual ~postfix_parser_base() = default;
     virtual std::unique_ptr<ast::expression>
     parse(parser& p_parser, token p_tok, std::unique_ptr<ast::expression> p_left) const = 0;
     virtual int get_precedence() const = 0;
   };
 
-  struct infix_parser_unary : public infix_parser_base
+  struct postfix_parser_unary : public postfix_parser_base
   {
-    infix_parser_unary(int p_precedence) : m_precedence(p_precedence)
+    postfix_parser_unary(int p_precedence) : m_precedence(p_precedence)
     {
     }
 
     std::unique_ptr<ast::expression>
     parse(parser& p_parser, token p_tok, std::unique_ptr<ast::expression> p_left) const override
     {
-      return std::make_unique<ast::infix_unary_expression>(
+      return std::make_unique<ast::postfix_unary_expression>(
           p_tok, operator_type_from_string(p_tok.raw_literal), std::move(p_left));
     }
 
@@ -239,7 +239,7 @@ namespace ok
     int m_precedence;
   };
 
-  struct infix_parser_binary : public infix_parser_base
+  struct infix_parser_binary : public postfix_parser_base
   {
     infix_parser_binary(int p_precedence, bool p_is_right) : m_precedence(p_precedence), m_is_right(p_is_right)
     {
@@ -264,7 +264,7 @@ namespace ok
     bool m_is_right;
   };
 
-  struct access_parser : public infix_parser_base
+  struct access_parser : public postfix_parser_base
   {
     access_parser(int p_precedence, bool p_is_right) : m_precedence(p_precedence), m_is_right(p_is_right)
     {
@@ -283,24 +283,24 @@ namespace ok
       }
 
       auto property_expr = std::make_unique<ast::identifier_expression>(name_tok, name_tok.raw_literal);
-      std::unique_ptr<ast::expression> val_expr = nullptr;
+      // std::unique_ptr<ast::expression> val_expr = nullptr;
       std::list<std::unique_ptr<ast::expression>> args = {};
       bool is_invoke = false;
 
-      if(p_parser.lookahead_token().type == token_type::tok_assign)
-      {
-        p_parser.advance(); // skip identifier
-        p_parser.advance(); // skip =
-        val_expr = p_parser.parse_expression(precedence::prec_assignment - 1);
-      }
-      else if(p_parser.lookahead_token().type == token_type::tok_left_paren)
+      // if(p_parser.lookahead_token().type == token_type::tok_assign)
+      // {
+      //   p_parser.advance(); // skip identifier
+      //   p_parser.advance(); // skip =
+      //   val_expr = p_parser.parse_expression(precedence::prec_assignment - 1);
+      // }
+      if(p_parser.lookahead_token().type == token_type::tok_left_paren)
       {
         p_parser.advance(); // skip to the paren
         args = parse_expression_list(p_parser, {token_type::tok_right_paren, "("});
         is_invoke = true;
       }
       return std::make_unique<ast::access_expression>(
-          name_tok, std::move(p_left), std::move(property_expr), std::move(val_expr), std::move(args), is_invoke);
+          name_tok, std::move(p_left), std::move(property_expr), std::move(args), is_invoke);
     }
 
     int get_precedence() const override
@@ -313,7 +313,7 @@ namespace ok
     bool m_is_right;
   };
 
-  struct subscript_parser : public infix_parser_base
+  struct subscript_parser : public postfix_parser_base
   {
     subscript_parser(int p_precedence, bool p_is_right) : m_precedence(p_precedence), m_is_right(p_is_right)
     {
@@ -342,7 +342,7 @@ namespace ok
     bool m_is_right;
   };
 
-  struct conditional_parser : public infix_parser_base
+  struct conditional_parser : public postfix_parser_base
   {
     std::unique_ptr<ast::expression>
     parse(parser& p_parser, token p_tok, std::unique_ptr<ast::expression> p_left) const override
@@ -364,17 +364,12 @@ namespace ok
     }
   };
 
-  struct call_parser : public infix_parser_base
+  struct call_parser : public postfix_parser_base
   {
     std::unique_ptr<ast::expression>
     parse(parser& p_parser, token p_tok, std::unique_ptr<ast::expression> p_left) const override
     {
       auto args = parse_expression_list(p_parser, {token_type::tok_right_paren, "("});
-
-      // return nullptr; // TODO(Qais): error handling for god sake!
-      // this is wrong in cases of a(b)(c) this will allow cursed syntax like a(b);c to be parsed just fine lol
-      // if(p_parser.current_token().type == token_type::tok_semicolon)
-      //  p_parser.advance();
       return std::make_unique<ast::call_expression>(p_tok, std::move(p_left), std::move(args));
     }
 
@@ -384,24 +379,22 @@ namespace ok
     }
   };
 
-  struct assign_parser : public infix_parser_base
+  template <typename AssignExpr = ast::assign_expression>
+  struct assign_parser : public postfix_parser_base
   {
     virtual std::unique_ptr<ast::expression>
     parse(parser& p_parser, token p_tok, std::unique_ptr<ast::expression> p_left) const
     {
       p_parser.advance();
-      const auto mods = p_parser.parse_binding_modifiers();
-      auto right =
-          p_parser.parse_expression(precedence::prec_assignment - 1); // always right associative, to allow a=b=c
-      if(p_left->get_type() != ast::node_type::nt_identifier_expr)
-        p_parser.parse_error(
-            parser::error::code::expected_identifier, "expected identifier before: {}", right->token_literal());
-      // return nullptr; // TODO(Qais): bitch, error handling aghhh!
-      auto real_lhs = static_cast<ast::identifier_expression*>(p_left.get());
-      return std::make_unique<ast::assign_expression>(
-          ast::assign_expression(p_tok,
-                                 std::make_unique<ast::binding>(real_lhs->get_token(), real_lhs->token_literal(), mods),
-                                 std::move(right)));
+      // always right associative, to allow a=b=c
+      auto right = p_parser.parse_expression(precedence::prec_assignment - 1);
+      if(!p_left->is_lvalue())
+      {
+        p_parser.parse_error(parser::error::code::expected_identifier, "expected lvalue as assignment target");
+      }
+
+      return std::make_unique<AssignExpr>(
+          AssignExpr(p_tok, operator_type_from_string(p_tok.raw_literal), std::move(p_left), std::move(right)));
     }
 
     virtual int get_precedence() const

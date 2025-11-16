@@ -44,4 +44,8 @@
 #endif
 #define OK_NOT_GARBAGE_COLLECTED
 
+#define OK_UNUSED [[maybe_unused]]
+#define OK_LIKELY [[likely]]
+#define OK_UNLIKELY [[unlikely]]
+
 #endif // OK_MACROS_HPP

@@ -54,8 +54,54 @@ namespace ok::debug
       return simple_instruction("op_multiply", p_offset);
     case to_utype(opcode::op_divide):
       return simple_instruction("op_divide", p_offset);
+    case to_utype(opcode::op_modulo):
+      return simple_instruction("op_modulo", p_offset);
+    case to_utype(opcode::op_and):
+      return simple_instruction("op_and", p_offset);
+    case to_utype(opcode::op_xor):
+      return simple_instruction("op_xor", p_offset);
+    case to_utype(opcode::op_or):
+      return simple_instruction("op_or", p_offset);
+    case to_utype(opcode::op_shift_left):
+      return simple_instruction("op_shift_left", p_offset);
+    case to_utype(opcode::op_shift_right):
+      return simple_instruction("op_shift_right", p_offset);
+    case to_utype(opcode::op_add_assign):
+      return simple_instruction("op_plus_equal", p_offset);
+    case to_utype(opcode::op_subtract_assign):
+      return simple_instruction("op_minus_equal", p_offset);
+    case to_utype(opcode::op_multiply_assign):
+      return simple_instruction("op_multiply_equal", p_offset);
+    case to_utype(opcode::op_divide_assign):
+      return simple_instruction("op_divide_equal", p_offset);
+    case to_utype(opcode::op_modulo_assign):
+      return simple_instruction("op_modulo_equal", p_offset);
+    case to_utype(opcode::op_and_assign):
+      return simple_instruction("op_and_equal", p_offset);
+    case to_utype(opcode::op_xor_assign):
+      return simple_instruction("op_xor_equal", p_offset);
+    case to_utype(opcode::op_or_assign):
+      return simple_instruction("op_or_equal", p_offset);
+    case to_utype(opcode::op_shift_left_assign):
+      return simple_instruction("op_shift_left_equal", p_offset);
+    case to_utype(opcode::op_shift_right_assign):
+      return simple_instruction("op_shift_right_equal", p_offset);
+    case to_utype(opcode::op_as):
+      return simple_instruction("op_as", p_offset);
+    case to_utype(opcode::op_additive):
+      return simple_instruction("op_additive", p_offset);
     case to_utype(opcode::op_negate):
       return simple_instruction("op_negate", p_offset);
+    case to_utype(opcode::op_tiled):
+      return simple_instruction("op_tiled", p_offset);
+    case to_utype(opcode::op_preincrement):
+      return simple_instruction("op_preincrement", p_offset);
+    case to_utype(opcode::op_predecrement):
+      return simple_instruction("op_predecrement", p_offset);
+    case to_utype(opcode::op_postdecrement):
+      return simple_instruction("op_postdecrement", p_offset);
+    case to_utype(opcode::op_postincrement):
+      return simple_instruction("op_postincrement", p_offset);
     case to_utype(opcode::op_true):
       return simple_instruction("op_true", p_offset);
     case to_utype(opcode::op_false):
@@ -90,6 +136,16 @@ namespace ok::debug
       return identifier_instruction("op_set_global", p_chunk, p_offset);
     case to_utype(opcode::op_set_global_long):
       return identifier_long_instruction("op_set_global_long", p_chunk, p_offset);
+    case to_utype(opcode::op_set_if_global):
+    {
+      p_offset = identifier_instruction("op_set_if_global", p_chunk, p_offset);
+      return set_if_instruction(p_chunk, p_offset);
+    }
+    case to_utype(opcode::op_set_if_global_long):
+    {
+      p_offset = identifier_long_instruction("op_set_if_global", p_chunk, p_offset);
+      return set_if_instruction(p_chunk, p_offset);
+    }
     case to_utype(opcode::op_get_local):
       return single_operand_instruction("op_get_local", p_chunk, p_offset);
     case to_utype(opcode::op_get_local_long):
@@ -98,6 +154,16 @@ namespace ok::debug
       return single_operand_instruction("op_set_local", p_chunk, p_offset);
     case to_utype(opcode::op_set_local_long):
       return multi_operand_instruction<3>("op_set_local_long", p_chunk, p_offset);
+    case to_utype(opcode::op_set_if_local):
+    {
+      p_offset = single_operand_instruction("set_if_local", p_chunk, p_offset);
+      return set_if_instruction(p_chunk, p_offset);
+    }
+    case to_utype(opcode::op_set_if_local_long):
+    {
+      p_offset = multi_operand_instruction<3>("set_if_local_long", p_chunk, p_offset);
+      return set_if_instruction(p_chunk, p_offset);
+    }
     case to_utype(opcode::op_conditional_jump):
       return multi_operand_instruction<3>("op_conditional_jump", p_chunk, p_offset);
     case to_utype(opcode::op_conditional_truthy_jump):
@@ -118,10 +184,20 @@ namespace ok::debug
       return single_operand_instruction("op_get_upvalue", p_chunk, p_offset);
     case to_utype(opcode::op_get_upvalue_long):
       return multi_operand_instruction<3>("op_get_upvalue_long", p_chunk, p_offset);
-    case to_utype(opcode::op_set_up_value):
+    case to_utype(opcode::op_set_upvalue):
       return single_operand_instruction("op_set_upvalue", p_chunk, p_offset);
     case to_utype(opcode::op_set_upvalue_long):
       return multi_operand_instruction<3>("op_set_upvalue_long", p_chunk, p_offset);
+    case to_utype(opcode::op_set_if_upvalue):
+    {
+      p_offset = single_operand_instruction("set_if_upvalue", p_chunk, p_offset);
+      return set_if_instruction(p_chunk, p_offset);
+    }
+    case to_utype(opcode::op_set_if_upvalue_long):
+    {
+      p_offset = multi_operand_instruction<3>("set_if_upvalue_long", p_chunk, p_offset);
+      return set_if_instruction(p_chunk, p_offset);
+    }
     case to_utype(opcode::op_close_upvalue):
       return simple_instruction("op_close_upvalue", p_offset);
     case to_utype(opcode::op_class):
@@ -154,6 +230,14 @@ namespace ok::debug
       return invoke_instruction("op_invoke_super", p_chunk, p_offset);
     case to_utype(opcode::op_invoke_super_long):
       return invoke_long_instruction("op_invoke_super_long", p_chunk, p_offset);
+    case to_utype(opcode::op_special_method):
+      return special_method_instruction("op_special_method", p_chunk, p_offset);
+    case to_utype(opcode::op_convert_method):
+      return convert_method_instruction("op_convert_method", p_chunk, p_offset);
+    case to_utype(opcode::op_save_slot):
+      return simple_instruction("op_save_slot", p_offset);
+    case to_utype(opcode::op_push_saved_slot):
+      return simple_instruction("op_push_saved_slot", p_offset);
     default:
     {
       std::println("unknown opcode: '{}'", instruction);
@@ -294,7 +378,7 @@ namespace ok::debug
     constexpr auto INSTRUCTION_SIZE = 1 + CONSTANT_INDEX + sizeof(uint8_t); // from start offset
     uint32_t constant = p_chunk.code[p_offset + CONSTANT_INDEX];
     uint32_t arity = p_chunk.code[p_offset + CONSTANT_INDEX + 1];
-    std::print("{} {:4d} {}'", p_name, constant, arity);
+    std::print("{} {:4d} {} '", p_name, constant, arity);
     get_g_vm()->print_value(p_chunk.identifiers[constant]);
     std::println("'");
     return p_offset + INSTRUCTION_SIZE;
@@ -306,7 +390,7 @@ namespace ok::debug
     constexpr auto INSTRUCTION_SIZE = 1 + CONSTANT_LONG_INDEX + sizeof(uint8_t) * 3;
     const uint32_t constant = decode_int<uint32_t, 3>(p_chunk.code, p_offset + CONSTANT_LONG_INDEX);
     uint32_t arity = p_chunk.code[p_offset + CONSTANT_LONG_INDEX + 3 + 1];
-    std::print("{} {:4d} {}'", p_name, constant, arity);
+    std::print("{} {:4d} {} '", p_name, constant, arity);
     get_g_vm()->print_value(p_chunk.identifiers[constant]);
     std::println("'");
     return p_offset + INSTRUCTION_SIZE;
@@ -330,9 +414,37 @@ namespace ok::debug
     constexpr auto INSTRUCTION_SIZE = CONSTANT_LONG_INDEX + sizeof(uint8_t) * 3 + 3;
     const uint32_t constant = decode_int<uint32_t, 3>(p_chunk.code, p_offset + CONSTANT_LONG_INDEX);
     uint32_t id = decode_int<uint32_t, 3>(p_chunk.code, p_offset + CONSTANT_LONG_INDEX + 1);
-    std::print("{} {:4d} {}'", p_name, constant, id);
+    std::print("{} {:4d} {} '", p_name, constant, id);
     get_g_vm()->print_value(p_chunk.identifiers[constant]);
     std::println("'");
     return p_offset + INSTRUCTION_SIZE;
+  }
+
+  int disassembler::special_method_instruction(std::string_view p_name, const chunk& p_chunk, int p_offset)
+  {
+    constexpr auto CONSTANT_INDEX = 1;                                      // from start offset
+    constexpr auto INSTRUCTION_SIZE = 1 + CONSTANT_INDEX + sizeof(uint8_t); // from start offset
+    uint8_t type = p_chunk.code[p_offset + CONSTANT_INDEX];
+    uint8_t arity = p_chunk.code[p_offset + CONSTANT_INDEX + 1];
+    std::print("{} {:4d} {} '", p_name, type, arity);
+    std::print("{}", method_type_to_string(type));
+    std::println("'");
+    return p_offset + INSTRUCTION_SIZE;
+  }
+
+  int disassembler::convert_method_instruction(std::string_view p_name, const chunk& p_chunk, int p_offset)
+  {
+    constexpr auto CONSTANT_INDEX = 1;                    // from start offset
+    constexpr auto INSTRUCTION_SIZE = 1 + CONSTANT_INDEX; // from start offset
+    uint8_t arity = p_chunk.code[p_offset + CONSTANT_INDEX];
+    std::println("{} {}", p_name, arity);
+    return p_offset + INSTRUCTION_SIZE;
+  }
+
+  int disassembler::set_if_instruction(const chunk& p_chunk, int p_offset)
+  {
+    auto fcn = decode_int<uint64_t, 8>(p_chunk.code, p_offset);
+    std::println("function: {}", (void*)fcn);
+    return p_offset + sizeof(uint64_t);
   }
 } // namespace ok::debug
