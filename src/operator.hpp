@@ -452,20 +452,19 @@ namespace ok
       return "<expr> >>= <expr>";
 
     case method_type::mt_ctor:
-      return "ctor";
+      return "<ctor>";
     case method_type::mt_dtor:
-      return "dtor";
+      return "<dtor>";
     case method_type::mt_print:
-      return "print";
-
+      return "<print>";
     case method_type::mt_convert:
-      return "convert";
+      return "<convert>";
 
     case method_type::mt_none:
     default:
-      return "none"sv;
+      return "<none>"sv;
     }
-    return "none"sv;
+    return "<none>"sv;
   }
 
   constexpr uint8_t unique_overridable_operator_type_to_method_type(unique_overridable_operator_type p_uoot)

@@ -42,7 +42,6 @@ namespace ok
     null_val,
     number_val,
     native_function_val,
-    // native_method_val,
     object_val,
   };
 
@@ -59,18 +58,10 @@ namespace ok
     stackoverflow,
   };
 
-  struct value_error
-  {
-    bool has_payload = false; // on stack
-    bool recoverable = true;
-    value_error_code code = value_error_code::ok;
-  };
-
-  using native_method_return_type = value_error;
-  using native_function_return_type = native_method_return_type;
+  struct native_return_type;
 
   // argc number of passed arguments *it does not include the "this" pointer*
-  typedef native_function_return_type (*native_function)(vm* p_vm, value_t p_this, uint8_t p_argc);
+  typedef native_return_type (*native_function)(vm* p_vm, value_t p_this, uint8_t p_argc);
   // typedef native_method_return_type (*native_method)(vm* p_vm, value_t p_this, uint8_t p_argc, value_t* p_argv);
 
   template <typename T>
@@ -111,6 +102,29 @@ namespace ok
   };
 
   using value_array = std::vector<value_t>;
+
+  struct value_error
+  {
+    value_error_code code = value_error_code::ok;
+    value_t payload{};
+    bool recoverable = true;
+  };
+
+  enum class native_return_code : uint8_t
+  {
+    nrc_none = 0,
+    nrc_return = 1 << 0,
+    nrc_subcall = 1 << 1,
+    nrc_error = 1 << 2,
+    nrc_print_exit = 1 << 3,
+    nrc_ok = nrc_return | nrc_subcall | nrc_print_exit,
+  };
+
+  struct native_return_type
+  {
+    native_return_code code;
+    value_error error; // if type is nrtt_error
+  };
 
   // constexpr uint64_t _make_value_key(uint32_t p_lhs_all, uint32_t p_rhs_all)
   // {

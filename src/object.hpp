@@ -27,8 +27,6 @@
 // clang-format off
 #define OK_IS_VALUE_STRING_OBJECT(v) (OK_IS_VALUE_OBJECT(v) && OK_VALUE_AS_OBJECT(v)->get_type() == object_type::obj_string)
 #define OK_IS_VALUE_FUNCTION_OBJECT(v) (OK_IS_VALUE_OBJECT(v) && OK_VALUE_AS_OBJECT(v)->get_type() == object_type::obj_function)
-//#define OK_IS_VALUE_NATIVE_FUNCTION_OBJECT(v) (OK_IS_VALUE_OBJECT(v) && v.as.obj->get_type() == object_type::obj_native_function)
-//#define OK_IS_VALUE_NATIVE_METHOD_OBJECT(v) (OK_IS_VALUE_OBJECT(v) && v.as.obj->get_type() == object_type::obj_native_method)
 #define OK_IS_VALUE_CLOSURE_OBJECT(v) (OK_IS_VALUE_OBJECT(v) && OK_VALUE_AS_OBJECT(v)->get_type() == object_type::obj_closure)
 #define OK_IS_VALUE_UPVALUE_OBJECT(v) (OK_IS_VALUE_OBJECT(v) && OK_VALUE_AS_OBJECT(v)->get_type() == object_type::obj_upvalue)
 #define OK_IS_VALUE_CLASS_OBJECT(v) (OK_IS_VALUE_OBJECT(v) && OK_VALUE_AS_OBJECT(v)->get_type() == object_type::obj_class)
@@ -39,8 +37,6 @@
 
 #define OK_VALUE_AS_STRING_OBJECT(v) ((string_object*)OK_VALUE_AS_OBJECT(v))
 #define OK_VALUE_AS_FUNCTION_OBJECT(v) ((function_object*)OK_VALUE_AS_OBJECT(v))
-//#define OK_VALUE_AS_NATIVE_FUNCTION_OBJECT(v) ((native_function_object*)v.as.obj)
-//#define OK_VALUE_AS_NATIVE_METHOD_OBJECT(v) ((native_method_object*)v.as.obj)
 #define OK_VALUE_AS_CLOSURE_OBJECT(v) ((closure_object*)OK_VALUE_AS_OBJECT(v))
 #define OK_VALUE_AS_UPVALUE_OBJECT(v) ((upvalue_object*)OK_VALUE_AS_OBJECT(v))
 #define OK_VALUE_AS_CLASS_OBJECT(v) ((class_object*)OK_VALUE_AS_OBJECT(v))
@@ -80,24 +76,18 @@ namespace ok
            object*& p_objects_list,
            bool is_instance = false,
            bool is_class = false);
+
     // 24bit integer
     inline uint32_t get_type() const
     {
-      // #if defined(PARANOID)
-      // return type;
-      // #endif
       return type & 0x00ffffff;
     }
 
     inline void set_type(uint32_t p_type)
     {
-#if defined(PARANOID)
-      ASSERT(p_type <= uint24_max);
-#endif
       type = (type & 0xff000000) | (p_type & 0x00ffffff);
     }
 
-    // keep this flag first so we pack it into the keys
     inline bool is_instance() const
     {
 #if defined(PARANOID)
@@ -146,63 +136,22 @@ namespace ok
       p_mark ? type |= (1u << 26) : type &= ~(1u << 26);
     }
 
-    inline bool same_type_as(const object& p_other) const
-    {
-      return get_type() == p_other.get_type() && is_instance() == p_other.is_instance();
-    }
-
   private:
-    // 24bit for the type => 16 bit for the object type, and 8 bits for the version (related to inheritance),
-    // and 1 bit for the _is_registered boolean, and one bit for the _is_marked boolean, and 6 free bits
+    // 24 bit integer for object type, 1 bit is_instance, 1 bit is_class, 1 bit is_marked (gc)
     uint32_t type;
 
-#if defined(PARANOID) // faster to inspect in debug builds
+#if defined(PARANOID) // easier to inspect in debug builds
     bool _is_class = false;
     bool _is_marked = false;
     bool _is_instance = false;
 #endif
   };
 
-  // struct native_function_return_type
-  // {
-  //   bool is_error;
-  //   union
-  //   {
-  //     value_t normal_return;
-  //     value_error error_return;
-  //   };
-  // };
-
-  // typedef union
-  // {
-  //   value_t value;
-  //   std::optional<call_frame> frame;
-  //   value_error_code error;
-  //   void* other;
-  // } native_method_return_value;
-
-  // struct native_method_return_type
-  // {
-  //   enum
-  //   {
-  //     rt_operations,
-  //     rt_print,
-  //     rt_function_call,
-  //     rt_error,
-  //   } return_type;
-
-  //   native_method_return_value return_value;
-  // };
-
-  // typedef native_function_return_type (*native_function)(vm* p_vm, uint8_t p_argc, value_t* p_argv);
-  // typedef native_method_return_type (*native_method)(vm* p_vm, value_t p_this, uint8_t p_argc, value_t* p_argv);
-
   struct string_object
   {
     // create a string object (allocates char buffer on heap)
     string_object(const std::string_view p_src, class_object* p_string_class, object*& p_objects_list);
     string_object(std::span<std::string_view> p_srcs, class_object* p_string_class, object*& p_objects_list);
-
     ~string_object();
 
     template <typename Obj = object>
@@ -216,14 +165,10 @@ namespace ok
     size_t length;
     char* chars;
 
-    static native_method_return_type equal(vm* p_vm, value_t p_this, uint8_t p_argc);
-    static native_method_return_type bang_equal(vm* p_vm, value_t p_this, uint8_t p_argc);
-
-    static native_method_return_type plus(vm* p_vm, value_t p_this, uint8_t p_argc);
-    static native_method_return_type print(vm* p_vm, value_t p_this, uint8_t p_argc);
-
-    // private:
-    //   string_object();
+    static native_return_type equal(vm* p_vm, value_t p_this, uint8_t p_argc);
+    static native_return_type bang_equal(vm* p_vm, value_t p_this, uint8_t p_argc);
+    static native_return_type plus(vm* p_vm, value_t p_this, uint8_t p_argc);
+    static native_return_type print(vm* p_vm, value_t p_this, uint8_t p_argc);
   };
 } // namespace ok
 
@@ -385,6 +330,7 @@ namespace ok
                  class_object* p_meta,
                  class_object* p_super,
                  object*& p_objects_list);
+
     ~class_object();
 
     template <typename Obj = object>
@@ -397,17 +343,11 @@ namespace ok
     string_object* name;
     special_methods specials;
     std::unordered_map<string_object*, value_t> methods;
-    // std::unordered_map<method_key, value_t> methods; // TODO(Qais): override by arity, steal bits from pointer,
-    //  and dont hash the string (it is interned), and hide this behind a compile time flag, and use a custom struct for
-    //  the non optimized version
 
-    static native_method_return_type equal(vm* p_vm, value_t p_this, uint8_t p_argc);
-    static native_method_return_type bang_equal(vm* p_vm, value_t p_this, uint8_t p_argc);
-    static native_method_return_type call(vm* p_vm, value_t p_this, uint8_t p_argc);
-    static native_method_return_type print(vm* p_vm, value_t p_this, uint8_t p_argc);
-
-    // private:
-    //   class_object();
+    static native_return_type equal(vm* p_vm, value_t p_this, uint8_t p_argc);
+    static native_return_type bang_equal(vm* p_vm, value_t p_this, uint8_t p_argc);
+    static native_return_type call(vm* p_vm, value_t p_this, uint8_t p_argc);
+    static native_return_type print(vm* p_vm, value_t p_this, uint8_t p_argc);
   };
 
   struct function_object
@@ -424,73 +364,38 @@ namespace ok
     uint32_t upvalues = 0;
     uint8_t arity = 0;
 
-    static native_method_return_type equal(vm* p_vm, value_t p_this, uint8_t p_argc);
-    static native_method_return_type bang_equal(vm* p_vm, value_t p_this, uint8_t p_argc);
-    static native_method_return_type print(vm* p_vm, value_t p_this, uint8_t p_argc);
-
-    // static std::expected<std::optional<call_frame>, value_error> call(value_t* p_this, uint8_t p_argc);
+    static native_return_type equal(vm* p_vm, value_t p_this, uint8_t p_argc);
+    static native_return_type bang_equal(vm* p_vm, value_t p_this, uint8_t p_argc);
+    static native_return_type print(vm* p_vm, value_t p_this, uint8_t p_argc);
 
   private:
     static value_t equal_impl(function_object* p_this, function_object* p_other, bool p_equal = true);
     friend struct closure_object;
-    // private:
-    //   function_object();
-    //   friend struct closure_object;
   };
 
-  // struct native_function_object
-  // {
-  //   native_function_object(native_function p_function, class_object* p_native_function_class, object*&
-  //   p_objects_list); ~native_function_object();
+  struct upvalue_object;
+  struct closure_object
+  {
+    closure_object(function_object* p_function, class_object* p_closure_class, object*& p_objects_list);
+    ~closure_object();
 
-  //   template <typename Obj = object>
-  //   static Obj* create(native_function p_function, class_object* p_native_function_class, object*& p_objects_list);
+    template <typename Obj = object>
+    static Obj* create(function_object* p_function, class_object* p_closure_class, object*& p_objects_list);
 
-  //   object up;
-  //   native_function function;
+    object up;
+    function_object* function;
+    std::vector<upvalue_object*> upvalues;
 
-  //   static native_method_return_type equal(vm* p_vm, value_t p_this, uint8_t p_argc, value_t* p_argv);
-  //   static native_method_return_type bang_equal(vm* p_vm, value_t p_this, uint8_t p_argc, value_t* p_argv);
+    static native_return_type equal(vm* p_vm, value_t p_this, uint8_t p_argc);
+    static native_return_type bang_equal(vm* p_vm, value_t p_this, uint8_t p_argc);
+    static native_return_type call(vm* p_vm, value_t p_this, uint8_t p_argc);
+    static native_return_type print(vm* p_vm, value_t p_this, uint8_t p_argc);
 
-  //   static std::expected<value_t, value_error> equal_bound_method(value_t p_this, value_t p_bound_method);
-  //   static std::expected<value_t, value_error> bang_equal_bound_method(value_t p_this, value_t p_bound_method);
-
-  //   static std::expected<value_t, value_error> equal_closure(value_t p_this, value_t p_closure);
-  //   static std::expected<value_t, value_error> bang_equal_closure(value_t p_this, value_t p_closure);
-
-  //   static native_method_return_type call(vm* p_vm, value_t p_this, uint8_t p_argc, value_t* p_argv);
-  //   static native_method_return_type print(vm* p_vm, value_t p_this, uint8_t p_argc, value_t* p_argv);
-
-  //   // private:
-  //   //   native_function_object();
-  // };
-
-  // struct native_method_object
-  // {
-  //   native_method_object(native_method p_native_method, class_object* p_native_method_class, object*&
-  //   p_objects_list); ~native_method_object();
-
-  //   template <typename Obj = object>
-  //   static Obj* create(native_method p_native_method, class_object* p_native_method_class, object*& p_objects_list);
-
-  //   object up;
-  //   native_method method;
-
-  //   static native_method_return_type equal(vm* p_vm, value_t p_this, uint8_t p_argc, value_t* p_argv);
-  //   static native_method_return_type bang_equal(vm* p_vm, value_t p_this, uint8_t p_argc, value_t* p_argv);
-
-  //   static std::expected<value_t, value_error> equal_bound_method(value_t p_this, value_t p_bound_method);
-  //   static std::expected<value_t, value_error> bang_equal_bound_method(value_t p_this, value_t p_bound_method);
-
-  //   static std::expected<value_t, value_error> equal_closure(value_t p_this, value_t p_closure);
-  //   static std::expected<value_t, value_error> bang_equal_closure(value_t p_this, value_t p_closure);
-
-  //   static native_method_return_type call(vm* p_vm, value_t p_this, uint8_t p_argc, value_t* p_argv);
-  //   static native_method_return_type print(vm* p_vm, value_t p_this, uint8_t p_argc, value_t* p_argv);
-
-  //   // private:
-  //   //   native_function_object();
-  // };
+  private:
+    static native_return_type equality_impl(vm* p_vm, value_t p_this, value_t p_other, bool p_equals);
+    static native_return_type call_impl(vm* p_vm, uint8_t p_argc, value_t p_this);
+    static native_return_type print_impl(vm* p_vm, value_t p_this);
+  };
 
   struct upvalue_object
   {
@@ -505,42 +410,7 @@ namespace ok
     upvalue_object* next = nullptr;
     value_t closed{};
 
-    static native_method_return_type print(vm* p_vm, value_t p_this, uint8_t p_argc);
-    // private:
-    //   upvalue_object();
-  };
-
-  struct closure_object
-  {
-    closure_object(function_object* p_function, class_object* p_closure_class, object*& p_objects_list);
-    ~closure_object();
-
-    template <typename Obj = object>
-    static Obj* create(function_object* p_function, class_object* p_closure_class, object*& p_objects_list);
-
-    object up;
-    function_object* function;
-    std::vector<upvalue_object*> upvalues;
-
-    static native_method_return_type equal(vm* p_vm, value_t p_this, uint8_t p_argc);
-    static native_method_return_type bang_equal(vm* p_vm, value_t p_this, uint8_t p_argc);
-    static native_method_return_type call(vm* p_vm, value_t p_this, uint8_t p_argc);
-    static native_method_return_type print(vm* p_vm, value_t p_this, uint8_t p_argc);
-
-    static native_method_return_type equal_impl(vm* p_vm, value_t p_this, value_t p_other);
-    static native_method_return_type bang_equal_impl(vm* p_vm, value_t p_this, value_t p_other);
-    static native_method_return_type call_impl(vm* p_vm, uint8_t p_argc, value_t p_this);
-    static native_method_return_type print_impl(vm* p_vm, value_t p_this);
-
-    static std::expected<value_t, value_error_code> equal_native_function(value_t p_this, value_t p_native_function);
-    static std::expected<value_t, value_error_code> bang_equal_native_function(value_t p_this,
-                                                                               value_t p_native_function);
-    static std::expected<value_t, value_error_code> equal_bound_method(value_t p_this, value_t p_bound_method);
-    static std::expected<value_t, value_error_code> bang_equal_bound_method(value_t p_this, value_t p_bound_method);
-
-    // private:
-    //   closure_object();
-    //   friend struct bound_method_object;
+    static native_return_type print(vm* p_vm, value_t p_this, uint8_t p_argc);
   };
 
   struct instance_object
@@ -554,17 +424,12 @@ namespace ok
     object up;
     std::unordered_map<string_object*, value_t> fields;
 
-    static native_method_return_type print(vm* p_vm, value_t p_this, uint8_t p_argc);
-
-    // private:
-    //   instance_object();
-    // static std::expected<value_t, value_error> equal(object* p_this, value_t p_sure_is_instance);
-    // static std::expected<std::optional<call_frame>, value_error> call(object* p_this, uint8_t p_argc);
+    static native_return_type print(vm* p_vm, value_t p_this, uint8_t p_argc);
+    static native_return_type clone(vm* p_vm, value_t p_this, uint8_t p_argc);
   };
 
   struct bound_method_object
   {
-    // using methods_store = arraymap<value_t, 4, uint8_t>;
     bound_method_object(value_t p_receiver, value_t p_methods, class_object* p_class, object*& p_objects_list);
     ~bound_method_object();
 
@@ -574,24 +439,12 @@ namespace ok
     object up;
     value_t receiver;
     value_t method;
-    // methods_store methods;
 
-    static native_method_return_type equal(vm* p_vm, value_t p_this, uint8_t p_argc);
-    static native_method_return_type bang_equal(vm* p_vm, value_t p_this, uint8_t p_argc);
-
-    static std::expected<value_t, value_error_code> equal_closure(value_t p_this, value_t p_closure);
-    static std::expected<value_t, value_error_code> bang_equal_closure(value_t p_this, value_t p_closure);
-
-    static std::expected<value_t, value_error_code> equal_native_function(value_t p_this, value_t p_native_function);
-    static std::expected<value_t, value_error_code> bang_equal_native_function(value_t p_this,
-                                                                               value_t p_native_function);
-
-    static native_method_return_type call(vm* p_vm, value_t p_this, uint8_t p_argc);
-    static native_method_return_type print(vm* p_vm, value_t p_this, uint8_t p_argc);
+    static native_return_type equal(vm* p_vm, value_t p_this, uint8_t p_argc);
+    static native_return_type bang_equal(vm* p_vm, value_t p_this, uint8_t p_argc);
+    static native_return_type call(vm* p_vm, value_t p_this, uint8_t p_argc);
+    static native_return_type print(vm* p_vm, value_t p_this, uint8_t p_argc);
   };
-
-  // template <typename T, typename... Args>
-  // concept doesconstruct = requires(Args&&... args) { T(std::forward<Args>(args)...); };
 
   template <typename T, typename... Args>
     requires std::is_constructible_v<T, Args...>

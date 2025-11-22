@@ -119,105 +119,96 @@ namespace ok
     return (object*)create<string_object>(p_srcs, p_string_class, p_objects_list);
   }
 
-  // string_object::string_object() : up(object_type::obj_string)
-  // {
-  //   [[maybe_unused]] static const bool _ = [this] -> bool
-  //   {
-  //     auto _vm = get_g_vm();
-  //     auto& ops = _vm->register_object_operations(up.get_type());
-  //     std::array<std::pair<uint32_t, vm::operation_function_infix_binary>, 2> op_fcn = {
-  //         std::pair<uint32_t, vm::operation_function_infix_binary>{
-  //             _make_object_key(operator_type::op_equal, value_type::object_val, object_type::obj_string),
-  //             string_object::equal},
-  //         {_make_object_key(operator_type::op_plus, value_type::object_val, object_type::obj_string),
-  //          string_object::plus}};
-  //     ops.binary_infix.register_operations(op_fcn);
-
-  //     ops.print_function = string_object::print;
-  //     return true;
-  //   }();
-  // }
-
-  native_method_return_type string_object::equal(vm* p_vm, value_t p_this, uint8_t p_argc)
+  native_return_type string_object::equal(vm* p_vm, value_t, uint8_t p_argc)
   {
     ASSERT(p_argc == 1);
-    const auto other = p_vm->stack_pop();
-    // const auto this_ = p_vm->stack_pop();
+    const auto this_ = p_vm->get_receiver();
+    const auto other = p_vm->get_arg(0);
     if(OK_IS_VALUE_STRING_OBJECT(other)) [[likely]]
     {
-      p_vm->stack_push(value_t{OK_VALUE_AS_STRING_OBJECT(p_this) == OK_VALUE_AS_STRING_OBJECT(other)});
-      return {.code = value_error_code::ok};
+      p_vm->return_value(value_t{OK_VALUE_AS_STRING_OBJECT(this_) == OK_VALUE_AS_STRING_OBJECT(other)});
+      return {.code = native_return_code::nrc_return};
     }
 
-    p_vm->stack_push(value_t{}); // TODO(Qais): proper error payload
-    return {.code = value_error_code::undefined_operation, .has_payload = true};
+    return {.code = native_return_code::nrc_error,
+            .error{.code = value_error_code::undefined_operation,
+                   .payload{value_t{std::string_view{"invalid string '==', rhs is not of type string"}}}}};
   }
 
-  native_method_return_type string_object::bang_equal(vm* p_vm, value_t p_this, uint8_t p_argc)
+  native_return_type string_object::bang_equal(vm* p_vm, value_t, uint8_t p_argc)
   {
     ASSERT(p_argc == 1);
-    const auto other = p_vm->stack_pop();
-    // const auto this_ = p_vm->stack_pop();
+    const auto this_ = p_vm->get_receiver();
+    const auto other = p_vm->get_arg(0);
     if(OK_IS_VALUE_STRING_OBJECT(other)) [[likely]]
     {
-      p_vm->stack_push(value_t{OK_VALUE_AS_STRING_OBJECT(p_this) != OK_VALUE_AS_STRING_OBJECT(other)});
-      return {.code = value_error_code::ok};
+      p_vm->return_value(value_t{OK_VALUE_AS_STRING_OBJECT(this_) != OK_VALUE_AS_STRING_OBJECT(other)});
+      return {.code = native_return_code::nrc_return};
     }
 
-    p_vm->stack_push(value_t{}); // TODO(Qais): proper error payload
-    return {.code = value_error_code::undefined_operation, .has_payload = true};
+    return {.code = native_return_code::nrc_error,
+            .error{.code = value_error_code::undefined_operation,
+                   .payload{value_t{std::string_view{"invalid string '!=', rhs is not of type string"}}}}};
   }
 
-  native_method_return_type string_object::plus(vm* p_vm, value_t p_this, uint8_t p_argc)
+  native_return_type string_object::plus(vm* p_vm, value_t, uint8_t p_argc)
   {
     ASSERT(p_argc == 1);
-    const auto other = p_vm->stack_pop();
-    // const auto this_ = p_vm->stack_pop();
+    const auto this_ = p_vm->get_receiver();
+    const auto other = p_vm->get_arg(0);
     if(OK_IS_VALUE_STRING_OBJECT(other)) [[likely]]
     {
-      const auto this_string = OK_VALUE_AS_STRING_OBJECT(p_this);
+      const auto this_string = OK_VALUE_AS_STRING_OBJECT(this_);
       const auto other_string = OK_VALUE_AS_STRING_OBJECT(other);
       std::array<std::string_view, 2> arr = {std::string_view{this_string->chars, this_string->length},
                                              {other_string->chars, other_string->length}};
-      p_vm->stack_push(value_t{copy{create(arr, this_string->up.class_, p_vm->get_objects_list())}});
-      return {.code = value_error_code::ok};
+      p_vm->return_value(value_t{copy{create(arr, this_string->up.class_, p_vm->get_objects_list())}});
+      return {.code = native_return_code::nrc_return};
     }
 
-    p_vm->stack_push(value_t{}); // TODO(Qais): proper error payload
-    return {.code = value_error_code::undefined_operation, .has_payload = true};
+    return {.code = native_return_code::nrc_error,
+            .error{.code = value_error_code::undefined_operation,
+                   .payload{value_t{std::string_view{"invalid string '+', rhs is not of type string"}}}}};
   }
 
-  native_method_return_type string_object::print(vm* p_vm, value_t p_this, uint8_t p_argc)
+  native_return_type string_object::print(vm* p_vm, value_t, uint8_t p_argc)
   {
     ASSERT(p_argc == 0);
-    // const auto this_ = p_vm->stack_pop();
-
-    const auto this_string = OK_VALUE_AS_STRING_OBJECT(p_this);
+    const auto this_ = p_vm->get_receiver();
+    const auto this_string = OK_VALUE_AS_STRING_OBJECT(this_);
     std::print("{}", std::string_view{this_string->chars, this_string->length});
-    return {.code = value_error_code::ok};
+    return {.code = native_return_code::nrc_print_exit};
   }
 
   struct string_meta_class
   {
-    static native_method_return_type call(vm* p_vm, value_t p_this, uint8_t p_argc)
+    static native_return_type call(vm* p_vm, value_t, uint8_t p_argc)
     {
-      // const auto this_ = p_vm->stack_top(p_argc);
-      const auto arg = p_vm->stack_top(0);
+      const auto this_ = p_vm->get_receiver();
+      const auto this_class = OK_VALUE_AS_CLASS_OBJECT(this_);
+      const auto arg = p_vm->get_arg(0);
 
-      const auto this_class = OK_VALUE_AS_CLASS_OBJECT(p_this);
-      if(p_argc != 1 || (!OK_IS_VALUE_OBJECT(arg) && !OK_IS_VALUE_STRING_OBJECT(arg)))
+      if(p_argc != 1)
       {
-        return {.code = value_error_code::arguments_mismatch};
+        return {
+            .code = native_return_code::nrc_error,
+            .error{.code = value_error_code::arguments_mismatch,
+                   .payload{value_t{std::format("invalid string construct, expected 1 argument got: {}", p_argc)}}}};
       }
-      // const std::string_view p_src, class_object* p_string_class, object*& p_objects_list
+      else if(!OK_IS_VALUE_OBJECT(arg) || !OK_IS_VALUE_STRING_OBJECT(arg))
+      {
+        return {
+            .code = native_return_code::nrc_error,
+            .error{.code = value_error_code::undefined_operation,
+                   .payload{value_t{std::string_view{"invalid string construct, argument is not of type string"}}}}};
+      }
 
       auto arg_str = OK_VALUE_AS_STRING_OBJECT(arg);
-      const auto str = new_tobject<string_object>(std::string_view{arg_str->chars, arg_str->length},
-                                                  OK_VALUE_AS_CLASS_OBJECT(p_this),
-                                                  p_vm->get_objects_list());
-      p_vm->stack_top(p_argc) = value_t{copy{(object*)str}};
+      const auto str = new_tobject<string_object>(
+          std::string_view{arg_str->chars, arg_str->length}, OK_VALUE_AS_CLASS_OBJECT(this_), p_vm->get_objects_list());
 
-      return {.code = value_error_code::ok};
+      p_vm->return_value(value_t{copy{(object*)str}});
+      return {.code = native_return_code::nrc_return};
     }
   };
 
@@ -230,69 +221,57 @@ namespace ok
     name = p_name;
   }
 
-  // function_object::function_object() : up(object_type::obj_function)
-  // {
-  //   [[maybe_unused]] static const bool _ = [this] -> bool
-  //   {
-  //     auto _vm = get_g_vm();
-  //     auto& ops = _vm->register_object_operations(up.get_type());
-  //     std::array<std::pair<uint32_t, vm::operation_function_infix_binary>, 2> op_fcn = {
-  //         std::pair<uint32_t, vm::operation_function_infix_binary>{
-  //             _make_object_key(operator_type::op_equal, value_type::object_val, object_type::obj_function),
-  //             function_object::equal}};
-  //     ops.binary_infix.register_operations(op_fcn);
-  //     ops.call_function = function_object::call;
-  //     ops.print_function = function_object::print;
-  //     return true;
-  //   }();
-  // }
-
   function_object::~function_object()
   {
   }
 
-  native_method_return_type function_object::equal(vm* p_vm, value_t p_this, uint8_t p_argc)
+  native_return_type function_object::equal(vm* p_vm, value_t, uint8_t p_argc)
   {
     ASSERT(p_argc == 1);
-    const auto other = p_vm->stack_pop();
-    // const auto this_ = p_vm->stack_pop();
+    const auto this_ = p_vm->get_receiver();
+    const auto other = p_vm->get_arg(0);
     if(OK_IS_VALUE_FUNCTION_OBJECT(other)) [[likely]]
     {
-      p_vm->stack_push(equal_impl(OK_VALUE_AS_FUNCTION_OBJECT(p_this), OK_VALUE_AS_FUNCTION_OBJECT(other)));
-      return {.code = value_error_code::ok};
+      p_vm->return_value(equal_impl(OK_VALUE_AS_FUNCTION_OBJECT(this_), OK_VALUE_AS_FUNCTION_OBJECT(other)));
+      return {.code = native_return_code::nrc_return};
     }
 
-    p_vm->stack_push(value_t{}); // TODO(Qais): proper error payload
-    return {.code = value_error_code::undefined_operation, .has_payload = true};
+    // TODO(Qais): i think those should be defined on callable
+    return {.code = native_return_code::nrc_error,
+            .error{.code = value_error_code::undefined_operation,
+                   .payload{value_t{std::string_view{"invalid '==' on function, rhs is not of type function"}}}}};
   }
 
-  native_method_return_type function_object::bang_equal(vm* p_vm, value_t p_this, uint8_t p_argc)
+  native_return_type function_object::bang_equal(vm* p_vm, value_t, uint8_t p_argc)
   {
     ASSERT(p_argc == 1);
-    const auto other = p_vm->stack_pop();
-    // const auto this_ = p_vm->stack_pop();
+    const auto this_ = p_vm->get_receiver();
+    const auto other = p_vm->get_arg(0);
     if(OK_IS_VALUE_FUNCTION_OBJECT(other)) [[likely]]
     {
-      p_vm->stack_push(equal_impl(OK_VALUE_AS_FUNCTION_OBJECT(p_this), OK_VALUE_AS_FUNCTION_OBJECT(other), false));
-      return {.code = value_error_code::ok};
+      p_vm->return_value(equal_impl(OK_VALUE_AS_FUNCTION_OBJECT(this_), OK_VALUE_AS_FUNCTION_OBJECT(other), false));
+      return {.code = native_return_code::nrc_return};
     }
 
-    p_vm->stack_push(value_t{}); // TODO(Qais): proper error payload
-    return {.code = value_error_code::undefined_operation, .has_payload = true};
+    // TODO(Qais): i think those should be defined on callable
+    return {.code = native_return_code::nrc_error,
+            .error{.code = value_error_code::undefined_operation,
+                   .payload{value_t{std::string_view{"invalid '!=' on function, rhs is not of type function"}}}}};
+  }
+
+  native_return_type function_object::print(vm* p_vm, value_t, uint8_t p_argc)
+  {
+    ASSERT(p_argc == 0);
+    const auto this_ = p_vm->get_receiver();
+    const auto this_function = OK_VALUE_AS_FUNCTION_OBJECT(this_);
+    std::print("<fu {}>", std::string_view{this_function->name->chars, this_function->name->length});
+    return {.code = native_return_code::nrc_print_exit};
   }
 
   value_t function_object::equal_impl(function_object* p_this, function_object* p_other, bool p_equal)
   {
     return value_t{p_this->name == p_other->name && p_equal};
     /*p_this->arity == p_other->arity &&*/ // no function overloading yet!
-  }
-
-  native_method_return_type function_object::print([[maybe_unused]] vm* p_vm, value_t p_this, uint8_t p_argc)
-  {
-    ASSERT(p_argc == 0);
-    const auto this_function = OK_VALUE_AS_FUNCTION_OBJECT(p_this);
-    std::print("<fu {}>", std::string_view{this_function->name->chars, this_function->name->length});
-    return {.code = value_error_code::ok};
   }
 
   template <typename T>
@@ -332,141 +311,84 @@ namespace ok
       upvalues.emplace_back(nullptr);
   }
 
-  // closure_object::closure_object() : up(object_type::obj_closure)
-  // {
-  //   [[maybe_unused]] static const bool _ = [this] -> bool
-  //   {
-  //     auto _vm = get_g_vm();
-  //     auto& ops = _vm->register_object_operations(up.get_type());
-  //     std::array<std::pair<uint32_t, vm::operation_function_infix_binary>, 2> op_fcn = {
-  //         std::pair<uint32_t, vm::operation_function_infix_binary>{
-  //             _make_object_key(operator_type::op_equal, value_type::object_val, object_type::obj_native_function),
-  //             closure_object::equal}};
-  //     ops.binary_infix.register_operations(op_fcn);
-  //     ops.call_function = closure_object::call;
-  //     ops.print_function = closure_object::print;
-  //     return true;
-  //   }();
-  // }
-
   closure_object::~closure_object()
   {
   }
 
-  native_method_return_type closure_object::equal(vm* p_vm, value_t p_this, uint8_t p_argc)
+  native_return_type closure_object::equal(vm* p_vm, value_t, uint8_t p_argc)
   {
     ASSERT(p_argc == 1);
-    const auto other = p_vm->stack_pop();
-    // const auto this_ = p_vm->stack_pop();
-    return equal_impl(p_vm, p_this, other);
+    const auto this_ = p_vm->get_receiver();
+    const auto other = p_vm->get_arg(0);
+    return equality_impl(p_vm, this_, other, true);
   }
 
-  native_method_return_type closure_object::bang_equal(vm* p_vm, value_t p_this, uint8_t p_argc)
+  native_return_type closure_object::bang_equal(vm* p_vm, value_t, uint8_t p_argc)
   {
     ASSERT(p_argc == 1);
-    const auto other = p_vm->stack_pop();
-    // const auto this_ = p_vm->stack_pop();
-    return bang_equal_impl(p_vm, p_this, other);
+    const auto this_ = p_vm->get_receiver();
+    const auto other = p_vm->get_arg(0);
+    return equality_impl(p_vm, this_, other, false);
   }
 
-  std::expected<value_t, value_error_code> closure_object::equal_native_function(value_t p_this,
-                                                                                 value_t p_native_function)
-  {
-    return value_t{false};
-  }
-
-  std::expected<value_t, value_error_code> closure_object::bang_equal_native_function(value_t p_this,
-                                                                                      value_t p_native_function)
-  {
-    return value_t{false};
-  }
-
-  std::expected<value_t, value_error_code> closure_object::equal_bound_method(value_t p_this, value_t p_bound_method)
-  {
-    return value_t{false};
-  }
-
-  std::expected<value_t, value_error_code> closure_object::bang_equal_bound_method(value_t p_this,
-                                                                                   value_t p_bound_method)
-  {
-    return value_t{false};
-  }
-
-  native_method_return_type closure_object::print(vm* p_vm, value_t p_this, uint8_t p_argc)
+  native_return_type closure_object::print(vm* p_vm, value_t, uint8_t p_argc)
   {
     ASSERT(p_argc == 0);
-    // const auto this_ = p_vm->stack_pop();
-    return print_impl(p_vm, p_this);
-    // return {.return_type = native_method_return_type::rt_print, .return_value.other = nullptr};
+    const auto this_ = p_vm->get_receiver();
+    return print_impl(p_vm, this_);
   }
 
-  // this is a call operation on closure that means the vm will build the call for it
-  // so arguments shall be in the expected order, also this argc is directly for the call of the closure
-  // stack: [ [this closure], <[args...p_argc]> ]
-  native_method_return_type closure_object::call(vm* p_vm, value_t p_this, uint8_t p_argc)
+  native_return_type closure_object::call(vm* p_vm, value_t p_this, uint8_t p_argc)
   {
-    // const auto this_ = p_vm->stack_top(p_argc);
+    // only here use p_this, since closure may be called with a receiver other than closure_object instance
     return call_impl(p_vm, p_argc, p_this);
   }
 
-  native_method_return_type closure_object::equal_impl(vm* p_vm, value_t p_this, value_t p_other)
+  native_return_type closure_object::equality_impl(vm* p_vm, value_t p_this, value_t p_other, bool p_equals)
   {
     if(OK_IS_VALUE_CLOSURE_OBJECT(p_other)) [[likely]]
     {
       const auto other_closure = OK_VALUE_AS_CLOSURE_OBJECT(p_other);
       const auto this_closure = OK_VALUE_AS_CLOSURE_OBJECT(p_this);
-      p_vm->stack_push(function_object::equal_impl(this_closure->function, other_closure->function));
-      return {.code = value_error_code::ok};
+      p_vm->return_value(function_object::equal_impl(this_closure->function, other_closure->function, p_equals));
+      return {.code = native_return_code::nrc_return};
     }
 
-    p_vm->stack_push(value_t{}); // TODO(Qais): proper error payload
-    return {.code = value_error_code::undefined_operation, .has_payload = true};
+    return {.code = native_return_code::nrc_error,
+            .error{.code = value_error_code::undefined_operation,
+                   .payload{value_t{std::string_view{"invalid '==' on closure, rhs is not of type closure"}}}}};
   }
 
-  native_method_return_type closure_object::bang_equal_impl(vm* p_vm, value_t p_this, value_t p_other)
-  {
-    if(OK_IS_VALUE_CLOSURE_OBJECT(p_other)) [[likely]]
-    {
-      const auto other_closure = OK_VALUE_AS_CLOSURE_OBJECT(p_other);
-      const auto this_closure = OK_VALUE_AS_CLOSURE_OBJECT(p_this);
-      p_vm->stack_push(function_object::equal_impl(this_closure->function, other_closure->function, false));
-      return {.code = value_error_code::ok};
-    }
-
-    p_vm->stack_push(value_t{}); // TODO(Qais): proper error payload
-    return {.code = value_error_code::undefined_operation, .has_payload = true};
-  }
-
-  native_method_return_type closure_object::call_impl(vm* p_vm, uint8_t p_argc, value_t p_this)
+  native_return_type closure_object::call_impl(vm* p_vm, uint8_t p_argc, value_t p_this)
   {
     const auto this_closure = OK_VALUE_AS_CLOSURE_OBJECT(p_this);
     if(p_argc != this_closure->function->arity)
     {
-      // clean the stack
-      p_vm->stack_pop(p_argc + 1); // pop all args + the closure
-      p_vm->stack_push(value_t{}); // TODO(Qais): proper error payload
-      return {.code = value_error_code::arguments_mismatch, .has_payload = true};
+      return {.code = native_return_code::nrc_error,
+              .error{.code = value_error_code::arguments_mismatch,
+                     .payload{value_t{std::format("invalid call on closure, expected {} arguments, got: {}",
+                                                  this_closure->function->arity,
+                                                  p_argc)}}}};
     }
 
     const auto frame = call_frame{this_closure,
                                   this_closure->function->associated_chunk.code.data(),
-                                  p_vm->frame_stack_top() - p_argc - 1,
-                                  p_vm->frame_stack_top() - p_argc - 1};
-    auto res = p_vm->push_call_frame(frame);
+                                  p_vm->frame_stack_top(),
+                                  p_vm->frame_stack_top()};
+    const auto res = p_vm->start_subcall(frame);
     if(!res)
     {
-      return {.code = value_error_code::stackoverflow,
-              .has_payload = false,
-              .recoverable = false}; // irrecoverable no payload (vm already pushes a runtime error)
+      return {.code = native_return_code::nrc_error, .error.code = value_error_code::internal_propagated_error};
     }
-    return {.code = value_error_code::ok};
+
+    return {.code = native_return_code::nrc_subcall};
   }
 
-  native_method_return_type closure_object::print_impl(vm* p_vm, value_t p_this)
+  native_return_type closure_object::print_impl(vm* p_vm, value_t p_this)
   {
     const auto this_closure = OK_VALUE_AS_CLOSURE_OBJECT(p_this);
     std::print("<closure {:p}>", (void*)this_closure);
-    return {.code = value_error_code::ok};
+    return {.code = native_return_code::nrc_print_exit};
   }
 
   template <typename T>
@@ -494,23 +416,29 @@ namespace ok
 
   struct closure_meta_class
   {
-    static native_method_return_type call(vm* p_vm, value_t p_this, uint8_t p_argc)
+    static native_return_type call(vm* p_vm, value_t, uint8_t p_argc)
     {
-      // const auto this_ = p_vm->stack_top(p_argc);
-      const auto arg = p_vm->stack_top(0);
-
-      const auto this_class = OK_VALUE_AS_CLASS_OBJECT(p_this);
-      if(p_argc != 1 || (!OK_IS_VALUE_OBJECT(arg) && !OK_IS_VALUE_CLOSURE_OBJECT(arg)))
+      const auto this_ = p_vm->get_receiver();
+      const auto this_class = OK_VALUE_AS_CLASS_OBJECT(this_);
+      if(p_argc != 1)
       {
-        return {.code = value_error_code::arguments_mismatch};
+        return {
+            .code = native_return_code::nrc_error,
+            .error{.code = value_error_code::arguments_mismatch,
+                   .payload{value_t{std::format("invalid closure construct, expected 1 arguments, got: {}", p_argc)}}}};
       }
-      // const std::string_view p_src, class_object* p_string_class, object*& p_objects_list
 
-      auto arg_clo = OK_VALUE_AS_CLOSURE_OBJECT(arg);
-      const auto clo = arg_clo;
-      p_vm->stack_top(p_argc) = value_t{copy{(object*)clo}};
+      const auto arg = p_vm->get_arg(0);
+      if(!OK_IS_VALUE_OBJECT(arg) || !OK_IS_VALUE_CLOSURE_OBJECT(arg))
+      {
+        return {
+            .code = native_return_code::nrc_error,
+            .error{.code = value_error_code::undefined_operation,
+                   .payload{value_t{std::string_view{"invalid closure construct, argument is not of type closure"}}}}};
+      }
 
-      return {.code = value_error_code::ok};
+      p_vm->return_value(arg);
+      return {.code = native_return_code::nrc_return};
     }
   };
 
@@ -522,6 +450,14 @@ namespace ok
 
   upvalue_object::~upvalue_object()
   {
+  }
+
+  native_return_type upvalue_object::print(vm* p_vm, value_t, uint8_t p_argc)
+  {
+    ASSERT(p_argc == 0);
+    const auto this_ = p_vm->get_receiver();
+    std::print("upvalue: {:p}", (void*)OK_VALUE_AS_UPVALUE_OBJECT(this_));
+    return {.code = native_return_code::nrc_print_exit};
   }
 
   template <typename T>
@@ -542,25 +478,6 @@ namespace ok
     return new upvalue_object(p_slot, p_upvalue_class, p_objects_list);
   }
 
-  // upvalue_object::upvalue_object() : up(object_type::obj_upvalue)
-  // {
-  //   [[maybe_unused]] static const bool _ = [this] -> bool
-  //   {
-  //     auto _vm = get_g_vm();
-  //     auto& ops = _vm->register_object_operations(up.get_type());
-  //     ops.print_function = upvalue_object::print;
-  //     return true;
-  //   }();
-  // }
-
-  native_method_return_type upvalue_object::print(vm* p_vm, value_t p_this, uint8_t p_argc)
-  {
-    ASSERT(p_argc == 0);
-    // const auto this_ = p_vm->stack_pop();
-    std::print("upvalue: {:p}", (void*)OK_VALUE_AS_UPVALUE_OBJECT(p_this));
-    return {.code = value_error_code::ok};
-  }
-
   class_object::class_object(string_object* p_name,
                              uint32_t p_class_type,
                              class_object* p_meta,
@@ -579,93 +496,79 @@ namespace ok
   {
   }
 
-  // class_object::class_object() : up(object_type::obj_class)
-  // {
-  //   [[maybe_unused]] static const bool _ = [this] -> bool
-  //   {
-  //     auto _vm = get_g_vm();
-  //     auto& ops = _vm->register_object_operations(up.get_type());
-  //     std::array<std::pair<uint32_t, vm::operation_function_infix_binary>, 2> op_fcn = {
-  //         std::pair<uint32_t, vm::operation_function_infix_binary>{
-  //             _make_object_key(operator_type::op_equal, value_type::object_val, object_type::obj_class),
-  //             class_object::equal}};
-  //     ops.binary_infix.register_operations(op_fcn);
-  //     ops.call_function = class_object::call;
-  //     ops.print_function = class_object::print;
-  //     return true;
-  //   }();
-  // }
-
-  native_method_return_type class_object::equal(vm* p_vm, value_t p_this, uint8_t p_argc)
+  native_return_type class_object::equal(vm* p_vm, value_t, uint8_t p_argc)
   {
     ASSERT(p_argc == 1);
-    const auto other = p_vm->stack_pop();
-    // const auto this_ = p_vm->stack_pop();
+    const auto this_ = p_vm->get_receiver();
+    const auto other = p_vm->get_arg(0);
     if(OK_IS_VALUE_CLASS_OBJECT(other)) [[likely]]
     {
       const auto other_class = OK_VALUE_AS_CLASS_OBJECT(other);
-      const auto this_class = OK_VALUE_AS_CLASS_OBJECT(p_this);
-      p_vm->stack_push(
-          value_t{this_class == other_class &&
-                  this_class->name == other_class->name}); // mostly redundant extra name check (it will short circuit)
-      return {.code = value_error_code::ok};
+      const auto this_class = OK_VALUE_AS_CLASS_OBJECT(this_);
+      p_vm->return_value(value_t{this_class == other_class && this_class->name == other_class->name});
+      return {.code = native_return_code::nrc_return};
     }
 
-    p_vm->stack_push(value_t{}); // TODO(Qais): proper error payload
-    return {.code = value_error_code::undefined_operation, .has_payload = true};
+    return {.code = native_return_code::nrc_error,
+            .error{.code = value_error_code::undefined_operation,
+                   .payload{value_t{std::string_view{"invalid '==' on class, rhs is not of class type"}}}}};
   }
 
-  native_method_return_type class_object::bang_equal(vm* p_vm, value_t p_this, uint8_t p_argc)
+  native_return_type class_object::bang_equal(vm* p_vm, value_t, uint8_t p_argc)
   {
     ASSERT(p_argc == 1);
-    const auto other = p_vm->stack_pop();
-    // const auto this_ = p_vm->stack_pop();
+    const auto this_ = p_vm->get_receiver();
+    const auto other = p_vm->get_arg(0);
     if(OK_IS_VALUE_CLASS_OBJECT(other)) [[likely]]
     {
       const auto other_class = OK_VALUE_AS_CLASS_OBJECT(other);
-      const auto this_class = OK_VALUE_AS_CLASS_OBJECT(p_this);
-      p_vm->stack_push(
-          value_t{this_class != other_class ||
-                  this_class->name != other_class->name}); // mostly redundant extra name check (it will short circuit)
-      return {.code = value_error_code::ok};
+      const auto this_class = OK_VALUE_AS_CLASS_OBJECT(this_);
+      p_vm->return_value(value_t{this_class != other_class || this_class->name != other_class->name});
+      return {.code = native_return_code::nrc_return};
     }
 
-    p_vm->stack_push(value_t{}); // TODO(Qais): proper error payload
-    return {.code = value_error_code::undefined_operation, .has_payload = true};
+    return {.code = native_return_code::nrc_error,
+            .error{.code = value_error_code::undefined_operation,
+                   .payload{value_t{std::string_view{"invalid '!=' on class, rhs is not of class type"}}}}};
   }
 
-  native_method_return_type class_object::print(vm* p_vm, value_t p_this, uint8_t p_argc)
+  native_return_type class_object::print(vm* p_vm, value_t, uint8_t p_argc)
   {
     ASSERT(p_argc == 0);
-    // const auto this_ = p_vm->stack_pop();
-    const auto this_class = OK_VALUE_AS_CLASS_OBJECT(p_this);
+    const auto this_ = p_vm->get_receiver();
+    const auto this_class = OK_VALUE_AS_CLASS_OBJECT(this_);
     std::print("{}", std::string_view{this_class->name->chars, this_class->name->length});
-    return {.code = value_error_code::ok};
+    return {.code = native_return_code::nrc_print_exit};
   }
 
-  native_method_return_type class_object::call(vm* p_vm, value_t p_this, uint8_t p_argc)
+  native_return_type class_object::call(vm* p_vm, value_t, uint8_t p_argc)
   {
-    // const auto this_ = p_vm->stack_top(p_argc);
-    const auto this_class = OK_VALUE_AS_CLASS_OBJECT(p_this);
-    // yo
+    const auto this_ = p_vm->get_receiver();
+    const auto this_class = OK_VALUE_AS_CLASS_OBJECT(this_);
     const auto instance = new_tobject<instance_object>(this_class->up.get_type(), this_class, p_vm->get_objects_list());
-    // TODO(Qais): dont use this!
-    // register_base_methods((object*)instance);
 
-    p_vm->stack_top(p_argc) = value_t{copy{(object*)instance}};
-
-    // auto key = make_methods_key(p_vm->get_statics().init_string, p_argc);
     const auto ctor = instance->up.class_->specials.operations[method_type::mt_ctor];
     if(!OK_IS_VALUE_NULL(ctor))
     {
-      auto res = p_vm->call_value(p_argc, ctor);
-      if(!res)
+      p_vm->stack_top(p_argc) = value_t{copy{(object*)instance}}; // forwarding, not a return
+      if(!p_vm->call_value(ctor, ctor, p_argc))
       {
-        return {.code = value_error_code::internal_propagated_error};
+        return {.code = native_return_code::nrc_error, .error.code = value_error_code::internal_propagated_error};
       }
+      return {.code = native_return_code::nrc_subcall};
+    }
+    else if(p_argc != 0)
+    {
+      return {
+          .code = native_return_code::nrc_error,
+          .error{.code = value_error_code::undefined_operation,
+                 .payload{value_t{std::format("invalid default constructor on class '{}', expected 0 arguments got: {}",
+                                              this_class->name->chars,
+                                              p_argc)}}}};
     }
 
-    return {.code = value_error_code::ok};
+    p_vm->return_value(value_t{copy{(object*)instance}});
+    return {.code = native_return_code::nrc_return};
   }
 
   template <typename T>
@@ -720,32 +623,31 @@ namespace ok
     }
   }
 
-  // instance_object::instance_object() : up(object_type::obj_instance)
-  // {
-  //   [[maybe_unused]] static const bool _ = [this] -> bool
-  //   {
-  //     auto _vm = get_g_vm();
-  //     auto& ops = _vm->register_object_operations(up.get_type());
-  //     // std::array<std::pair<uint32_t, vm::operation_function_infix_binary>, 2> op_fcn = {
-  //     //     std::pair<uint32_t, vm::operation_function_infix_binary>{
-  //     //         _make_object_key(operator_type::op_equal, value_type::object_val, object_type::obj_class),
-  //     //         class_object::equal}};
-  //     // ops.binary_infix.register_operations(op_fcn);
-  //     // ops.call_function = class_object::call;
-  //     ops.print_function = instance_object::print;
-  //     return true;
-  //   }();
-  // }
-
-  native_method_return_type instance_object::print(vm* p_vm, value_t p_this, uint8_t p_argc)
+  native_return_type instance_object::print(vm* p_vm, value_t, uint8_t p_argc)
   {
     ASSERT(p_argc == 0);
-    // const auto this_ = p_vm->stack_pop();
-    const auto this_instance = OK_VALUE_AS_INSTANCE_OBJECT(p_this);
+    const auto this_ = p_vm->get_receiver();
+    const auto this_instance = OK_VALUE_AS_INSTANCE_OBJECT(this_);
     std::print("instance of: {}",
                std::string_view{this_instance->up.class_->name->chars, this_instance->up.class_->name->length});
-    return {.code = value_error_code::ok};
-    // return {.return_type = native_method_return_type::rt_print, .return_value.other = nullptr};
+    return {.code = native_return_code::nrc_print_exit};
+  }
+
+  native_return_type instance_object::clone(vm* p_vm, value_t, uint8_t p_argc)
+  {
+    if(p_argc != 0)
+    {
+      return {.code = native_return_code::nrc_error,
+              .error{.code = value_error_code::arguments_mismatch,
+                     .payload{value_t{std::format("invalid clone, expected 0 arguments, got: {}", p_argc)}}}};
+    }
+    const auto this_ = p_vm->get_receiver();
+    const auto this_instance = OK_VALUE_AS_INSTANCE_OBJECT(this_);
+    auto clone =
+        new_tobject<instance_object>(this_instance->up.get_type(), this_instance->up.class_, p_vm->get_objects_list());
+    clone->fields = this_instance->fields; // shallow copy except for primitives
+    p_vm->return_value(value_t{copy{clone}});
+    return {.code = native_return_code::nrc_return};
   }
 
   template <typename T>
@@ -783,136 +685,80 @@ namespace ok
   {
   }
 
-  // bound_method_object::bound_method_object() : up(object_type::obj_bound_method)
-  // {
-  //   [[maybe_unused]] static const bool _ = [this] -> bool
-  //   {
-  //     auto _vm = get_g_vm();
-  //     auto& ops = _vm->register_object_operations(up.get_type());
-  //     std::array<std::pair<uint32_t, vm::operation_function_infix_binary>, 2> op_fcn = {
-  //         std::pair<uint32_t, vm::operation_function_infix_binary>{
-  //             _make_object_key(operator_type::op_equal, value_type::object_val, object_type::obj_class),
-  //             bound_method_object::equal}};
-  //     ops.binary_infix.register_operations(op_fcn);
-  //     ops.call_function = bound_method_object::call;
-  //     ops.print_function = bound_method_object::print;
-  //     return true;
-  //   }();
-  // }
-
-  native_method_return_type bound_method_object::print(vm* p_vm, value_t p_this, uint8_t p_argc)
-  {
-    ASSERT(p_argc == 0);
-    // const auto this_ = p_vm->stack_pop();
-    auto this_bound_method = OK_VALUE_AS_BOUND_METHOD_OBJECT(p_this);
-    // when ugly meets slow
-    // value_t val{copy{this_bound_method->method}};
-    // return closure_object::print_impl(p_vm, val);
-    std::print("<bound method: {:p}>", (void*)this_bound_method);
-    return {.code = value_error_code::ok};
-  }
-
-  native_method_return_type bound_method_object::equal(vm* p_vm, value_t p_this, uint8_t p_argc)
+  native_return_type bound_method_object::equal(vm* p_vm, value_t, uint8_t p_argc)
   {
     ASSERT(p_argc == 1);
-    const auto other = p_vm->stack_pop();
-    // const auto this_ = p_vm->stack_pop();
+    const auto this_ = p_vm->get_receiver();
+    const auto other = p_vm->get_arg(0);
     if(OK_IS_VALUE_BOUND_METHOD_OBJECT(other)) [[likely]]
     {
-      const auto this_bound_method = OK_VALUE_AS_BOUND_METHOD_OBJECT(p_this);
+      const auto this_bound_method = OK_VALUE_AS_BOUND_METHOD_OBJECT(this_);
       const auto other_bound_method = OK_VALUE_AS_BOUND_METHOD_OBJECT(other);
       // when very ugly meets slow
       const auto method = other_bound_method->method;
-      // value_t argv[2] = {value_t{copy{this_bound_method->method}}, method};
-
-      // auto closure_equal =
-      //     closure_object::equal_impl(p_vm, value_t{copy{this_bound_method->method}}, method); // looks bad!
-      // if(closure_equal.code != value_error_code::ok)
-      //   return closure_equal;
-
       // TODO(Qais): ts pmo
-      p_vm->stack_top(0) =
+      p_vm->return_value(
           value_t{this_bound_method->receiver.type == other_bound_method->receiver.type &&
-                  OK_VALUE_AS_OBJECT(this_bound_method->receiver) == OK_VALUE_AS_OBJECT(other_bound_method->receiver) &&
-                  this_bound_method &&
-                  other_bound_method}; // i mean come on, if that other line looks bad then how does this line look like
-      return {.code = value_error_code::ok};
+                  OK_VALUE_AS_OBJECT(this_bound_method->receiver) == OK_VALUE_AS_OBJECT(other_bound_method->receiver)});
+      return {.code = native_return_code::nrc_return};
     }
     p_vm->stack_push(value_t{});
-    return {.code = value_error_code::undefined_operation, .has_payload = true};
+    return {
+        .code = native_return_code::nrc_error,
+        .error{.code = value_error_code::undefined_operation,
+               .payload{value_t{std::format("invalid '==' on bound method, expected 0 arguments got: {}", p_argc)}}}};
   }
 
-  native_method_return_type bound_method_object::bang_equal(vm* p_vm, value_t p_this, uint8_t p_argc)
+  native_return_type bound_method_object::bang_equal(vm* p_vm, value_t, uint8_t p_argc)
   {
     ASSERT(p_argc == 1);
-    const auto other = p_vm->stack_pop();
-    // const auto this_ = p_vm->stack_pop();
+    const auto this_ = p_vm->get_receiver();
+    const auto other = p_vm->get_arg(0);
     if(OK_IS_VALUE_BOUND_METHOD_OBJECT(other)) [[likely]]
     {
-      const auto this_bound_method = OK_VALUE_AS_BOUND_METHOD_OBJECT(p_this);
+      const auto this_bound_method = OK_VALUE_AS_BOUND_METHOD_OBJECT(this_);
       const auto other_bound_method = OK_VALUE_AS_BOUND_METHOD_OBJECT(other);
       // when very ugly meets slow
-      // const auto method = value_t{copy{other_bound_method->method}};
-      // value_t argv[2] = {value_t{copy{this_bound_method->method}}, method};
-      // auto closure_equal =
-      //    closure_object::equal_impl(p_vm, value_t{copy{this_bound_method->method}}, method); // looks bad!
-      // if(closure_equal.code != value_error_code::ok)
-      //  return closure_equal;
-
+      const auto method = other_bound_method->method;
       // TODO(Qais): ts pmo
-      p_vm->stack_top(0) = value_t{
-          !(this_bound_method->receiver.type == other_bound_method->receiver.type &&
-            OK_VALUE_AS_OBJECT(this_bound_method->receiver) == OK_VALUE_AS_OBJECT(other_bound_method->receiver) &&
-            this_bound_method &&
-            other_bound_method)}; // i mean come on, if that other line looks bad then what do this line look like
-      return {.code = value_error_code::ok};
+      p_vm->return_value(
+          value_t{this_bound_method->receiver.type != other_bound_method->receiver.type ||
+                  OK_VALUE_AS_OBJECT(this_bound_method->receiver) != OK_VALUE_AS_OBJECT(other_bound_method->receiver)});
+      return {.code = native_return_code::nrc_return};
     }
     p_vm->stack_push(value_t{});
-    return {.code = value_error_code::undefined_operation, .has_payload = true};
+    return {
+        .code = native_return_code::nrc_error,
+        .error{.code = value_error_code::undefined_operation,
+               .payload{value_t{std::format("invalid '==' on bound method, expected 0 arguments got: {}", p_argc)}}}};
   }
 
-  std::expected<value_t, value_error_code> bound_method_object::equal_closure(value_t p_this, value_t p_closure)
+  native_return_type bound_method_object::call(vm* p_vm, value_t, uint8_t p_argc)
   {
-    return value_t{false};
-  }
-
-  std::expected<value_t, value_error_code> bound_method_object::bang_equal_closure(value_t p_this, value_t p_closure)
-  {
-    return value_t{false};
-  }
-
-  std::expected<value_t, value_error_code> bound_method_object::equal_native_function(value_t p_this,
-                                                                                      value_t p_native_function)
-  {
-    return value_t{false};
-  }
-
-  std::expected<value_t, value_error_code> bound_method_object::bang_equal_native_function(value_t p_this,
-                                                                                           value_t p_native_function)
-  {
-    return value_t{false};
-  }
-
-  native_method_return_type bound_method_object::call(vm* p_vm, value_t p_this, uint8_t p_argc)
-  {
-    // const auto this_ = p_vm->stack_top(p_argc);
-    const auto this_bound_method = OK_VALUE_AS_BOUND_METHOD_OBJECT(p_this);
-    p_vm->stack_top(p_argc) = this_bound_method->receiver;
-    // value_t argv[2] = {value_t{copy{this_bound_method->method}}, p_argv[1]};
-    // return closure_object::call_impl(p_vm, p_argc, value_t{copy{this_bound_method->method}});
-    auto method = this_bound_method->method;
+    const auto this_ = p_vm->get_receiver();
+    const auto this_bound_method = OK_VALUE_AS_BOUND_METHOD_OBJECT(this_);
+    const auto method = this_bound_method->method;
     if(OK_IS_VALUE_NULL(method))
     {
-      p_vm->stack_push(value_t{});
-      return {.code = value_error_code::undefined_operation, .has_payload = true};
+      return {.code = native_return_code::nrc_error,
+              .error{.code = value_error_code::undefined_operation,
+                     .payload{value_t{std::string_view{"invalid call on bound method"}}}}};
     }
-    p_vm->stack_top(p_argc) = method; // put the wrapped method on the stack and perform normal call
-    auto res = p_vm->call_value(p_argc, method);
-    if(!res)
+    p_vm->stack_top(p_argc) = this_bound_method->receiver; // TODO(Qais): check this pls pls
+    if(!p_vm->call_value(method, method, p_argc))
     {
-      return {.code = value_error_code::internal_propagated_error};
+      return {.code = native_return_code::nrc_error, .error.code = value_error_code::internal_propagated_error};
     }
-    return {.code = value_error_code::ok};
+    return {.code = native_return_code::nrc_subcall};
+  }
+
+  native_return_type bound_method_object::print(vm* p_vm, value_t, uint8_t p_argc)
+  {
+    ASSERT(p_argc == 0);
+    const auto this_ = p_vm->get_receiver();
+    auto this_bound_method = OK_VALUE_AS_BOUND_METHOD_OBJECT(this_);
+    std::print("<bound method: {:p}>", (void*)this_bound_method);
+    return {.code = native_return_code::nrc_print_exit};
   }
 
   template <typename T>
@@ -1069,6 +915,10 @@ namespace ok
   {
     auto* object_class = new_tobject<class_object>(nullptr, object_type::obj_object, nullptr, nullptr, p_objects_list);
     object_class->up.class_ = object_class;
+    auto& ops = object_class->specials.operations;
+    ops[method_type::mt_binary_infix_equal] = value_t{class_object::equal, false};
+    ops[method_type::mt_binary_infix_bang_equal] = value_t{class_object::bang_equal, false};
+    ops[method_type::mt_print] = value_t{class_object::print, false};
     return object_class;
   }
 
@@ -1099,6 +949,8 @@ namespace ok
     auto* instance_class = new_tobject<class_object>(
         instance_class_name, object_type::obj_function, p_meta_class, nullptr, p_objects_list);
 
+    auto* clone_method_name = new_tobject<string_object>("clone", p_string, p_objects_list);
+    instance_class->methods[clone_method_name] = value_t{instance_object::clone, false};
     auto& ops = instance_class->specials.operations;
     ops[method_type::mt_print] = value_t{instance_object::print, false};
 
