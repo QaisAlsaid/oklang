@@ -1,0 +1,3 @@
+let mut _local_mutable = "local_mutable";
+_local_mutable = "mutated";
+print _local_mutable; // expect: mutated

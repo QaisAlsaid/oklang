@@ -1,0 +1,11 @@
+for let mut i = 0; i < 1; ++i -> print (i); 
+// expect: 0
+for let mut i = 1; i < 2; ++i -> { print (i); } 
+// expect: 1
+for 
+let mut i = 0;
+i < 1;
+++i 
+-> 
+print (i); 
+// expect: 0

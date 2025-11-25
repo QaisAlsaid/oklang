@@ -8,6 +8,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 namespace ok
 {
@@ -49,7 +50,6 @@ namespace ok
         expected_token,
         expected_identifier,
         malformed_number,
-        invalid_expression,
         expected_statement,
         expected_expression,
         unexpected_token,
@@ -58,20 +58,35 @@ namespace ok
         illegal_operator_override,
       };
       code error_code;
-      std::string message;
+      size_t line, offset;
+      std::string file_name, line_content, raw, message;
 
       static constexpr std::string_view code_to_string(code p_code)
       {
         switch(p_code)
         {
         case code::no_prefix_parse_function:
-          return "no_prefix_parse_function";
+          return "no prefix parse function";
         case code::expected_token:
-          return "expected_token";
+          return "expected token";
         case code::expected_identifier:
-          return "expected_identifier";
+          return "expected identifier";
+        case code::malformed_number:
+          return "malformed number";
+        case code::expected_statement:
+          return "expected statement";
+        case code::expected_expression:
+          return "expected expression";
+        case code::unexpected_token:
+          return "unexpected token";
+        case code::illegal_declaration_modifier:
+          return "illegal declaration modifier";
+        case code::illegal_binding_modifier:
+          return "illegal binding modifier";
+        case code::illegal_operator_override:
+          return "illegal operator override";
         }
-        return "unknown";
+        return "unknown error";
       }
     };
     struct errors
@@ -81,19 +96,31 @@ namespace ok
     };
 
   public:
-    parser(token_array& p_token_array);
+    parser(token_array& p_token_array, std::string_view p_file_path, std::string_view p_file_content);
     std::unique_ptr<ast::program> parse_program();
     std::unique_ptr<ast::expression> parse_expression(int p_precedence = precedence::prec_lowest);
-    ast::binding_modifier parse_binding_modifiers();
+    ast::binding_modifier parse_binding_modifiers(std::unordered_map<uint8_t, token>* p_out_tokens = nullptr);
 
     template <typename... Args>
-    void parse_error(error::code code, std::format_string<Args...> fmt, Args&&... args)
+    void parse_error(error::code p_code,
+                     size_t p_line,
+                     size_t p_offset,
+                     std::string p_raw,
+                     std::format_string<Args...> p_fmt = "",
+                     Args&&... args)
     {
       if(m_paranoia)
         return;
 
       m_paranoia = true;
-      m_errors.errs.emplace_back(code, std::format(fmt, std::forward<Args>(args)...));
+      auto content = get_line(p_line);
+      m_errors.errs.emplace_back(p_code,
+                                 p_line,
+                                 p_offset,
+                                 std::string{m_file_name},
+                                 content,
+                                 p_raw,
+                                 std::format(p_fmt, std::forward<Args>(args)...));
     }
 
     bool advance();
@@ -130,16 +157,24 @@ namespace ok
         unique_overridable_operator_type* p_out_op_type = nullptr);
 
     void sync_state();
-    void munch_extra_semicolons();
-    ast::declaration_modifier parse_declaration_modifiers();
+    ast::declaration_modifier parse_declaration_modifiers(std::unordered_map<uint8_t, token>* p_out_tokens = nullptr);
     ast::declaration_modifier parse_declaration_modifier(token_type p_tok) const;
     bool is_declaration_modifier(token_type p_tok) const;
+    bool validate_declaration_modifiers(ast::declaration_modifier p_mods,
+                                        ast::declaration_modifier p_against,
+                                        const std::unordered_map<uint8_t, token>& p_toks);
 
     ast::binding_modifier parse_binding_modifier(token_type p_tok) const;
     bool is_binding_modifier(token_type p_tok) const;
+    bool validate_binding_modifiers(ast::binding_modifier p_mods,
+                                    ast::binding_modifier p_against,
+                                    const std::unordered_map<uint8_t, token>& p_toks);
+    std::string get_line(size_t p_line);
 
   private:
     token_array& m_token_array;
+    std::string_view m_file_name = "";
+    std::string_view m_file_content = "";
     size_t m_current_token = 0;
     size_t m_lookahead_token = 0;
     bool m_paranoia = false;

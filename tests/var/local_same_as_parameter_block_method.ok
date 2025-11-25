@@ -1,0 +1,8 @@
+class Class {
+  fu x(_) {
+    let _ = 0; // shadow _
+    print _; // expect: 0
+  }
+}
+
+Class().x(123);

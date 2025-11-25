@@ -1,0 +1,3 @@
+glob let x = 1;
+let x = x;
+print x; // expect: 1

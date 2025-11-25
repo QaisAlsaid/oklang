@@ -187,7 +187,7 @@ namespace ok
   public:
     vm();
     ~vm();
-    interpret_result interpret(const std::string_view p_source);
+    interpret_result interpret(const std::string_view p_filename, const std::string_view p_source);
 
     inline object*& get_objects_list()
     {

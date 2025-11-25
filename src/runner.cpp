@@ -33,11 +33,12 @@ namespace ok
     }
 
     const std::ifstream fstream(p_file);
+    auto file_str = p_file.string();
     std::stringstream ss;
     ss << fstream.rdbuf();
     const auto& src_str = ss.str();
 
-    const auto res = vm.interpret(src_str);
+    const auto res = vm.interpret(file_str, src_str);
     switch(res)
     {
     case ok::vm::interpret_result::parse_error:

@@ -1,0 +1,6 @@
+{
+  {
+    glob let _glob_immutable_var = "global_immutable";
+  }
+  print _glob_immutable_var; // expect: global_immutable
+}

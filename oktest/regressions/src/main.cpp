@@ -29,9 +29,8 @@ run_result run_oklang(const std::string_view path, const std::string_view okpath
   std::string stdout_file = "out.log";
   std::string stderr_file = "err.log";
   cmd << "\"" << okpath << "\" " << "\"" << path << "\" > " << stdout_file << " 2> " << stderr_file;
-  // cmd << okpath << " " << path << " > tmp.out 2>&1";
 
-  auto cmd_str = cmd.str();
+  std::string cmd_str = cmd.str();
   int ret = system(cmd_str.c_str());
   return {ret, read_file("out.log"), read_file("err.log")};
 }
@@ -116,8 +115,6 @@ int main(int argc, char** argv)
     if(entry.path().extension() == ".ok")
     {
       std::string test_path = entry.path();
-      std::string expected_path = test_path.substr(0, test_path.size() - 3) + ".out";
-      std::string expected = read_file(expected_path);
 
       auto tc = parse_test_file(test_path);
       auto rr = run_oklang(test_path, okpath);
@@ -161,30 +158,6 @@ int main(int argc, char** argv)
           std::println("[OK]: {}", test_path);
         }
       }
-
-      // if(ret.exit_code == 0)
-      // {
-      //   const auto& actual = ret;
-      //   if(actual == expected)
-      //   {
-      //     std::println("[OK]: {}", test_path);
-      //     ok++;
-      //   }
-      //   else
-      //   {
-      //     std::println(stderr, "[NOTOK]: {}", test_path);
-      //     std::println("expected:\n {}", expected);
-      //     std::println("got:\n {}", actual);
-      //     notok++;
-      //   }
-      // }
-      // else
-      // {
-      //   std::println(stderr, "[CRASH]: {}", test_path);
-      //   std::println("expected: \n {}, with return code of '{}'", expected, 0);
-      //   std::println("got:\n {}, and return code of '{}'", ret.first, ret.second);
-      //   crash++;
-      // }
     }
   }
 

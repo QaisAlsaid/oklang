@@ -35,7 +35,7 @@ namespace ok
   // struct native_function_return_type;
   // struct native_method_return_type;
 
-  // 3bits are avilable for this which allows up to 9 types
+  // 3bits are available for this which allows up to 9 types
   enum class value_type : uint8_t // need this for stable hash not as storage optimization
   {
     bool_val = 0,
@@ -123,7 +123,7 @@ namespace ok
   struct native_return_type
   {
     native_return_code code;
-    value_error error; // if type is nrtt_error
+    value_error error; // if type is nrc_error
   };
 
   // constexpr uint64_t _make_value_key(uint32_t p_lhs_all, uint32_t p_rhs_all)

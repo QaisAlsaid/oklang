@@ -237,7 +237,7 @@ namespace ok
       // if(!running)
       //   break;
 
-      const auto res = vm.interpret(ret.value());
+      const auto res = vm.interpret("", ret.value());
       switch(res)
       {
       case ok::vm::interpret_result::parse_error:

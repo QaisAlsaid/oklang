@@ -27,15 +27,25 @@ namespace ok
       }
       else if(p_parser.lookahead_token().type != expected_end.type)
       {
-        p_parser.parse_error(
-            parser::error::code::expected_token, "expected '{}', after expression list", expected_end.raw_literal);
+        auto tok = p_parser.lookahead_token();
+        p_parser.parse_error(parser::error::code::expected_token,
+                             tok.line,
+                             tok.offset,
+                             tok.raw_literal,
+                             "expected '{}', after expression list",
+                             expected_end.raw_literal);
         break;
       }
     }
     if(p_parser.lookahead_token().type != expected_end.type) // account for eof
     {
-      p_parser.parse_error(
-          parser::error::code::expected_token, "expected '{}', after expression list", expected_end.raw_literal);
+      auto tok = p_parser.lookahead_token();
+      p_parser.parse_error(parser::error::code::expected_token,
+                           tok.line,
+                           tok.offset,
+                           tok.raw_literal,
+                           "expected '{}', after expression list",
+                           expected_end.raw_literal);
     }
     else // not strictleay necessary since advance on eof produces eof
     {
@@ -69,7 +79,12 @@ namespace ok
       double ret = std::strtod(c_str, &end);
       if(ret == 0 && end == c_str) // error
       {
-        p_parser.parse_error(parser::error::code::malformed_number, "error converting: '{}', to a number", c_str);
+        p_parser.parse_error(parser::error::code::malformed_number,
+                             p_tok.line,
+                             p_tok.offset,
+                             p_tok.raw_literal,
+                             "error converting: '{}', to a number",
+                             c_str);
       }
       return std::make_unique<ast::number_expression>(p_tok, ret);
     }
@@ -113,12 +128,19 @@ namespace ok
     {
       if(p_parser.lookahead_token().type != token_type::tok_dot)
       {
-        p_parser.parse_error(parser::error::code::expected_token, "expected '.' after 'super'");
+        auto tok = p_parser.lookahead_token();
+        p_parser.parse_error(
+            parser::error::code::expected_token, tok.line, tok.offset, tok.raw_literal, "expected '.' after 'super'");
       }
       p_parser.advance();
       if(p_parser.lookahead_token().type != token_type::tok_identifier)
       {
-        p_parser.parse_error(parser::error::code::expected_identifier, "expected superclass method name");
+        auto tok = p_parser.lookahead_token();
+        p_parser.parse_error(parser::error::code::expected_identifier,
+                             tok.line,
+                             tok.offset,
+                             tok.raw_literal,
+                             "expected superclass method name");
       }
       p_parser.advance();
       auto method_tok = p_parser.current_token();
@@ -159,7 +181,12 @@ namespace ok
         auto key = p_parser.parse_expression();
         if(p_parser.lookahead_token().type != token_type::tok_colon)
         {
-          p_parser.parse_error(parser::error::code::expected_token, "expected ':', after map key");
+          auto tok = p_parser.lookahead_token();
+          p_parser.parse_error(parser::error::code::expected_token,
+                               tok.line,
+                               tok.offset,
+                               tok.raw_literal,
+                               "expected ':', after map key");
         }
         p_parser.advance();
         p_parser.advance();
@@ -171,13 +198,23 @@ namespace ok
         }
         else if(p_parser.lookahead_token().type != token_type::tok_right_brace)
         {
-          p_parser.parse_error(parser::error::code::expected_token, "expected '}}', after map entries");
+          auto tok = p_parser.lookahead_token();
+          p_parser.parse_error(parser::error::code::expected_token,
+                               tok.line,
+                               tok.offset,
+                               tok.raw_literal,
+                               "expected '}}', after map entries");
           break;
         }
       }
       if(p_parser.lookahead_token().type != token_type::tok_right_brace) // account for eof
       {
-        p_parser.parse_error(parser::error::code::expected_token, "expected '}}', after map entries");
+        auto tok = p_parser.lookahead_token();
+        p_parser.parse_error(parser::error::code::expected_token,
+                             tok.line,
+                             tok.offset,
+                             tok.raw_literal,
+                             "expected '}}', after map entries");
       }
       else // not strictleay necessary since advance on eof produces eof
       {
@@ -278,6 +315,9 @@ namespace ok
       if(name_tok.type != token_type::tok_identifier)
       {
         p_parser.parse_error(parser::error::code::expected_identifier,
+                             name_tok.line,
+                             name_tok.offset,
+                             name_tok.raw_literal,
                              "expected property name after '.' access operator");
         return nullptr;
       }
@@ -326,7 +366,12 @@ namespace ok
       auto right = p_parser.parse_expression();
       if(p_parser.lookahead_token().type != token_type::tok_right_bracket)
       {
-        p_parser.parse_error(parser::error::code::expected_token, "expected ']' after subscript operator expression");
+        auto tok = p_parser.current_token();
+        p_parser.parse_error(parser::error::code::expected_token,
+                             tok.line,
+                             tok.offset,
+                             tok.raw_literal,
+                             "expected ']' after subscript operator expression");
       }
       p_parser.advance();
       return std::make_unique<ast::subscript_expression>(p_tok, std::move(p_left), std::move(right));
@@ -390,7 +435,12 @@ namespace ok
       auto right = p_parser.parse_expression(precedence::prec_assignment - 1);
       if(!p_left->is_lvalue())
       {
-        p_parser.parse_error(parser::error::code::expected_identifier, "expected lvalue as assignment target");
+        auto tok = p_left->get_token();
+        p_parser.parse_error(parser::error::code::expected_identifier,
+                             tok.line,
+                             tok.offset,
+                             tok.raw_literal,
+                             "expected lvalue as assignment target");
       }
 
       return std::make_unique<AssignExpr>(

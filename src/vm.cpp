@@ -566,7 +566,7 @@ namespace ok
     {
       m_stack.pop();
       m_stack.pop();
-      m_stack.push(value_t{OK_VALUE_AS_NUMBER(lhs) >= OK_VALUE_AS_NUMBER(rhs)});
+      m_stack.push(value_t{OK_VALUE_AS_NUMBER(lhs) <= OK_VALUE_AS_NUMBER(rhs)});
       return true;
     }
     else if(OK_IS_VALUE_OBJECT(lhs))
@@ -1121,12 +1121,13 @@ namespace ok
     define_native_function("rand", rand_native);
   }
 
-  auto vm::interpret(const std::string_view p_source) -> interpret_result
+  auto vm::interpret(const std::string_view p_filename, const std::string_view p_source) -> interpret_result
   {
     m_compiler = compiler{}; // reinitialize and clear previous state
     push_call_frame(call_frame{.ip = nullptr, .slots = 0, .top = 0, .closure = nullptr});
     auto compile_result = m_compiler.compile(
         this,
+        p_filename,
         p_source,
         new_tobject<string_object>("main", get_builtin_class(object_type::obj_string), get_objects_list()));
     if(!compile_result)
@@ -1723,46 +1724,38 @@ namespace ok
       case to_utype(opcode::op_conditional_jump):
       case to_utype(opcode::op_conditional_truthy_jump):
       {
-        ASSERT(false); // TODO(Qais): fix once conversions are in place
-        // const auto jump = decode_int<uint32_t, 3>(read_bytes<3>(), 0);
-        // const auto res = perform_unary_prefix<operator_type::op_bool>(
-        //     m_stack.pop()); // always take bool and bang it if necessary, because ! operation does not guarantee
-        //                     // boolean return type, while bool operation always guarantee boolean return type
-        // if(!res.has_value())
-        // {
-        //   runtime_error("invalid boolean conversion");
-        //   return interpret_result::runtime_error;
-        // }
-        // const auto cond = static_cast<opcode>(instruction) == opcode::op_conditional_jump
-        //                       ? !OK_VALUE_AS_BOOL(res.value())
-        //                       : OK_VALUE_AS_BOOL(res.value());
-        // frame->ip += jump * cond;
+        const auto jump = decode_int<uint32_t, 3>(read_bytes<3>(), 0);
+        auto val = m_stack.pop();
+        if(!OK_IS_VALUE_BOOL(val))
+        {
+          runtime_error("value not bool");
+          return interpret_result::runtime_error;
+        }
+        const auto cond = static_cast<opcode>(instruction) == opcode::op_conditional_jump ? !OK_VALUE_AS_BOOL(val)
+                                                                                          : OK_VALUE_AS_BOOL(val);
+        frame->ip += jump * cond;
         break;
       }
       case to_utype(opcode::op_conditional_jump_leave):
       case to_utype(opcode::op_conditional_truthy_jump_leave):
       {
-        // TODO(Qais): same as above
-        //  const auto jump = decode_int<uint32_t, 3>(read_bytes<3>(), 0);
-        //  const auto res = perform_unary_prefix<operator_type::op_bool>(
-        //      m_stack.top()); // always take bool and bang it if necessary, because ! operation does not guarantee
-        //                      // boolean return type, while bool operation always guarantee boolean return type
-        //  if(!res.has_value())
-        //  {
-        //    runtime_error("invalid boolean conversion");
-        //    return interpret_result::runtime_error;
-        //  }
-        //  const auto cond = static_cast<opcode>(instruction) == opcode::op_conditional_jump_leave
-        //                        ? !OK_VALUE_AS_BOOL(res.value())
-        //                        : OK_VALUE_AS_BOOL(res.value());
-        //  if(cond)
-        //  {
-        //    frame->ip += jump; //* cond;
-        //  }
-        //  else
-        //  {
-        //    m_stack.pop();
-        //  }
+        const auto jump = decode_int<uint32_t, 3>(read_bytes<3>(), 0);
+        auto val = m_stack.pop();
+        if(!OK_IS_VALUE_BOOL(val))
+        {
+          runtime_error("value not bool");
+          return interpret_result::runtime_error;
+        }
+        const auto cond = static_cast<opcode>(instruction) == opcode::op_conditional_jump ? !OK_VALUE_AS_BOOL(val)
+                                                                                          : OK_VALUE_AS_BOOL(val);
+        if(cond)
+        {
+          frame->ip += jump;
+        }
+        else
+        {
+          m_stack.pop();
+        }
         break;
       }
       case to_utype(opcode::op_jump):

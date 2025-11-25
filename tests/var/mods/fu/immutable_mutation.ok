@@ -1,0 +1,6 @@
+fu x () {
+}
+
+fu x () {
+} 
+// expect error

@@ -59,6 +59,9 @@ namespace ok::ast
     nt_for_stmt,
     nt_control_flow_stmt,
     nt_return_stmt,
+    nt_try_stmt,
+    nt_catch_stmt,
+    nt_finalize_stmt,
     // declarations
     nt_let_decl,
     nt_function_decl,
@@ -1218,6 +1221,84 @@ namespace ok::ast
 
   private:
     std::unique_ptr<expression> m_expression;
+  };
+
+  class try_statement : public statement
+  {
+  public:
+    try_statement(token p_tok, std::unique_ptr<statement> p_body)
+        : statement(node_type::nt_try_stmt, p_tok), m_body(std::move(p_body))
+    {
+    }
+
+    std::string to_string() override
+    {
+      std::stringstream ss;
+      ss << "try " << m_body->to_string();
+      return ss.str();
+    }
+
+    const std::unique_ptr<statement>& get_body() const
+    {
+      return m_body;
+    }
+
+  private:
+    std::unique_ptr<statement> m_body;
+  };
+
+  class catch_statement : public statement
+  {
+  public:
+    catch_statement(token p_tok, std::unique_ptr<binding> p_binding, std::unique_ptr<statement> p_body)
+        : statement(node_type::nt_catch_stmt, p_tok), m_binding(std::move(p_binding)), m_body(std::move(p_body))
+    {
+    }
+
+    std::string to_string() override
+    {
+      std::stringstream ss;
+      ss << "catch " << m_binding->to_string() << m_body->to_string();
+      return ss.str();
+    }
+
+    const std::unique_ptr<binding>& get_binding() const
+    {
+      return m_binding;
+    }
+
+    const std::unique_ptr<statement>& get_body() const
+    {
+      return m_body;
+    }
+
+  private:
+    std::unique_ptr<binding> m_binding;
+    std::unique_ptr<statement> m_body;
+  };
+
+  class finalize_statement : public statement
+  {
+  public:
+    finalize_statement(token p_tok, std::unique_ptr<statement> p_body)
+        : statement(node_type::nt_finalize_stmt, p_tok), m_body(std::move(p_body))
+    {
+    }
+
+    std::string to_string() override
+    {
+      std::stringstream ss;
+      ss << "finalize " << m_body->to_string();
+      return ss.str();
+    }
+
+    const std::unique_ptr<statement>& get_body() const
+    {
+      return m_body;
+    }
+
+  private:
+    std::unique_ptr<statement> m_body;
   };
 
   /**

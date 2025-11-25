@@ -1,0 +1,2 @@
+glob let x = 1;
+glob let x = 2; // expect error

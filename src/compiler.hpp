@@ -142,7 +142,8 @@ namespace ok
 
   public:
     // type is always string the name will determine the script being ran and the future namespace also the main
-    function_object* compile(vm* p_vm, const std::string_view p_src, string_object* p_function_name);
+    function_object*
+    compile(vm* p_vm, const std::string_view p_filename, const std::string_view p_src, string_object* p_function_name);
     chunk* current_chunk() const
     {
       ASSERT(m_compiled);

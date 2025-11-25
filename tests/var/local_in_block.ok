@@ -1,0 +1,12 @@
+fu func() {
+  let x = "x";
+  print x; // expect: x
+  let y = x + " y";
+  print y; // expect: x y
+  let z = y + " z";
+  print z; // expect: x y z
+  let w = z + " w";
+  print w; // expect: x y z w
+}
+func();
+// TODO(Qais): memory leak in string::create

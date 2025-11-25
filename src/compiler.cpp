@@ -50,7 +50,10 @@ namespace ok
     Class* cls;
   };
 
-  function_object* compiler::compile(vm* p_vm, const std::string_view p_src, string_object* p_function_name)
+  function_object* compiler::compile(vm* p_vm,
+                                     const std::string_view p_filename,
+                                     const std::string_view p_src,
+                                     string_object* p_function_name)
   {
     m_compiled = true;
     m_vm = p_vm;
@@ -62,7 +65,7 @@ namespace ok
       TRACELN("token: type: '{}', raw: '{}'", token_type_to_string(tok.type), tok.raw_literal);
     TRACELN("\n}}");
 #endif
-    parser prs{arr};
+    parser prs{arr, p_filename, p_src};
     auto root = prs.parse_program();
     m_parse_errors = prs.get_errors();
     if(!m_parse_errors.errs.empty() || root == nullptr)

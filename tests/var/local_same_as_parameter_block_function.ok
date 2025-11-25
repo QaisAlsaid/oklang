@@ -1,0 +1,7 @@
+fu x(_) 
+{ // this '{}' is not a part of the function declaration, rather its a normal block statement, this mean its scope differs from the function's scope, thus it can shadow function parameters! 
+  let _ = 0; // shadow _
+  print _; // expect: 0
+}
+
+x(123);

@@ -91,6 +91,8 @@ namespace ok
     tok_mut,
     tok_static,
     tok_async,
+    tok_try,
+    tok_catch,
   };
 
   struct token
@@ -267,6 +269,10 @@ namespace ok
       return "static"sv;
     case token_type::tok_async:
       return "async"sv;
+    case token_type::tok_try:
+      return "try"sv;
+    case token_type::tok_catch:
+      return "catch"sv;
     }
     return "unknown"sv;
   }

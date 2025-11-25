@@ -1,0 +1,3 @@
+fu x(_, _) // expect error
+{
+}

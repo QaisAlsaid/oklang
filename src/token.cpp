@@ -15,7 +15,6 @@ namespace ok
                                                                         {"break"sv, token_type::tok_break},
                                                                         {"continue"sv, token_type::tok_continue},
                                                                         {"if"sv, token_type::tok_if},
-                                                                        {"elif"sv, token_type::tok_elif},
                                                                         {"else"sv, token_type::tok_else},
                                                                         {"and"sv, token_type::tok_and},
                                                                         {"or"sv, token_type::tok_or},
@@ -28,13 +27,14 @@ namespace ok
                                                                         {"false"sv, token_type::tok_false},
                                                                         {"return"sv, token_type::tok_return},
                                                                         {"not", token_type::tok_not},
-                                                                        {"ok"sv, token_type::tok_ok},
                                                                         {"operator"sv, token_type::tok_operator},
                                                                         {"glob"sv, token_type::tok_glob},
                                                                         {"export"sv, token_type::tok_export},
                                                                         {"mut"sv, token_type::tok_mut},
                                                                         {"static"sv, token_type::tok_static},
-                                                                        {"async"sv, token_type::tok_async}};
+                                                                        {"async"sv, token_type::tok_async},
+                                                                        {"try"sv, token_type::tok_try},
+                                                                        {"catch"sv, token_type::tok_catch}};
 
   token_type lookup_identifier(const std::string_view p_raw)
   {

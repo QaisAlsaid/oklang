@@ -1,0 +1,3 @@
+class Class {
+  fu x(_) -> let whatever = 2; // expect error
+}

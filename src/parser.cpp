@@ -5,7 +5,7 @@
 #include "parsers.hpp"
 #include "token.hpp"
 #include "utility.hpp"
-#include "vm_stack.hpp"
+#include "vm_stack.hpp" // for get_vm_logger
 #include <memory>
 #include <unordered_map>
 
@@ -113,7 +113,8 @@ namespace ok
     return true;
   }();
 
-  parser::parser(token_array& p_token_array) : m_token_array(p_token_array)
+  parser::parser(token_array& p_token_array, std::string_view p_filename, std::string_view p_filecontent)
+      : m_token_array(p_token_array), m_file_name(p_filename), m_file_content(p_filecontent)
   {
     advance();
   }
@@ -132,9 +133,7 @@ namespace ok
     auto prefix_it = s_prefix_parse_map.find(tok.type);
     if(s_prefix_parse_map.end() == prefix_it)
     {
-      // TODO(Qais): wtf?
-      parse_error(
-          error::code::no_prefix_parse_function, "[{}] no prefix parser found for: {}", tok.offset, tok.raw_literal);
+      parse_error(error::code::no_prefix_parse_function, tok.line, tok.offset, tok.raw_literal);
       return nullptr;
     }
 
@@ -167,7 +166,12 @@ namespace ok
     while(tok.type != token_type::tok_eof)
     {
       if(auto stmt = parse_declaration())
-        list.push_back(std::move(stmt));
+      {
+        if(stmt->get_type() != ast::node_type::nt_empty_stmt)
+        {
+          list.push_back(std::move(stmt));
+        }
+      }
       advance();
       tok = current_token();
     }
@@ -178,37 +182,26 @@ namespace ok
   std::unique_ptr<ast::statement> parser::parse_declaration()
   {
     std::unique_ptr<ast::statement> ret;
-    const auto mods = parse_declaration_modifiers();
+    std::unordered_map<uint8_t, token> mods_toks;
+    const auto mods = parse_declaration_modifiers(&mods_toks);
 
     switch(current_token().type)
     {
     case token_type::tok_let:
     {
-      if((mods & ~let_declmods) != ast::declaration_modifier::dm_none)
-      {
-        parse_error(error::code::illegal_declaration_modifier, "illegal modifier in 'let' declaration");
-      }
+      validate_declaration_modifiers(mods, let_declmods, mods_toks);
       ret = parse_let_declaration(mods);
-      // if(current_token().type != token_type::tok_semicolon)
-      //   parse_error(error::code::expected_token, "expected ';', after: {}", ret->token_literal());
-      // munch_extra_semicolons();
       break;
     }
     case token_type::tok_fu:
     {
-      if((mods & ~function_declmods) != ast::declaration_modifier::dm_none)
-      {
-        parse_error(error::code::illegal_declaration_modifier, "illegal modifier in 'fu' declaration");
-      }
+      validate_declaration_modifiers(mods, function_declmods, mods_toks);
       ret = parse_function_declaration(mods);
       break;
     }
     case token_type::tok_class:
     {
-      if((mods & ~class_declmods) != ast::declaration_modifier::dm_none)
-      {
-        parse_error(error::code::illegal_declaration_modifier, "illegal modifier in 'class' declaration");
-      }
+      validate_declaration_modifiers(mods, class_declmods, mods_toks);
       ret = parse_class_declaration(mods);
       break;
     }
@@ -216,7 +209,12 @@ namespace ok
     {
       if(mods != ast::declaration_modifier::dm_none)
       {
-        parse_error(error::code::illegal_declaration_modifier, "declaration modifiers can only apper in declarations");
+        auto tok = current_token();
+        parse_error(error::code::illegal_declaration_modifier,
+                    tok.line,
+                    tok.offset,
+                    tok.raw_literal,
+                    "declaration modifiers can only appear before declarations");
       }
       ret = parse_statement();
       break;
@@ -227,20 +225,33 @@ namespace ok
     return ret;
   }
 
-  ast::declaration_modifier parser::parse_declaration_modifiers()
+  ast::declaration_modifier parser::parse_declaration_modifiers(std::unordered_map<uint8_t, token>* p_out_tokens)
   {
     ast::declaration_modifier mods = ast::declaration_modifier::dm_none;
 
     while(current_token().type != token_type::tok_eof)
     {
+      const auto tok = current_token();
       const auto declmod = parse_declaration_modifier(current_token().type);
       if(declmod == ast::declaration_modifier::dm_none)
       {
         goto OUT;
       }
+      else if(is_in_group(declmod, mods))
+      {
+        parse_error(error::code::illegal_declaration_modifier,
+                    tok.line,
+                    tok.offset,
+                    tok.raw_literal,
+                    "declaration modifier cant appear more than once in one declaration");
+      }
       else
       {
         mods |= declmod;
+        if(p_out_tokens)
+        {
+          (*p_out_tokens)[to_utype(declmod)] = tok;
+        }
       }
       advance();
     }
@@ -278,20 +289,53 @@ namespace ok
     return parse_declaration_modifier(p_tok) != ast::declaration_modifier::dm_none;
   }
 
-  ast::binding_modifier parser::parse_binding_modifiers()
+  bool parser::validate_declaration_modifiers(ast::declaration_modifier p_mods,
+                                              ast::declaration_modifier p_against,
+                                              const std::unordered_map<uint8_t, token>& p_toks)
+  {
+    if((p_mods & ~p_against) != ast::declaration_modifier::dm_none)
+    {
+      for(auto it : p_toks)
+      {
+        auto mod = static_cast<ast::declaration_modifier>(it.first);
+        if(!is_in_group(mod, p_against) || mod != ast::declaration_modifier::dm_none)
+        {
+          const auto& tok = it.second;
+          parse_error(error::code::illegal_declaration_modifier, tok.line, tok.offset, tok.raw_literal);
+        }
+      }
+      return false;
+    }
+    return true;
+  }
+
+  ast::binding_modifier parser::parse_binding_modifiers(std::unordered_map<uint8_t, token>* p_out_tokens)
   {
     ast::binding_modifier mods = ast::binding_modifier::bm_none;
 
     while(current_token().type != token_type::tok_eof)
     {
+      const auto tok = current_token();
       const auto bindmod = parse_binding_modifier(current_token().type);
       if(bindmod == ast::binding_modifier::bm_none)
       {
         goto OUT;
       }
+      else if(is_in_group(bindmod, mods))
+      {
+        parse_error(error::code::illegal_binding_modifier,
+                    tok.line,
+                    tok.offset,
+                    tok.raw_literal,
+                    "binding modifier cant appear more than once in one declaration");
+      }
       else
       {
         mods |= bindmod;
+        if(p_out_tokens)
+        {
+          (*p_out_tokens)[to_utype(bindmod)] = tok;
+        }
       }
       advance();
     }
@@ -315,6 +359,26 @@ namespace ok
   bool parser::is_binding_modifier(token_type p_tok) const
   {
     return parse_binding_modifier(p_tok) != ast::binding_modifier::bm_none;
+  }
+
+  bool parser::validate_binding_modifiers(ast::binding_modifier p_mods,
+                                          ast::binding_modifier p_against,
+                                          const std::unordered_map<uint8_t, token>& p_toks)
+  {
+    if((p_mods & ~p_against) != ast::binding_modifier::bm_none)
+    {
+      for(auto it : p_toks)
+      {
+        auto mod = static_cast<ast::binding_modifier>(it.first);
+        if(!is_in_group(mod, p_against) || mod != ast::binding_modifier::bm_none)
+        {
+          const auto& tok = it.second;
+          parse_error(error::code::illegal_binding_modifier, tok.line, tok.offset, tok.raw_literal);
+        }
+      }
+      return false;
+    }
+    return true;
   }
 
   std::unique_ptr<ast::statement> parser::parse_statement()
@@ -354,8 +418,15 @@ namespace ok
     auto expr = parse_expression();
     auto expr_stmt = std::make_unique<ast::expression_statement>(trigger_tok, std::move(expr));
     if(lookahead_token().type != token_type::tok_semicolon)
-      parse_error(error::code::expected_token, "expected ';', after: {}", expr_stmt->token_literal());
-    // munch_extra_semicolons();
+    {
+      auto tok = current_token();
+      parse_error(error::code::expected_token,
+                  tok.line,
+                  tok.offset,
+                  tok.raw_literal,
+                  "expected ';', after: {}",
+                  tok.raw_literal);
+    }
 
     advance();
     return expr_stmt;
@@ -367,8 +438,15 @@ namespace ok
     advance();
     auto expr = parse_expression();
     if(lookahead_token().type != token_type::tok_semicolon)
-      parse_error(error::code::expected_token, "expected ';', after: {}", expr->token_literal());
-    // munch_extra_semicolons();
+    {
+      auto tok = current_token();
+      parse_error(error::code::expected_token,
+                  tok.line,
+                  tok.offset,
+                  tok.raw_literal,
+                  "expected ';', after: {}",
+                  tok.raw_literal);
+    }
 
     advance();
 
@@ -379,7 +457,15 @@ namespace ok
   {
     auto cf_tok = current_token();
     if(lookahead_token().type != token_type::tok_semicolon)
-      parse_error(error::code::expected_token, "expected ';', after: {}", cf_tok.raw_literal);
+    {
+      auto tok = current_token();
+      parse_error(error::code::expected_token,
+                  tok.line,
+                  tok.offset,
+                  tok.raw_literal,
+                  "expected ';', after: {}",
+                  tok.raw_literal);
+    }
     advance();
     return std::make_unique<ast::control_flow_statement>(cf_tok);
   }
@@ -394,7 +480,15 @@ namespace ok
       expr = parse_expression();
     }
     if(lookahead_token().type != token_type::tok_semicolon)
-      parse_error(error::code::expected_token, "expected ';', after return statement");
+    {
+      auto tok = current_token();
+      parse_error(error::code::expected_token,
+                  tok.line,
+                  tok.offset,
+                  tok.raw_literal,
+                  "expected ';', after: {}",
+                  tok.raw_literal);
+    }
     advance();
     return std::make_unique<ast::return_statement>(ret_tok, std::move(expr));
   }
@@ -409,9 +503,17 @@ namespace ok
       auto decl = parse_declaration();
       statements.push_back(std::move(decl));
     }
+    if(lookahead_token().type != token_type::tok_right_brace)
+    {
+      auto tok = current_token();
+      parse_error(error::code::expected_token,
+                  tok.line,
+                  tok.offset,
+                  tok.raw_literal,
+                  "expected '}}', after: {}",
+                  tok.raw_literal);
+    }
     advance();
-    if(current_token().type != token_type::tok_right_brace)
-      parse_error(error::code::expected_token, "expected '}}', after {}", statements.back()->token_literal());
     if(lookahead_token().type == token_type::tok_semicolon)
       advance(); // skip semicolon if present
     return std::make_unique<ast::block_statement>(trigger_tok, std::move(statements));
@@ -424,21 +526,20 @@ namespace ok
     auto expr = parse_expression();
     if(!expr)
     {
-      parse_error(error::code::invalid_expression, "expected expression after 'if'");
-      return nullptr;
+      parse_error(error::code::expected_expression, if_token.line, if_token.offset, if_token.raw_literal);
     }
     advance();
     if(current_token().type != token_type::tok_arrow)
     {
-      parse_error(error::code::expected_token, "expected '->' after expression: {}", expr->to_string());
-      return nullptr;
+      auto tok = current_token();
+      parse_error(error::code::expected_expression, tok.line, tok.offset, tok.raw_literal);
     }
+    auto arrow_tok = current_token();
     advance(); // skip '->'
     auto cons = parse_statement();
     if(!cons)
     {
-      parse_error(error::code::expected_statement, "expected statement after '{}'", "->");
-      return nullptr;
+      parse_error(error::code::expected_statement, arrow_tok.line, arrow_tok.offset, arrow_tok.raw_literal);
     }
     std::unique_ptr<ast::statement> alt = nullptr;
     auto lat = lookahead_token().type;
@@ -448,11 +549,11 @@ namespace ok
       advance();
       if(current_token().type == token_type::tok_arrow)
         advance();
+      auto tok = current_token();
       alt = parse_statement();
       if(alt == nullptr)
       {
-        parse_error(error::code::expected_statement, "expected statement after 'else'");
-        return nullptr;
+        parse_error(error::code::expected_statement, tok.line, tok.offset, tok.raw_literal);
       }
     }
     return std::make_unique<ast::if_statement>(if_token, std::move(expr), std::move(cons), std::move(alt));
@@ -465,21 +566,20 @@ namespace ok
     auto expr = parse_expression();
     if(!expr)
     {
-      parse_error(error::code::invalid_expression, "expected expression after 'while'");
-      return nullptr;
+      parse_error(error::code::expected_expression, while_token.line, while_token.offset, while_token.raw_literal);
     }
     advance();
     if(current_token().type != token_type::tok_arrow)
     {
-      parse_error(error::code::expected_token, "expected '->' after expression: {}", expr->to_string());
-      return nullptr;
+      auto tok = current_token();
+      parse_error(error::code::expected_token, tok.line, tok.offset, tok.raw_literal, "expected '->'");
     }
     advance(); // skip '->'
     auto body = parse_statement();
     if(!body)
     {
-      parse_error(error::code::expected_statement, "expected statement after '{}'", "->");
-      return nullptr;
+      auto tok = current_token();
+      parse_error(error::code::expected_statement, tok.line, tok.offset, tok.raw_literal);
     }
     return std::make_unique<ast::while_statement>(while_token, std::move(expr), std::move(body));
   }
@@ -498,17 +598,24 @@ namespace ok
     }
     else if(is_declaration_modifier(current_token().type))
     {
-      // for better error messages!
       const auto mods = parse_declaration_modifiers();
+      auto tok = current_token();
       if(lookahead_token().type != token_type::tok_let)
       {
-        parse_error(error::code::expected_token, "expected 'let' after declaration modifiers in for initializer");
+        parse_error(error::code::expected_token,
+                    tok.line,
+                    tok.offset,
+                    tok.raw_literal,
+                    "expected 'let' after declaration modifiers in for initializer");
       }
-      advance();
       {
         parse_error(error::code::illegal_declaration_modifier,
+                    tok.line,
+                    tok.offset,
+                    tok.raw_literal,
                     "illegal usage of declaration modifiers in for loop initializer");
       }
+      advance();
       init = parse_let_declaration(mods); // checks semicolon
     }
     else if(current_token().type == token_type::tok_let)
@@ -525,15 +632,19 @@ namespace ok
       cond = parse_expression();
       if(cond == nullptr)
       {
-        parse_error(error::code::expected_expression, "expected expression as 'for' condition");
-        return nullptr;
+        auto tok = current_token();
+        parse_error(error::code::expected_expression,
+                    tok.line,
+                    tok.offset,
+                    tok.raw_literal,
+                    "expected expression as 'for' condition");
       }
       advance();
     }
     if(current_token().type != token_type::tok_semicolon)
     {
-      parse_error(error::code::expected_token, "expected ';' after condition");
-      return nullptr;
+      auto tok = current_token();
+      parse_error(error::code::expected_token, tok.line, tok.offset, tok.raw_literal, "expected ';' after condition");
     }
     advance();
     if(current_token().type != token_type::tok_arrow) // there must be an increment
@@ -541,22 +652,28 @@ namespace ok
       inc = parse_expression();
       if(inc == nullptr)
       {
-        parse_error(error::code::expected_expression, "expected expression as 'for' increment");
-        return nullptr;
+        auto tok = current_token();
+        parse_error(error::code::expected_expression,
+                    tok.line,
+                    tok.offset,
+                    tok.raw_literal,
+                    "expected expression as 'for' increment");
       }
       advance();
     }
     if(current_token().type != token_type::tok_arrow)
     {
-      parse_error(error::code::expected_token, "expected '->' after 'for' clauses");
-      return nullptr;
+      auto tok = current_token();
+      parse_error(
+          error::code::expected_token, tok.line, tok.offset, tok.raw_literal, "expected '->' after 'for' clauses");
     }
     advance();
     body = parse_statement();
     if(body == nullptr)
     {
-      parse_error(error::code::expected_statement, "expected statement as 'for' body");
-      return nullptr;
+      auto tok = current_token();
+      parse_error(
+          error::code::expected_statement, tok.line, tok.offset, tok.raw_literal, "expected statement as 'for' body");
     }
     return std::make_unique<ast::for_statement>(
         for_token, std::move(body), std::move(init), std::move(cond), std::move(inc));
@@ -566,50 +683,61 @@ namespace ok
   {
     auto let_tok = current_token();
     advance();
-    const auto bindmods = parse_binding_modifiers();
-    if((bindmods & ~let_bindmods) != ast::binding_modifier::bm_none)
-    {
-      parse_error(error::code::illegal_binding_modifier, "illegal binding modifiers in let declaration binding");
-    }
+    std::unordered_map<uint8_t, token> mods_toks;
+    const auto bindmods = parse_binding_modifiers(&mods_toks);
+    validate_binding_modifiers(bindmods, let_bindmods, mods_toks);
 
     std::unique_ptr<ast::binding> binding;
     std::unique_ptr<ast::expression> value = std::make_unique<ast::null_expression>(let_tok);
 
     auto expr = parse_expression();
-    if(expr->get_type() == ast::node_type::nt_assign_expr)
+    if(expr)
     {
-      auto assign = std::unique_ptr<ast::assign_expression>((ast::assign_expression*)expr.release());
-      auto& left = assign->get_left();
-      value = std::move(assign->get_right());
-      if(left->get_type() != ast::node_type::nt_identifier_expr)
+      if(expr->get_type() == ast::node_type::nt_assign_expr)
       {
-        parse_error(error::code::expected_identifier, "expected identifier in let declaration");
+        auto assign = (ast::assign_expression*)expr.get();
+        auto& left = assign->get_left();
+        value = std::move(assign->get_right());
+        if(left->get_type() != ast::node_type::nt_identifier_expr)
+        {
+          goto EXPECTED_IDENT;
+        }
+        auto left_ident = (ast::identifier_expression*)left.get();
+        binding = std::make_unique<ast::binding>(left_ident->get_token(), left_ident->get_value(), bindmods);
       }
-      auto left_ident = (ast::identifier_expression*)left.release();
-      binding = std::make_unique<ast::binding>(left_ident->get_token(), left_ident->get_value(), bindmods);
-    }
-    else if(expr->get_type() == ast::node_type::nt_identifier_expr)
-    {
-      auto ident = (ast::identifier_expression*)expr.release();
-      binding = std::make_unique<ast::binding>(ident->get_token(), ident->get_value(), bindmods);
+      else if(expr->get_type() == ast::node_type::nt_identifier_expr)
+      {
+        auto ident = (ast::identifier_expression*)expr.get();
+        binding = std::make_unique<ast::binding>(ident->get_token(), ident->get_value(), bindmods);
+      }
+      else
+      {
+        goto EXPECTED_IDENT;
+      }
     }
     else
-      parse_error(error::code::expected_identifier, "expected identifier in let declaration");
+    {
+    EXPECTED_IDENT:
+      parse_error(error::code::expected_identifier,
+                  let_tok.line,
+                  let_tok.offset,
+                  let_tok.raw_literal,
+                  "expected identifier in let declaration");
+    }
 
     advance();
     if(current_token().type != token_type::tok_semicolon)
-      parse_error(error::code::expected_token, "expected ';', after: let declaration");
+    {
+      auto tok = current_token();
+      parse_error(
+          error::code::expected_token, tok.line, tok.offset, tok.raw_literal, "expected ';', after: let declaration");
+    }
 
     return std::make_unique<ast::let_declaration>(let_tok, std::move(binding), std::move(value), p_declmods);
-  } // glob let inst_1 = cls(); glob let inst_2 = cls(); inst_1.value = 69; inst_2.value = 1;
+  }
 
   std::unique_ptr<ast::function_declaration> parser::parse_function_declaration(ast::declaration_modifier p_mods)
   {
-    // fu do_stuff() -> {  } // optional arrow when body is block
-    // fu do_stuff() {  } // notmal stuff
-    // fu do_stuff() -> print("doing stuff"); // one statement requires arrow
-    //// let f = fu () -> {  } // TODO, Update: no cant do this because it breaks the semantics and is not expected to
-    //// work when the functions are statements rather than expressions
     auto fu_token = current_token();
     advance();
     return parse_function_declaration_impl(fu_token, p_mods, function_bindmods, "function");
@@ -624,7 +752,8 @@ namespace ok
                                           unique_overridable_operator_type* p_out_op_type)
   {
     std::unique_ptr<ast::binding> binding;
-    const auto mods = parse_binding_modifiers();
+    std::unordered_map<uint8_t, token> mods_toks;
+    const auto mods = parse_binding_modifiers(&mods_toks);
     token tok;
     if(current_token().type == token_type::tok_identifier)
     {
@@ -655,7 +784,11 @@ namespace ok
 
           if(lookahead_token().type != expect)
           {
+            auto tok = lookahead_token();
             parse_error(error::code::expected_token,
+                        tok.line,
+                        tok.offset,
+                        tok.raw_literal,
                         "expected '{}', in operator overload, in {} declaration",
                         token_type_to_string(expect),
                         callit);
@@ -677,35 +810,35 @@ namespace ok
       if(!is_in_group(uoot, p_allowed_overrides))
       {
         parse_error(error::code::illegal_operator_override,
+                    tok.line,
+                    tok.offset,
+                    tok.raw_literal,
                     "illegal operator overload '{}', in {} declaration",
                     tok.raw_literal,
                     callit);
       }
     }
 
-    if((mods & ~p_allowed_binding_mods) != ast::binding_modifier::bm_none)
-    {
-      parse_error(error::code::illegal_binding_modifier, "illegal binding modifiers in {} declaration binding", callit);
-    }
+    validate_binding_modifiers(mods, p_allowed_binding_mods, mods_toks);
     binding = std::make_unique<ast::binding>(tok, tok.raw_literal, mods);
     advance();
 
     // else keep it null, because mods doesnt affect anything, compiler will worn about this situation
     if(current_token().type != token_type::tok_left_paren)
-      parse_error(error::code::expected_token, "expected '(' in {} declaration", callit);
+    {
+      auto tok = current_token();
+      parse_error(
+          error::code::expected_token, tok.line, tok.offset, tok.raw_literal, "expected '(' in {} declaration", callit);
+    }
     advance();
     std::list<std::unique_ptr<ast::binding>> params;
     if(current_token().type != token_type::tok_right_paren)
     {
       while(current_token().type != token_type::tok_right_paren && current_token().type != token_type::tok_eof)
       {
-        const auto mods = parse_binding_modifiers();
-        if((mods & ~function_param_bindmods) != ast::binding_modifier::bm_none)
-        {
-          parse_error(error::code::illegal_binding_modifier,
-                      "illegal binding modifiers in {} parameters declaration binding",
-                      callit);
-        }
+        std::unordered_map<uint8_t, token> mods_toks;
+        const auto mods = parse_binding_modifiers(&mods_toks);
+        validate_binding_modifiers(mods, function_param_bindmods, mods_toks);
         auto tok = current_token();
         advance();
         params.push_back(std::make_unique<ast::binding>(tok, tok.raw_literal, mods));
@@ -715,13 +848,23 @@ namespace ok
         }
         else if(current_token().type != token_type::tok_right_paren)
         {
-          parse_error(parser::error::code::expected_token, "expected ')', after parameters list");
+          auto tok = current_token();
+          parse_error(parser::error::code::expected_token,
+                      tok.line,
+                      tok.offset,
+                      tok.raw_literal,
+                      "expected ')', after parameters list");
           break;
         }
       }
       if(current_token().type != token_type::tok_right_paren) // eof
       {
-        parse_error(parser::error::code::expected_token, "expected ')', after parameters list");
+        auto tok = current_token();
+        parse_error(parser::error::code::expected_token,
+                    tok.line,
+                    tok.offset,
+                    tok.raw_literal,
+                    "expected ')', after parameters list");
       }
       else
       {
@@ -794,7 +937,15 @@ namespace ok
     }
 
     if(current_token().type != token_type::tok_left_brace && !had_arrow)
-      parse_error(error::code::expected_token, "expected '->' in one-liner {} declaration", callit);
+    {
+      auto tok = current_token();
+      parse_error(error::code::expected_token,
+                  tok.line,
+                  tok.offset,
+                  tok.raw_literal,
+                  "expected '->' in one-liner {} declaration",
+                  callit);
+    }
 
     // advance();
 
@@ -810,13 +961,12 @@ namespace ok
     advance();
     if(current_token().type != token_type::tok_identifier)
     {
-      parse_error(error::code::expected_identifier, "expected class name");
+      auto tok = current_token();
+      parse_error(error::code::expected_identifier, tok.line, tok.offset, tok.raw_literal, "expected class name");
     }
-    const auto mods = parse_binding_modifiers();
-    if((mods & ~class_bindmods) != ast::binding_modifier::bm_none)
-    {
-      parse_error(error::code::illegal_binding_modifier, "illegal binding modifiers in class declaration binding");
-    }
+    std::unordered_map<uint8_t, token> mods_toks;
+    const auto mods = parse_binding_modifiers(&mods_toks);
+    validate_binding_modifiers(mods, class_bindmods, mods_toks);
     auto tok = current_token();
     advance();
     auto binding = std::make_unique<ast::binding>(tok, tok.raw_literal, mods);
@@ -827,7 +977,9 @@ namespace ok
     {
       if(lookahead_token().type != token_type::tok_identifier)
       {
-        parse_error(error::code::expected_identifier, "expected superclass name");
+        auto tok = current_token();
+        parse_error(
+            error::code::expected_identifier, tok.line, tok.offset, tok.raw_literal, "expected superclass name");
       }
       advance();
       auto curr = current_token();
@@ -837,23 +989,23 @@ namespace ok
 
     if(current_token().type != token_type::tok_left_brace)
     {
-      parse_error(error::code::expected_token, "expected '{{' before class body");
+      auto tok = current_token();
+      parse_error(
+          error::code::expected_token, tok.line, tok.offset, tok.raw_literal, "expected '{{' before class body");
     }
     advance();
 
     std::list<ast::class_declaration::method_declaration> methods;
     while(current_token().type != token_type::tok_right_brace && current_token().type != token_type::tok_eof)
     {
-      const auto mods = parse_declaration_modifiers();
+      std::unordered_map<uint8_t, token> mods_toks;
+      const auto mods = parse_declaration_modifiers(&mods_toks);
       auto tok = current_token();
       switch(tok.type)
       {
       case token_type::tok_fu:
       {
-        if((mods & ~method_declmods) != ast::declaration_modifier::dm_none)
-        {
-          parse_error(error::code::illegal_declaration_modifier, "illegal modifier in 'method' declaration");
-        }
+        validate_declaration_modifiers(mods, method_declmods, mods_toks);
         auto op = unique_overridable_operator_type::uoot_method;
         advance();
         auto md = parse_function_declaration_impl(
@@ -868,31 +1020,33 @@ namespace ok
       }
       case token_type::tok_let:
       {
-        if((mods & ~field_declmods) != ast::declaration_modifier::dm_none)
-        {
-          parse_error(error::code::illegal_declaration_modifier, "illegal modifier in 'field' declaration");
-        }
+        validate_declaration_modifiers(mods, field_declmods, mods_toks);
         // TODO(Qais):
         break;
       }
       case token_type::tok_operator:
       {
-        if((mods & ~method_declmods) != ast::declaration_modifier::dm_none)
-        {
-          parse_error(error::code::illegal_declaration_modifier, "illegal modifier in 'method' declaration");
-        }
+        validate_declaration_modifiers(mods, method_declmods, mods_toks);
         methods.push_back(parse_operator_overload(mods));
         break;
       }
       default:
-        parse_error(error::code::unexpected_token, "unexpected token: '{}' in class body", tok.raw_literal);
+      {
+        parse_error(error::code::unexpected_token,
+                    tok.line,
+                    tok.offset,
+                    tok.raw_literal,
+                    "unexpected: '{}' in class body",
+                    tok.raw_literal);
         goto OUT;
+      }
       }
     }
   OUT:
     if(current_token().type != token_type::tok_right_brace)
     {
-      parse_error(error::code::expected_token, "expected '}}' after class body");
+      auto tok = current_token();
+      parse_error(error::code::expected_token, tok.line, tok.offset, tok.raw_literal, "expected '}}' after class body");
     }
     // advance();
 
@@ -931,7 +1085,11 @@ namespace ok
     if(lookahead_token().type == p_type)
       return advance();
 
+    auto tok = current_token();
     parse_error(error::code::expected_token,
+                tok.line,
+                tok.offset,
+                tok.raw_literal,
                 "expected token of type: {}, at: {}",
                 token_type_to_string(p_type),
                 lookahead_token().offset);
@@ -961,11 +1119,6 @@ namespace ok
     m_paranoia = false;
     while(lookahead_token().type != token_type::tok_eof)
     {
-      if(current_token().type == token_type::tok_semicolon)
-      {
-        munch_extra_semicolons();
-        return;
-      }
       switch(current_token().type)
       {
       case token_type::tok_class:
@@ -976,8 +1129,13 @@ namespace ok
       case token_type::tok_while:
       case token_type::tok_print:
       case token_type::tok_return:
+      case token_type::tok_semicolon:
         return;
       default:;
+        if(is_declaration_modifier(current_token().type))
+        {
+          return;
+        }
       }
       advance();
     }
@@ -988,18 +1146,36 @@ namespace ok
     return m_errors;
   }
 
-  void parser::munch_extra_semicolons()
+  std::string parser::get_line(size_t p_line)
   {
-    // while(lookahead_token().type == token_type::tok_semicolon)
-    //{
-    //   advance();
-    // }
+    std::stringstream ss;
+    auto line = 0;
+    for(auto ch : m_file_content)
+    {
+      if(line == p_line)
+      {
+        ss << ch;
+      }
+      if(ch == '\n')
+      {
+        line++;
+      }
+    }
+    return ss.str();
   }
 
   void parser::errors::show() const
   {
     for(const auto& err : errs)
-      ERRORLN("parse error: {}:{}", error::code_to_string(err.error_code), err.message);
+    {
+      ERRORLN("{}:{}:{}: parse error: [{}]: {}",
+              err.file_name,
+              err.line,
+              err.offset,
+              error::code_to_string(err.error_code),
+              err.message);
+      ERRORLN("{}", err.line_content);
+    }
   }
 
 } // namespace ok

@@ -1,0 +1,8 @@
+fu x(_) -> print _;
+
+x('ok'); // expect: ok
+
+class OK {
+  fu x() -> print 'ok';
+}
+OK().x(); // expect: ok

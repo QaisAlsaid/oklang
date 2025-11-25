@@ -13,7 +13,7 @@ namespace ok
       return {};
     m_start_position = &p_input[0];
     m_current_position = m_start_position;
-    m_current_line = 1;
+    m_current_line = 0;
     m_current_offset = 0;
     auto verr = utf8::validate(p_input);
     token_array arr;

@@ -110,6 +110,7 @@ namespace ok
     if(interned != nullptr)
       return interned;
     return interned_strings.set({chars, length});
+    delete chars; // TODO(Qais): fix
   }
 
   template <>
