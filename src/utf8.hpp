@@ -104,55 +104,6 @@ namespace ok::utf8
     }
     return {};
   }
-
-  /*
-  inline std::expected<void, validation_error> validate(const std::string_view str)
-  {
-    const uint8_t* p = (uint8_t*)str.data();
-    const uint8_t* end = p + str.size();
-
-    while(p < end)
-    {
-      if(*p < 0x80) // ascii
-      {
-        p++;
-      }
-      else if((*p & 0xe0) == 0xc0) // 2 bytes
-      {
-        if(p + 1 >= end || (p[1] & 0xc0) != 0x80 || (*p & 0xfe) == 0xc0)
-          return std::unexpected{validation_error{validation_error::leading::_2, p}};
-        p += 2;
-      }
-      else if((*p & 0xf0) == 0xe0) // 3 bytes
-      {
-        if(p + 2 >= end || (p[1] & 0xc0) != 0x80 || (p[2] & 0xc0) != 0x80)
-          return std::unexpected{validation_error{validation_error::leading::_3, p}};
-        uint8_t lead = *p;
-        if(lead == 0xe0 && (p[1] & 0xe0) == 0x80)
-          return std::unexpected{validation_error{validation_error::leading::_3, p}};
-        if(lead == 0xed && (p[1] & 0xe0) == 0xa0)
-          return std::unexpected{validation_error{validation_error::leading::_3, p}};
-        p += 3;
-      }
-      else if((*p & 0xf8) == 0xf0) // 4 bytes
-      {
-        if(p + 3 >= end || (p[1] & 0xc0) != 0x80 || (p[2] & 0xc0) != 0x80 || (p[3] & 0xc0) != 0x80)
-          return std::unexpected{validation_error{validation_error::leading::_4, p}};
-        uint8_t lead = *p;
-        if(lead == 0xf0 && (p[1] & 0xf0) == 0x80)
-          return std::unexpected{validation_error{validation_error::leading::_4, p}};
-        if(lead > 0xf4 || (lead == 0xf4 && p[1] > 0x8f))
-          return std::unexpected{validation_error{validation_error::leading::_4, p}};
-        p += 4;
-      }
-      else
-      {
-        return std::unexpected{validation_error{validation_error::leading::invalid, p}};
-      }
-    }
-    return {};
-  }
-    */
 } // namespace ok::utf8
 
 #endif // OK_UTF8_HPP

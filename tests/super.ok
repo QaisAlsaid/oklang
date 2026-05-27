@@ -1,0 +1,16 @@
+class Base {
+  fu method() {
+    this.x = 5;
+  }
+}
+
+class Derived inherits Base {
+  fu method() {
+    super.method();
+    print this.x; // expect: 5
+  }
+}
+
+
+let d = Derived();
+d.method();

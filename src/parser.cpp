@@ -119,14 +119,6 @@ namespace ok
     advance();
   }
 
-  // TODO(Qais): you pice of shit of a developer, check where this function returns,
-  // and by that i mean the current token state, and does it guarantee it on all execution paths?
-  // ok update, i might've gone too harsh on myself, while its clear(from the behavior of parse_expression_statement)
-  // that it skips all tokens that are related to the current expression, but still is that a guarantee or just an
-  // assumption?
-  // TODO(Qais): i think this off by one problem is a common problem in parsers. so if you really want to design this
-  // in an actually bullet proof/clean way, you might want to introduce something like advancement policy and state
-  // synchronizer or santi checker or something like that idk tbh
   std::unique_ptr<ast::expression> parser::parse_expression(int p_precedence)
   {
     auto tok = current_token();
@@ -134,7 +126,6 @@ namespace ok
     if(s_prefix_parse_map.end() == prefix_it)
     {
       parse_error(error::code::no_prefix_parse_function, tok.line, tok.offset, tok.raw_literal);
-      return nullptr;
     }
 
     auto left = prefix_it->second->parse(*this, tok);
@@ -400,6 +391,17 @@ namespace ok
       return parse_control_flow_statement();
     case token_type::tok_return:
       return parse_return_statement();
+    case token_type::tok_throw:
+      return parse_throw_statement();
+    case token_type::tok_try:
+      return parse_try_catch_statement();
+    case token_type::tok_catch:
+    case token_type::tok_finalize:
+    {
+      const auto tok = current_token();
+      parse_error(error::code::unexpected_token, tok.line, tok.offset, tok.raw_literal);
+      return nullptr;
+    }
     case token_type::tok_semicolon:
     {
       const auto semicolon = current_token();
@@ -491,6 +493,29 @@ namespace ok
     }
     advance();
     return std::make_unique<ast::return_statement>(ret_tok, std::move(expr));
+  }
+
+  std::unique_ptr<ast::throw_statement> parser::parse_throw_statement()
+  {
+    auto throw_tok = current_token();
+    std::unique_ptr<ast::expression> expr = nullptr;
+    if(lookahead_token().type != token_type::tok_semicolon)
+    {
+      advance();
+      expr = parse_expression();
+    }
+    if(lookahead_token().type != token_type::tok_semicolon)
+    {
+      auto tok = current_token();
+      parse_error(error::code::expected_token,
+                  tok.line,
+                  tok.offset,
+                  tok.raw_literal,
+                  "expected ';', after: {}",
+                  tok.raw_literal);
+    }
+    advance();
+    return std::make_unique<ast::throw_statement>(throw_tok, std::move(expr));
   }
 
   std::unique_ptr<ast::block_statement> parser::parse_block_statement()
@@ -677,6 +702,130 @@ namespace ok
     }
     return std::make_unique<ast::for_statement>(
         for_token, std::move(body), std::move(init), std::move(cond), std::move(inc));
+  }
+
+  std::unique_ptr<ast::try_catch_statement> parser::parse_try_catch_statement()
+  {
+    auto try_tok = current_token();
+    auto _try = parse_try_statement();
+    advance();
+    auto catches = parse_catch_statements();
+    std::unique_ptr<ast::finalize_statement> finalize;
+    validate_catches(catches);
+    if(current_token().type == token_type::tok_finalize)
+    {
+      finalize = parse_finalize_statement();
+      advance();
+    }
+    return std::make_unique<ast::try_catch_statement>(
+        try_tok, std::move(_try), std::move(catches), std::move(finalize));
+  }
+
+  std::unique_ptr<ast::try_statement> parser::parse_try_statement()
+  {
+    auto try_tok = current_token();
+    advance();
+    if(try_tok.type != token_type::tok_try)
+    {
+      parse_error(error::code::expected_token, try_tok.line, try_tok.offset, try_tok.raw_literal);
+    }
+    if(current_token().type == token_type::tok_arrow)
+    {
+      advance();
+    }
+    auto body = parse_statement();
+    return std::make_unique<ast::try_statement>(try_tok, std::move(body));
+  }
+
+  std::list<std::unique_ptr<ast::catch_statement>> parser::parse_catch_statements()
+  {
+    std::list<std::unique_ptr<ast::catch_statement>> catches;
+    while(current_token().type == token_type::tok_catch)
+    {
+      // catch -> {}
+      // catch err as e {}
+      // catch err as e -> {}
+      // catch e {}
+      // carc e -> {}
+      // catch {}
+      auto catch_tok = current_token();
+      std::unique_ptr<ast::expression> type = nullptr;
+      std::unique_ptr<ast::binding> binding = nullptr;
+      advance();
+      bool has_init = true;
+
+      if(current_token().type == token_type::tok_arrow)
+      {
+        advance();
+        has_init = false;
+      }
+      if(current_token().type == token_type::tok_left_brace)
+      {
+        has_init = false;
+      }
+
+      if(has_init)
+      {
+        auto expr = parse_expression();
+        if(expr->get_type() == ast::node_type::nt_infix_binary_expr)
+        {
+          auto infix = (ast::infix_binary_expression*)expr.get();
+          if(infix->get_operator() != operator_type::op_as)
+          {
+            parse_error(error::code::expected_identifier, expr->get_line(), expr->get_offset(), expr->token_literal());
+          }
+          const auto& right = infix->get_right();
+          if(right->get_type() != ast::node_type::nt_identifier_expr)
+          {
+            parse_error(
+                error::code::expected_identifier, right->get_line(), right->get_offset(), right->token_literal());
+          }
+          auto ident = (ast::identifier_expression*)right.get();
+          type = std::move(infix->get_left());
+          binding = std::make_unique<ast::binding>(ident->get_token(), ident->token_literal());
+        }
+        else if(expr->get_type() == ast::node_type::nt_identifier_expr)
+        {
+          auto ident = (ast::identifier_expression*)expr.get();
+          binding = std::make_unique<ast::binding>(ident->get_token(), ident->token_literal());
+        }
+        else
+        {
+          parse_error(error::code::expected_identifier, expr->get_line(), expr->get_offset(), expr->token_literal());
+        }
+        advance();
+      }
+      auto body = parse_statement();
+      if(lookahead_token().type ==
+         token_type::tok_catch) // not end of catches, advance cuz we gonna use it, otherwise dont advance cuz we dont
+                                // wanna consume tokens that arent ours!
+      {
+        advance();
+      }
+      catches.push_back(
+          std::make_unique<ast::catch_statement>(catch_tok, std::move(body), std::move(type), std::move(binding)));
+    }
+    return catches;
+  }
+
+  std::unique_ptr<ast::finalize_statement> parser::parse_finalize_statement()
+  {
+    auto finalize_tok = current_token();
+    advance();
+    if(finalize_tok.type != token_type::tok_finalize)
+    {
+      parse_error(error::code::expected_token, finalize_tok.line, finalize_tok.offset, finalize_tok.raw_literal);
+    }
+    if(current_token().type == token_type::tok_arrow)
+    {
+      advance();
+    }
+    auto body = parse_statement();
+    return std::make_unique<ast::finalize_statement>(finalize_tok, std::move(body));
+  }
+
+  void parser::validate_catches(const std::list<std::unique_ptr<ast::catch_statement>>& p_catches)
+  {
   }
 
   std::unique_ptr<ast::let_declaration> parser::parse_let_declaration(ast::declaration_modifier p_declmods)

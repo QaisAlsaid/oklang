@@ -59,9 +59,11 @@ namespace ok::ast
     nt_for_stmt,
     nt_control_flow_stmt,
     nt_return_stmt,
+    nt_throw_stmt,
     nt_try_stmt,
     nt_catch_stmt,
     nt_finalize_stmt,
+    nt_try_catch_stmt,
     // declarations
     nt_let_decl,
     nt_function_decl,
@@ -279,7 +281,9 @@ namespace ok::ast
 
     std::string to_string() override
     {
-      return binding_modifiers_to_string(m_modifiers);
+      std::stringstream ss;
+      ss << binding_modifiers_to_string(m_modifiers) << " " << m_name;
+      return ss.str();
     }
 
     binding_modifier get_modifiers() const
@@ -530,12 +534,12 @@ namespace ok::ast
       return ss.str();
     }
 
-    const std::unique_ptr<expression>& get_left() const
+    std::unique_ptr<expression>& get_left()
     {
       return m_left;
     }
 
-    const std::unique_ptr<expression>& get_right() const
+    std::unique_ptr<expression>& get_right()
     {
       return m_right;
     }
@@ -714,26 +718,6 @@ namespace ok::ast
 
   private:
     std::unique_ptr<expression> m_expression;
-    std::unique_ptr<expression> m_left;
-    std::unique_ptr<expression> m_right;
-  };
-
-  class operator_expression : public expression
-  {
-  public:
-    operator_expression(token p_tok, std::unique_ptr<expression> p_left, std::unique_ptr<expression> p_right)
-        : expression(node_type::nt_operator_expr, p_tok), m_left(std::move(p_left)), m_right(std::move(p_right))
-    {
-    }
-
-    std::string to_string() override
-    {
-      std::stringstream ss;
-      ss << m_left->to_string() << m_token.raw_literal << m_right->to_string();
-      return ss.str();
-    }
-
-  private:
     std::unique_ptr<expression> m_left;
     std::unique_ptr<expression> m_right;
   };
@@ -1210,7 +1194,31 @@ namespace ok::ast
     std::string to_string() override
     {
       std::stringstream ss;
-      ss << m_token.raw_literal << "  " << (m_expression == nullptr ? m_expression->to_string() : "null");
+      ss << m_token.raw_literal << "  " << (m_expression != nullptr ? m_expression->to_string() : "null");
+      return ss.str();
+    }
+
+    const std::unique_ptr<expression>& get_expression() const
+    {
+      return m_expression;
+    }
+
+  private:
+    std::unique_ptr<expression> m_expression;
+  };
+
+  class throw_statement : public statement
+  {
+  public:
+    throw_statement(token p_tok, std::unique_ptr<expression> p_expr = nullptr)
+        : statement(node_type::nt_throw_stmt, p_tok), m_expression(std::move(p_expr))
+    {
+    }
+
+    std::string to_string() override
+    {
+      std::stringstream ss;
+      ss << m_token.raw_literal << "  " << (m_expression != nullptr ? m_expression->to_string() : "null");
       return ss.str();
     }
 
@@ -1250,15 +1258,20 @@ namespace ok::ast
   class catch_statement : public statement
   {
   public:
-    catch_statement(token p_tok, std::unique_ptr<binding> p_binding, std::unique_ptr<statement> p_body)
-        : statement(node_type::nt_catch_stmt, p_tok), m_binding(std::move(p_binding)), m_body(std::move(p_body))
+    catch_statement(token p_tok,
+                    std::unique_ptr<statement> p_body,
+                    std::unique_ptr<expression> p_type = nullptr,
+                    std::unique_ptr<binding> p_binding = nullptr)
+        : statement(node_type::nt_catch_stmt, p_tok), m_body(std::move(p_body)), m_type(std::move(p_type)),
+          m_binding(std::move(p_binding))
     {
     }
 
     std::string to_string() override
     {
       std::stringstream ss;
-      ss << "catch " << m_binding->to_string() << m_body->to_string();
+      ss << "catch " << (m_type ? m_type->to_string() : "") << (m_binding ? m_binding->to_string() : "")
+         << m_body->to_string();
       return ss.str();
     }
 
@@ -1267,14 +1280,20 @@ namespace ok::ast
       return m_binding;
     }
 
+    const std::unique_ptr<expression>& get_type() const
+    {
+      return m_type;
+    }
+
     const std::unique_ptr<statement>& get_body() const
     {
       return m_body;
     }
 
   private:
-    std::unique_ptr<binding> m_binding;
     std::unique_ptr<statement> m_body;
+    std::unique_ptr<expression> m_type;
+    std::unique_ptr<binding> m_binding;
   };
 
   class finalize_statement : public statement
@@ -1299,6 +1318,54 @@ namespace ok::ast
 
   private:
     std::unique_ptr<statement> m_body;
+  };
+
+  class try_catch_statement : public statement
+  {
+  public:
+    try_catch_statement(token p_tok,
+                        std::unique_ptr<try_statement> p_try,
+                        std::list<std::unique_ptr<catch_statement>> p_catches,
+                        std::unique_ptr<finalize_statement> p_finalize = nullptr)
+        : statement(node_type::nt_try_catch_stmt, p_tok), m_try(std::move(p_try)), m_catches(std::move(p_catches)),
+          m_finalize(std::move(p_finalize))
+    {
+    }
+
+    std::string to_string() override
+    {
+      std::stringstream ss;
+      ss << m_try->to_string();
+      for(const auto& c : m_catches)
+      {
+        ss << c->to_string();
+      }
+      if(m_finalize)
+      {
+        ss << m_finalize->to_string();
+      }
+      return ss.str();
+    }
+
+    const std::unique_ptr<try_statement>& get_try() const
+    {
+      return m_try;
+    }
+
+    const std::list<std::unique_ptr<catch_statement>>& get_catches() const
+    {
+      return m_catches;
+    }
+
+    const std::unique_ptr<finalize_statement>& get_finalize() const
+    {
+      return m_finalize;
+    }
+
+  private:
+    std::unique_ptr<try_statement> m_try;
+    std::list<std::unique_ptr<catch_statement>> m_catches;
+    std::unique_ptr<finalize_statement> m_finalize;
   };
 
   /**

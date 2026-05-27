@@ -36,6 +36,51 @@ namespace ok
 #endif
   }
 
+  native_return_type object::is(vm* p_vm, value_t p_this, uint8_t p_argc)
+  {
+    ASSERT(p_argc == 1);
+    const auto this_ = p_vm->get_receiver();
+    const auto this_object = OK_VALUE_AS_OBJECT(this_);
+    const auto rhs = p_vm->get_arg(0);
+
+    if(!OK_IS_VALUE_CLASS_OBJECT(rhs))
+    {
+      p_vm->push_exception("right operand of 'is' operator must be a class");
+      return {.code = native_return_code::nrc_error};
+    }
+
+    p_vm->return_value(value_t{ok::is_instance(this_, rhs)});
+    return {.code = native_return_code::nrc_return};
+  }
+
+  native_return_type object::equal(vm* p_vm, value_t p_this, uint8_t p_argc)
+  {
+    ASSERT(p_argc == 1);
+    const auto this_ = p_vm->get_receiver();
+    const auto other = p_vm->get_arg(0);
+    p_vm->return_value(value_t{this_.as.pointer == other.as.pointer});
+    return {.code = native_return_code::nrc_return};
+  }
+
+  native_return_type object::bang_equal(vm* p_vm, value_t p_this, uint8_t p_argc)
+  {
+    ASSERT(p_argc == 1);
+    const auto this_ = p_vm->get_receiver();
+    const auto other = p_vm->get_arg(0);
+    p_vm->return_value(value_t{this_.as.pointer != other.as.pointer});
+    return {.code = native_return_code::nrc_return};
+  }
+
+  native_return_type object::print(vm* p_vm, value_t p_this, uint8_t p_argc)
+  {
+    ASSERT(p_argc == 0);
+    const auto this_ = p_vm->get_receiver();
+    const auto this_object = OK_VALUE_AS_OBJECT(this_);
+    std::print("object of type: [{}]",
+               std::string_view{this_object->class_->name->chars, this_object->class_->name->length});
+    return {.code = native_return_code::nrc_print_exit};
+  }
+
   string_object::string_object(const std::string_view p_src, class_object* p_string_class, object*& p_objects_list)
       : up(object_type::obj_string, p_string_class, p_objects_list)
   {
@@ -486,6 +531,7 @@ namespace ok
                              object*& p_objects_list)
       : up(p_class_type, p_meta, p_objects_list, false, true)
   {
+    super = p_super;
     name = p_name;
     if(p_super != nullptr)
     {
@@ -510,9 +556,8 @@ namespace ok
       return {.code = native_return_code::nrc_return};
     }
 
-    return {.code = native_return_code::nrc_error,
-            .error{.code = value_error_code::undefined_operation,
-                   .payload{value_t{std::string_view{"invalid '==' on class, rhs is not of class type"}}}}};
+    p_vm->return_value(value_t{false});
+    return {.code = native_return_code::nrc_return};
   }
 
   native_return_type class_object::bang_equal(vm* p_vm, value_t, uint8_t p_argc)
@@ -528,9 +573,8 @@ namespace ok
       return {.code = native_return_code::nrc_return};
     }
 
-    return {.code = native_return_code::nrc_error,
-            .error{.code = value_error_code::undefined_operation,
-                   .payload{value_t{std::string_view{"invalid '!=' on class, rhs is not of class type"}}}}};
+    p_vm->return_value(value_t{false});
+    return {.code = native_return_code::nrc_return};
   }
 
   native_return_type class_object::print(vm* p_vm, value_t, uint8_t p_argc)
@@ -546,7 +590,7 @@ namespace ok
   {
     const auto this_ = p_vm->get_receiver();
     const auto this_class = OK_VALUE_AS_CLASS_OBJECT(this_);
-    const auto instance = new_tobject<instance_object>(this_class->up.get_type(), this_class, p_vm->get_objects_list());
+    const auto instance = new_tobject<instance_object>(object_type::obj_instance, this_class, p_vm->get_objects_list());
 
     const auto ctor = instance->up.class_->specials.operations[method_type::mt_ctor];
     if(!OK_IS_VALUE_NULL(ctor))
@@ -602,6 +646,37 @@ namespace ok
   {
     auto co = new class_object(p_name, p_class_type, p_meta, p_super, p_objects_list);
     return co;
+  }
+
+  template <typename Obj>
+  Obj* class_object::create_meta(string_object* p_name,
+                                 uint32_t p_class_type,
+                                 class_object* p_class_class,
+                                 object*& p_objects_list)
+  {
+    static_assert(false, "type mismatch");
+  }
+
+  template <>
+  object* class_object::create_meta(string_object* p_name,
+                                    uint32_t p_class_type,
+                                    class_object* p_class_class,
+                                    object*& p_objects_list)
+  {
+    auto co = new class_object(p_name, p_class_type, nullptr, p_class_class, p_objects_list);
+
+    return (object*)co;
+  }
+
+  template <>
+  class_object* class_object::create_meta(string_object* p_name,
+                                          uint32_t p_class_type,
+                                          class_object* p_class_class,
+                                          object*& p_objects_list)
+  {
+    // TODO(Qais): real meta + super
+    auto co = new class_object(p_name, p_class_type, nullptr, nullptr, p_objects_list);
+    return (class_object*)co;
   }
 
   instance_object::instance_object(uint32_t p_instance_type, class_object* p_class, object*& p_objects_list)
@@ -704,10 +779,9 @@ namespace ok
       return {.code = native_return_code::nrc_return};
     }
     p_vm->stack_push(value_t{});
-    return {
-        .code = native_return_code::nrc_error,
-        .error{.code = value_error_code::undefined_operation,
-               .payload{value_t{std::format("invalid '==' on bound method, expected 0 arguments got: {}", p_argc)}}}};
+    return {.code = native_return_code::nrc_error,
+            .error{.code = value_error_code::undefined_operation,
+                   .payload{value_t{std::format("invalid '==' on bound method, unexpected type")}}}};
   }
 
   native_return_type bound_method_object::bang_equal(vm* p_vm, value_t, uint8_t p_argc)
@@ -728,10 +802,9 @@ namespace ok
       return {.code = native_return_code::nrc_return};
     }
     p_vm->stack_push(value_t{});
-    return {
-        .code = native_return_code::nrc_error,
-        .error{.code = value_error_code::undefined_operation,
-               .payload{value_t{std::format("invalid '==' on bound method, expected 0 arguments got: {}", p_argc)}}}};
+    return {.code = native_return_code::nrc_error,
+            .error{.code = value_error_code::undefined_operation,
+                   .payload{value_t{std::format("invalid '!=' on bound method, unexpected type")}}}};
   }
 
   native_return_type bound_method_object::call(vm* p_vm, value_t, uint8_t p_argc)
@@ -788,6 +861,158 @@ namespace ok
     return bmo;
   }
 
+  struct exception_meta_class
+  {
+    static native_return_type call(vm* p_vm, value_t, uint8_t p_argc)
+    {
+      const auto this_ = p_vm->get_receiver();
+      const auto this_class = OK_VALUE_AS_CLASS_OBJECT(this_);
+      const auto arg = p_vm->get_arg(0);
+
+      if(p_argc != 1)
+      {
+        return {
+            .code = native_return_code::nrc_error,
+            .error{.code = value_error_code::arguments_mismatch,
+                   .payload{value_t{std::format("invalid exception construct, expected 1 argument got: {}", p_argc)}}}};
+      }
+      else if(!OK_IS_VALUE_OBJECT(arg) || !OK_IS_VALUE_STRING_OBJECT(arg))
+      {
+        return {
+            .code = native_return_code::nrc_error,
+            .error{.code = value_error_code::undefined_operation,
+                   .payload{value_t{std::string_view{"invalid exception construct, argument is not of type string"}}}}};
+      }
+
+      auto arg_str = OK_VALUE_AS_STRING_OBJECT(arg);
+      const auto ex = new_tobject<exception_object>(
+          OK_VALUE_AS_STRING_OBJECT((value_t{std::string_view{arg_str->chars, arg_str->length}})),
+          OK_VALUE_AS_STRING_OBJECT((value_t{p_vm->get_stack_trace()})),
+          OK_VALUE_AS_CLASS_OBJECT(this_),
+          p_vm->get_objects_list());
+
+      p_vm->return_value(value_t{copy{(object*)ex}});
+      return {.code = native_return_code::nrc_return};
+    }
+  };
+
+  exception_object::exception_object(string_object* p_message,
+                                     string_object* p_stack_trace,
+                                     class_object* p_class,
+                                     object*& p_objects_list)
+      : up(object_type::obj_exception, p_class, p_objects_list)
+  {
+    message = p_message;
+    stack_trace = p_stack_trace;
+  }
+
+  exception_object::~exception_object()
+  {
+  }
+
+  native_return_type exception_object::equal(vm* p_vm, value_t, uint8_t p_argc)
+  {
+    ASSERT(p_argc == 1);
+    const auto this_ = p_vm->get_receiver();
+    const auto other = p_vm->get_arg(0);
+    if(OK_IS_VALUE_EXCEPTION_OBJECT(other)) [[likely]]
+    {
+      const auto this_exception = OK_VALUE_AS_EXCEPTION_OBJECT(this_);
+      const auto other_exception = OK_VALUE_AS_EXCEPTION_OBJECT(other);
+
+      p_vm->return_value(value_t{this_exception->message == other_exception->message &&
+                                 this_exception->stack_trace == other_exception->stack_trace});
+      return {.code = native_return_code::nrc_return};
+    }
+    p_vm->stack_push(value_t{});
+    return {.code = native_return_code::nrc_error,
+            .error{.code = value_error_code::undefined_operation,
+                   .payload{value_t{std::format("invalid '==' on exception, unexpected type")}}}};
+  }
+
+  native_return_type exception_object::bang_equal(vm* p_vm, value_t, uint8_t p_argc)
+  {
+    ASSERT(p_argc == 1);
+    const auto this_ = p_vm->get_receiver();
+    const auto other = p_vm->get_arg(0);
+    if(OK_IS_VALUE_EXCEPTION_OBJECT(other)) [[likely]]
+    {
+      const auto this_exception = OK_VALUE_AS_EXCEPTION_OBJECT(this_);
+      const auto other_exception = OK_VALUE_AS_EXCEPTION_OBJECT(other);
+
+      p_vm->return_value(value_t{this_exception->message != other_exception->message ||
+                                 this_exception->stack_trace != other_exception->stack_trace});
+      return {.code = native_return_code::nrc_return};
+    }
+    p_vm->stack_push(value_t{});
+    return {.code = native_return_code::nrc_error,
+            .error{.code = value_error_code::undefined_operation,
+                   .payload{value_t{std::format("invalid '!=' on exception, unexpected type")}}}};
+  }
+
+  native_return_type exception_object::print(vm* p_vm, value_t, uint8_t p_argc)
+  {
+    ASSERT(p_argc == 0);
+    const auto this_ = p_vm->get_receiver();
+    auto this_exception = OK_VALUE_AS_EXCEPTION_OBJECT(this_);
+    if(this_exception->message)
+    {
+      std::print("exception: message: {}",
+                 std::string_view{this_exception->message->chars, this_exception->message->length});
+    }
+    if(this_exception->stack_trace)
+    {
+      std::print("exception: stacktrace: {}",
+                 std::string_view{this_exception->stack_trace->chars, this_exception->stack_trace->length});
+    }
+    return {.code = native_return_code::nrc_print_exit};
+  }
+
+  template <>
+  object* exception_object::create<object>(string_object* p_message,
+                                           string_object* p_stack_trace,
+                                           class_object* p_class,
+                                           object*& p_objects_list)
+  {
+    auto eo = new exception_object(p_message, p_stack_trace, p_class, p_objects_list);
+    return (object*)eo;
+  }
+
+  template <>
+  exception_object* exception_object::create<exception_object>(string_object* p_message,
+                                                               string_object* p_stack_trace,
+                                                               class_object* p_class,
+                                                               object*& p_objects_list)
+  {
+    auto eo = new exception_object(p_message, p_stack_trace, p_class, p_objects_list);
+    return eo;
+  }
+
+  object_wrapper::object_wrapper(object* p_object, class_object* p_class, object*& p_objects_list)
+      : up(object_type::obj_wrapper, p_class, p_objects_list)
+  {
+    obj = p_object;
+  }
+
+  object_wrapper::~object_wrapper()
+  {
+  }
+
+  template <>
+  object* object_wrapper::create<object>(object* p_object, class_object* p_class, object*& p_objects_list)
+  {
+    auto ow = new object_wrapper(p_object, p_class, p_objects_list);
+    return (object*)ow;
+  }
+
+  template <>
+  object_wrapper*
+  object_wrapper::create<object_wrapper>(object* p_object, class_object* p_class, object*& p_objects_list)
+  {
+    auto ow = new object_wrapper(p_object, p_class, p_objects_list);
+    return ow;
+  }
+
   void delete_object(object* p_object)
   {
     if(p_object->is_instance())
@@ -840,6 +1065,10 @@ namespace ok
   void object_inherit(class_object* p_super, class_object* p_sub)
   {
     // TODO(Qais): mro and specials
+    ASSERT(p_super != nullptr);
+    ASSERT(p_sub != nullptr);
+
+    p_sub->super = p_super;
     p_sub->methods.insert_range(p_super->methods);
     p_sub->specials.operations = p_super->specials.operations;
   }
@@ -848,7 +1077,7 @@ namespace ok
 
   static class_object* register_object_class(object*& p_objects_list);
   static class_object* register_meta_class_class(object*& p_objects_list, class_object* p_object_class);
-  static class_object* register_class_class(object*& p_objects_list, class_object* p_meta_class);
+  static class_object* register_class_class(object*& p_objects_list, class_object* p_object_class);
   static class_object*
   register_instance_class(object*& p_objects_list, class_object* p_string, class_object* p_meta_class);
   static class_object*
@@ -863,15 +1092,148 @@ namespace ok
   register_closure_class(object*& p_objects_list, class_object* p_string, class_object* p_class_class);
   static class_object*
   register_bound_method_class(object*& p_objects_list, class_object* p_string, class_object* p_class_class);
+  static class_object*
+  register_exception_class(object*& p_objects_list, class_object* p_string, class_object* p_class_class);
 
   bool object_register_builtins(vm* p_vm)
   {
     p_vm->get_gc().pause();
     auto& objects = p_vm->get_objects_list();
 
+    auto* object_class = new_tobject<class_object>(nullptr, object_type::obj_object, nullptr, nullptr, objects);
+    {
+      auto& ops = object_class->specials.operations;
+      ops[method_type::mt_print] = value_t{object::print, false};
+      ops[method_type::mt_binary_infix_equal] = value_t{object::equal, false};
+      ops[method_type::mt_binary_infix_bang_equal] = value_t{object::bang_equal, false};
+    }
+
+    auto* class_class = new_tobject<class_object>(nullptr, object_type::obj_class, nullptr, object_class, objects);
+    {
+      class_class->up.class_ = class_class;
+      auto& ops = class_class->specials.operations;
+      ops[method_type::mt_print] = value_t{class_object::print, false};
+      ops[method_type::mt_binary_infix_equal] = value_t{class_object::equal, false};
+      ops[method_type::mt_binary_infix_bang_equal] = value_t{class_object::bang_equal, false};
+      ops[method_type::mt_unary_postfix_call] = value_t{class_object::call, false};
+    }
+
+    auto* object_metaclass =
+        new_tobject<class_object>(nullptr, object_type::obj_meta_class, class_class, object_class, objects);
+
+    auto* string_meta_class =
+        new_tobject<class_object>(nullptr, object_type::obj_meta_class, class_class, object_class, objects);
+    auto* string_class =
+        new_tobject<class_object>(nullptr, object_type::obj_string, string_meta_class, object_class, objects);
+
+    {
+      auto* string_meta_name = new_tobject<string_object>("string_meta", string_class, objects);
+      auto* string_class_name = new_tobject<string_object>("string", string_class, objects);
+      string_meta_class->name = string_meta_name;
+      string_class->name = string_class_name;
+
+      auto& meta_ops = string_meta_class->specials.operations;
+      meta_ops[method_type::mt_unary_postfix_call] = value_t{string_meta_class::call, false};
+
+      auto& ops = string_class->specials.operations;
+      ops[method_type::mt_binary_infix_plus] = value_t{string_object::plus, false};
+      ops[method_type::mt_binary_infix_equal] = value_t{string_object::equal, false};
+      ops[method_type::mt_binary_infix_bang_equal] = value_t{string_object::bang_equal, false};
+      ops[method_type::mt_print] = value_t{string_object::print, false};
+    }
+
+    // update all strings in broken state
+    for(auto interned : p_vm->get_interned_strings().underlying())
+    {
+      interned.second->up.class_ = string_class;
+    }
+
+    object_class->name = new_tobject<string_object>("object", string_class, objects);
+    object_metaclass->name = new_tobject<string_object>("meta_class", string_class, objects);
+    class_class->name = new_tobject<string_object>("class", string_class, objects);
+
+    auto* function_class_name = new_tobject<string_object>("function", string_class, objects);
+    auto* function_class =
+        new_tobject<class_object>(function_class_name, object_type::obj_function, class_class, object_class, objects);
+
+    {
+      auto& ops = function_class->specials.operations;
+      ops[method_type::mt_binary_infix_equal] = value_t{function_object::equal, false};
+      ops[method_type::mt_binary_infix_bang_equal] = value_t{function_object::bang_equal, false};
+      ops[method_type::mt_print] = value_t{function_object::print, false};
+    }
+
+    auto* closure_class_name = new_tobject<string_object>("closure", string_class, objects);
+    auto* closure_meta_class_name = new_tobject<string_object>("closure_meta", string_class, objects);
+
+    auto* closure_meta_class = new_tobject<class_object>(
+        closure_meta_class_name, object_type::obj_meta_class, class_class, object_class, objects);
+    auto* closure_class = new_tobject<class_object>(
+        closure_class_name, object_type::obj_closure, closure_meta_class, object_class, objects);
+
+    {
+      auto& meta_ops = closure_meta_class->specials.operations;
+      meta_ops[method_type::mt_unary_postfix_call] = value_t{closure_meta_class::call, false};
+
+      auto& ops = closure_class->specials.operations;
+      ops[method_type::mt_binary_infix_equal] = value_t{closure_object::equal, false};
+      ops[method_type::mt_binary_infix_bang_equal] = value_t{closure_object::bang_equal, false};
+      ops[method_type::mt_unary_postfix_call] = value_t{closure_object::call, false};
+      ops[method_type::mt_print] = value_t{closure_object::print, false};
+      ops[method_type::mt_unary_postfix_call] = value_t{closure_object::call, false};
+    }
+
+    auto* bound_method_class_name = new_tobject<string_object>("bound_method", string_class, objects);
+    auto* bound_method_class = new_tobject<class_object>(
+        bound_method_class_name, object_type::obj_bound_method, class_class, class_class, objects);
+
+    {
+      auto& ops = bound_method_class->specials.operations;
+      ops[method_type::mt_binary_infix_equal] = value_t{bound_method_object::equal, false};
+      ops[method_type::mt_binary_infix_bang_equal] = value_t{bound_method_object::bang_equal, false};
+      ops[method_type::mt_unary_postfix_call] = value_t{bound_method_object::call, false};
+      ops[method_type::mt_print] = value_t{bound_method_object::print, false};
+    }
+
+    auto* exception_meta_name = new_tobject<string_object>("exception_meta", string_class, objects);
+    auto* exception_meta_class =
+        new_tobject<class_object>(exception_meta_name, object_type::obj_meta_class, class_class, class_class, objects);
+
+    auto& meta_ops = exception_meta_class->specials.operations;
+    meta_ops[method_type::mt_unary_postfix_call] = value_t{exception_meta_class::call, false};
+
+    auto* exception_class_name = new_tobject<string_object>("exception", string_class, objects);
+    auto* exception_class = new_tobject<class_object>(
+        exception_class_name, object_type::obj_exception, exception_meta_class, object_class, objects);
+
+    {
+      auto& ops = exception_class->specials.operations;
+      ops[method_type::mt_binary_infix_equal] = value_t{exception_object::equal, false};
+      ops[method_type::mt_binary_infix_bang_equal] = value_t{exception_object::bang_equal, false};
+      ops[method_type::mt_print] = value_t{exception_object::print, false};
+    }
+
+    p_vm->register_api_builtin((object*)object_class, object_type::obj_object, object_class->name);
+    p_vm->register_builtin((object*)object_metaclass, object_type::obj_meta_class);
+    p_vm->register_builtin((object*)class_class, object_type::obj_class);
+    p_vm->register_builtin((object*)function_class, object_type::obj_function);
+    p_vm->register_api_builtin((object*)string_class, object_type::obj_string, string_class->name);
+    p_vm->register_api_builtin((object*)closure_class, object_type::obj_closure, closure_class_name);
+    p_vm->register_builtin((object*)bound_method_class, object_type::obj_bound_method);
+    p_vm->register_api_builtin((object*)exception_class, object_type::obj_exception, exception_class_name);
+    p_vm->get_gc().resume();
+    return true;
+  }
+
+  bool object_register_builtins_0(vm* p_vm)
+  {
+    p_vm->get_gc().pause();
+    auto*& objects = p_vm->get_objects_list();
+
     auto* object_class = register_object_class(objects);
     auto* meta_class_class = register_meta_class_class(objects, object_class);
-    auto* class_class = register_class_class(objects, meta_class_class);
+    object_class->up.class_ = meta_class_class;
+    auto* class_class = register_class_class(objects, object_class);
 
     auto* string_class = register_string_class(objects, class_class);
     p_vm->register_api_builtin((object*)string_class, object_type::obj_string, string_class->name);
@@ -902,6 +1264,9 @@ namespace ok
     auto* closure_class = register_closure_class(objects, string_class, callable_class);
     p_vm->register_api_builtin((object*)closure_class, object_type::obj_closure, closure_class->name);
 
+    auto* exception_class = register_exception_class(objects, string_class, callable_class);
+    p_vm->register_api_builtin((object*)exception_class, object_type::obj_exception, exception_class->name);
+
     p_vm->get_gc().resume();
     return true;
   }
@@ -917,8 +1282,6 @@ namespace ok
     auto* object_class = new_tobject<class_object>(nullptr, object_type::obj_object, nullptr, nullptr, p_objects_list);
     object_class->up.class_ = object_class;
     auto& ops = object_class->specials.operations;
-    ops[method_type::mt_binary_infix_equal] = value_t{class_object::equal, false};
-    ops[method_type::mt_binary_infix_bang_equal] = value_t{class_object::bang_equal, false};
     ops[method_type::mt_print] = value_t{class_object::print, false};
     return object_class;
   }
@@ -928,18 +1291,20 @@ namespace ok
     auto* meta_class =
         new_tobject<class_object>(nullptr, object_type::obj_meta_class, p_object_class, p_object_class, p_objects_list);
     auto& ops = meta_class->specials.operations;
-    ops[method_type::mt_binary_infix_equal] = value_t{class_object::equal, false};
-    ops[method_type::mt_binary_infix_bang_equal] = value_t{class_object::bang_equal, false};
-    ops[method_type::mt_print] = value_t{class_object::print, false};
     return meta_class;
   }
 
-  static class_object* register_class_class(object*& p_objects_list, class_object* p_meta_class)
+  static class_object* register_class_class(object*& p_objects_list, class_object* p_object_class)
   {
     auto* class_class =
-        new_tobject<class_object>(nullptr, object_type::obj_class, p_meta_class, p_meta_class, p_objects_list);
+        new_tobject<class_object>(nullptr, object_type::obj_class, nullptr, p_object_class, p_objects_list);
+    class_class->up.class_ = class_class;
     auto& ops = class_class->specials.operations;
     ops[method_type::mt_unary_postfix_call] = value_t{class_object::call, false};
+    ops[method_type::mt_binary_infix_equal] = value_t{class_object::equal, false};
+    ops[method_type::mt_binary_infix_bang_equal] = value_t{class_object::bang_equal, false};
+    ops[method_type::mt_print] = value_t{class_object::print, false};
+
     return class_class;
   }
 
@@ -1049,5 +1414,66 @@ namespace ok
     ops[method_type::mt_print] = value_t{bound_method_object::print, false};
 
     return bound_method_class;
+  }
+
+  static class_object*
+  register_exception_class(object*& p_objects_list, class_object* p_string, class_object* p_class_class)
+  {
+    auto* exception_meta_name = new_tobject<string_object>("exception_meta", p_string, p_objects_list);
+    auto* exception_meta_class =
+        new_tobject<class_object>(nullptr, object_type::obj_meta_class, p_class_class, p_class_class, p_objects_list);
+
+    auto& meta_ops = exception_meta_class->specials.operations;
+    meta_ops[method_type::mt_unary_postfix_call] = value_t{exception_meta_class::call, false};
+
+    auto* exception_class_name = new_tobject<string_object>("exception", p_string, p_objects_list);
+    auto* exception_class = new_tobject<class_object>(
+        exception_class_name, object_type::obj_exception, exception_meta_class, p_class_class, p_objects_list);
+
+    auto& ops = exception_class->specials.operations;
+    ops[method_type::mt_binary_infix_equal] = value_t{exception_object::equal, false};
+    ops[method_type::mt_binary_infix_bang_equal] = value_t{exception_object::bang_equal, false};
+    ops[method_type::mt_print] = value_t{exception_object::print, false};
+
+    return exception_class;
+  }
+
+  bool is_instance(value_t p_instance, value_t p_type)
+  {
+    if(!OK_IS_VALUE_OBJECT(p_instance) || !OK_IS_VALUE_CLASS_OBJECT(p_type))
+    {
+      return false;
+    }
+
+    auto* current = OK_VALUE_AS_OBJECT(p_instance)->class_;
+    auto* target = OK_VALUE_AS_CLASS_OBJECT(p_type);
+
+    while(current->up.get_type() != object_type::obj_object && current->super->up.get_type() != object_type::obj_object)
+    {
+      if(current == target)
+        return true;
+      current = current->super;
+    }
+    return false;
+  }
+
+  bool is_instance_old(value_t p_instance, value_t p_type)
+  {
+    if(!OK_IS_VALUE_OBJECT(p_instance) || !OK_VALUE_AS_OBJECT(p_instance)->is_instance())
+      return false;
+    if(!OK_IS_VALUE_OBJECT(p_type) || !OK_VALUE_AS_OBJECT(p_type)->is_class())
+      return false;
+
+    auto* current = OK_VALUE_AS_OBJECT(p_instance)->class_;
+    auto* target = OK_VALUE_AS_CLASS_OBJECT(p_type);
+
+    while(current && current->up.get_type() != object_type::obj_object &&
+          current->up.class_->up.get_type() != object_type::obj_object)
+    {
+      if(current == target)
+        return true;
+      current = current->up.class_;
+    }
+    return false;
   }
 } // namespace ok

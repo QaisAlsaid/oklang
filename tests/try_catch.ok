@@ -1,0 +1,5 @@
+try {
+  throw exception("ex");
+} catch {
+  print "caught";
+}

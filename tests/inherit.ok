@@ -1,0 +1,16 @@
+class Base {
+  fu method() {
+    return "base";
+  }
+}
+
+class Derived inherits Base {
+  fu method() {
+    return "derived";
+  }
+}
+
+let b = Base();
+print b.method(); // expect: base
+let d = Derived();
+print d.method(); // expect: derived

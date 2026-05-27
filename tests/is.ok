@@ -1,0 +1,9 @@
+class Cls {
+
+}
+
+
+let inst = Cls();
+
+print (inst is Cls); // expect: true 
+print (inst is not Cls); // expect: false

@@ -9,6 +9,7 @@
 #include "parser.hpp"
 #include <cstdint>
 #include <format>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -42,6 +43,9 @@ namespace ok
         illegal_binding_modifier,
         insufficent_parameters_count,
         illegal_lvalue,
+        expected_name,
+        too_many_exceptions,
+        empty_throw,
       };
       code error_code;
       std::string message;
@@ -76,7 +80,6 @@ namespace ok
 
     struct loop_context
     {
-      // this starting to get ugly with those flags
       size_t scope_depth;
       size_t continue_target;
       size_t break_target;
@@ -238,8 +241,10 @@ namespace ok
     void compile(ast::function_declaration* p_function_declaration);
     void compile(ast::call_expression* p_call_expression);
     void compile(ast::return_statement* p_return_statement);
+    void compile(ast::throw_statement* p_throw_statement);
     void compile(ast::class_declaration* p_class_declaration);
     void compile(ast::assign_expression* p_assignment_expr);
+    void compile(ast::try_catch_statement* p_try_catch_stmt);
 
     // only compiles invocation, set is handled in the assignment expr compile function!
     void compile(ast::access_expression* p_access_expression);
@@ -317,6 +322,16 @@ namespace ok
     void set_lvalue_from_stack(ast::expression* p_expr);
 
     // void lvalue_operation(ast::expression* p_expr, variable_operation p_op);
+
+    void compile_try(const std::unique_ptr<ast::try_statement>& p_try);
+    void compile_catch(const std::unique_ptr<ast::catch_statement>& p_catch);
+    void compile_finalize(const std::unique_ptr<ast::finalize_statement>& p_finalize);
+    void compile_catches(const std::list<std::unique_ptr<ast::catch_statement>>& p_catches,
+                         std::vector<uint32_t>& p_jumps);
+
+    // bool: is wildcard catch
+    uint32_t declare_catch(const std::unique_ptr<ast::catch_statement>& p_catch);
+    std::vector<uint32_t> declare_catches(const std::list<std::unique_ptr<ast::catch_statement>>& p_catches);
 
     template <typename... Args>
     void compile_error(error::code code, std::format_string<Args...> fmt, Args&&... args)

@@ -34,7 +34,9 @@ namespace ok
                                                                         {"static"sv, token_type::tok_static},
                                                                         {"async"sv, token_type::tok_async},
                                                                         {"try"sv, token_type::tok_try},
-                                                                        {"catch"sv, token_type::tok_catch}};
+                                                                        {"catch"sv, token_type::tok_catch},
+                                                                        {"finalize"sv, token_type::tok_finalize},
+                                                                        {"throw"sv, token_type::tok_throw}};
 
   token_type lookup_identifier(const std::string_view p_raw)
   {

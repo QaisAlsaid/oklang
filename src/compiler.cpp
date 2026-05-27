@@ -163,11 +163,17 @@ namespace ok
     case ast::node_type::nt_return_stmt:
       compile((ast::return_statement*)p_node);
       return;
+    case ast::node_type::nt_throw_stmt:
+      compile((ast::throw_statement*)p_node);
+      return;
     case ast::node_type::nt_class_decl:
       compile((ast::class_declaration*)p_node);
       return;
     case ast::node_type::nt_access_expr:
       compile((ast::access_expression*)p_node);
+      return;
+    case ast::node_type::nt_try_catch_stmt:
+      compile((ast::try_catch_statement*)p_node);
       return;
     case ast::node_type::nt_empty_stmt:
       return;
@@ -955,6 +961,154 @@ namespace ok
     }
   }
 
+  void compiler::compile(ast::throw_statement* p_throw_statement)
+  {
+    if(p_throw_statement->get_expression() == nullptr)
+    {
+      compile_error(error::code::empty_throw, "empty throw statement, needs an expression");
+    }
+    else
+    {
+      compile(p_throw_statement->get_expression().get());
+      current_chunk()->write(opcode::op_throw, p_throw_statement->get_offset());
+    }
+  }
+
+  void compiler::compile(ast::try_catch_statement* p_try_catch_stmt)
+  {
+    const auto offset = p_try_catch_stmt->get_offset();
+    auto try_start_jump = emit_jump(opcode::op_jump, offset);
+    const auto try_start = current_chunk()->code.size();
+    compile(p_try_catch_stmt->get_try()->get_body().get());
+    auto normal_exit = emit_jump(opcode::op_jump, offset);
+    const auto try_end = current_chunk()->code.size();
+
+    patch_jump(try_start_jump, try_end);
+
+    for(auto& catch_ : p_try_catch_stmt->get_catches())
+    {
+      current_function().function->exceptions.emplace_back(try_start, try_end, 0);
+      if(catch_->get_type())
+      {
+        compile(catch_->get_type().get());
+
+        if(!catch_->get_binding())
+        {
+          compile_error(error::code::expected_name, "expected a variable declaration");
+        }
+      }
+      else
+      {
+        current_chunk()->write(opcode::op_null, catch_->get_offset());
+      }
+
+      current_chunk()->write(opcode::op_push_catch_type, offset);
+      if(current_function().function->exceptions.size() >= UINT8_MAX)
+      {
+        compile_error(
+            error::code::too_many_exceptions, "too many exceptions in function, exceeds limit which is: ", UINT8_MAX);
+      }
+      current_chunk()->write(current_function().function->exceptions.size() - 1, offset);
+    }
+
+    auto try_jump = emit_jump(opcode::op_loop, offset);
+    patch_loop(try_jump, try_start);
+
+    for(size_t idx = 0; auto& catch_ : p_try_catch_stmt->get_catches())
+    {
+      const auto handler_start = current_chunk()->code.size();
+      current_function().function->exceptions[idx++].handler_start = handler_start; // patch handler
+      begin_scope();
+      bool needs_pop = false;
+      if(catch_->get_binding())
+      {
+        const auto& bind = catch_->get_binding();
+        declare_variable(
+            {.flags = vdf_from_bm(bind->get_modifiers()), .name = bind->get_name()}, bind->get_offset(), false);
+      }
+      else
+      {
+        needs_pop = true;
+      }
+      compile_catch(catch_);
+      end_scope();
+      if(needs_pop)                                                   // hacky ig
+        current_chunk()->write(opcode::op_pop, catch_->get_offset()); // pop the unbound caught exception
+    }
+    patch_jump(normal_exit, current_chunk()->code.size());
+
+    // auto jumps = declare_catches(p_try_catch_stmt->get_catches());
+    // compile_catches(p_try_catch_stmt->get_catches(), jumps);
+
+    // compile_finalize(p_try_catch_stmt->get_finalize());
+  }
+
+  void compiler::compile_try(const std::unique_ptr<ast::try_statement>& p_try)
+  {
+    ASSERT(p_try);
+    compile(p_try->get_body().get());
+  }
+
+  void compiler::compile_finalize(const std::unique_ptr<ast::finalize_statement>& p_finalize)
+  {
+  }
+
+  uint32_t compiler::declare_catch(const std::unique_ptr<ast::catch_statement>& p_catch)
+  {
+    ASSERT(p_catch);
+    if(p_catch->get_type())
+    {
+      compile(p_catch->get_type().get());
+
+      if(!p_catch->get_binding())
+      {
+        compile_error(error::code::expected_name, "expected a variable declaration");
+      }
+    }
+    else
+    {
+      // TODO(Qais): else wildcard
+      current_chunk()->write(opcode::op_null, p_catch->get_offset());
+    }
+    return emit_jump(opcode::op_null, p_catch->get_offset());
+  }
+
+  std::vector<uint32_t> compiler::declare_catches(const std::list<std::unique_ptr<ast::catch_statement>>& p_catches)
+  {
+    std::vector<uint32_t> vec;
+    vec.reserve(p_catches.size());
+    for(const auto& catch_ : p_catches)
+    {
+      auto c = declare_catch(catch_);
+      vec.push_back(c);
+    }
+    return vec;
+  }
+
+  void compiler::compile_catches(const std::list<std::unique_ptr<ast::catch_statement>>& p_catches,
+                                 std::vector<uint32_t>& p_jumps)
+  {
+    ASSERT(p_catches.size() == p_jumps.size());
+    for(auto i = 0; const auto& catch_ : p_catches)
+    {
+      begin_scope();
+      patch_jump(p_jumps[i++], current_chunk()->code.size());
+      if(catch_->get_binding())
+      {
+        const auto& bind = catch_->get_binding();
+        declare_variable(
+            {.flags = vdf_from_bm(bind->get_modifiers()), .name = bind->get_name()}, bind->get_offset(), false);
+      }
+      compile_catch(catch_);
+      end_scope();
+    }
+  }
+
+  void compiler::compile_catch(const std::unique_ptr<ast::catch_statement>& p_catch)
+  {
+    compile(p_catch->get_body().get());
+  }
+
   void compiler::compile(ast::identifier_expression* p_ident_expr)
   {
     const auto& str_val = p_ident_expr->get_value();
@@ -1141,7 +1295,6 @@ namespace ok
     {
       // TODO(Qais): bruh for god sake wont you just write a function that does this, instead of hacking your way
       // through the validation function!
-
       auto ret = utf8::validate_codepoint((const uint8_t*)c, (const uint8_t*)src_str.c_str());
       // TODO(Qais): does that have to be in compiler, and just for strings, or is it better to support escape sequence
       // at lexer level? (btw this code looks like shit)
@@ -1956,5 +2109,4 @@ namespace ok
       ERRORLN("compile error: {}: {}", error::code_to_string(err.error_code), err.message);
     }
   }
-
 } // namespace ok

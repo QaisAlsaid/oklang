@@ -4,6 +4,7 @@
 #include "compiler.hpp"
 #include "copy.hpp"
 #include "debug.hpp"
+#include "interned_string.hpp"
 #include "log.hpp"
 #include "macros.hpp"
 #include "object.hpp"
@@ -18,6 +19,7 @@
 #include <ctime>
 #include <expected>
 #include <print>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -326,7 +328,7 @@ namespace ok
     auto nm = this_class->specials.conversions.find(other_tp);
     if(this_class->specials.conversions.end() == nm)
     {
-      runtime_error("error");
+      push_exception("error");
       return false;
     }
     m_stack.pop();
@@ -357,7 +359,7 @@ namespace ok
     }
     m_stack.pop();
     m_stack.pop();
-    runtime_error("error");
+    push_exception("error");
     return false;
   }
 
@@ -380,7 +382,7 @@ namespace ok
     m_stack.pop();
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <>
@@ -402,7 +404,7 @@ namespace ok
     m_stack.pop();
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <>
@@ -417,7 +419,7 @@ namespace ok
       if(OK_VALUE_AS_NUMBER(rhs) == 0)
       {
         return false;
-        runtime_error("division by 0");
+        push_exception("division by 0");
       }
       m_stack.push({value_t{OK_VALUE_AS_NUMBER(lhs) / OK_VALUE_AS_NUMBER(rhs)}});
       return true;
@@ -429,7 +431,7 @@ namespace ok
     m_stack.pop();
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   bool vm::perform_equality_builtins(value_t p_lhs, value_t p_rhs, bool p_equals)
@@ -510,7 +512,7 @@ namespace ok
     m_stack.pop();
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <>
@@ -532,7 +534,7 @@ namespace ok
     m_stack.pop();
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <>
@@ -554,7 +556,7 @@ namespace ok
     m_stack.pop();
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <>
@@ -576,7 +578,7 @@ namespace ok
     m_stack.pop();
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <>
@@ -594,7 +596,7 @@ namespace ok
     m_stack.pop();
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <>
@@ -609,7 +611,7 @@ namespace ok
     m_stack.pop();
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <>
@@ -624,7 +626,7 @@ namespace ok
     m_stack.pop();
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <>
@@ -639,7 +641,7 @@ namespace ok
     m_stack.pop();
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <>
@@ -660,7 +662,7 @@ namespace ok
     m_stack.pop();
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <>
@@ -681,7 +683,7 @@ namespace ok
     m_stack.pop();
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <>
@@ -702,7 +704,7 @@ namespace ok
     m_stack.pop();
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <>
@@ -723,7 +725,7 @@ namespace ok
     m_stack.pop();
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <>
@@ -738,7 +740,7 @@ namespace ok
     m_stack.pop();
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <>
@@ -753,7 +755,7 @@ namespace ok
     m_stack.pop();
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <>
@@ -768,7 +770,7 @@ namespace ok
     m_stack.pop();
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <>
@@ -783,7 +785,7 @@ namespace ok
     m_stack.pop();
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <>
@@ -798,7 +800,7 @@ namespace ok
     m_stack.pop();
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <>
@@ -813,7 +815,7 @@ namespace ok
     m_stack.pop();
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <>
@@ -828,7 +830,7 @@ namespace ok
     m_stack.pop();
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <>
@@ -843,7 +845,7 @@ namespace ok
     m_stack.pop();
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <>
@@ -858,7 +860,7 @@ namespace ok
     m_stack.pop();
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <operator_type>
@@ -936,7 +938,7 @@ namespace ok
     }
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <>
@@ -953,7 +955,7 @@ namespace ok
     }
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <>
@@ -971,7 +973,7 @@ namespace ok
     }
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <>
@@ -984,7 +986,7 @@ namespace ok
     }
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <>
@@ -1002,7 +1004,7 @@ namespace ok
     }
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <>
@@ -1020,7 +1022,7 @@ namespace ok
     }
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <operator_type>
@@ -1068,7 +1070,7 @@ namespace ok
     }
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   template <>
@@ -1086,7 +1088,7 @@ namespace ok
     }
     m_stack.pop();
     return false;
-    runtime_error("error");
+    push_exception("error");
   }
 
   vm::vm() : m_stack(s_stack_base_size), m_logger(LOG_LEVEL)
@@ -1124,7 +1126,10 @@ namespace ok
   auto vm::interpret(const std::string_view p_filename, const std::string_view p_source) -> interpret_result
   {
     m_compiler = compiler{}; // reinitialize and clear previous state
-    push_call_frame(call_frame{.ip = nullptr, .slots = 0, .top = 0, .closure = nullptr});
+    push_call_frame(call_frame{.ip = nullptr,
+                               .slots = 0,
+                               .top = 0,
+                               .closure = nullptr}); // compiler uses print thus it needs a fake call frame
     auto compile_result = m_compiler.compile(
         this,
         p_filename,
@@ -1143,7 +1148,8 @@ namespace ok
     auto closure =
         new_tobject<closure_object>(compile_result, get_builtin_class(object_type::obj_closure), get_objects_list());
     m_stack.top() = value_t{copy{(object*)closure}};
-    if(!push_call_frame(call_frame{closure, closure->function->associated_chunk.code.data(), 0, 0}))
+    if(push_call_frame(call_frame{closure, closure->function->associated_chunk.code.data(), 0, 0}) !=
+       interpret_result::ok)
     {
       return interpret_result::runtime_error;
     }
@@ -1172,11 +1178,13 @@ namespace ok
     {
 #ifdef PARANOID
       TRACE("  [stack view]:  [");
+      int it = 0;
       for(auto e : m_stack)
       {
         TRACE("[");
         print_value(e);
         TRACE("]");
+        it++;
       }
       TRACELN("]");
       // FIXME(Qais): offset isnt being calculated properly, Update: i think its fixed, keeping this if it broke
@@ -1602,7 +1610,7 @@ namespace ok
         auto ret = perform_print(m_stack.top());
         if(!ret)
         {
-          runtime_error("bad print");
+          push_exception("bad print");
           return interpret_result::runtime_error;
         }
         std::println(); // hack!
@@ -1619,7 +1627,7 @@ namespace ok
         auto it = m_globals.find(name_str);
         if(m_globals.end() != it)
         {
-          runtime_error("redefining global: " + std::string{name_str->chars}); // tf is this?
+          push_exception("redefining global: ", name_str->chars);
           return vm::interpret_result::runtime_error;
         }
         m_globals[name_str] = {m_stack.top(), flags};
@@ -1635,7 +1643,7 @@ namespace ok
         auto it = m_globals.find(name_str);
         if(m_globals.end() == it)
         {
-          runtime_error("undefined global: " + std::string{name_str->chars}); // tf is this?
+          push_exception("undefined global: ", name_str->chars);
           return vm::interpret_result::runtime_error;
         }
         m_stack.push(it->second.global);
@@ -1650,12 +1658,12 @@ namespace ok
         auto it = m_globals.find(name_str);
         if(m_globals.end() == it)
         {
-          runtime_error("undefined global");
+          push_exception("undefined global");
           return interpret_result::runtime_error;
         }
         if((it->second.flags & variable_declaration_flags::vdf_mutable) == variable_declaration_flags::vdf_none)
         {
-          runtime_error("attempting to mutate an immutable global variable. did you forget to declare it 'mut'?");
+          push_exception("attempting to mutate an immutable global variable. did you forget to declare it 'mut'?");
           return interpret_result::runtime_error;
         }
         it->second.global = m_stack.top();
@@ -1677,12 +1685,12 @@ namespace ok
           auto it = m_globals.find(name_str);
           if(m_globals.end() == it)
           {
-            runtime_error("undefined global");
+            push_exception("undefined global");
             return interpret_result::runtime_error;
           }
           if((it->second.flags & variable_declaration_flags::vdf_mutable) == variable_declaration_flags::vdf_none)
           {
-            runtime_error("attempting to mutate an immutable global variable. did you forget to declare it 'mut'?");
+            push_exception("attempting to mutate an immutable global variable. did you forget to declare it 'mut'?");
             return interpret_result::runtime_error;
           }
           it->second.global = m_stack.top();
@@ -1728,7 +1736,7 @@ namespace ok
         auto val = m_stack.pop();
         if(!OK_IS_VALUE_BOOL(val))
         {
-          runtime_error("value not bool");
+          push_exception("value not bool");
           return interpret_result::runtime_error;
         }
         const auto cond = static_cast<opcode>(instruction) == opcode::op_conditional_jump ? !OK_VALUE_AS_BOOL(val)
@@ -1743,7 +1751,7 @@ namespace ok
         auto val = m_stack.pop();
         if(!OK_IS_VALUE_BOOL(val))
         {
-          runtime_error("value not bool");
+          push_exception("value not bool");
           return interpret_result::runtime_error;
         }
         const auto cond = static_cast<opcode>(instruction) == opcode::op_conditional_jump ? !OK_VALUE_AS_BOOL(val)
@@ -1847,8 +1855,9 @@ namespace ok
                                               get_builtin_class(object_type::obj_object),
                                               get_builtin_class(object_type::obj_class),
                                               get_objects_list());
-        auto cls = new_object<class_object>(
-            name_str, id, meta, get_builtin_class(object_type::obj_instance), get_objects_list());
+        auto cls = new_tobject<class_object>(
+            name_str, id, meta, get_builtin_class(object_type::obj_class), get_objects_list());
+        cls->specials.operations[method_type::mt_print] = value_t{instance_object::print, false};
         m_stack.push(value_t{copy{cls}});
         break;
       }
@@ -1859,7 +1868,7 @@ namespace ok
         // in types via a table in the vm
         if(OK_IS_VALUE_OBJECT(m_stack.top()) && !OK_VALUE_AS_OBJECT(m_stack.top())->is_instance())
         {
-          runtime_error("only instances can have properties");
+          push_exception("only instances can have properties");
           return interpret_result::runtime_error;
         }
         const auto instance = OK_VALUE_AS_INSTANCE_OBJECT(m_stack.top());
@@ -1885,7 +1894,7 @@ namespace ok
         auto obj = OK_VALUE_AS_OBJECT(m_stack.top(1));
         if(OK_IS_VALUE_OBJECT(m_stack.top(1)) && !OK_VALUE_AS_OBJECT(m_stack.top(1))->is_instance())
         {
-          runtime_error("only instances can have properties");
+          push_exception("only instances can have properties");
           return interpret_result::runtime_error;
         }
         const auto instance = OK_VALUE_AS_INSTANCE_OBJECT(m_stack.top(1));
@@ -1903,7 +1912,7 @@ namespace ok
         auto obj = OK_VALUE_AS_OBJECT(m_stack.top(1));
         if(OK_IS_VALUE_OBJECT(m_stack.top(1)) && !OK_VALUE_AS_OBJECT(m_stack.top(1))->is_instance())
         {
-          runtime_error("only instances can have properties");
+          push_exception("only instances can have properties");
           return interpret_result::runtime_error;
         }
         const auto instance = OK_VALUE_AS_INSTANCE_OBJECT(m_stack.top(1));
@@ -1969,7 +1978,7 @@ namespace ok
 
         if(OK_IS_VALUE_OBJECT(super) && !OK_VALUE_AS_OBJECT(super)->is_class())
         {
-          runtime_error("superclass must be a class");
+          push_exception("superclass must be a class");
           return interpret_result::runtime_error;
         }
 
@@ -2021,6 +2030,42 @@ namespace ok
         frame->saved_slot = value_t{};
         break;
       }
+      case to_utype(opcode::op_push_catch_type):
+      {
+        // TODO(Qais): safety(optional)?
+        const auto tp = read_byte();
+        const auto top = m_stack.pop();
+        if(!is_instance(top, value_t{copy{get_builtin_class(object_type::obj_exception)}}) &&
+           !OK_IS_VALUE_NULL(top) /* null => wildcard catch, weird ikr? */)
+        {
+          if(push_exception("exceptions must derive from 'exception'") != interpret_result::ok)
+          {
+            return interpret_result::runtime_error;
+          }
+          break;
+        }
+        m_call_frames.back().closure->function->exceptions[tp].exception = top;
+        break;
+      }
+      case to_utype(opcode::op_throw):
+      {
+        const auto top = m_stack.pop();
+        if(!(OK_IS_VALUE_EXCEPTION_OBJECT(top) ||
+             is_instance(top, value_t{copy{get_builtin_class(object_type::obj_exception)}})))
+        {
+          if(push_exception("exceptions must be and instance of exception or derived from 'exception'") !=
+             interpret_result::ok)
+          {
+            return interpret_result::runtime_error;
+          }
+          break;
+        }
+        if(push_exception(top) != interpret_result::ok)
+        {
+          return interpret_result::runtime_error;
+        }
+        break;
+      }
       }
     }
   }
@@ -2044,7 +2089,7 @@ namespace ok
     const auto base = frame->closure->function->associated_chunk.code.data();
     const auto end = base + frame->closure->function->associated_chunk.code.size();
 
-    ASSERT(frame->ip < end); // address pointer out of pounds
+    ASSERT(frame->ip < end); // address pointer out of bound
     return *frame->ip++;
   }
 
@@ -2093,7 +2138,7 @@ namespace ok
     TRACELN("call value: argc: {}, callee: {}", p_argc, (uint32_t)p_callee.type);
     if(!OK_IS_VALUE_NATIVE_FUNCTION(p_callee) && !OK_IS_VALUE_OBJECT(p_callee))
     {
-      runtime_error("bad call: callee isn't of type native function or of type object");
+      push_exception("bad call: callee isn't of type native function or of type object");
       return false;
     }
 
@@ -2111,16 +2156,36 @@ namespace ok
     else if(OK_IS_VALUE_OBJECT(p_callee))
     {
       auto obj = OK_VALUE_AS_OBJECT(p_callee);
-      const auto& call_ops = obj->class_->specials.operations[method_type::mt_unary_postfix_call];
-      const auto callfcn = call_ops;
+      value_t call_op;
+      if(OK_IS_VALUE_CLASS_OBJECT(p_callee))
+      {
+        call_op = OK_VALUE_AS_CLASS_OBJECT(p_callee)->specials.operations[method_type::mt_unary_postfix_call];
+      }
+      else
+      {
+        call_op = obj->class_->specials.operations[method_type::mt_unary_postfix_call];
+      }
+      const auto callfcn = call_op;
       if(OK_IS_VALUE_NULL(callfcn))
       {
-        runtime_error("undefined operation");
+        push_exception("undefined operation");
         return false;
       }
-      return call_native(OK_VALUE_AS_NATIVE_FUNCTION(callfcn), p_callee, p_argc);
+      else if(OK_IS_VALUE_NATIVE_FUNCTION(callfcn))
+      {
+        return call_native(OK_VALUE_AS_NATIVE_FUNCTION(callfcn), p_callee, p_argc);
+      }
+      else if(OK_IS_VALUE_CLOSURE_OBJECT(callfcn))
+      {
+        return call_native(OK_VALUE_AS_CLOSURE_OBJECT(callfcn)->call, callfcn, p_argc);
+      }
+      else
+      {
+        push_exception("undefined operation");
+        return false;
+      }
     }
-    runtime_error("undefined operation");
+    push_exception("undefined operation");
     return false;
   }
 
@@ -2130,12 +2195,12 @@ namespace ok
 
     if(is_in_group(nrt.code, native_return_code::nrc_error))
     {
-      runtime_error("native call error");
+      push_exception("native call error");
       return false;
     }
     if(!is_in_group(nrt.code, p_allowed_codes))
     {
-      runtime_error("not allowed");
+      push_exception("not allowed");
       return false;
     }
     return true;
@@ -2146,7 +2211,7 @@ namespace ok
     auto receiver = m_stack.top(p_argc);
     if(!OK_IS_VALUE_OBJECT(receiver))
     {
-      runtime_error("can't invoke method on non-class types");
+      push_exception("can't invoke method on non-class types");
       return false;
     }
 
@@ -2163,7 +2228,7 @@ namespace ok
       return invoke_from_class(obj->class_, p_method_name, p_argc);
     }
 
-    runtime_error("cant perform invoke on non-instance types");
+    push_exception("cant perform invoke on non-instance types");
     return false;
   }
 
@@ -2172,7 +2237,7 @@ namespace ok
     auto it = p_class->methods.find(p_method_name);
     if(p_class->methods.end() == it)
     {
-      runtime_error("undefined method: "); // TODO(Qais): runtime error is shit
+      push_exception("undefined method: "); // TODO(Qais): runtime error is shit
       return false;
     }
     return call_value(it->second, it->second, p_argc);
@@ -2235,7 +2300,7 @@ namespace ok
 
     if(!(OK_IS_VALUE_OBJECT(convertee) && OK_VALUE_AS_OBJECT(convertee)->is_class()))
     {
-      runtime_error("bad conversion");
+      push_exception("bad conversion");
       m_stack.pop();
       m_stack.pop();
       return false;
@@ -2254,7 +2319,7 @@ namespace ok
     auto it = p_class->methods.find(p_name);
     if(p_class->methods.end() == it)
     {
-      runtime_error("undefined property: " + std::string{std::string_view{p_name->chars, p_name->length}});
+      push_exception("undefined property: ", p_name->chars);
       return false;
     }
 
@@ -2297,22 +2362,30 @@ namespace ok
     {
       return perform_print_others(p_printable);
     }
-    runtime_error("err");
+    push_exception("err");
     return false;
   }
 
   bool vm::perform_print_others(value_t p_printable)
   {
-    auto cls = OK_VALUE_AS_OBJECT(p_printable)->class_;
+    class_object* cls;
+    if(OK_IS_VALUE_CLASS_OBJECT(p_printable))
+    {
+      cls = OK_VALUE_AS_CLASS_OBJECT(p_printable);
+    }
+    else
+    {
+      cls = OK_VALUE_AS_OBJECT(p_printable)->class_;
+    }
     auto nm = cls->specials.operations[method_type::mt_print];
     if(OK_IS_VALUE_NULL(nm))
     {
-      runtime_error("error");
+      push_exception("error");
       return false;
     }
     if(!OK_IS_VALUE_NATIVE_FUNCTION(nm))
     {
-      runtime_error("print not allowed");
+      push_exception("print not allowed");
       return false;
     }
     m_stack.push(p_printable);
@@ -2324,6 +2397,7 @@ namespace ok
 
   // this is slow, why the fuck would you encode the function like this, just call it from the vm. omg this is so stupid
   // i cant believe i did this
+  // wow forgot this shit even existed. yes it's as bad as the previous line claims.
   std::expected<bool, bool> vm::set_if()
   {
     auto fcn = (compiler::compare_function)decode_int<uint64_t, 8>(read_bytes<8>(), 0);
@@ -2331,16 +2405,36 @@ namespace ok
     {
       return std::unexpected(false);
     }
-    if(fcn(m_stack.top()))
-    {
-      return true;
-    }
-    return false;
+    return fcn(m_stack.top());
   }
 
-  void vm::runtime_error(const std::string& err)
+  auto vm::push_exception(value_t p_current_exception) -> interpret_result
   {
-    ERRORLN("runtime error: {}", err);
+    size_t call_frames_count = m_call_frames.size();
+    while(call_frames_count > 0)
+    {
+      auto& frame = m_call_frames.back();
+      const auto& function = frame.closure->function;
+      const auto pc = frame.ip - function->associated_chunk.code.data();
+
+      for(const auto& exception : function->exceptions)
+      {
+        if(pc >= exception.try_start && pc < exception.try_end &&
+           (is_instance(p_current_exception, exception.exception) || OK_IS_VALUE_NULL(exception.exception)))
+        {
+          frame.ip = function->associated_chunk.code.data() + exception.handler_start;
+          m_stack.push(p_current_exception);
+          return interpret_result::ok; // continue dispatch
+        }
+      }
+      call_frames_count--;
+    }
+
+    return panic(p_current_exception); // exit
+  }
+
+  auto vm::panic(value_t p_exception) -> interpret_result
+  {
     for(const auto& frame : m_call_frames)
     {
       size_t instruction = frame.ip - frame.closure->function->associated_chunk.code.data() - 1;
@@ -2348,6 +2442,9 @@ namespace ok
               frame.closure->function->associated_chunk.get_offset(instruction),
               frame.closure->function->name->chars);
     }
+    // TODO(Qais): find a way to print (run a print function maybe, and handle inner errors)
+    ERRORLN("uncaught exception: {}", OK_VALUE_AS_EXCEPTION_OBJECT(p_exception)->message->chars);
+    return interpret_result::runtime_error;
   }
 
   // TODO(Qais): name spaces
@@ -2372,6 +2469,11 @@ namespace ok
       delete_object(m_objects_list);
       m_objects_list = next;
     }
+  }
+
+  std::string vm::get_stack_trace()
+  {
+    return "";
   }
 
   native_return_type clock_native(vm* p_vm, value_t, uint8_t p_argc)

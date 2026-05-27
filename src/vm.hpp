@@ -16,9 +16,11 @@
 #include <array>
 #include <cstdint>
 #include <expected>
+#include <format>
 #include <string_view>
 #include <type_traits>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace ok
@@ -214,15 +216,15 @@ namespace ok
       return m_compiler.get_parse_errors();
     }
 
-    inline bool push_call_frame(const call_frame& p_call_frame)
+    inline interpret_result push_call_frame(const call_frame& p_call_frame)
     {
       if(m_call_frames.size() >= s_call_frame_max_size)
       {
-        runtime_error("stackoverflow");
-        return false;
+        // runtime_error("stackoverflow");
+        return push_exception("stackoverflow");
       }
       m_call_frames.push_back(p_call_frame);
-      return true;
+      return interpret_result::ok;
     }
 
     inline size_t frame_stack_top()
@@ -303,7 +305,21 @@ namespace ok
     void print_value(value_t p_value);
 
     bool call_value(value_t p_callee, value_t p_this, uint8_t p_argc);
-    void runtime_error(const std::string& err); // TODO(Qais): error types and format strings
+
+    interpret_result push_exception(value_t p_exception);
+    interpret_result panic(value_t p_exception);
+
+    template <typename... Args>
+    interpret_result push_exception(std::format_string<Args...> fmt, Args&&... args)
+    {
+      auto message = new_tobject<string_object>(std::format(fmt, std::forward<Args>(args)...),
+                                                get_builtin_class(object_type::obj_string),
+                                                get_objects_list());
+      auto exception = new_tobject<exception_object>(
+          message, nullptr, get_builtin_class(object_type::obj_exception), get_objects_list());
+      return push_exception(value_t{copy{exception}});
+    }
+
     void register_api_builtin(object* p_obj, int idx, string_object* p_name)
     {
       register_builtin(p_obj, idx);
@@ -346,10 +362,12 @@ namespace ok
 
     inline bool start_subcall(const call_frame& p_call_frame)
     {
-      return push_call_frame(p_call_frame);
+      return push_call_frame(p_call_frame) == interpret_result::ok;
     }
 
     void init();
+
+    std::string get_stack_trace();
 
   private:
     interpret_result run();
@@ -447,7 +465,8 @@ namespace ok
     // maybe do it when adding optimization pass
     std::unordered_map<string_object*, global_entry> m_globals;
 
-    std::array<object*, 10> m_builtins;
+    // TODO(Qais): lazy ahhh
+    std::array<object*, 12> m_builtins;
     // value_operations m_value_operations;
     logger m_logger;
     compiler m_compiler; // temporary

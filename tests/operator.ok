@@ -1,0 +1,16 @@
+class Cls {
+  operator + (_) {
+    if _ is Cls -> {
+      this.value = this.value + _.value;
+      return this;
+    } else -> {
+      throw Exception("exception");
+    }
+  }
+}
+
+let inst = Cls();
+inst.value = 66;
+let inst2 = Cls();
+inst2.value = 1;
+print (inst + inst2).value; // expect: 67

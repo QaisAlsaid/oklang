@@ -1,6 +1,6 @@
 {
   let x = "x";
   {
-    print "x"; // expect: x
+    print x; // expect: x
   }
 }

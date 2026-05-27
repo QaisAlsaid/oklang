@@ -32,7 +32,7 @@
 #define OK_IS_VALUE_CLASS_OBJECT(v) (OK_IS_VALUE_OBJECT(v) && OK_VALUE_AS_OBJECT(v)->get_type() == object_type::obj_class)
 #define OK_IS_VALUE_INSTANCE_OBJECT(v) (OK_IS_VALUE_OBJECT(v) && OK_VALUE_AS_OBJECT(v)->get_type() == object_type::obj_instance)
 #define OK_IS_VALUE_BOUND_METHOD_OBJECT(v) (OK_IS_VALUE_OBJECT(v) && OK_VALUE_AS_OBJECT(v)->get_type() == object_type::obj_bound_method)
-
+#define OK_IS_VALUE_EXCEPTION_OBJECT(v) (OK_IS_VALUE_OBJECT(v) && OK_VALUE_AS_OBJECT(v)->get_type() == object_type::obj_exception)
 
 
 #define OK_VALUE_AS_STRING_OBJECT(v) ((string_object*)OK_VALUE_AS_OBJECT(v))
@@ -42,6 +42,7 @@
 #define OK_VALUE_AS_CLASS_OBJECT(v) ((class_object*)OK_VALUE_AS_OBJECT(v))
 #define OK_VALUE_AS_INSTANCE_OBJECT(v) ((instance_object*)OK_VALUE_AS_OBJECT(v))
 #define OK_VALUE_AS_BOUND_METHOD_OBJECT(v) ((bound_method_object*)OK_VALUE_AS_OBJECT(v))
+#define OK_VALUE_AS_EXCEPTION_OBJECT(v) ((exception_object*)OK_VALUE_AS_OBJECT(v))
 // clang-format on
 
 namespace ok
@@ -61,6 +62,8 @@ namespace ok
       obj_closure,
       obj_upvalue,
       obj_bound_method,
+      obj_exception,
+      obj_wrapper,
       obj_last,
     } object_type;
   }
@@ -135,6 +138,11 @@ namespace ok
 #endif
       p_mark ? type |= (1u << 26) : type &= ~(1u << 26);
     }
+
+    static native_return_type is(vm* p_vm, value_t p_this, uint8_t p_argc);
+    static native_return_type equal(vm* p_vm, value_t p_this, uint8_t p_argc);
+    static native_return_type bang_equal(vm* p_vm, value_t p_this, uint8_t p_argc);
+    static native_return_type print(vm* p_vm, value_t p_this, uint8_t p_argc);
 
   private:
     // 24 bit integer for object type, 1 bit is_instance, 1 bit is_class, 1 bit is_marked (gc)
@@ -339,15 +347,28 @@ namespace ok
                        class_object* p_meta,
                        class_object* p_super,
                        object*& p_objects_list);
+
+    template <typename Obj = object>
+    static Obj*
+    create_meta(string_object* p_name, uint32_t p_class_type, class_object* p_class_class, object*& p_objects_list);
+
     object up;
     string_object* name;
+    class_object* super;
     special_methods specials;
     std::unordered_map<string_object*, value_t> methods;
+    class_object* instance_class;
 
     static native_return_type equal(vm* p_vm, value_t p_this, uint8_t p_argc);
     static native_return_type bang_equal(vm* p_vm, value_t p_this, uint8_t p_argc);
     static native_return_type call(vm* p_vm, value_t p_this, uint8_t p_argc);
     static native_return_type print(vm* p_vm, value_t p_this, uint8_t p_argc);
+  };
+
+  struct exception_entry
+  {
+    size_t try_start, try_end, handler_start;
+    value_t exception;
   };
 
   struct function_object
@@ -361,8 +382,10 @@ namespace ok
     object up;
     chunk associated_chunk;
     string_object* name = nullptr;
+
     uint32_t upvalues = 0;
     uint8_t arity = 0;
+    std::vector<exception_entry> exceptions;
 
     static native_return_type equal(vm* p_vm, value_t p_this, uint8_t p_argc);
     static native_return_type bang_equal(vm* p_vm, value_t p_this, uint8_t p_argc);
@@ -444,6 +467,40 @@ namespace ok
     static native_return_type bang_equal(vm* p_vm, value_t p_this, uint8_t p_argc);
     static native_return_type call(vm* p_vm, value_t p_this, uint8_t p_argc);
     static native_return_type print(vm* p_vm, value_t p_this, uint8_t p_argc);
+  };
+
+  struct exception_object
+  {
+    exception_object(string_object* p_message,
+                     string_object* p_stack_trace,
+                     class_object* p_class,
+                     object*& p_objects_list);
+    ~exception_object();
+
+    template <typename Obj = object>
+    static Obj*
+    create(string_object* p_message, string_object* p_stack_trace, class_object* p_class, object*& p_objects_list);
+
+    object up;
+    string_object* message;
+    string_object* stack_trace;
+
+    static native_return_type equal(vm* p_vm, value_t p_this, uint8_t p_argc);
+    static native_return_type bang_equal(vm* p_vm, value_t p_this, uint8_t p_argc);
+    static native_return_type print(vm* p_vm, value_t p_this, uint8_t p_argc);
+  };
+
+  struct object_wrapper
+  {
+    object_wrapper(object* p_object, class_object* p_class, object*& p_objects_list);
+    ~object_wrapper();
+
+    template <typename Obj = object>
+    static Obj* create(object* p_object, class_object* p_class, object*& p_objects_list);
+
+    object up;
+    object* obj;
+    std::unordered_map<string_object*, value_t> fields;
   };
 
   template <typename T, typename... Args>
@@ -532,5 +589,7 @@ namespace ok
   bool object_register_builtins(vm* p_vm);
   void object_inherit(class_object* p_super, class_object* p_sub);
   void register_base_methods(object* p_object);
+
+  bool is_instance(value_t p_instance, value_t p_type);
 } // namespace ok
 #endif // OK_OBJECT_HPP

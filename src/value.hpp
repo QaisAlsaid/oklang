@@ -42,6 +42,7 @@ namespace ok
     null_val,
     number_val,
     native_function_val,
+    // primitive_function_val,
     object_val,
   };
 

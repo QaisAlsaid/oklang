@@ -43,7 +43,7 @@ namespace ok
   enum class opcode : byte
   {
     // internal idk
-    op_invalid,
+    op_invalid = 0,
     op_pop,
     op_pop_n, // no long version, max is 255 pops. other than that emit more than one of these
     op_constant,
@@ -156,6 +156,11 @@ namespace ok
     op_set_property_long,
     op_set_if_property,
     op_set_if_property_long,
+
+    // exceptions
+    op_push_catch_type,
+    op_finalize,
+    op_throw,
   };
   constexpr uint32_t op_constant_max_count = UINT8_MAX;
   constexpr uint32_t uint24_max = (1 << 24) - 1;

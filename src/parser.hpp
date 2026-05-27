@@ -27,15 +27,15 @@ namespace ok
       prec_equality,    // x == y
       prec_comparision, // x < y, x > y, x <= y, x >= y
       prec_shift,       // x << y, x >> y
-      prec_as,
-      prec_sum,       // 2 + 2
-      prec_product,   // 3 * 3
-      prec_exponent,  // 2 ** 6
-      prec_prefix,    // !x
-      prec_postfix,   // x++
-      prec_call,      // x()
-      prec_member,    // foo.bar
-      prec_subscript, // x[]
+      prec_as,          // x as string
+      prec_sum,         // 2 + 2
+      prec_product,     // 3 * 3
+      prec_exponent,    // 2 ** 6
+      prec_prefix,      // !x
+      prec_postfix,     // x++
+      prec_call,        // x()
+      prec_member,      // foo.bar
+      prec_subscript,   // x[]
     };
   };
 
@@ -142,6 +142,13 @@ namespace ok
     std::unique_ptr<ast::for_statement> parse_for_statement();
     std::unique_ptr<ast::control_flow_statement> parse_control_flow_statement();
     std::unique_ptr<ast::return_statement> parse_return_statement();
+    std::unique_ptr<ast::throw_statement> parse_throw_statement();
+    std::unique_ptr<ast::try_catch_statement> parse_try_catch_statement();
+
+    std::unique_ptr<ast::try_statement> parse_try_statement();
+    std::list<std::unique_ptr<ast::catch_statement>> parse_catch_statements();
+    std::unique_ptr<ast::finalize_statement> parse_finalize_statement();
+    void validate_catches(const std::list<std::unique_ptr<ast::catch_statement>>& p_catches);
 
     ast::class_declaration::method_declaration parse_operator_overload(ast::declaration_modifier p_dm);
 

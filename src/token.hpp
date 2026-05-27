@@ -93,6 +93,8 @@ namespace ok
     tok_async,
     tok_try,
     tok_catch,
+    tok_finalize,
+    tok_throw,
   };
 
   struct token
@@ -273,6 +275,10 @@ namespace ok
       return "try"sv;
     case token_type::tok_catch:
       return "catch"sv;
+    case token_type::tok_finalize:
+      return "finalize"sv;
+    case token_type::tok_throw:
+      return "throw"sv;
     }
     return "unknown"sv;
   }

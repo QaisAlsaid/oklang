@@ -238,6 +238,10 @@ namespace ok::debug
       return simple_instruction("op_save_slot", p_offset);
     case to_utype(opcode::op_push_saved_slot):
       return simple_instruction("op_push_saved_slot", p_offset);
+    case to_utype(opcode::op_push_catch_type):
+      return single_operand_instruction("op_push_catch_type_catch", p_chunk, p_offset);
+    case to_utype(opcode::op_throw):
+      return simple_instruction("op_throw", p_offset);
     default:
     {
       std::println("unknown opcode: '{}'", instruction);
