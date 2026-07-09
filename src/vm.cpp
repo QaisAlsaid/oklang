@@ -2362,7 +2362,6 @@ namespace ok
     {
       return perform_print_others(p_printable);
     }
-class Cls {operator + (_) {this.value = this.value + _.value;return this;}}let inst = Cls();inst.value = 66;let inst2 = Cls();inst2.value = 1;print (inst + inst2).value; // expect: 67
     push_exception("err");
     return false;
   }
