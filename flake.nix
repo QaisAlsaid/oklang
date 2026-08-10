@@ -31,7 +31,7 @@
           nativeBuildInputs = [ ok ];
         } ''
           mkdir -p $out
-          oktest-regression ${ok}/bin/ok ${self}/tests ${ok}/bin/okc_debug | tee $out/summary.txt
+          oktest-regression ${ok}/bin/ok ${self}/tests ${ok}/bin/ok_debug | tee $out/summary.txt
         '';
       };
 
