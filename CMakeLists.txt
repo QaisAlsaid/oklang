@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.11)
-project(okc LANGUAGES CXX)
+project(ok LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
@@ -15,7 +15,7 @@ add_compile_options(-w)
 
 include_directories(${OK_PATH}/src ${OK_PATH}/include)
 
-function (add_okc_build target_name build_type) 
+function (add_ok_build target_name build_type) 
   add_executable(${target_name} ${OK_SRC} ${OK_HDR})
   target_compile_options(${target_name} PRIVATE 
         $<$<CONFIG:Debug>:-g>
@@ -34,10 +34,5 @@ function (add_okc_build target_name build_type)
     endif()
 endfunction()
 
-add_okc_build(okc_debug debug)
-add_okc_build(okc_release release)
-
-
-add_custom_target(okc ALL
-    DEPENDS okc_release
-)
+add_ok_build(ok_debug debug)
+add_ok_build(ok release)
