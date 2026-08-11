@@ -1,0 +1,102 @@
+#ifndef OK_TOKEN_HPP
+#define OK_TOKEN_HPP
+
+#include <stdint.h>
+
+typedef enum {
+  TOKEN_ERROR = 0,
+  TOKEN_ILLEGAL,         // invalid utf8
+  TOKEN_EOF,             // end of file
+  TOKEN_ASSIGN,          // =
+  TOKEN_PLUS,            // +
+  TOKEN_MINUS,           // -
+  TOKEN_ASTERISK,        // * 
+  TOKEN_SLASH,           // /
+  TOKEN_MODULO,          // %
+  TOKEN_CARET,           // ^
+  TOKEN_AMPERSAND,       // &
+  TOKEN_BAR,             // |
+  TOKEN_PLUS_PLUS,       // ++
+  TOKEN_MINUS_MINUS,     // --
+  TOKEN_PLUS_EQUAL,      // +=
+  TOKEN_MINUS_EQUAL, 
+  TOKEN_ASTERISK_EQUAL,
+  TOKEN_SLASH_EQUAL,
+  TOKEN_MODULO_EQUAL, 
+  TOKEN_CARET_EQUAL, 
+  TOKEN_AMPERSAND_EQUAL, 
+  TOKEN_BAR_EQUAL, 
+  TOKEN_SHIFT_LEFT_EQUAL,
+  TOKEN_SHIFT_RIGHT_EQUAL, 
+  TOKEN_SHIFT_LEFT,
+  TOKEN_SHIFT_RIGHT,
+  TOKEN_COMMA,
+  TOKEN_COLON,
+  TOKEN_SEMICOLON,
+  TOKEN_DOT,
+  TOKEN_QUESTION,
+  TOKEN_BANG,
+  TOKEN_BANG_EQUAL,
+  TOKEN_EQUAL,
+  TOKEN_LESS_EQUAL,
+  TOKEN_GREATER_EQUAL,
+  TOKEN_LESS,
+  TOKEN_GREATER,
+  TOKEN_LEFT_PAREN,
+  TOKEN_RIGHT_PAREN,
+  TOKEN_LEFT_BRACE,
+  TOKEN_RIGHT_BRACE,
+  TOKEN_LEFT_BRACKET,
+  TOKEN_RIGHT_BRACKET,
+  TOKEN_ARROW,
+
+  TOKEN_IDENTIFIER,
+  TOKEN_NUMBER,
+  TOKEN_STRING,
+
+  TOKEN_PRINT,
+  TOKEN_IMPORT,
+  TOKEN_AS,
+  TOKEN_FU,
+  TOKEN_LET,
+  TOKEN_WHILE,
+  TOKEN_FOR,
+  TOKEN_BREAK,
+  TOKEN_CONTINUE,
+  TOKEN_IF,
+  TOKEN_ELSE,
+  TOKEN_AND,
+  TOKEN_OR,
+  TOKEN_CLASS,
+  TOKEN_SUPER,
+  TOKEN_INHERITS,
+  TOKEN_THIS,
+  TOKEN_NULL,
+  TOKEN_TRUE,
+  TOKEN_FALSE,
+  TOKEN_RETURN,
+  TOKEN_NOT,
+  TOKEN_OK,
+  TOKEN_OPERATOR,
+  TOKEN_GLOB,
+  TOKEN_EXPORT,
+  TOKEN_MUT,
+  TOKEN_STATIC,
+  TOKEN_ASYNC,
+  TOKEN_TRY,
+  TOKEN_CATCH,
+  TOKEN_THROW,
+  TOKEN_FINALIZE,
+} token_type;
+
+typedef struct {
+  token_type type;
+  const char* start;
+  uint32_t length;
+  uint32_t offset;
+  uint32_t line;
+} token;
+
+const char* token_type_to_string(token_type p_type);
+
+#endif // OK_TOKEN_HPP
