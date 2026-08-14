@@ -24,14 +24,25 @@ typedef struct {
 } vm; 
 
 typedef enum {
-  OK,
-  COMPILE_ERROR, // evantually the vm won't be coupled to the compiler, but we eat that for now
+  RUNTIME_OK,
   RUNTIME_ERROR,
-} interpret_result; 
+} runtime_status; 
+
+typedef struct {
+  runtime_status status;
+  value top_level_return; // TODO when gc, instead of returning raw value return a gc guarded proxy.
+} interpret_result;
+
+void interpret_result_deinit(interpret_result* p_interpret_result);
+
+typedef struct {
+  source* source;
+  chunk* chunk;
+} interpret_specs; 
 
 void vm_init(vm* p_vm);
-void vm_free(vm* p_vm);
-interpret_result vm_interpret(vm* p_vm, chunk* p_chunk);
+void vm_deinit(vm* p_vm);
+interpret_result vm_interpret(vm* p_vm, interpret_specs);
 interpret_result vm_run(vm* p_vm);
 
 #endif // OK_VM_H

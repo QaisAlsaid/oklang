@@ -10,17 +10,21 @@
 
 #define STACK_SIZE 256
 
+void interpret_result_deinit(interpret_result* p_interpret_result) {
+}
 void vm_init(vm* p_vm) {
   stack_init_warm(&p_vm->stack, STACK_SIZE);
 }
  
-void vm_free(vm* p_vm) {
+void vm_deinit(vm* p_vm) {
   stack_free(&p_vm->stack);
 }
 
-interpret_result vm_interpret(vm* p_vm, chunk* p_chunk) {
-  p_vm->chunk = p_chunk;
-  return vm_run(p_vm);
+interpret_result vm_interpret(vm* p_vm, interpret_specs p_specs) {
+  p_vm->chunk = p_specs.chunk;
+  interpret_result interpret_result = vm_run(p_vm);
+  p_vm->chunk = NULL;
+  return interpret_result;
 }
 
 interpret_result vm_run(vm* p_vm) {
@@ -48,9 +52,10 @@ interpret_result vm_run(vm* p_vm) {
     byte instruction = READ_BYTE();
     switch (instruction) {
       case OP_RETURN: {
-	value_debug_print(stack_popr(&p_vm->stack));
-	printf("\n");
-	return OK;
+	value returned = stack_popr(&p_vm->stack);
+	interpret_result result;
+	result.top_level_return = returned; 
+	result.status = RUNTIME_OK;
        }
        case OP_CONSTANT: {
          value constant = READ_CONSTANT();
@@ -66,7 +71,7 @@ interpret_result vm_run(vm* p_vm) {
 	  BIN_OP(+);
 	  break;
 	}
-	case OP_SUBTRCT: {
+	case OP_SUBTRACT: {
 	  BIN_OP(-);
 	  break;
 	}
@@ -103,7 +108,7 @@ void stack_resize(stack* p_stack, uint32_t p_new_size) {
 
 void stack_push(stack* p_stack, value p_value) {
   if (p_stack->top == p_stack->count) {
-    OK_ARRAY_APPEND(value, p_stack->count, p_stack->capacity, p_stack->values, p_value);
+    OK_ARRAY_APPEND(value, uint32_t, p_stack->count, p_stack->capacity, p_stack->values, p_value);
     p_stack->top++;
   } else {
     p_stack->values[p_stack->top] = p_value;

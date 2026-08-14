@@ -7,8 +7,15 @@
 void lexer_init(lexer* p_lexer, const char* p_src) {
   p_lexer->start = p_src;
   p_lexer->current = p_src;
-  p_lexer->line = 1;
-  p_lexer->offset = 1;
+  p_lexer->line_info.line = 1;
+  p_lexer->line_info.offset = 1;
+}
+
+void lexer_free(lexer* p_lexer) {
+  p_lexer->start = NULL;
+  p_lexer->current = NULL; 
+  p_lexer->line_info.line = 0;
+  p_lexer->line_info.offset = 0;
 }
 
 static bool at_end(lexer* p_lexer) {
@@ -18,8 +25,7 @@ static bool at_end(lexer* p_lexer) {
 static token create_token(lexer* p_lexer, token_type p_type) {
   token token;
   token.type = p_type;
-  token.line = p_lexer->line;
-  token.offset = p_lexer->offset;
+  token.line_info = p_lexer->line_info;
   token.length = (uint32_t)(p_lexer->current - p_lexer->start);
   token.start = p_lexer->start;
   return token;
@@ -28,15 +34,14 @@ static token create_token(lexer* p_lexer, token_type p_type) {
 static token create_error_token(lexer* p_lexer, const char* p_message) {
   token token;
   token.type = TOKEN_ERROR;
-  token.offset = p_lexer->offset;
-  token.line = p_lexer->line;
+  token.line_info = p_lexer->line_info;
   token.length = strlen(p_message);
   token.start = p_message;
   return token;
 }
 
 static char advance(lexer* p_lexer) {
-  p_lexer->offset++;
+  p_lexer->line_info.offset++;
   return (++p_lexer->current)[-1];
 }
 
@@ -62,7 +67,7 @@ static token string(lexer* p_lexer, char p_start, bool p_multiline) {
       token error = create_error_token(p_lexer, "unterminated string.");
       return error;
     } else if (peek(p_lexer) == '\n') {
-      p_lexer->line++;
+      p_lexer->line_info.line++;
     }
     advance(p_lexer);
   }
@@ -310,7 +315,7 @@ start:
       return create_token(p_lexer, TOKEN_SLASH);
     }
     case '\n':
-      p_lexer->line++;
+      p_lexer->line_info.line++;
       goto start;
     case ' ':
     case '\t':

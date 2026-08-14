@@ -34,7 +34,11 @@ void repl(ok* p_ok) {
       printf("\n");
       break;
     }
-    ok_run(p_ok, line);
+    source source;
+    source.source = FROM_REPL;
+    source.code = line;
+    source.path = "";
+    ok_run(p_ok, source);
   }
 }
 
@@ -43,11 +47,15 @@ void run_file(ok* p_ok, const char* p_path) {
   if (src == NULL) {
     exit(1);
   }
-  run_result res = ok_run(p_ok, src);
+  source source;
+  source.source = FROM_REPL;
+  source.code = src;
+  source.path = p_path;
+  run_result result = ok_run(p_ok, source); 
   free(src);
-  if (res == RUN_COMPILE_ERROR) {
+  if (result == RUN_PARSE_ERROR || result == RUN_COMPILE_ERROR) {
     exit(65);
-  } else if (res == RUN_RUNTIME_ERROR) {
+  } else if (result == RUN_RUNTIME_ERROR) {
     exit(70);
   }
 }

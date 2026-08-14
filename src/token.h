@@ -2,6 +2,7 @@
 #define OK_TOKEN_HPP
 
 #include <stdint.h>
+#include "source.h"
 
 typedef enum {
   TOKEN_ERROR = 0,
@@ -92,9 +93,8 @@ typedef enum {
 typedef struct {
   token_type type;
   const char* start;
+  line_info line_info;
   uint32_t length;
-  uint32_t offset;
-  uint32_t line;
 } token;
 
 const char* token_type_to_string(token_type p_type);

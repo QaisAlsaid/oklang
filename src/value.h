@@ -11,11 +11,10 @@ typedef struct {
   uint32_t count;
   uint32_t capacity;
   value* value_array;
-} values;
+} value_array;
 
-void values_init(values* p_values);
-void values_just_write(values* p_values, value p_value);
-uint32_t values_write(values* p_values, value p_value);
-void values_free(values* p_values);
+void value_array_init(value_array* p_values);
+void value_array_deinit(value_array* p_values);
+void value_array_append(value_array* p_values, value p_value);
 
 #endif // OK_VALUE_H

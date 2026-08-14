@@ -1,5 +1,6 @@
 #include "disassembler.h"
 #include <stdio.h>
+#include "utils.h"
 
 // this should ultimately use a custom logger so we can output to any stream we wish, but for now it is ok to just use printf.
 
@@ -16,30 +17,30 @@ const char* disassemble_chunk(chunk* p_chunk, const char* p_name) {
 
 static uint32_t op_code_instruction(const char* p_opname, uint32_t p_offset);
 static uint32_t constant_instruction(const char* p_opname, uint32_t p_offset, const chunk* p_chunk);
+static uint32_t constant_long_instruction(const char* p_opname, uint32_t p_offset, chunk* p_chunk);
 
 uint32_t disassemble_instruction(chunk* p_chunk, uint32_t p_offset) {
   printf("%04d ", p_offset);
 
-  line_info* info = source_info_find(&p_chunk->source_info, p_offset);
+  line_info_repeated* info = source_info_find(&p_chunk->source_info, p_offset);
   if (info && p_offset == 0) {
-    printf("%4d:%d ", info->line, info->offset);
+    printf("%4d:%d ", info->line_info.line, info->line_info.offset);
   }
   if (p_offset > 0) {
-    line_info* prev_info = source_info_find(&p_chunk->source_info, p_offset - 1);
-    line_info* info = source_info_find(&p_chunk->source_info, p_offset);
+    line_info_repeated* prev_info = source_info_find(&p_chunk->source_info, p_offset - 1);
+    line_info_repeated* info = source_info_find(&p_chunk->source_info, p_offset);
     if (info && prev_info) {
-      if (info->line ==  prev_info->line) {
+      if (info->line_info.line ==  prev_info->line_info.line) {
 	printf("   |");
       } else {
-	printf("%4d:", info->line);
+	printf("%4d:", info->line_info.line);
       }
-      if (info->offset ==  prev_info->offset) {
+      if (info->line_info.line ==  prev_info->line_info.offset) {
 	printf(" | ");
       }
-      if (info->offset !=  prev_info->offset)  {
-	printf("%d ", info->offset);
+      if (info->line_info.offset !=  prev_info->line_info.offset)  {
+	printf("%d ", info->line_info.offset);
       }
-
     }
   }
 
@@ -49,11 +50,15 @@ uint32_t disassemble_instruction(chunk* p_chunk, uint32_t p_offset) {
       return op_code_instruction("OP_RETURN", p_offset);
     case OP_CONSTANT:
       return constant_instruction("OP_CONSTANT", p_offset, p_chunk);
+    case OP_CONSTANT_LONG:
+      return constant_long_instruction("OP_CONSTANT_LONG", p_offset, p_chunk);
+    case OP_POP:
+      return op_code_instruction("OP_POP", p_offset);
     case OP_NEGATE: 
       return op_code_instruction("OP_NEGATE", p_offset);
     case OP_ADD:
       return op_code_instruction("OP_ADD", p_offset);
-    case OP_SUBTRCT: 
+    case OP_SUBTRACT: 
       return op_code_instruction("OP_SUBTRACT", p_offset);
     case OP_MULTIPLY:
       return op_code_instruction("OP_MULTIPLY", p_offset);
@@ -75,5 +80,13 @@ uint32_t constant_instruction(const char* p_opname, uint32_t p_offset, const chu
   printf("%-16s %4d '", p_opname, constant);
   value_debug_print(p_chunk->constants.value_array[constant]);
   printf("'\n");
-  return p_offset + OP_CONSTANT_OPERANDS_WIDTH + OP_CODE_WIDTH;
+  return p_offset + OP_CODE_WIDTH + OP_CONSTANT_OPERANDS_WIDTH;
+}
+
+uint32_t constant_long_instruction(const char* p_opname, uint32_t p_offset, chunk* p_chunk) {
+  const uint32_t constant = decode_int(p_chunk->code.code_array + OP_CODE_WIDTH, OP_CONSTANT_LONG_OPERANDS_WIDTH);
+  printf("%-16s %4d '", p_opname, constant);
+  value_debug_print(p_chunk->constants.value_array[constant]);
+  printf("'\n");
+  return p_offset + OP_CODE_WIDTH + OP_CONSTANT_LONG_OPERANDS_WIDTH;
 }

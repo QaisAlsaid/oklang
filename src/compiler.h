@@ -1,14 +1,36 @@
 #ifndef OK_COMPILER_H
 #define OK_COMPILER_H
 
-#include "lexer.h"
+#include "parser.h"
+#include "source.h"
+#include "chunk.h"
 
 typedef struct {
-  lexer lexer;
+  chunk* current_chunk;
+  source* source;
+  bool had_error;
+  bool panic;
 } compiler;
 
+typedef enum {
+  COMPILE_OK,
+  COMPILE_ERROR,
+} compile_status;
+
+typedef struct {
+  compile_status status;
+  chunk* chunk;
+} compile_result;
+
+void compile_result_deinit(compile_result* p_result);
+
+typedef struct {
+  source* source;
+  ast_root* root;
+} compiler_specs;
+
 void compiler_init(compiler* compiler);
-void compiler_compile(compiler* p_compiler, const char* p_src);
-void compiler_free(compiler* p_compiler);
+void compiler_deinit(compiler* p_compiler);
+compile_result compiler_compile(compiler* p_compiler, compiler_specs p_specs);
 
 #endif // OK_COMPILER_H
