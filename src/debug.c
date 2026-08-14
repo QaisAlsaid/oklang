@@ -1,46 +1,51 @@
-#include "disassembler.h"
+#include "debug.h"
 #include <stdio.h>
+#include <assert.h>
 #include "utils.h"
 
 // this should ultimately use a custom logger so we can output to any stream we wish, but for now it is ok to just use printf.
 
 #define UNKNOWN_ASSUMED_WIDTH 1
 
-const char* disassemble_chunk(chunk* p_chunk, const char* p_name) {
+static uint32_t op_code_instruction(const char* p_opname, const uint32_t p_offset);
+static uint32_t constant_instruction(const char* p_opname, const uint32_t p_offset, const chunk* p_chunk);
+static uint32_t constant_long_instruction(const char* p_opname, const uint32_t p_offset, const chunk* p_chunk);
+
+const char* debug_disassemble_chunk(const chunk* p_chunk, const char* p_name) {
   printf("-- %s --\n", p_name);
 
   for (uint32_t offset = 0; offset < p_chunk->code.count;) {
-    offset = disassemble_instruction(p_chunk, offset);
+    offset = debug_disassemble_instruction(p_chunk, offset);
   }
   return NULL;
 }
 
-static uint32_t op_code_instruction(const char* p_opname, uint32_t p_offset);
-static uint32_t constant_instruction(const char* p_opname, uint32_t p_offset, const chunk* p_chunk);
-static uint32_t constant_long_instruction(const char* p_opname, uint32_t p_offset, chunk* p_chunk);
-
-uint32_t disassemble_instruction(chunk* p_chunk, uint32_t p_offset) {
+uint32_t debug_disassemble_instruction(const chunk* p_chunk, uint32_t p_offset) {
   printf("%04d ", p_offset);
 
   line_info_repeated* info = source_info_find(&p_chunk->source_info, p_offset);
   if (info && p_offset == 0) {
-    printf("%4d:%d ", info->line_info.line, info->line_info.offset);
+    printf("%4d:%-4d ", info->line_info.line, info->line_info.offset);
   }
   if (p_offset > 0) {
     line_info_repeated* prev_info = source_info_find(&p_chunk->source_info, p_offset - 1);
     line_info_repeated* info = source_info_find(&p_chunk->source_info, p_offset);
     if (info && prev_info) {
-      if (info->line_info.line ==  prev_info->line_info.line) {
-	printf("   |");
+      if (info->line_info.line == prev_info->line_info.line) {
+	if (info->line_info.offset ==  prev_info->line_info.offset) {
+	  printf("   |");
+	  printf(" |   ");
+        } else {
+	  printf("   |");
+	  printf(" %-4d ", info->line_info.offset);
+        }
       } else {
-	printf("%4d:", info->line_info.line);
-      }
-      if (info->line_info.line ==  prev_info->line_info.offset) {
-	printf(" | ");
-      }
-      if (info->line_info.offset !=  prev_info->line_info.offset)  {
-	printf("%d ", info->line_info.offset);
-      }
+	if (info->line_info.offset ==  prev_info->line_info.offset) {
+	  printf("%4d: |", info->line_info.line);
+        } else {
+	  printf("%4d:%-4d ", info->line_info.line, info->line_info.offset);
+        }
+      }    
     }
   }
 
@@ -70,12 +75,12 @@ uint32_t disassemble_instruction(chunk* p_chunk, uint32_t p_offset) {
   }
 }
 
-uint32_t op_code_instruction(const char* p_opname, uint32_t p_offset) {
+uint32_t op_code_instruction(const char* p_opname, const uint32_t p_offset) {
   printf("%s\n", p_opname);
-  return p_offset + 1;
+  return p_offset + OP_CODE_WIDTH;
 }
 
-uint32_t constant_instruction(const char* p_opname, uint32_t p_offset, const chunk* p_chunk) {
+uint32_t constant_instruction(const char* p_opname, const uint32_t p_offset, const chunk* p_chunk) {
   uint8_t constant = p_chunk->code.code_array[p_offset + OP_CONSTANT_OPERANDS_WIDTH];
   printf("%-16s %4d '", p_opname, constant);
   value_debug_print(p_chunk->constants.value_array[constant]);
@@ -83,7 +88,7 @@ uint32_t constant_instruction(const char* p_opname, uint32_t p_offset, const chu
   return p_offset + OP_CODE_WIDTH + OP_CONSTANT_OPERANDS_WIDTH;
 }
 
-uint32_t constant_long_instruction(const char* p_opname, uint32_t p_offset, chunk* p_chunk) {
+uint32_t constant_long_instruction(const char* p_opname, const uint32_t p_offset, const chunk* p_chunk) {
   const uint32_t constant = decode_int(p_chunk->code.code_array + OP_CODE_WIDTH, OP_CONSTANT_LONG_OPERANDS_WIDTH);
   printf("%-16s %4d '", p_opname, constant);
   value_debug_print(p_chunk->constants.value_array[constant]);

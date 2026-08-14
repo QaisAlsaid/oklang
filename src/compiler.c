@@ -3,17 +3,10 @@
 #include <stdlib.h>
 #include <assert.h>
 #include "utils.h"
-#include "disassembler.h"
+#include "debug.h"
 
 #define OK_DEBUG_DUMP_CODE
 
-typedef enum {
-  WARN,
-  ERROR,
-} report_severity;
-
-static void report_at(compiler* p_compiler, ast_node* p_node, report_severity p_severity, const char* p_message);
-static void report_at_with_note(compiler* p_compiler, ast_node* p_node, report_severity p_severity, const char* p_message, const char* p_note);
 static chunk* current_chunk(compiler* p_compiler);
 static bool emit_byte(compiler* p_compiler, byte p_byte, ast_node* p_node);
 static bool emit_2bytes(compiler* p_compiler, byte p_1st_byte, byte p_2nd_byte, ast_node* p_node);
@@ -66,7 +59,7 @@ compile_result compiler_compile(compiler* p_compiler, compiler_specs p_specs) {
     result.status = COMPILE_OK;
     result.chunk = _chunk;
 #if defined (OK_DEBUG_DUMP_CODE)
-    disassemble_chunk(_chunk, "code");
+    debug_disassemble_chunk(_chunk, "code");
 #endif // defined (OK_DEBUG_DUMP_CODE)
   } else {
     free(_chunk);
@@ -74,31 +67,6 @@ compile_result compiler_compile(compiler* p_compiler, compiler_specs p_specs) {
     result.chunk = NULL;
   }
   return result;
-}
-
-void report_at(compiler* p_compiler, ast_node* p_node, report_severity p_severity, const char* p_message) {
-  report_at_with_note(p_compiler, p_node, p_severity, p_message, NULL);
-}
- 
-// abstract away (for both parser and compiler) and extend
-void report_at_with_note(compiler* p_compiler, ast_node* p_node, report_severity p_severity, const char* p_message, const char* p_note) {
-  if (p_compiler->panic) return;
-  p_compiler->panic = true;
-  p_compiler->had_error = true;
-  const char* report = p_severity == WARN ? "warning" : "error";
-  const char* message = p_message != NULL ? p_message : ""; 
-  fprintf(stderr, "%s:%d:%d: %s: %s\n", p_compiler->source->path, p_node->token.line_info.line, p_node->token.line_info.offset, report, message);
-  if (p_node->node_type == AST_EOF_STATEMENT) {
-    fprintf(stderr, "    | ");
-    fprintf(stderr, "at end (EOF).\n");
-  } else {
-    fprintf(stderr, "    | ");
-    fprintf(stderr, "%.*s\n", p_node->token.length, p_node->token.start);
-    fprintf(stderr, "    | ");
-    fprintf(stderr, "%*c\n", p_node->token.line_info.offset - 1, '^');
-  }
-  if (p_note)
-    fprintf(stderr, "    | note: %s\n", p_note);
 }
 
 chunk* current_chunk(compiler* p_compiler) {
@@ -131,26 +99,17 @@ uint32_t create_constant(compiler* p_compiler, value p_value, ast_node* p_node) 
   chunk* chunk = current_chunk(p_compiler);
   const uint32_t index = chunk_write_constant_with_line_info(chunk, p_value, p_node->token.line_info);
   if (index == CONSTANTS_INVALID) {
-    char* note;
-    asprintf(&note, "maximum number of constants is: %d", CONSTANTS_MAX);
-    report_at_with_note(p_compiler, p_node, ERROR, "too many constants in one function.", note);
-    free(note);
+    string message = string_create("too many constants in single function.", 0, false);
+    string note = asprint("maximum number of constants is: %d", CONSTANTS_MAX);
+    report_at_noted(&p_compiler->panic, &p_compiler->had_error, p_node->node_type == AST_EOF_STATEMENT, p_compiler->source,
+	&p_node->token, REPORT_SEVERITY_ERROR, &message, &note);
   }
   return index;
 }
 
 bool emit_constant(compiler* p_compiler, value p_value, ast_node* p_node) {
   const uint32_t index = create_constant(p_compiler, p_value, p_node);
-  if (index <= OP_CONSTANT_MAX) {
-    emit_2bytes(p_compiler, OP_CONSTANT, index, p_node);
-  } else if (index <= OP_CONSTANT_LONG_MAX) {
-    byte bytes[OP_CONSTANT_LONG_OPERANDS_WIDTH];
-    encode_int(bytes, OP_CONSTANT_LONG_OPERANDS_WIDTH, index);
-    emit_bytes(p_compiler, bytes, OP_CONSTANT_LONG_OPERANDS_WIDTH, p_node);
-  } else {
-    return false;
-  }
-  return true;
+  return  index != CONSTANTS_INVALID;
 }
 
 static bool compile_node(compiler* p_compiler, ast_node* p_node) {
@@ -215,16 +174,16 @@ static bool compile_node(compiler* p_compiler, ast_node* p_node) {
     case AST_EOF_STATEMENT:
       return compile_eof_statement(p_compiler, (ast_eof_statement*)p_node);
     default: {
-      char* message;
-      asprintf(&message, "unable to compile node: %d", p_node->node_type);
-      report_at(p_compiler, p_node, ERROR, message);
-      free(message);
+      string message = asprint("unable to compile node: %d", p_node->node_type);
+      report_at(&p_compiler->panic, &p_compiler->had_error, p_node->node_type == AST_EOF_STATEMENT, p_compiler->source,
+	&p_node->token, REPORT_SEVERITY_ERROR, &message);
+      return false;
     }
   }
 }
 
 static bool compile_root(compiler* p_compiler, ast_root* p_root) {
-  for (ast_root_statements_list_node* node = p_root->statements.head; node != NULL; node = node->next) {
+  for (ast_statements_list_node* node = p_root->statements.head; node != NULL; node = node->next) {
     const bool res = compile_node(p_compiler, (ast_node*)node->statement);
   }
   return true;

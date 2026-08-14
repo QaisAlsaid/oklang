@@ -19,13 +19,6 @@ run_result ok_run(ok* p_ok, source p_source) {
     return RUN_PARSE_ERROR;
   }
 
-  ast_root_statements_list_node* node = parse_result.root->statements.head;
-  
-  while(node != NULL) {
-    printf("%i\n", (int)node->statement->node.node_type);
-    node = node->next;
-  }
-
   compiler_specs compiler_specs;
   compiler_specs.root = parse_result.root;
   compiler_specs.source = &p_source;
@@ -35,7 +28,6 @@ run_result ok_run(ok* p_ok, source p_source) {
     compile_result_deinit(&compile_result);
     return RUN_COMPILE_ERROR;
   }
-  return RUN_OK;
   interpret_specs interpret_specs;
   interpret_specs.chunk = compile_result.chunk;
   interpret_specs.source = &p_source;

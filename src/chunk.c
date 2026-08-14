@@ -5,6 +5,7 @@
 #include "utils.h"
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 void code_init(code* p_code) {
   OK_ARRAY_INIT(p_code->count, p_code->capacity, p_code->code_array);
@@ -20,7 +21,8 @@ void code_write_1byte(code* p_code, byte p_byte) {
 }
 
 void code_write_2bytes(code* p_code, const byte p_1st_byte, const byte p_2nd_byte) {
-  OK_ARRAY_APPEND_N(byte, uint32_t, p_code->count, p_code->capacity, p_code->code_array, &p_1st_byte, 2);
+  byte bytes[2] = { p_1st_byte, p_2nd_byte }; 
+  OK_ARRAY_APPEND_N(byte, uint32_t, p_code->count, p_code->capacity, p_code->code_array, bytes, 2);
 }
 
 void code_write(code* p_code, const byte* p_bytes, const size_t p_bytes_count) {
@@ -48,7 +50,7 @@ append:
   }
 }
 
-line_info_repeated* source_info_find(source_info* p_source_info, const uint32_t p_instruction_index) {
+line_info_repeated* source_info_find(const source_info* p_source_info, const uint32_t p_instruction_index) {
   for (uint32_t num_instructions = 0, i = 0; i < p_source_info->count; ++i) {
     line_info_repeated* info = &p_source_info->line_info_array[i]; 
     num_instructions += info->reps;
@@ -96,7 +98,7 @@ bool chunk_write_code_with_line_info(chunk* p_chunk, const byte* p_bytes, const 
   return true;
 }
 
-bool chunk_write_constant_with_line_info(chunk* p_chunk, const value p_constant, const line_info p_line_info) {
+uint32_t chunk_write_constant_with_line_info(chunk* p_chunk, const value p_constant, const line_info p_line_info) {
   if (p_chunk->constants.count > CONSTANTS_MAX) {
     return CONSTANTS_INVALID;
   }

@@ -18,7 +18,7 @@ include_directories(${OK_PATH}/src ${OK_PATH}/include)
 function (add_ok_build target_name build_type) 
   add_executable(${target_name} ${OK_SRC} ${OK_HDR})
   target_compile_options(${target_name} PRIVATE 
-        $<$<CONFIG:Debug>:-g>
+        $<$<CONFIG:Debug>:-g -O0>
         $<$<CONFIG:Release>:-O3>
     )
     set_target_properties(${target_name} PROPERTIES

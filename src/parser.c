@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
+#include "utils.h"
 
 static precedence get_precedence(token_type p_type); 
 
@@ -15,7 +16,7 @@ static ast_expression_statement* parse_expression_statement(parser* p_parser);
 static ast_eof_statement* parse_eof_statement(parser* p_parser);
 
 static bool advance(parser* p_parser);
-static bool expect(parser* p_parser, token_type p_type, const char* p_message);
+static bool expect(parser* p_parser, token_type p_type, string p_message);
 static token current(parser* p_parser);
 static token peek(parser* p_parser);
 static void sync_state(parser* p_parser);
@@ -158,28 +159,6 @@ void parse_result_deinit(parse_result* parse_result) {
   parse_result->root = NULL;
 }
 
-typedef enum {
-  SEVERITY_WARN,
-  SEVERITY_ERROR,
-} report_severity;
-
-static void report_at(parser* p_parser, token p_token, report_severity p_severity, const char* p_message) {
-  if (p_parser->panic) return;
-  p_parser->panic = true;
-  p_parser->had_error = true;
-  const char* report = p_severity == SEVERITY_WARN ? "warning" : "error";
-  fprintf(stderr, "%s:%d:%d: %s: %s\n", p_parser->source->path, p_token.line_info.line, p_token.line_info.offset, report, p_message);
-  if (p_token.type == TOKEN_EOF) {
-    fprintf(stderr, "    | ");
-    fprintf(stderr, "at end (EOF).\n");
-  } else if (p_token.type != TOKEN_ERROR) {
-    fprintf(stderr, "    | ");
-    fprintf(stderr, "%.*s\n", p_token.length, p_token.start);
-    fprintf(stderr, "    | ");
-    fprintf(stderr, "%*c\n", p_token.line_info.offset - 1, '^');
-  }
-}
-
 bool advance(parser* p_parser) {
   p_parser->previous = p_parser->current;
   for (;;) {
@@ -187,17 +166,21 @@ bool advance(parser* p_parser) {
     if (p_parser->current.type != TOKEN_ERROR) {
       break;
     }
-    report_at(p_parser, p_parser->current, SEVERITY_ERROR, p_parser->current.start);
+    string message = asprint("%*.s", p_parser->current.length, p_parser->current.start);
+    report_at(&p_parser->panic, &p_parser->had_error, p_parser->current.type == TOKEN_EOF,
+	p_parser->source, &p_parser->current, REPORT_SEVERITY_ERROR, &message);
+    string_deinit(&message);
     return false;
   }
   return true;
 }
 
-bool expect(parser* p_parser, token_type p_type, const char* p_message) {
+bool expect(parser* p_parser, token_type p_type, string p_message) {
   if (p_parser->current.type == p_type) {
     return advance(p_parser);
   }
-  report_at(p_parser, p_parser->current, SEVERITY_ERROR, p_message);
+  report_at(&p_parser->panic, &p_parser->had_error, p_parser->current.type == TOKEN_EOF,
+	p_parser->source, &p_parser->current, REPORT_SEVERITY_ERROR, &p_message);
   return false;
 }
 
@@ -229,11 +212,11 @@ ast_root* parse_root(parser* p_parser) {
   while(advance(p_parser) && p_parser->previous.type != TOKEN_EOF) {
     ast_statement* statement = try_parse_declaration(p_parser);
     if (statement != NULL && statement->node.node_type != AST_EMPTY_STATEMENT) {
-      ast_root_statements_list_append(&root->statements, statement);
+      ast_statements_list_append(&root->statements, statement);
     }
   }
   if (p_parser->previous.type == TOKEN_EOF) {
-    ast_root_statements_list_append(&root->statements, (ast_statement*)parse_eof_statement(p_parser));
+    ast_statements_list_append(&root->statements, (ast_statement*)parse_eof_statement(p_parser));
   }
   return root;
 }
@@ -242,7 +225,9 @@ ast_expression* parse_expression(parser* p_parser, int p_precedence) {
   token tok = p_parser->previous;
   const parse_rule prefix_rule = parse_rules[tok.type];
   if (prefix_rule.prefix == NULL) {
-    report_at(p_parser, tok, SEVERITY_ERROR, "expected expression.");
+    string message = string_create("expected expression.", STRING_CALCULATE_LENGTH, false);
+    report_at(&p_parser->panic, &p_parser->had_error, p_parser->current.type == TOKEN_EOF,
+	p_parser->source, &p_parser->current, REPORT_SEVERITY_ERROR, &message);
     return NULL;
   } 
   ast_expression* left = prefix_rule.prefix(p_parser, tok);
@@ -287,7 +272,7 @@ ast_expression* parse_grouping(parser* p_parser, token p_trigger) {
   if (expr == NULL) {
     return NULL;
   }
-  if (expect(p_parser, TOKEN_RIGHT_PAREN, "expected ')'.")) {
+  if (expect(p_parser, TOKEN_RIGHT_PAREN, string_create("expected ')'.", STRING_CALCULATE_LENGTH, false))) {
     return expr;
   }
   ast_node_deinit((ast_node*)expr);
@@ -394,7 +379,9 @@ ast_expression_statement* parse_expression_statement(parser* p_parser) {
     return NULL;
   }
   if (p_parser->current.type != TOKEN_SEMICOLON) {
-    report_at(p_parser, p_parser->current, SEVERITY_ERROR, "expected ';' after expression statement.");
+    string message = string_create("expected ';' after expression statement.", STRING_CALCULATE_LENGTH, false);
+    report_at(&p_parser->panic, &p_parser->had_error, p_parser->current.type == TOKEN_EOF,
+	p_parser->source, &p_parser->current, REPORT_SEVERITY_ERROR, &message);
     return NULL;
   }
   advance(p_parser);

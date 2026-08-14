@@ -1,7 +1,7 @@
 #include "vm.h"
 #define OK_TRACE_EXECUTION
 #if defined(OK_TRACE_EXECUTION)
-  #include "disassembler.h"
+  #include "debug.h"
 #endif // defined(OK_TRACE_EXECUTION)
 
 #include "mm.h"
@@ -46,7 +46,7 @@ interpret_result vm_run(vm* p_vm) {
 	printf(" ]");
       }
       printf("\n");
-      disassemble_instruction(p_vm->chunk, (uint32_t)(ip - p_vm->chunk->code.code_array));
+      debug_disassemble_instruction(p_vm->chunk, (uint32_t)(ip - p_vm->chunk->code.code_array));
     #endif // defined(OK_TRACE_EXECUTION)
 
     byte instruction = READ_BYTE();
@@ -56,6 +56,7 @@ interpret_result vm_run(vm* p_vm) {
 	interpret_result result;
 	result.top_level_return = returned; 
 	result.status = RUNTIME_OK;
+	return result;
        }
        case OP_CONSTANT: {
          value constant = READ_CONSTANT();
