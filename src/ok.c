@@ -1,7 +1,7 @@
 #include "ok.h"
 #include "chunk.h"
-#include <stdlib.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 void ok_init(ok* p_ok) {
   p_ok->compiler = malloc(sizeof(compiler));
@@ -43,8 +43,7 @@ run_result ok_run(ok* p_ok, source p_source) {
   return RUN_OK;
 }
 
-void ok_free(ok* p_ok) 
-{
+void ok_free(ok* p_ok) {
   vm_deinit(p_ok->vm);
   compiler_deinit(p_ok->compiler);
   free(p_ok->vm);

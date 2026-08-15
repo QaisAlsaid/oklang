@@ -1,9 +1,10 @@
 #include "debug.h"
-#include <stdio.h>
-#include <assert.h>
 #include "utils.h"
+#include <assert.h>
+#include <stdio.h>
 
-// this should ultimately use a custom logger so we can output to any stream we wish, but for now it is ok to just use printf.
+// this should ultimately use a custom logger so we can output to any stream we wish, but for now it is ok to just use
+// printf.
 
 #define UNKNOWN_ASSUMED_WIDTH 1
 
@@ -12,11 +13,13 @@ static uint32_t constant_instruction(const char* p_opname, const uint32_t p_offs
 static uint32_t constant_long_instruction(const char* p_opname, const uint32_t p_offset, const chunk* p_chunk);
 
 const char* debug_disassemble_chunk(const chunk* p_chunk, const char* p_name) {
-  printf("-- %s --\n", p_name);
+  printf("---> %s <---\n", p_name);
 
   for (uint32_t offset = 0; offset < p_chunk->code.count;) {
     offset = debug_disassemble_instruction(p_chunk, offset);
   }
+
+  printf("<--- %s --->\n", p_name);
   return NULL;
 }
 
@@ -32,46 +35,47 @@ uint32_t debug_disassemble_instruction(const chunk* p_chunk, uint32_t p_offset) 
     line_info_repeated* info = source_info_find(&p_chunk->source_info, p_offset);
     if (info && prev_info) {
       if (info->line_info.line == prev_info->line_info.line) {
-	if (info->line_info.offset ==  prev_info->line_info.offset) {
-	  printf("   |");
-	  printf(" |   ");
+        if (info->line_info.offset == prev_info->line_info.offset) {
+          printf("   |");
+          printf(" |   ");
         } else {
-	  printf("   |");
-	  printf(" %-4d ", info->line_info.offset);
+          printf("   |");
+          printf(" %-4d ", info->line_info.offset);
         }
       } else {
-	if (info->line_info.offset ==  prev_info->line_info.offset) {
-	  printf("%4d: |", info->line_info.line);
+        if (info->line_info.offset == prev_info->line_info.offset) {
+          printf("%4d: |", info->line_info.line);
         } else {
-	  printf("%4d:%-4d ", info->line_info.line, info->line_info.offset);
+          printf("%4d:%-4d ", info->line_info.line, info->line_info.offset);
         }
-      }    
+      }
     }
   }
 
   uint8_t instruction = p_chunk->code.code_array[p_offset];
   switch (instruction) {
-    case OP_RETURN: 
-      return op_code_instruction("OP_RETURN", p_offset);
-    case OP_CONSTANT:
-      return constant_instruction("OP_CONSTANT", p_offset, p_chunk);
-    case OP_CONSTANT_LONG:
-      return constant_long_instruction("OP_CONSTANT_LONG", p_offset, p_chunk);
-    case OP_POP:
-      return op_code_instruction("OP_POP", p_offset);
-    case OP_NEGATE: 
-      return op_code_instruction("OP_NEGATE", p_offset);
-    case OP_ADD:
-      return op_code_instruction("OP_ADD", p_offset);
-    case OP_SUBTRACT: 
-      return op_code_instruction("OP_SUBTRACT", p_offset);
-    case OP_MULTIPLY:
-      return op_code_instruction("OP_MULTIPLY", p_offset);
-    case OP_DIVIDE:
-      return op_code_instruction("OP_DIVIDE", p_offset);
-    default:
-      printf("unknown opcode %d (assumed width: %u)\n", instruction, UNKNOWN_ASSUMED_WIDTH);
-      return p_offset + UNKNOWN_ASSUMED_WIDTH; // should we even advance here? since it could also be multibyte instruction which will break anyway!
+  case OP_RETURN:
+    return op_code_instruction("OP_RETURN", p_offset);
+  case OP_CONSTANT:
+    return constant_instruction("OP_CONSTANT", p_offset, p_chunk);
+  case OP_CONSTANT_LONG:
+    return constant_long_instruction("OP_CONSTANT_LONG", p_offset, p_chunk);
+  case OP_POP:
+    return op_code_instruction("OP_POP", p_offset);
+  case OP_NEGATE:
+    return op_code_instruction("OP_NEGATE", p_offset);
+  case OP_ADD:
+    return op_code_instruction("OP_ADD", p_offset);
+  case OP_SUBTRACT:
+    return op_code_instruction("OP_SUBTRACT", p_offset);
+  case OP_MULTIPLY:
+    return op_code_instruction("OP_MULTIPLY", p_offset);
+  case OP_DIVIDE:
+    return op_code_instruction("OP_DIVIDE", p_offset);
+  default:
+    printf("unknown opcode %d (assumed width: %u)\n", instruction, UNKNOWN_ASSUMED_WIDTH);
+    return p_offset + UNKNOWN_ASSUMED_WIDTH; // should we even advance here? since it could also be multibyte
+                                             // instruction which will break anyway!
   }
 }
 

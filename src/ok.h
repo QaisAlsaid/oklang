@@ -1,8 +1,8 @@
-#ifndef OK_H 
+#ifndef OK_H
 #define OK_H
 
-#include "source.h"
 #include "compiler.h"
+#include "source.h"
 #include "vm.h"
 
 typedef enum {
@@ -18,7 +18,7 @@ typedef struct {
   source source;
 } ok;
 
-// creates parser + compiler + vm, sets up pipline 
+// creates parser + compiler + vm, sets up pipline
 void ok_init(ok* p_ok);
 void ok_free(ok* p_ok);
 // runs the pipline with the source.

@@ -1,9 +1,9 @@
 #ifndef OK_LEXER_H
 #define OK_LEXER_H
 
+#include "source.h"
 #include "stdint.h"
 #include "token.h"
-#include "source.h"
 
 typedef struct {
   const char* start;

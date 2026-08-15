@@ -98,24 +98,34 @@ bool end_compile(compiler* p_compiler, ast_node* p_node) {
 uint32_t create_constant(compiler* p_compiler, value p_value, ast_node* p_node) {
   chunk* chunk = current_chunk(p_compiler);
   const uint32_t index = chunk_write_constant_with_line_info(chunk, p_value, p_node->token.line_info);
-  if (index == CONSTANTS_INVALID) {
-    string message = string_create("too many constants in single function.", 0, false);
-    string note = asprint("maximum number of constants is: %d", CONSTANTS_MAX);
-    report_at_noted(&p_compiler->panic,
-                    &p_compiler->had_error,
-                    p_node->node_type == AST_EOF_STATEMENT,
-                    p_compiler->source,
-                    &p_node->token,
-                    REPORT_SEVERITY_ERROR,
-                    &message,
-                    &note);
+  if (!IS_CONSTANT_VALID(index)) {
+    if (index == CONSTANT_OVERFLOW) {
+      string message = string_create("too many constants in single function.", 0, false);
+      string note = asprint("maximum number of constants is: %d", CONSTANT_MAX);
+      report_at_noted(&p_compiler->panic,
+                      &p_compiler->had_error,
+                      p_node->node_type == AST_EOF_STATEMENT,
+                      p_compiler->source,
+                      &p_node->token,
+                      REPORT_SEVERITY_ERROR,
+                      &message,
+                      &note);
+    } else if (index == CONSTANT_ALLOCATION_FAILED) {
+      string message = string_create("failed to allocate memory for constant.", 0, false);
+      report_at(&p_compiler->panic,
+                &p_compiler->had_error,
+                p_node->node_type == AST_EOF_STATEMENT,
+                p_compiler->source,
+                &p_node->token,
+                REPORT_SEVERITY_ERROR,
+                &message);
+    }
   }
   return index;
 }
 
 bool emit_constant(compiler* p_compiler, value p_value, ast_node* p_node) {
-  const uint32_t index = create_constant(p_compiler, p_value, p_node);
-  return index != CONSTANTS_INVALID;
+  return IS_CONSTANT_VALID(create_constant(p_compiler, p_value, p_node));
 }
 
 static bool compile_node(compiler* p_compiler, ast_node* p_node) {

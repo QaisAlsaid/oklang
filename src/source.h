@@ -12,7 +12,7 @@ typedef struct {
   sourced source;
   const char* code;
   const char* path;
-} source ;
+} source;
 
 typedef struct {
   uint32_t offset;

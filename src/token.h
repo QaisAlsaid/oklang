@@ -1,34 +1,34 @@
 #ifndef OK_TOKEN_HPP
 #define OK_TOKEN_HPP
 
-#include <stdint.h>
 #include "source.h"
+#include <stdint.h>
 
 typedef enum {
   TOKEN_ERROR = 0,
-  TOKEN_ILLEGAL,         // invalid utf8
-  TOKEN_EOF,             // end of file
-  TOKEN_ASSIGN,          // =
-  TOKEN_PLUS,            // +
-  TOKEN_MINUS,           // -
-  TOKEN_ASTERISK,        // * 
-  TOKEN_SLASH,           // /
-  TOKEN_MODULO,          // %
-  TOKEN_CARET,           // ^
-  TOKEN_AMPERSAND,       // &
-  TOKEN_BAR,             // |
-  TOKEN_PLUS_PLUS,       // ++
-  TOKEN_MINUS_MINUS,     // --
-  TOKEN_PLUS_EQUAL,      // +=
-  TOKEN_MINUS_EQUAL, 
+  TOKEN_ILLEGAL,     // invalid utf8
+  TOKEN_EOF,         // end of file
+  TOKEN_ASSIGN,      // =
+  TOKEN_PLUS,        // +
+  TOKEN_MINUS,       // -
+  TOKEN_ASTERISK,    // *
+  TOKEN_SLASH,       // /
+  TOKEN_MODULO,      // %
+  TOKEN_CARET,       // ^
+  TOKEN_AMPERSAND,   // &
+  TOKEN_BAR,         // |
+  TOKEN_PLUS_PLUS,   // ++
+  TOKEN_MINUS_MINUS, // --
+  TOKEN_PLUS_EQUAL,  // +=
+  TOKEN_MINUS_EQUAL,
   TOKEN_ASTERISK_EQUAL,
   TOKEN_SLASH_EQUAL,
-  TOKEN_MODULO_EQUAL, 
-  TOKEN_CARET_EQUAL, 
-  TOKEN_AMPERSAND_EQUAL, 
-  TOKEN_BAR_EQUAL, 
+  TOKEN_MODULO_EQUAL,
+  TOKEN_CARET_EQUAL,
+  TOKEN_AMPERSAND_EQUAL,
+  TOKEN_BAR_EQUAL,
   TOKEN_SHIFT_LEFT_EQUAL,
-  TOKEN_SHIFT_RIGHT_EQUAL, 
+  TOKEN_SHIFT_RIGHT_EQUAL,
   TOKEN_SHIFT_LEFT,
   TOKEN_SHIFT_RIGHT,
   TOKEN_COMMA,

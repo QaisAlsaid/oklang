@@ -1,8 +1,8 @@
-#include <stdio.h>
+#include "utils.h"
 #include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "utils.h"
 
 void encode_int(uint8_t* p_bytes, const uint8_t p_bytes_count, const uint64_t p_value) {
   for (uint8_t i = 0; i < p_bytes_count; ++i) {
@@ -20,8 +20,7 @@ uint64_t decode_int(const uint8_t* p_bytes, const uint8_t p_bytes_count) {
 
 static void init_info(uint64_t* p_info, const uint64_t p_length, const bool p_is_dynamic) {
   *p_info = p_length & 0x00ffffffffffffff;
-  *p_info = p_is_dynamic ? *p_info | (1ul << 56) : 
-    *p_info & ~(1ul << 56);
+  *p_info = p_is_dynamic ? *p_info | (1ul << 56) : *p_info & ~(1ul << 56);
 }
 
 string string_create(const char* p_chars, const uint64_t p_length, const bool p_is_dynamic) {
@@ -63,7 +62,7 @@ bool string_is_dynamic(const string* p_string) {
 string asprint(const char* p_fmt, ...) {
   int n = 0;
   size_t size = 0;
-  char *chars = NULL;
+  char* chars = NULL;
   va_list ap;
 
   va_start(ap, p_fmt);
@@ -74,7 +73,7 @@ string asprint(const char* p_fmt, ...) {
     return string_create(NULL, 0, false);
   }
 
-  size = (size_t) n + 1;
+  size = (size_t)n + 1;
   chars = malloc(size);
   if (chars == NULL) {
     return string_create(NULL, 0, false);
@@ -92,22 +91,40 @@ string asprint(const char* p_fmt, ...) {
   return string_create(chars, size, true);
 }
 
-report_status report_at(bool* p_panic, bool* p_had_error, const bool p_is_eof, const source* p_source,
-    const token* p_token, const report_severity p_severity, const string* p_message) {
+report_status report_at(bool* p_panic,
+                        bool* p_had_error,
+                        const bool p_is_eof,
+                        const source* p_source,
+                        const token* p_token,
+                        const report_severity p_severity,
+                        const string* p_message) {
   return report_at_noted(p_panic, p_had_error, p_is_eof, p_source, p_token, p_severity, p_message, NULL);
 }
 
-report_status report_at_noted(bool* p_panic, bool* p_had_error, const bool p_is_eof, const source* p_source,
-    const token* p_token, const report_severity p_severity, const string* p_message, const string* p_note) {
+report_status report_at_noted(bool* p_panic,
+                              bool* p_had_error,
+                              const bool p_is_eof,
+                              const source* p_source,
+                              const token* p_token,
+                              const report_severity p_severity,
+                              const string* p_message,
+                              const string* p_note) {
   // TODO: custom loggers
   // idk man should we care about printf fail, or at least hide behind macro or not care at all..
-  if (p_panic) return REPORT_STATUS_SKIPPED;
+  if (p_panic)
+    return REPORT_STATUS_SKIPPED;
   bool printf_fail = false;
   *p_panic = true;
   *p_had_error = true;
   const char* report = p_severity == REPORT_SEVERITY_WARN ? "warning" : "error";
   const char* message = p_message != NULL && p_message->chars != NULL ? p_message->chars : "";
-  printf_fail |= fprintf(stderr, "%s:%d:%d: %s: %s\n", p_source->path, p_token->line_info.line, p_token->line_info.offset, report, message) < 0;
+  printf_fail |= fprintf(stderr,
+                         "%s:%d:%d: %s: %s\n",
+                         p_source->path,
+                         p_token->line_info.line,
+                         p_token->line_info.offset,
+                         report,
+                         message) < 0;
   if (p_is_eof) {
     printf_fail |= fprintf(stderr, "    | ") < 0;
     printf_fail |= fprintf(stderr, "at end (EOF).\n") < 0;
@@ -120,6 +137,5 @@ report_status report_at_noted(bool* p_panic, bool* p_had_error, const bool p_is_
   if (p_note != NULL && p_note->chars != NULL) {
     printf_fail |= fprintf(stderr, "    | note: %s\n", p_note->chars) < 0;
   }
-  return printf_fail ? REPORT_STATUS_FAILED : REPORT_STATUS_OK; 
+  return printf_fail ? REPORT_STATUS_FAILED : REPORT_STATUS_OK;
 }
-

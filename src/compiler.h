@@ -1,9 +1,9 @@
 #ifndef OK_COMPILER_H
 #define OK_COMPILER_H
 
+#include "chunk.h"
 #include "parser.h"
 #include "source.h"
-#include "chunk.h"
 
 typedef struct {
   chunk* current_chunk;

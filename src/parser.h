@@ -1,10 +1,10 @@
 #ifndef OK_PARSER_H
 #define OK_PARSER_H
 
+#include "ast.h"
 #include "lexer.h"
 #include "source.h"
 #include "token.h"
-#include "ast.h"
 
 #include <stdbool.h>
 
@@ -40,10 +40,7 @@ typedef struct {
   bool had_error;
 } parser;
 
-typedef enum {
-  PARSE_OK,
-  PARSE_ERROR
-} parse_status;
+typedef enum { PARSE_OK, PARSE_ERROR } parse_status;
 
 typedef struct {
   parse_status status;

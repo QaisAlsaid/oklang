@@ -1,6 +1,7 @@
 #ifndef OK_VALUE_H
 #define OK_VALUE_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 typedef double value;
@@ -15,6 +16,6 @@ typedef struct {
 
 void value_array_init(value_array* p_values);
 void value_array_deinit(value_array* p_values);
-void value_array_append(value_array* p_values, value p_value);
+bool value_array_append(value_array* p_values, value p_value);
 
 #endif // OK_VALUE_H

@@ -1,9 +1,9 @@
 #ifndef OK_UTILS_H
 #define OK_UTILS_H
 
-#include <stdint.h>
-#include <stddef.h>
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #include "source.h"
 #include "token.h"
@@ -13,7 +13,7 @@ uint64_t decode_int(const uint8_t* p_bytes, const uint8_t p_bytes_count);
 
 // immutable string with length, and dynamic allocaton info.
 typedef struct {
-  uint64_t info; // length + one bit for is_dynamic + 7 free bits. (don't attempt to read length from here)  
+  uint64_t info;     // length + one bit for is_dynamic + 7 free bits. (don't attempt to read length from here)
   const char* chars; // immutable
 } string;
 
@@ -39,9 +39,20 @@ typedef enum {
   REPORT_STATUS_SKIPPED,
 } report_status;
 
-report_status report_at(bool* p_panic, bool* p_had_error, const bool p_is_eof, const source* p_source,
-    const token* p_token, const report_severity p_severity, const string* p_message);
-report_status report_at_noted(bool* p_panic, bool* p_had_error, const bool p_is_eof, const source* p_source,
-    const token* p_token, const report_severity p_severity, const string* p_message, const string* p_note);
+report_status report_at(bool* p_panic,
+                        bool* p_had_error,
+                        const bool p_is_eof,
+                        const source* p_source,
+                        const token* p_token,
+                        const report_severity p_severity,
+                        const string* p_message);
+report_status report_at_noted(bool* p_panic,
+                              bool* p_had_error,
+                              const bool p_is_eof,
+                              const source* p_source,
+                              const token* p_token,
+                              const report_severity p_severity,
+                              const string* p_message,
+                              const string* p_note);
 
 #endif // OK_UTILS_H
