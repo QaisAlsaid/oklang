@@ -1,56 +1,56 @@
 #include "ast.h"
 #include "utils.h"
 
+#include <assert.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
-#include <assert.h>
 
-#define AST_LIST_X(node_type) \
-    X(AST_NODE, ast_node) \
-    X(AST_EXPRESSION, ast_expression) \
-    X(AST_STATEMENT, ast_statement) \
-    X(AST_DECLARATION, ast_declaration) \
-    X(AST_ROOT, ast_root) \
-    /*X(AST_BINDING, ast_binding)*/ \
-    X(AST_IDENTIFIER_EXPRESSION, ast_identifier_expression) \
-    X(AST_NUMBER_EXPRESSION, ast_number_expression) \
-    X(AST_STRING_EXPRESSION, ast_string_expression) \
-    X(AST_PREFIX_UNARY_EXPRESSION, ast_prefix_unary_expression) \
-    X(AST_INFIX_BINARY_EXPRESSION, ast_infix_binary_expression) \
-    X(AST_POSTFIX_UNARY_EXPRESSION, ast_postfix_unary_expression) \
-    /*X(AST_CALL_EXPRESSION, ast_call_expression)*/ \
-    /*X(AST_ASSIGN_EXPRESSION, ast_assign_expression)*/ \
-    /*X(AST_COMPOUND_ASSIGN_EXPRESSION, ast_compound_assign_expression)*/ \
-    /*X(AST_OPERATOR_EXPRESSION, ast_operator_expression)*/ \
-    /*X(AST_CONDITIONAL_EXPRESSION, ast_conditional_expression)*/ \
-    X(AST_BOOLEAN_EXPRESSION, ast_boolean_expression) \
-    X(AST_NULL_EXPRESSION, ast_null_expression) \
-    /*X(AST_ACCESS_EXPRESSION, ast_access_expression)*/ \
-    /*X(AST_THIS_EXPRESSION, ast_this_expression)*/ \
-    /*X(AST_SUPER_EXPRESSION, ast_super_expression)*/ \
-    /*X(AST_NODE, ast_array_expression)*/ \
-    /*X(AST_MAP_EXPRESSION, ast_map_expression)*/ \
-    /*X(AST_SUBSCRIPT_EXPRESSION, ast_subscript_expression)*/ \
-    X(AST_EMPTY_STATEMENT, ast_empty_statement) \
-    X(AST_EXPRESSION_STATEMENT, ast_expression_statement) \
-    /*X(AST_PRINT_STATEMENT, ast_print_statement)*/ \
-    /*X(AST_BLOCK_STATEMENT, ast_block_statement)*/ \
-    /*X(AST_IF_STATEMENT, ast_if_statement)*/ \
-    /*X(AST_FOR_STATEMENT, ast_for_statement)*/ \
-    /*X(AST_WHILE_STATEMENT, ast_while_statement)*/ \
-    /*X(AST_CONTROL_FLOW_STATEMENT, ast_control_flow_statement)*/ \
-    /*X(AST_RETURN_STATEMENT, ast_return_statement)*/ \
-    /*X(AST_THROW_STATEMENT, ast_throw_statement)*/ \
-    /*X(AST_TRY_STATEMENT, ast_try_statement)*/ \
-    /*X(AST_CATCH_STATEMENT, ast_catch_statement)*/ \
-    /*X(AST_FINALIZE_STATEMENT, ast_finalize_statement)*/ \
-    /*X(AST_TRY_CATCH_STATEMENT, ast_try_catch_statement)*/ \
-    /*X(AST_EOF_STATEMENT, ast_eof_statement)*/ \
-    /*X(AST_LET_DECLARATION, ast_let_declaration)*/ \
-    /*X(AST_FUNCTION_DECLARATION, ast_function_declaration)*/ \
-    /*X(AST_CLASS_DECLARATION, ast_class_declaration)*/ \
+#define AST_LIST_X(node_type)                                                                                          \
+  X(AST_NODE, ast_node)                                                                                                \
+  X(AST_EXPRESSION, ast_expression)                                                                                    \
+  X(AST_STATEMENT, ast_statement)                                                                                      \
+  X(AST_DECLARATION, ast_declaration)                                                                                  \
+  X(AST_ROOT, ast_root)                                                                                                \
+  /*X(AST_BINDING, ast_binding)*/                                                                                      \
+  X(AST_IDENTIFIER_EXPRESSION, ast_identifier_expression)                                                              \
+  X(AST_NUMBER_EXPRESSION, ast_number_expression)                                                                      \
+  X(AST_STRING_EXPRESSION, ast_string_expression)                                                                      \
+  X(AST_PREFIX_UNARY_EXPRESSION, ast_prefix_unary_expression)                                                          \
+  X(AST_INFIX_BINARY_EXPRESSION, ast_infix_binary_expression)                                                          \
+  X(AST_POSTFIX_UNARY_EXPRESSION, ast_postfix_unary_expression)                                                        \
+  /*X(AST_CALL_EXPRESSION, ast_call_expression)*/                                                                      \
+  /*X(AST_ASSIGN_EXPRESSION, ast_assign_expression)*/                                                                  \
+  /*X(AST_COMPOUND_ASSIGN_EXPRESSION, ast_compound_assign_expression)*/                                                \
+  /*X(AST_OPERATOR_EXPRESSION, ast_operator_expression)*/                                                              \
+  /*X(AST_CONDITIONAL_EXPRESSION, ast_conditional_expression)*/                                                        \
+  X(AST_BOOLEAN_EXPRESSION, ast_boolean_expression)                                                                    \
+  X(AST_NULL_EXPRESSION, ast_null_expression)                                                                          \
+  /*X(AST_ACCESS_EXPRESSION, ast_access_expression)*/                                                                  \
+  /*X(AST_THIS_EXPRESSION, ast_this_expression)*/                                                                      \
+  /*X(AST_SUPER_EXPRESSION, ast_super_expression)*/                                                                    \
+  /*X(AST_NODE, ast_array_expression)*/                                                                                \
+  /*X(AST_MAP_EXPRESSION, ast_map_expression)*/                                                                        \
+  /*X(AST_SUBSCRIPT_EXPRESSION, ast_subscript_expression)*/                                                            \
+  X(AST_EMPTY_STATEMENT, ast_empty_statement)                                                                          \
+  X(AST_EXPRESSION_STATEMENT, ast_expression_statement)                                                                \
+  /*X(AST_PRINT_STATEMENT, ast_print_statement)*/                                                                      \
+  /*X(AST_BLOCK_STATEMENT, ast_block_statement)*/                                                                      \
+  /*X(AST_IF_STATEMENT, ast_if_statement)*/                                                                            \
+  /*X(AST_FOR_STATEMENT, ast_for_statement)*/                                                                          \
+  /*X(AST_WHILE_STATEMENT, ast_while_statement)*/                                                                      \
+  /*X(AST_CONTROL_FLOW_STATEMENT, ast_control_flow_statement)*/                                                        \
+  /*X(AST_RETURN_STATEMENT, ast_return_statement)*/                                                                    \
+  /*X(AST_THROW_STATEMENT, ast_throw_statement)*/                                                                      \
+  /*X(AST_TRY_STATEMENT, ast_try_statement)*/                                                                          \
+  /*X(AST_CATCH_STATEMENT, ast_catch_statement)*/                                                                      \
+  /*X(AST_FINALIZE_STATEMENT, ast_finalize_statement)*/                                                                \
+  /*X(AST_TRY_CATCH_STATEMENT, ast_try_catch_statement)*/                                                              \
+  /*X(AST_EOF_STATEMENT, ast_eof_statement)*/                                                                          \
+  /*X(AST_LET_DECLARATION, ast_let_declaration)*/                                                                      \
+  /*X(AST_FUNCTION_DECLARATION, ast_function_declaration)*/                                                            \
+  /*X(AST_CLASS_DECLARATION, ast_class_declaration)*/
 
 void ast_node_init(ast_node* p_node, ast_node_type p_type, token p_token) {
   p_node->node_type = p_type;
@@ -59,86 +59,86 @@ void ast_node_init(ast_node* p_node, ast_node_type p_type, token p_token) {
 
 void ast_node_deinit(ast_node* p_node) {
   switch (p_node->node_type) {
-    case AST_NODE:
-      break;
-    case AST_EXPRESSION:
-      ast_expression_deinit((ast_expression*)p_node);
-      break;
-    case AST_STATEMENT:
-      ast_statement_deinit((ast_statement*)p_node); 
-      break;
-    case AST_DECLARATION:
-      ast_declaration_deinit((ast_declaration*)p_node);
-      break;
-    case AST_ROOT:
-      ast_root_deinit((ast_root*)p_node);
-      break;
-    case AST_BINDING:
-      break;
-    case AST_IDENTIFIER_EXPRESSION:
-      ast_identifier_expression_deinit((ast_identifier_expression*)p_node);
-      break;
-    case AST_NUMBER_EXPRESSION:
-      ast_number_expression_deinit((ast_number_expression*)p_node);
-      break;
-    case AST_STRING_EXPRESSION:
-      ast_string_expression_deinit((ast_string_expression*)p_node);
-      break;
-    case AST_PREFIX_UNARY_EXPRESSION:
-      ast_prefix_unary_expression_deinit((ast_prefix_unary_expression*)p_node);
-      break;
-    case AST_INFIX_BINARY_EXPRESSION:
-      ast_infix_binary_expression_deinit((ast_infix_binary_expression*)p_node);
-      break;
-    case AST_POSTFIX_UNARY_EXPRESSION:
-      ast_postfix_unary_expression_deinit((ast_postfix_unary_expression*)p_node);
-      break;
-    case AST_CALL_EXPRESSION:
-    case AST_ASSIGN_EXPRESSION:
-    case AST_COMPOUND_ASSIGN_EXPRESSION:
-    case AST_OPERATOR_EXPRESSION:
-    case AST_CONDITIONAL_EXPRESSION:
-      assert(0);
-    case AST_BOOLEAN_EXPRESSION:
-      ast_boolean_expression_deinit((ast_boolean_expression*)p_node);
-      break;
-    case AST_NULL_EXPRESSION:
-      ast_null_expression_deinit((ast_null_expression*)p_node);
-      break;
-    case AST_ACCESS_EXPRESSION:
-    case AST_THIS_EXPRESSION:
-    case AST_SUPER_EXPRESSION:
-    case AST_ARRAY_EXPRESSION:
-    case AST_MAP_EXPRESSION:
-    case AST_SUBSCRIPT_EXPRESSION:
-      assert(0);
+  case AST_NODE:
+    break;
+  case AST_EXPRESSION:
+    ast_expression_deinit((ast_expression*)p_node);
+    break;
+  case AST_STATEMENT:
+    ast_statement_deinit((ast_statement*)p_node);
+    break;
+  case AST_DECLARATION:
+    ast_declaration_deinit((ast_declaration*)p_node);
+    break;
+  case AST_ROOT:
+    ast_root_deinit((ast_root*)p_node);
+    break;
+  case AST_BINDING:
+    break;
+  case AST_IDENTIFIER_EXPRESSION:
+    ast_identifier_expression_deinit((ast_identifier_expression*)p_node);
+    break;
+  case AST_NUMBER_EXPRESSION:
+    ast_number_expression_deinit((ast_number_expression*)p_node);
+    break;
+  case AST_STRING_EXPRESSION:
+    ast_string_expression_deinit((ast_string_expression*)p_node);
+    break;
+  case AST_PREFIX_UNARY_EXPRESSION:
+    ast_prefix_unary_expression_deinit((ast_prefix_unary_expression*)p_node);
+    break;
+  case AST_INFIX_BINARY_EXPRESSION:
+    ast_infix_binary_expression_deinit((ast_infix_binary_expression*)p_node);
+    break;
+  case AST_POSTFIX_UNARY_EXPRESSION:
+    ast_postfix_unary_expression_deinit((ast_postfix_unary_expression*)p_node);
+    break;
+  case AST_CALL_EXPRESSION:
+  case AST_ASSIGN_EXPRESSION:
+  case AST_COMPOUND_ASSIGN_EXPRESSION:
+  case AST_OPERATOR_EXPRESSION:
+  case AST_CONDITIONAL_EXPRESSION:
+    assert(0);
+  case AST_BOOLEAN_EXPRESSION:
+    ast_boolean_expression_deinit((ast_boolean_expression*)p_node);
+    break;
+  case AST_NULL_EXPRESSION:
+    ast_null_expression_deinit((ast_null_expression*)p_node);
+    break;
+  case AST_ACCESS_EXPRESSION:
+  case AST_THIS_EXPRESSION:
+  case AST_SUPER_EXPRESSION:
+  case AST_ARRAY_EXPRESSION:
+  case AST_MAP_EXPRESSION:
+  case AST_SUBSCRIPT_EXPRESSION:
+    assert(0);
 
-    case AST_EMPTY_STATEMENT:
-      ast_empty_statement_deinit((ast_empty_statement*)p_node);
-      break;
-    case AST_EXPRESSION_STATEMENT:
-      ast_expression_statement_deinit((ast_expression_statement*)p_node);
-      break;
-    case AST_PRINT_STATEMENT:
-    case AST_BLOCK_STATEMENT:
-    case AST_IF_STATEMENT:
-    case AST_FOR_STATEMENT:
-    case AST_WHILE_STATEMENT:
-    case AST_CONTROL_FLOW_STATEMENT:
-    case AST_RETURN_STATEMENT:
-    case AST_THROW_STATEMENT:
-    case AST_TRY_STATEMENT:
-    case AST_CATCH_STATEMENT:
-    case AST_FINALIZE_STATEMENT:
-    case AST_TRY_CATCH_STATEMENT:
+  case AST_EMPTY_STATEMENT:
+    ast_empty_statement_deinit((ast_empty_statement*)p_node);
+    break;
+  case AST_EXPRESSION_STATEMENT:
+    ast_expression_statement_deinit((ast_expression_statement*)p_node);
+    break;
+  case AST_PRINT_STATEMENT:
+  case AST_BLOCK_STATEMENT:
+  case AST_IF_STATEMENT:
+  case AST_FOR_STATEMENT:
+  case AST_WHILE_STATEMENT:
+  case AST_CONTROL_FLOW_STATEMENT:
+  case AST_RETURN_STATEMENT:
+  case AST_THROW_STATEMENT:
+  case AST_TRY_STATEMENT:
+  case AST_CATCH_STATEMENT:
+  case AST_FINALIZE_STATEMENT:
+  case AST_TRY_CATCH_STATEMENT:
 
-    case AST_LET_DECLARATION:
-    case AST_FUNCTION_DECLARATION:
-    case AST_CLASS_DECLARATION:
-      assert(0);
-    case AST_EOF_STATEMENT:
-      ast_eof_statement_deinit((ast_eof_statement*)p_node);
-      break;
+  case AST_LET_DECLARATION:
+  case AST_FUNCTION_DECLARATION:
+  case AST_CLASS_DECLARATION:
+    assert(0);
+  case AST_EOF_STATEMENT:
+    ast_eof_statement_deinit((ast_eof_statement*)p_node);
+    break;
   }
 }
 
@@ -206,21 +206,25 @@ void ast_statements_list_init(ast_statements_list* p_list) {
   p_list->tail = NULL;
 }
 
-void ast_statements_list_append(ast_statements_list* p_list, ast_statement* p_statement) {
+bool ast_statements_list_append(ast_statements_list* p_list, ast_statement* p_statement) {
   ast_statements_list_node* node = (ast_statements_list_node*)malloc(sizeof(ast_statements_list_node));
+  if (node == NULL) {
+    return false;
+  }
   node->next = NULL;
   node->statement = p_statement;
 
   if (p_list->head == NULL) {
     p_list->head = node;
     p_list->tail = node;
-    return;
+    return true;
   }
- 
+
   ast_statements_list_node* tmp = p_list->tail;
   p_list->tail = node;
   tmp->next = node;
   p_list->count++;
+  return true;
 }
 
 void ast_statement_list_deinit(ast_statements_list* p_list) {
@@ -267,8 +271,8 @@ string ast_root_asprint(const ast_root* p_root) {
       char* temp = malloc(len);
       free(chars);
       if (temp == NULL) {
-	string_deinit(&res);
-	return string_create(NULL, 0, false);
+        string_deinit(&res);
+        return string_create(NULL, 0, false);
       }
       chars = temp;
     }
@@ -326,7 +330,7 @@ void ast_number_expression_deinit(ast_number_expression* p_number) {
 
 double ast_number_expression_get_value(const ast_number_expression* p_number) {
   const ast_node* node = &p_number->expression.node;
-  char* endptr = (char*)node->token.start + node->token.length; // strtod won't touch the string 
+  char* endptr = (char*)node->token.start + node->token.length; // strtod won't touch the string
   const double value = strtod(node->token.start, &endptr);
   if (endptr == node->token.start) {
     return AST_NUMBER_EXPRESSION_PARSE_ERROR;
@@ -392,7 +396,7 @@ void ast_boolean_expression_deinit(ast_boolean_expression* p_boolean) {
 
 bool ast_boolean_expression_get_value(const ast_boolean_expression* p_boolean) {
   const ast_node* node = &p_boolean->expression.node;
-  return strncmp("true", node->token.start, node->token.length) ? true : false;
+  return strncmp("true", node->token.start, node->token.length) == 0 ? true : false;
 }
 
 bool ast_boolean_expression_print(const ast_boolean_expression* p_boolean) {
@@ -421,7 +425,10 @@ string ast_null_expression_asprint(const ast_null_expression* p_null) {
   return asprint("null");
 }
 
-void ast_prefix_unary_expression_init(ast_prefix_unary_expression* p_prefix, token p_token, token_type p_operator, ast_expression* p_right) {
+void ast_prefix_unary_expression_init(ast_prefix_unary_expression* p_prefix,
+                                      token p_token,
+                                      token_type p_operator,
+                                      ast_expression* p_right) {
   ast_expression_init(&p_prefix->expression, AST_PREFIX_UNARY_EXPRESSION, p_token);
   p_prefix->_operator = p_operator;
   p_prefix->right = p_right;
@@ -434,20 +441,28 @@ void ast_prefix_unary_expression_deinit(ast_prefix_unary_expression* p_prefix) {
   ast_expression_deinit(&p_prefix->expression);
 }
 
-#define OPERATOR_STRING \
-  switch (p_prefix->_operator) { \
-    case TOKEN_PLUS: op = "+"; break; \
-    case TOKEN_MINUS: op = "-"; break; \
-    case TOKEN_PLUS_PLUS: op = "++"; break; \
-    case TOKEN_MINUS_MINUS: op = "--"; break; \
-    default:; /* i trust the parser. do you?*/ \
+#define OPERATOR_STRING                                                                                                \
+  switch (p_prefix->_operator) {                                                                                       \
+  case TOKEN_PLUS:                                                                                                     \
+    op = "+";                                                                                                          \
+    break;                                                                                                             \
+  case TOKEN_MINUS:                                                                                                    \
+    op = "-";                                                                                                          \
+    break;                                                                                                             \
+  case TOKEN_PLUS_PLUS:                                                                                                \
+    op = "++";                                                                                                         \
+    break;                                                                                                             \
+  case TOKEN_MINUS_MINUS:                                                                                              \
+    op = "--";                                                                                                         \
+    break;                                                                                                             \
+  default:; /* i trust the parser. do you?*/                                                                           \
   }
 
 bool ast_prefix_unary_expression_print(const ast_prefix_unary_expression* p_prefix) {
-  // TODO proper operator enum 
+  // TODO proper operator enum
   const char* op;
   OPERATOR_STRING;
-  return printf("%s", op) > 0  && ast_print((ast_node*)p_prefix->right);
+  return printf("%s", op) > 0 && ast_print((ast_node*)p_prefix->right);
 }
 
 string ast_prefix_unary_expression_asprint(const ast_prefix_unary_expression* p_prefix) {
@@ -463,7 +478,10 @@ string ast_prefix_unary_expression_asprint(const ast_prefix_unary_expression* p_
 
 #undef OPERATOR_STRING
 
-void ast_postfix_unary_expression_init(ast_postfix_unary_expression* p_postfix, token p_token, token_type p_operator, ast_expression* p_left) {
+void ast_postfix_unary_expression_init(ast_postfix_unary_expression* p_postfix,
+                                       token p_token,
+                                       token_type p_operator,
+                                       ast_expression* p_left) {
   ast_expression_init(&p_postfix->expression, AST_POSTFIX_UNARY_EXPRESSION, p_token);
   p_postfix->_operator = p_operator;
   p_postfix->left = p_left;
@@ -476,15 +494,19 @@ void ast_postfix_unary_expression_deinit(ast_postfix_unary_expression* p_postfix
   ast_expression_deinit(&p_postfix->expression);
 }
 
-#define OPERATOR_STRING \
-  switch (p_postfix->_operator) { \
-    case TOKEN_PLUS_PLUS: op = "++"; break; \
-    case TOKEN_MINUS_MINUS: op = "--"; break; \
-    default:; /* i trust the parser. do you?*/ \
+#define OPERATOR_STRING                                                                                                \
+  switch (p_postfix->_operator) {                                                                                      \
+  case TOKEN_PLUS_PLUS:                                                                                                \
+    op = "++";                                                                                                         \
+    break;                                                                                                             \
+  case TOKEN_MINUS_MINUS:                                                                                              \
+    op = "--";                                                                                                         \
+    break;                                                                                                             \
+  default:; /* i trust the parser. do you?*/                                                                           \
   }
 
 bool ast_postfix_unary_expression_print(const ast_postfix_unary_expression* p_postfix) {
-  // TODO proper operator enum 
+  // TODO proper operator enum
   const char* op;
   OPERATOR_STRING;
   return ast_print((ast_node*)p_postfix->left) && printf("%s", op);
@@ -503,7 +525,11 @@ string ast_postfix_unary_expression_asprint(const ast_postfix_unary_expression* 
 
 #undef OPERATOR_STRING
 
-void ast_infix_binary_expression_init(ast_infix_binary_expression* p_infix, token p_token, token_type p_operator, ast_expression* p_left, ast_expression* p_right) {
+void ast_infix_binary_expression_init(ast_infix_binary_expression* p_infix,
+                                      token p_token,
+                                      token_type p_operator,
+                                      ast_expression* p_left,
+                                      ast_expression* p_right) {
   ast_expression_init(&p_infix->expression, AST_INFIX_BINARY_EXPRESSION, p_token);
   p_infix->_operator = p_operator;
   p_infix->left = p_left;
@@ -520,21 +546,28 @@ void ast_infix_binary_expression_deinit(ast_infix_binary_expression* p_infix) {
   ast_expression_deinit(&p_infix->expression);
 }
 
-#define OPERATOR_STRING \
-  switch (p_infix->_operator) { \
-    case TOKEN_PLUS: op = "+"; break; \
-    case TOKEN_MINUS: op = "-"; break; \
-    case TOKEN_PLUS_PLUS: op = "*"; break; \
-    case TOKEN_MINUS_MINUS: op = "/"; break; \
-    default:; /* i trust the parser. do you?*/ \
-  } 
+#define OPERATOR_STRING                                                                                                \
+  switch (p_infix->_operator) {                                                                                        \
+  case TOKEN_PLUS:                                                                                                     \
+    op = "+";                                                                                                          \
+    break;                                                                                                             \
+  case TOKEN_MINUS:                                                                                                    \
+    op = "-";                                                                                                          \
+    break;                                                                                                             \
+  case TOKEN_PLUS_PLUS:                                                                                                \
+    op = "*";                                                                                                          \
+    break;                                                                                                             \
+  case TOKEN_MINUS_MINUS:                                                                                              \
+    op = "/";                                                                                                          \
+    break;                                                                                                             \
+  default:; /* i trust the parser. do you?*/                                                                           \
+  }
 
 bool ast_infix_binary_expression_print(const ast_infix_binary_expression* p_infix) {
-  // TODO proper operator enum 
+  // TODO proper operator enum
   const char* op;
   OPERATOR_STRING;
-  return ast_print((ast_node*)p_infix->left) && printf("%s", op) &&
-    ast_print((ast_node*)p_infix->right);
+  return ast_print((ast_node*)p_infix->left) && printf("%s", op) && ast_print((ast_node*)p_infix->right);
 }
 
 string ast_infix_binary_expression_asprint(const ast_infix_binary_expression* p_infix) {
@@ -589,7 +622,9 @@ string ast_empty_statement_asprint(const ast_empty_statement* p_empty) {
   return string_create(NULL, 0, false);
 }
 
-void ast_expression_statement_init(ast_expression_statement* p_expression_statement, token p_token, ast_expression* p_expression) {
+void ast_expression_statement_init(ast_expression_statement* p_expression_statement,
+                                   token p_token,
+                                   ast_expression* p_expression) {
   ast_statement_init(&p_expression_statement->statement, AST_EXPRESSION_STATEMENT, p_token);
   p_expression_statement->expression = p_expression;
 }
@@ -610,29 +645,35 @@ string ast_expression_statement_asprint(const ast_expression_statement* p_expres
 }
 
 void ast_deinit(ast_node* p_node) {
-#define X(type, klass) case type: klass##_deinit((klass*)p_node);
+#define X(type, klass)                                                                                                 \
+  case type:                                                                                                           \
+    klass##_deinit((klass*)p_node);
   switch (p_node->node_type) {
     AST_LIST_X(p_node->node_type);
-    default:; // for now 
+  default:; // for now
   }
 #undef X
 }
 
 bool ast_print(ast_node* p_node) {
-#define X(type, klass) case type: return klass##_print((klass*)p_node);
-  switch(p_node->node_type) {
+#define X(type, klass)                                                                                                 \
+  case type:                                                                                                           \
+    return klass##_print((klass*)p_node);
+  switch (p_node->node_type) {
     AST_LIST_X(p_node->node_type);
-    default:;
+  default:;
   }
 #undef X
   return false;
 }
 
 string ast_asprint(ast_node* p_node) {
-#define X(type, klass) case type: return klass##_asprint((klass*)p_node);
-  switch(p_node->node_type) {
+#define X(type, klass)                                                                                                 \
+  case type:                                                                                                           \
+    return klass##_asprint((klass*)p_node);
+  switch (p_node->node_type) {
     AST_LIST_X(p_node->node_type);
-    default:;
+  default:;
   }
   return string_create(NULL, 0, false);
 #undef X

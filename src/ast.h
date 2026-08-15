@@ -110,7 +110,7 @@ typedef struct {
 } ast_statements_list;
 
 void ast_statements_list_init(ast_statements_list* p_list);
-void ast_statements_list_append(ast_statements_list* p_list, ast_statement* p_statement);
+bool ast_statements_list_append(ast_statements_list* p_list, ast_statement* p_statement);
 void ast_statement_list_deinit(ast_statements_list* p_list);
 
 typedef struct {
@@ -136,7 +136,6 @@ string ast_identifier_expression_asprint(const ast_identifier_expression* p_expr
 typedef struct {
   ast_expression expression;
 } ast_number_expression;
-
 
 #define AST_NUMBER_EXPRESSION_PARSE_ERROR (double)((uint64_t)(QNAN | 1))
 
@@ -181,7 +180,10 @@ typedef struct {
   ast_expression* right;
 } ast_prefix_unary_expression;
 
-void ast_prefix_unary_expression_init(ast_prefix_unary_expression* p_prefix, const token p_token, const token_type p_operator, ast_expression* p_right);
+void ast_prefix_unary_expression_init(ast_prefix_unary_expression* p_prefix,
+                                      const token p_token,
+                                      const token_type p_operator,
+                                      ast_expression* p_right);
 void ast_prefix_unary_expression_deinit(ast_prefix_unary_expression* p_prefix);
 bool ast_prefix_unary_expression_print(const ast_prefix_unary_expression* p_prefix);
 string ast_prefix_unary_expression_asprint(const ast_prefix_unary_expression* p_prefix);
@@ -192,7 +194,10 @@ typedef struct {
   ast_expression* left;
 } ast_postfix_unary_expression;
 
-void ast_postfix_unary_expression_init(ast_postfix_unary_expression* p_postfix, const token p_token, const token_type p_operator, ast_expression* p_left);
+void ast_postfix_unary_expression_init(ast_postfix_unary_expression* p_postfix,
+                                       const token p_token,
+                                       const token_type p_operator,
+                                       ast_expression* p_left);
 void ast_postfix_unary_expression_deinit(ast_postfix_unary_expression* p_postfix);
 bool ast_postfix_unary_expression_print(const ast_postfix_unary_expression* p_postfix);
 string ast_postfix_unary_expression_asprint(const ast_postfix_unary_expression* p_postfix);
@@ -204,7 +209,11 @@ typedef struct {
   ast_expression* right;
 } ast_infix_binary_expression;
 
-void ast_infix_binary_expression_init(ast_infix_binary_expression* p_infix, const token p_token, const token_type p_operator, ast_expression* p_left, ast_expression* p_right);
+void ast_infix_binary_expression_init(ast_infix_binary_expression* p_infix,
+                                      const token p_token,
+                                      const token_type p_operator,
+                                      ast_expression* p_left,
+                                      ast_expression* p_right);
 void ast_infix_binary_expression_deinit(ast_infix_binary_expression* p_infix);
 bool ast_infix_binary_expression_print(const ast_infix_binary_expression* p_infix);
 string ast_infix_binary_expression_asprint(const ast_infix_binary_expression* p_infix);
@@ -223,7 +232,9 @@ typedef struct {
   ast_expression* expression;
 } ast_expression_statement;
 
-void ast_expression_statement_init(ast_expression_statement* p_expression_statement, const token p_token, ast_expression* p_expression);
+void ast_expression_statement_init(ast_expression_statement* p_expression_statement,
+                                   const token p_token,
+                                   ast_expression* p_expression);
 void ast_expression_statement_deinit(ast_expression_statement* p_expression_statement);
 bool ast_expression_statement_print(const ast_expression_statement* p_expression_statement);
 string ast_expression_statement_asprint(const ast_expression_statement* p_expression_statement);
