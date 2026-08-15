@@ -2,9 +2,9 @@
 // and the driver (cli) is the executable, since oklang is an embedded language.
 // but for now it is fine to have both here.
 
-#include <stdio.h>
-#include <stddef.h>
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #include "ok.h"
@@ -51,7 +51,7 @@ void run_file(ok* p_ok, const char* p_path) {
   source.source = FROM_REPL;
   source.code = src;
   source.path = p_path;
-  run_result result = ok_run(p_ok, source); 
+  run_result result = ok_run(p_ok, source);
   free(src);
   if (result == RUN_PARSE_ERROR || result == RUN_COMPILE_ERROR) {
     exit(65);

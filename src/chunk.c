@@ -1,11 +1,11 @@
-#include <stddef.h>
 #include "chunk.h"
-#include "mm.h"
 #include "array.h"
+#include "mm.h"
 #include "utils.h"
-#include <string.h>
-#include <stdlib.h>
+#include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 void code_init(code* p_code) {
   OK_ARRAY_INIT(p_code->count, p_code->capacity, p_code->code_array);
@@ -21,7 +21,7 @@ void code_write_1byte(code* p_code, byte p_byte) {
 }
 
 void code_write_2bytes(code* p_code, const byte p_1st_byte, const byte p_2nd_byte) {
-  byte bytes[2] = { p_1st_byte, p_2nd_byte }; 
+  byte bytes[2] = {p_1st_byte, p_2nd_byte};
   OK_ARRAY_APPEND_N(byte, uint32_t, p_code->count, p_code->capacity, p_code->code_array, bytes, 2);
 }
 
@@ -45,14 +45,19 @@ void source_info_write(source_info* p_source_info, const line_info_repeated p_li
   if (back->line_info.line == p_line_info.line_info.line && back->line_info.offset == p_line_info.line_info.offset) {
     back->reps += p_line_info.reps;
   } else {
-append:
-    OK_ARRAY_APPEND(line_info_repeated, uint32_t, p_source_info->count, p_source_info->capacity, p_source_info->line_info_array, p_line_info);
+  append:
+    OK_ARRAY_APPEND(line_info_repeated,
+                    uint32_t,
+                    p_source_info->count,
+                    p_source_info->capacity,
+                    p_source_info->line_info_array,
+                    p_line_info);
   }
 }
 
 line_info_repeated* source_info_find(const source_info* p_source_info, const uint32_t p_instruction_index) {
   for (uint32_t num_instructions = 0, i = 0; i < p_source_info->count; ++i) {
-    line_info_repeated* info = &p_source_info->line_info_array[i]; 
+    line_info_repeated* info = &p_source_info->line_info_array[i];
     num_instructions += info->reps;
     if (num_instructions > p_instruction_index) {
       return info;
@@ -81,7 +86,10 @@ void chunk_write_1byte_code_with_line_info(chunk* p_chunk, const byte p_byte, co
   source_info_write(&p_chunk->source_info, info);
 }
 
-void chunk_write_2bytes_code_with_line_info(chunk* p_chunk, const byte p_1st_byte, const byte p_2nd_byte, const line_info p_line_info) {
+void chunk_write_2bytes_code_with_line_info(chunk* p_chunk,
+                                            const byte p_1st_byte,
+                                            const byte p_2nd_byte,
+                                            const line_info p_line_info) {
   code_write_2bytes(&p_chunk->code, p_1st_byte, p_2nd_byte);
   line_info_repeated info;
   info.reps = 2;
@@ -89,7 +97,10 @@ void chunk_write_2bytes_code_with_line_info(chunk* p_chunk, const byte p_1st_byt
   source_info_write(&p_chunk->source_info, info);
 }
 
-bool chunk_write_code_with_line_info(chunk* p_chunk, const byte* p_bytes, const size_t p_bytes_count, const line_info p_line_info) {
+bool chunk_write_code_with_line_info(chunk* p_chunk,
+                                     const byte* p_bytes,
+                                     const size_t p_bytes_count,
+                                     const line_info p_line_info) {
   code_write(&p_chunk->code, p_bytes, p_bytes_count);
   line_info_repeated info;
   info.reps = p_bytes_count;
@@ -99,11 +110,11 @@ bool chunk_write_code_with_line_info(chunk* p_chunk, const byte* p_bytes, const 
 }
 
 uint32_t chunk_write_constant_with_line_info(chunk* p_chunk, const value p_constant, const line_info p_line_info) {
-  if (p_chunk->constants.count > CONSTANTS_MAX) {
+  if (p_chunk->constants.count >= CONSTANTS_MAX) {
     return CONSTANTS_INVALID;
   }
   value_array_append(&p_chunk->constants, p_constant);
-  uint32_t index = p_chunk->constants.count;
+  uint32_t index = p_chunk->constants.count - 1;
   if (index <= OP_CONSTANT_MAX) {
     chunk_write_2bytes_code_with_line_info(p_chunk, OP_CONSTANT, (byte)index, p_line_info);
   } else {

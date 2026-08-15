@@ -1,9 +1,9 @@
 #include "compiler.h"
+#include "debug.h"
+#include "utils.h"
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <assert.h>
-#include "utils.h"
-#include "debug.h"
 
 #define OK_DEBUG_DUMP_CODE
 
@@ -53,12 +53,12 @@ compile_result compiler_compile(compiler* p_compiler, compiler_specs p_specs) {
   chunk* _chunk = (chunk*)malloc(sizeof(chunk));
   chunk_init(_chunk);
   p_compiler->current_chunk = _chunk;
-  compile_node(p_compiler, (ast_node*)p_specs.root);
+  bool res = compile_node(p_compiler, (ast_node*)p_specs.root);
   compile_result result;
-  if (p_compiler->had_error == false) {
+  if (p_compiler->had_error == false || res == false) {
     result.status = COMPILE_OK;
     result.chunk = _chunk;
-#if defined (OK_DEBUG_DUMP_CODE)
+#if defined(OK_DEBUG_DUMP_CODE)
     debug_disassemble_chunk(_chunk, "code");
 #endif // defined (OK_DEBUG_DUMP_CODE)
   } else {
@@ -91,7 +91,7 @@ bool emit_bytes(compiler* p_compiler, byte* p_bytes, size_t p_bytes_count, ast_n
   return true;
 }
 
-bool end_compile(compiler* p_compiler, ast_node* p_node){
+bool end_compile(compiler* p_compiler, ast_node* p_node) {
   return emit_byte(p_compiler, OP_RETURN, p_node);
 }
 
@@ -101,15 +101,21 @@ uint32_t create_constant(compiler* p_compiler, value p_value, ast_node* p_node) 
   if (index == CONSTANTS_INVALID) {
     string message = string_create("too many constants in single function.", 0, false);
     string note = asprint("maximum number of constants is: %d", CONSTANTS_MAX);
-    report_at_noted(&p_compiler->panic, &p_compiler->had_error, p_node->node_type == AST_EOF_STATEMENT, p_compiler->source,
-	&p_node->token, REPORT_SEVERITY_ERROR, &message, &note);
+    report_at_noted(&p_compiler->panic,
+                    &p_compiler->had_error,
+                    p_node->node_type == AST_EOF_STATEMENT,
+                    p_compiler->source,
+                    &p_node->token,
+                    REPORT_SEVERITY_ERROR,
+                    &message,
+                    &note);
   }
   return index;
 }
 
 bool emit_constant(compiler* p_compiler, value p_value, ast_node* p_node) {
   const uint32_t index = create_constant(p_compiler, p_value, p_node);
-  return  index != CONSTANTS_INVALID;
+  return index != CONSTANTS_INVALID;
 }
 
 static bool compile_node(compiler* p_compiler, ast_node* p_node) {
@@ -117,76 +123,82 @@ static bool compile_node(compiler* p_compiler, ast_node* p_node) {
     return false;
   }
   switch (p_node->node_type) {
-    case AST_ROOT:
-      return compile_root(p_compiler, (ast_root*)p_node);
-    case AST_BINDING:
-      assert(false);
-    case AST_IDENTIFIER_EXPRESSION:
-      return compile_identifier(p_compiler, (ast_identifier_expression*)p_node);
-    case AST_NUMBER_EXPRESSION:
-      return compile_number_expression(p_compiler, (ast_number_expression*)p_node);
-    case AST_STRING_EXPRESSION:
-      return compile_string_expression(p_compiler, (ast_string_expression*)p_node);
-    case AST_PREFIX_UNARY_EXPRESSION:
-      return compile_prefix_unary_expression(p_compiler, (ast_prefix_unary_expression*)p_node);
-    case AST_INFIX_BINARY_EXPRESSION:
-      return compile_infix_binary_expression(p_compiler, (ast_infix_binary_expression*)p_node);
-    case AST_POSTFIX_UNARY_EXPRESSION:
-      return compile_postfix_unary_expression(p_compiler, (ast_postfix_unary_expression*)p_node);
-    case AST_CALL_EXPRESSION:
-    case AST_ASSIGN_EXPRESSION:
-    case AST_COMPOUND_ASSIGN_EXPRESSION:
-    case AST_OPERATOR_EXPRESSION:
-    case AST_CONDITIONAL_EXPRESSION:
-      assert(0);
-    case AST_BOOLEAN_EXPRESSION:
-      return compile_boolean_expression(p_compiler, (ast_boolean_expression*)p_node);
-    case AST_NULL_EXPRESSION:
-      return compile_null_expression(p_compiler, (ast_null_expression*)p_node);
-    case AST_ACCESS_EXPRESSION:
-    case AST_THIS_EXPRESSION:
-    case AST_SUPER_EXPRESSION:
-    case AST_ARRAY_EXPRESSION:
-    case AST_MAP_EXPRESSION:
-    case AST_SUBSCRIPT_EXPRESSION:
+  case AST_ROOT:
+    return compile_root(p_compiler, (ast_root*)p_node);
+  case AST_BINDING:
+    assert(false);
+  case AST_IDENTIFIER_EXPRESSION:
+    return compile_identifier(p_compiler, (ast_identifier_expression*)p_node);
+  case AST_NUMBER_EXPRESSION:
+    return compile_number_expression(p_compiler, (ast_number_expression*)p_node);
+  case AST_STRING_EXPRESSION:
+    return compile_string_expression(p_compiler, (ast_string_expression*)p_node);
+  case AST_PREFIX_UNARY_EXPRESSION:
+    return compile_prefix_unary_expression(p_compiler, (ast_prefix_unary_expression*)p_node);
+  case AST_INFIX_BINARY_EXPRESSION:
+    return compile_infix_binary_expression(p_compiler, (ast_infix_binary_expression*)p_node);
+  case AST_POSTFIX_UNARY_EXPRESSION:
+    return compile_postfix_unary_expression(p_compiler, (ast_postfix_unary_expression*)p_node);
+  case AST_CALL_EXPRESSION:
+  case AST_ASSIGN_EXPRESSION:
+  case AST_COMPOUND_ASSIGN_EXPRESSION:
+  case AST_OPERATOR_EXPRESSION:
+  case AST_CONDITIONAL_EXPRESSION:
+    assert(0);
+  case AST_BOOLEAN_EXPRESSION:
+    return compile_boolean_expression(p_compiler, (ast_boolean_expression*)p_node);
+  case AST_NULL_EXPRESSION:
+    return compile_null_expression(p_compiler, (ast_null_expression*)p_node);
+  case AST_ACCESS_EXPRESSION:
+  case AST_THIS_EXPRESSION:
+  case AST_SUPER_EXPRESSION:
+  case AST_ARRAY_EXPRESSION:
+  case AST_MAP_EXPRESSION:
+  case AST_SUBSCRIPT_EXPRESSION:
 
-    case AST_EMPTY_STATEMENT:
-      assert(0); // parser bug
-    case AST_EXPRESSION_STATEMENT:
-      return compile_expression_statement(p_compiler, (ast_expression_statement*)p_node);
-    case AST_PRINT_STATEMENT:
-    case AST_BLOCK_STATEMENT:
-    case AST_IF_STATEMENT:
-    case AST_FOR_STATEMENT:
-    case AST_WHILE_STATEMENT:
-    case AST_CONTROL_FLOW_STATEMENT:
-    case AST_RETURN_STATEMENT:
-    case AST_THROW_STATEMENT:
-    case AST_TRY_STATEMENT:
-    case AST_CATCH_STATEMENT:
-    case AST_FINALIZE_STATEMENT:
-    case AST_TRY_CATCH_STATEMENT:
+  case AST_EMPTY_STATEMENT:
+    assert(0); // parser bug
+  case AST_EXPRESSION_STATEMENT:
+    return compile_expression_statement(p_compiler, (ast_expression_statement*)p_node);
+  case AST_PRINT_STATEMENT:
+  case AST_BLOCK_STATEMENT:
+  case AST_IF_STATEMENT:
+  case AST_FOR_STATEMENT:
+  case AST_WHILE_STATEMENT:
+  case AST_CONTROL_FLOW_STATEMENT:
+  case AST_RETURN_STATEMENT:
+  case AST_THROW_STATEMENT:
+  case AST_TRY_STATEMENT:
+  case AST_CATCH_STATEMENT:
+  case AST_FINALIZE_STATEMENT:
+  case AST_TRY_CATCH_STATEMENT:
 
-    case AST_LET_DECLARATION:
-    case AST_FUNCTION_DECLARATION:
-    case AST_CLASS_DECLARATION:
-      assert(0);
-    case AST_EOF_STATEMENT:
-      return compile_eof_statement(p_compiler, (ast_eof_statement*)p_node);
-    default: {
-      string message = asprint("unable to compile node: %d", p_node->node_type);
-      report_at(&p_compiler->panic, &p_compiler->had_error, p_node->node_type == AST_EOF_STATEMENT, p_compiler->source,
-	&p_node->token, REPORT_SEVERITY_ERROR, &message);
-      return false;
-    }
+  case AST_LET_DECLARATION:
+  case AST_FUNCTION_DECLARATION:
+  case AST_CLASS_DECLARATION:
+    assert(0);
+  case AST_EOF_STATEMENT:
+    return compile_eof_statement(p_compiler, (ast_eof_statement*)p_node);
+  default: {
+    string message = asprint("unable to compile node: %d", p_node->node_type);
+    report_at(&p_compiler->panic,
+              &p_compiler->had_error,
+              p_node->node_type == AST_EOF_STATEMENT,
+              p_compiler->source,
+              &p_node->token,
+              REPORT_SEVERITY_ERROR,
+              &message);
+    return false;
+  }
   }
 }
 
 static bool compile_root(compiler* p_compiler, ast_root* p_root) {
+  bool res = true;
   for (ast_statements_list_node* node = p_root->statements.head; node != NULL; node = node->next) {
-    const bool res = compile_node(p_compiler, (ast_node*)node->statement);
+    res &= compile_node(p_compiler, (ast_node*)node->statement);
   }
-  return true;
+  return res;
 }
 
 static bool compile_expression_statement(compiler* p_compiler, ast_expression_statement* p_expression_statement) {
@@ -215,9 +227,9 @@ static bool compile_prefix_unary_expression(compiler* p_compiler, ast_prefix_una
     return false;
   }
   switch (p_expression->_operator) {
-    case TOKEN_MINUS:
-      return emit_byte(p_compiler, OP_NEGATE, (ast_node*)p_expression);
-    default:;
+  case TOKEN_MINUS:
+    return emit_byte(p_compiler, OP_NEGATE, (ast_node*)p_expression);
+  default:;
   }
 }
 
@@ -225,15 +237,15 @@ static bool compile_infix_binary_expression(compiler* p_compiler, ast_infix_bina
   if (compile_node(p_compiler, (ast_node*)p_expression->left)) {
     if (compile_node(p_compiler, (ast_node*)p_expression->right)) {
       switch (p_expression->_operator) {
-	case TOKEN_PLUS:
-	  return emit_byte(p_compiler, OP_ADD, (ast_node*)p_expression);
-	case TOKEN_MINUS:
-	  return emit_byte(p_compiler, OP_SUBTRACT, (ast_node*)p_expression);
-	case TOKEN_ASTERISK:
-	  return emit_byte(p_compiler, OP_MULTIPLY, (ast_node*)p_expression);
-	case TOKEN_SLASH:
-	  return emit_byte(p_compiler, OP_DIVIDE, (ast_node*)p_expression);
-        default:;
+      case TOKEN_PLUS:
+        return emit_byte(p_compiler, OP_ADD, (ast_node*)p_expression);
+      case TOKEN_MINUS:
+        return emit_byte(p_compiler, OP_SUBTRACT, (ast_node*)p_expression);
+      case TOKEN_ASTERISK:
+        return emit_byte(p_compiler, OP_MULTIPLY, (ast_node*)p_expression);
+      case TOKEN_SLASH:
+        return emit_byte(p_compiler, OP_DIVIDE, (ast_node*)p_expression);
+      default:;
       }
     }
   }
