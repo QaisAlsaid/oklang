@@ -455,7 +455,13 @@ void ast_prefix_unary_expression_deinit(ast_prefix_unary_expression* p_prefix) {
   case TOKEN_MINUS_MINUS:                                                                                              \
     op = "--";                                                                                                         \
     break;                                                                                                             \
-  default:; /* i trust the parser. do you?*/                                                                           \
+  case TOKEN_BANG:                                                                                                     \
+    op = "!";                                                                                                          \
+    break;                                                                                                             \
+  case TOKEN_NOT:                                                                                                      \
+    op = "not ";                                                                                                       \
+    break;                                                                                                             \
+  default:;                                                                                                            \
   }
 
 bool ast_prefix_unary_expression_print(const ast_prefix_unary_expression* p_prefix) {
@@ -502,12 +508,12 @@ void ast_postfix_unary_expression_deinit(ast_postfix_unary_expression* p_postfix
   case TOKEN_MINUS_MINUS:                                                                                              \
     op = "--";                                                                                                         \
     break;                                                                                                             \
-  default:; /* i trust the parser. do you?*/                                                                           \
+  default:;                                                                                                            \
   }
 
 bool ast_postfix_unary_expression_print(const ast_postfix_unary_expression* p_postfix) {
   // TODO proper operator enum
-  const char* op;
+  const char* op = NULL;
   OPERATOR_STRING;
   return ast_print((ast_node*)p_postfix->left) && printf("%s", op);
 }
@@ -554,25 +560,43 @@ void ast_infix_binary_expression_deinit(ast_infix_binary_expression* p_infix) {
   case TOKEN_MINUS:                                                                                                    \
     op = "-";                                                                                                          \
     break;                                                                                                             \
-  case TOKEN_PLUS_PLUS:                                                                                                \
+  case TOKEN_ASTERISK:                                                                                                 \
     op = "*";                                                                                                          \
     break;                                                                                                             \
-  case TOKEN_MINUS_MINUS:                                                                                              \
+  case TOKEN_SLASH:                                                                                                    \
     op = "/";                                                                                                          \
     break;                                                                                                             \
-  default:; /* i trust the parser. do you?*/                                                                           \
+  case TOKEN_EQUAL:                                                                                                    \
+    op = "==";                                                                                                         \
+    break;                                                                                                             \
+  case TOKEN_BANG_EQUAL:                                                                                               \
+    op = "!=";                                                                                                         \
+    break;                                                                                                             \
+  case TOKEN_LESS:                                                                                                     \
+    op = "<";                                                                                                          \
+    break;                                                                                                             \
+  case TOKEN_GREATER:                                                                                                  \
+    op = ">";                                                                                                          \
+    break;                                                                                                             \
+  case TOKEN_LESS_EQUAL:                                                                                               \
+    op = "<=";                                                                                                         \
+    break;                                                                                                             \
+  case TOKEN_GREATER_EQUAL:                                                                                            \
+    op = ">=";                                                                                                         \
+    break;                                                                                                             \
+  default:;                                                                                                            \
   }
 
 bool ast_infix_binary_expression_print(const ast_infix_binary_expression* p_infix) {
   // TODO proper operator enum
-  const char* op;
+  const char* op = NULL;
   OPERATOR_STRING;
   return ast_print((ast_node*)p_infix->left) && printf("%s", op) && ast_print((ast_node*)p_infix->right);
 }
 
 string ast_infix_binary_expression_asprint(const ast_infix_binary_expression* p_infix) {
   // i think this is ugly, but what do i know
-  const char* op;
+  const char* op = NULL;
   OPERATOR_STRING;
   string left = ast_asprint((ast_node*)p_infix->left);
   if (left.chars == NULL) {
