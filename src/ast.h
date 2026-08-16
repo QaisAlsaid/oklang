@@ -3,10 +3,8 @@
 
 #include "token.h"
 #include "utils.h"
+#include "value.h" // for QNAN
 #include <stdbool.h>
-
-// move elsewhere
-#define QNAN ((uint64_t)0x7ffc000000000000)
 
 typedef enum {
   AST_NODE = 0,

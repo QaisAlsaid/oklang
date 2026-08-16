@@ -62,6 +62,14 @@ uint32_t debug_disassemble_instruction(const chunk* p_chunk, uint32_t p_offset) 
     return constant_long_instruction("OP_CONSTANT_LONG", p_offset, p_chunk);
   case OP_POP:
     return op_code_instruction("OP_POP", p_offset);
+  case OP_NULL:
+    return op_code_instruction("OP_NULL", p_offset);
+  case OP_FALSE:
+    return op_code_instruction("OP_FALSE", p_offset);
+  case OP_TRUE:
+    return op_code_instruction("OP_TRUE", p_offset);
+  case OP_NOT:
+    return op_code_instruction("OP_NOT", p_offset);
   case OP_NEGATE:
     return op_code_instruction("OP_NEGATE", p_offset);
   case OP_ADD:
@@ -72,6 +80,18 @@ uint32_t debug_disassemble_instruction(const chunk* p_chunk, uint32_t p_offset) 
     return op_code_instruction("OP_MULTIPLY", p_offset);
   case OP_DIVIDE:
     return op_code_instruction("OP_DIVIDE", p_offset);
+  case OP_EQUAL:
+    return op_code_instruction("OP_EQUAL", p_offset);
+  case OP_NOT_EQUAL:
+    return op_code_instruction("OP_NOT_EQUAL", p_offset);
+  case OP_LESS:
+    return op_code_instruction("OP_LESS", p_offset);
+  case OP_GREATER:
+    return op_code_instruction("OP_GREATER", p_offset);
+  case OP_LESS_EQUAL:
+    return op_code_instruction("OP_LESS_EQUAL", p_offset);
+  case OP_GREATER_EQUAL:
+    return op_code_instruction("OP_GREATER_EQUAL", p_offset);
   default:
     printf("unknown opcode %d (assumed width: %u)\n", instruction, UNKNOWN_ASSUMED_WIDTH);
     return p_offset + UNKNOWN_ASSUMED_WIDTH; // should we even advance here? since it could also be multibyte

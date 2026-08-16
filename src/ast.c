@@ -262,8 +262,8 @@ bool ast_root_print(const ast_root* p_root) {
 }
 
 string ast_root_asprint(const ast_root* p_root) {
-  char* chars;
-  size_t len;
+  char* chars = NULL;
+  size_t len = 0;
   for (ast_statements_list_node* node = p_root->statements.head; node != NULL; node = node->next) {
     string res = ast_asprint((ast_node*)node->statement);
     if (res.chars != NULL) {

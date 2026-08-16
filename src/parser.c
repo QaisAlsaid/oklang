@@ -8,7 +8,7 @@
 static precedence get_precedence(token_type p_type);
 
 static ast_root* parse_root(parser* p_parser);
-static ast_expression* parse_expression(parser* p_parser, int p_precedence);
+static ast_expression* parse_expression(parser* p_parser, precedence p_precedence);
 static ast_statement* parse_statement(parser* p_parser);
 static ast_statement* try_parse_declaration(parser* p_parser);
 static ast_empty_statement* parse_empty_statement(parser* p_parser);
@@ -85,8 +85,8 @@ static const parse_rule parse_rules[] = {
     [TOKEN_COLON] = {NULL, NULL, PREC_NONE},
     //[TOKEN_QUESTION] = { NULL, parse_conditional, PREC_NONE },
     [TOKEN_BANG] = {parse_unary_prefix, NULL, PREC_PREFIX},
-    [TOKEN_BANG_EQUAL] = {NULL, parse_binary_infix, PREC_COMPARISION},
-    [TOKEN_EQUAL] = {NULL, parse_binary_infix, PREC_COMPARISION},
+    [TOKEN_BANG_EQUAL] = {NULL, parse_binary_infix, PREC_EQUALITY},
+    [TOKEN_EQUAL] = {NULL, parse_binary_infix, PREC_EQUALITY},
     [TOKEN_LESS_EQUAL] = {NULL, parse_binary_infix, PREC_COMPARISION},
     [TOKEN_GREATER_EQUAL] = {NULL, parse_binary_infix, PREC_COMPARISION},
     [TOKEN_LESS] = {NULL, parse_binary_infix, PREC_COMPARISION},
@@ -118,11 +118,11 @@ static const parse_rule parse_rules[] = {
     [TOKEN_SUPER] = {NULL, NULL, PREC_NONE},
     [TOKEN_INHERITS] = {NULL, NULL, PREC_NONE},
     [TOKEN_THIS] = {NULL, NULL, PREC_NONE},
-    [TOKEN_NULL] = {NULL, NULL, PREC_NONE},
-    [TOKEN_TRUE] = {NULL, NULL, PREC_NONE},
-    [TOKEN_FALSE] = {NULL, NULL, PREC_NONE},
+    [TOKEN_NULL] = {parse_null, NULL, PREC_NONE},
+    [TOKEN_TRUE] = {parse_boolean, NULL, PREC_NONE},
+    [TOKEN_FALSE] = {parse_boolean, NULL, PREC_NONE},
     [TOKEN_RETURN] = {NULL, NULL, PREC_NONE},
-    [TOKEN_NOT] = {NULL, NULL, PREC_NONE},
+    [TOKEN_NOT] = {parse_unary_prefix, NULL, PREC_PREFIX},
     [TOKEN_OK] = {NULL, NULL, PREC_NONE},
     [TOKEN_OPERATOR] = {NULL, NULL, PREC_NONE},
     [TOKEN_GLOB] = {NULL, NULL, PREC_NONE},
@@ -227,6 +227,10 @@ ast_root* parse_root(parser* p_parser) {
     if (statement != NULL && statement->node.node_type != AST_EMPTY_STATEMENT) {
       ast_statements_list_append(&root->statements, statement);
     }
+    if (statement == NULL) {
+      p_parser->had_error = true;
+      p_parser->panic = true;
+    }
   }
   if (p_parser->previous.type == TOKEN_EOF) {
     ast_statements_list_append(&root->statements, (ast_statement*)parse_eof_statement(p_parser));
@@ -234,7 +238,7 @@ ast_root* parse_root(parser* p_parser) {
   return root;
 }
 
-ast_expression* parse_expression(parser* p_parser, int p_precedence) {
+ast_expression* parse_expression(parser* p_parser, precedence p_precedence) {
   token tok = p_parser->previous;
   const parse_rule prefix_rule = parse_rules[tok.type];
   if (prefix_rule.prefix == NULL) {
@@ -254,8 +258,8 @@ ast_expression* parse_expression(parser* p_parser, int p_precedence) {
   }
 
   token lookahead = p_parser->current;
-  while (lookahead.type != TOKEN_SEMICOLON ||
-         lookahead.type != TOKEN_EOF && (p_precedence < parse_rules[lookahead.type].precedence)) {
+  while (lookahead.type != TOKEN_SEMICOLON && lookahead.type != TOKEN_EOF &&
+         (p_precedence < parse_rules[lookahead.type].precedence)) {
     parse_rule infix_rule = parse_rules[lookahead.type];
     if (infix_rule.infix == NULL) {
       return left;
@@ -270,7 +274,7 @@ ast_expression* parse_expression(parser* p_parser, int p_precedence) {
 }
 
 ast_expression* parse_unary_prefix(parser* p_parser, token p_trigger) {
-  if (advance(p_parser)) {
+  if (!advance(p_parser)) {
     return NULL;
   }
   ast_expression* opperand = parse_expression(p_parser, PREC_PREFIX);

@@ -14,8 +14,15 @@ typedef struct {
 
 void stack_init(stack* p_stack);
 void stack_init_warm(stack* p_stack, uint32_t p_initial_capacity);
+// keeps allocated memory, only moves the top pointer
 void stack_resize(stack* p_stack, uint32_t p_new_size);
+// resizes the underlying array (fails if new size < top) or reallocation failed
+bool stack_sshrink(stack* p_stack, uint32_t p_new_size);
+// fails only when reallocation failed doesn't respect top pointer
+bool stack_shrink(stack* p_stack, uint32_t p_new_size);
 void stack_push(stack* p_stack, value p_value);
+value stack_top(stack* p_stack, uint32_t p_index);
+value* stack_top_ptr(stack* p_stack, uint32_t p_index);
 void stack_pop(stack* p_stack);
 value stack_popr(stack* p_stack);
 void stack_free(stack* p_stack);
@@ -23,6 +30,8 @@ void stack_free(stack* p_stack);
 typedef struct {
   stack stack;
   chunk* chunk;
+  source* source;
+  byte* ip;
 } vm;
 
 typedef enum {

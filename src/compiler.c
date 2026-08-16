@@ -226,7 +226,7 @@ bool compile_eof_statement(compiler* p_compiler, ast_eof_statement* p_eof) {
 }
 
 static bool compile_number_expression(compiler* p_compiler, ast_number_expression* p_number) {
-  return emit_constant(p_compiler, ast_number_expression_get_value(p_number), (ast_node*)p_number);
+  return emit_constant(p_compiler, NUMBER_AS_VALUE(ast_number_expression_get_value(p_number)), (ast_node*)p_number);
 }
 
 static bool compile_string_expression(compiler* p_compiler, ast_string_expression* p_string) {
@@ -239,8 +239,12 @@ static bool compile_prefix_unary_expression(compiler* p_compiler, ast_prefix_una
   switch (p_expression->_operator) {
   case TOKEN_MINUS:
     return emit_byte(p_compiler, OP_NEGATE, (ast_node*)p_expression);
+  case TOKEN_NOT:
+  case TOKEN_BANG:
+    return emit_byte(p_compiler, OP_NOT, (ast_node*)p_expression);
   default:;
   }
+  return false;
 }
 
 static bool compile_infix_binary_expression(compiler* p_compiler, ast_infix_binary_expression* p_expression) {
@@ -255,6 +259,19 @@ static bool compile_infix_binary_expression(compiler* p_compiler, ast_infix_bina
         return emit_byte(p_compiler, OP_MULTIPLY, (ast_node*)p_expression);
       case TOKEN_SLASH:
         return emit_byte(p_compiler, OP_DIVIDE, (ast_node*)p_expression);
+      case TOKEN_EQUAL:
+        return emit_byte(p_compiler, OP_EQUAL, (ast_node*)p_expression);
+      case TOKEN_BANG_EQUAL:
+        return emit_byte(p_compiler, OP_NOT_EQUAL, (ast_node*)p_expression);
+      case TOKEN_LESS:
+        return emit_byte(p_compiler, OP_LESS, (ast_node*)p_expression);
+      case TOKEN_GREATER:
+        return emit_byte(p_compiler, OP_GREATER, (ast_node*)p_expression);
+      case TOKEN_LESS_EQUAL:
+        return emit_byte(p_compiler, OP_LESS_EQUAL, (ast_node*)p_expression);
+      case TOKEN_GREATER_EQUAL:
+        return emit_byte(p_compiler, OP_GREATER_EQUAL, (ast_node*)p_expression);
+
       default:;
       }
     }
@@ -266,7 +283,9 @@ static bool compile_postfix_unary_expression(compiler* p_compiler, ast_postfix_u
 }
 
 static bool compile_boolean_expression(compiler* p_compiler, ast_boolean_expression* p_boolean) {
+  return emit_byte(p_compiler, ast_boolean_expression_get_value(p_boolean) ? OP_TRUE : OP_FALSE, (ast_node*)p_boolean);
 }
 
 static bool compile_null_expression(compiler* p_compiler, ast_null_expression* p_null) {
+  return emit_byte(p_compiler, OP_NULL, (ast_node*)p_null);
 }

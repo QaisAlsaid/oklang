@@ -18,7 +18,9 @@ run_result ok_run(ok* p_ok, source p_source) {
     parse_result_deinit(&parse_result);
     return RUN_PARSE_ERROR;
   }
-
+  printf("---> ast <---\n");
+  ast_print((ast_node*)parse_result.root);
+  printf("\n<--- ast --->\n");
   compiler_specs compiler_specs;
   compiler_specs.root = parse_result.root;
   compiler_specs.source = &p_source;

@@ -4,7 +4,13 @@
 #include <stdio.h>
 
 void value_debug_print(value p_value) {
-  printf("%g", p_value);
+  if (IS_VALUE_NUMBER(p_value)) {
+    printf("%g", VALUE_AS_NUMBER(p_value));
+  } else if (IS_VALUE_BOOL(p_value)) {
+    printf("%s", VALUE_AS_BOOL(p_value) ? "true" : "false");
+  } else if (IS_VALUE_NULL(p_value)) {
+    printf("null");
+  }
 }
 
 void value_array_init(value_array* p_values) {
