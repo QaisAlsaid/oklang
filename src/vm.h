@@ -2,6 +2,7 @@
 #define OK_VM_H
 
 #include "chunk.h"
+#include "object_store.h"
 
 typedef struct {
   uint32_t count;
@@ -32,6 +33,7 @@ typedef struct {
   chunk* chunk;
   source* source;
   byte* ip;
+  object_store* objects_store;
 } vm;
 
 typedef enum {
@@ -49,6 +51,7 @@ void interpret_result_deinit(interpret_result* p_interpret_result);
 typedef struct {
   source* source;
   chunk* chunk;
+  object_store* objects_store;
 } interpret_specs;
 
 void vm_init(vm* p_vm);

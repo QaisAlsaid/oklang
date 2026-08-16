@@ -6,8 +6,10 @@
 
 #include "array.h"
 #include "mm.h"
+#include "object.h"
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
 
 #define STACK_SIZE 256
 
@@ -20,15 +22,24 @@ void interpret_result_deinit(interpret_result* p_interpret_result) {
 
 void vm_init(vm* p_vm) {
   stack_init_warm(&p_vm->stack, STACK_SIZE);
+  p_vm->objects_store = NULL;
+  p_vm->ip = NULL;
+  p_vm->chunk = NULL;
+  p_vm->source = NULL;
 }
 
 void vm_deinit(vm* p_vm) {
   stack_free(&p_vm->stack);
+  p_vm->objects_store = NULL;
+  p_vm->ip = NULL;
+  p_vm->chunk = NULL;
+  p_vm->source = NULL;
 }
 
 interpret_result vm_interpret(vm* p_vm, interpret_specs p_specs) {
   p_vm->chunk = p_specs.chunk;
-  p_vm->source = p_specs.source; // having it this way means onlu one source per vm. but it's ok will fix soon.
+  p_vm->source = p_specs.source; // having it this way means only one source per vm. but it's ok will fix soon.
+  p_vm->objects_store = p_specs.objects_store;
   interpret_result interpret_result = vm_run(p_vm);
   p_vm->chunk = NULL;
   return interpret_result;
@@ -182,6 +193,11 @@ bool is_falsy(value p_value) {
 static bool values_equal(value p_lhs, value p_rhs) {
   if (IS_VALUE_NUMBER(p_lhs) && IS_VALUE_NUMBER(p_rhs))
     return VALUE_AS_NUMBER(p_lhs) == VALUE_AS_NUMBER(p_rhs);
+  else if (IS_VALUE_STRING(p_lhs) && IS_VALUE_STRING(p_rhs)) {
+    return strncmp(VALUE_AS_STRING(p_lhs)->string.chars,
+                   VALUE_AS_STRING(p_rhs)->string.chars,
+                   string_get_length(&VALUE_AS_STRING(p_lhs)->string)) == 0;
+  }
   return p_lhs == p_rhs;
 }
 

@@ -1,12 +1,16 @@
 #include "compiler.h"
 #include "debug.h"
+#include "object.h"
 #include "utils.h"
+#include "value.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 #define OK_DEBUG_DUMP_CODE
 
+static void error_at(compiler* p_compiler, ast_node* p_node, string p_message);
+static void error_at_noted(compiler* p_compiler, ast_node* p_node, string p_message, string p_note);
 static chunk* current_chunk(compiler* p_compiler);
 static bool emit_byte(compiler* p_compiler, byte p_byte, ast_node* p_node);
 static bool emit_2bytes(compiler* p_compiler, byte p_1st_byte, byte p_2nd_byte, ast_node* p_node);
@@ -42,17 +46,26 @@ void compile_result_deinit(compile_result* p_result) {
 
 void compiler_init(compiler* p_compiler) {
   p_compiler->current_chunk = NULL;
+  p_compiler->objects_store = NULL;
+  p_compiler->source = NULL;
   p_compiler->had_error = false;
+  p_compiler->panic = false;
 }
 
 void compiler_deinit(compiler* p_compiler) {
   p_compiler->current_chunk = NULL;
+  p_compiler->source = NULL;
+  p_compiler->objects_store = NULL;
+  p_compiler->had_error = false;
+  p_compiler->panic = false;
 }
 
 compile_result compiler_compile(compiler* p_compiler, compiler_specs p_specs) {
   chunk* _chunk = (chunk*)malloc(sizeof(chunk));
   chunk_init(_chunk);
   p_compiler->current_chunk = _chunk;
+  p_compiler->source = p_specs.source;
+  p_compiler->objects_store = p_specs.objects_store;
   bool res = compile_node(p_compiler, (ast_node*)p_specs.root);
   compile_result result;
   if (p_compiler->had_error == false || res == false) {
@@ -67,6 +80,14 @@ compile_result compiler_compile(compiler* p_compiler, compiler_specs p_specs) {
     result.chunk = NULL;
   }
   return result;
+}
+
+void error_at(compiler* p_compiler, ast_node* p_node, string p_message) {
+  error_at_noted(p_compiler, p_node, p_message, create_string(NULL, 0, false));
+}
+
+void error_at_noted(compiler* p_compiler, ast_node* p_node, string p_message, string p_note) {
+  error_at_noted(p_compiler, p_node, p_message, p_note);
 }
 
 chunk* current_chunk(compiler* p_compiler) {
@@ -100,25 +121,15 @@ uint32_t create_constant(compiler* p_compiler, value p_value, ast_node* p_node) 
   const uint32_t index = chunk_write_constant_with_line_info(chunk, p_value, p_node->token.line_info);
   if (!IS_CONSTANT_VALID(index)) {
     if (index == CONSTANT_OVERFLOW) {
-      string message = string_create("too many constants in single function.", 0, false);
       string note = asprint("maximum number of constants is: %d", CONSTANT_MAX);
-      report_at_noted(&p_compiler->panic,
-                      &p_compiler->had_error,
-                      p_node->node_type == AST_EOF_STATEMENT,
-                      p_compiler->source,
-                      &p_node->token,
-                      REPORT_SEVERITY_ERROR,
-                      &message,
-                      &note);
+      error_at_noted(p_compiler,
+                     p_node,
+                     create_string("too many constants in single function.", STRING_IGNORE_LENGTH, false),
+                     note);
+      string_deinit(&note);
     } else if (index == CONSTANT_ALLOCATION_FAILED) {
-      string message = string_create("failed to allocate memory for constant.", 0, false);
-      report_at(&p_compiler->panic,
-                &p_compiler->had_error,
-                p_node->node_type == AST_EOF_STATEMENT,
-                p_compiler->source,
-                &p_node->token,
-                REPORT_SEVERITY_ERROR,
-                &message);
+      error_at(
+          p_compiler, p_node, create_string("failed to allocate memory for constant.", STRING_IGNORE_LENGTH, false));
     }
   }
   return index;
@@ -191,13 +202,8 @@ static bool compile_node(compiler* p_compiler, ast_node* p_node) {
     return compile_eof_statement(p_compiler, (ast_eof_statement*)p_node);
   default: {
     string message = asprint("unable to compile node: %d", p_node->node_type);
-    report_at(&p_compiler->panic,
-              &p_compiler->had_error,
-              p_node->node_type == AST_EOF_STATEMENT,
-              p_compiler->source,
-              &p_node->token,
-              REPORT_SEVERITY_ERROR,
-              &message);
+    error_at(p_compiler, p_node, message);
+    string_deinit(&message);
     return false;
   }
   }
@@ -226,10 +232,34 @@ bool compile_eof_statement(compiler* p_compiler, ast_eof_statement* p_eof) {
 }
 
 static bool compile_number_expression(compiler* p_compiler, ast_number_expression* p_number) {
-  return emit_constant(p_compiler, NUMBER_AS_VALUE(ast_number_expression_get_value(p_number)), (ast_node*)p_number);
+  double number = ast_number_expression_get_value(p_number);
+  if (number == AST_NUMBER_EXPRESSION_PARSE_ERROR) {
+    error_at(p_compiler, (ast_node*)p_number, create_string("failed to parse number.", STRING_IGNORE_LENGTH, false));
+  }
+  return emit_constant(p_compiler, NUMBER_AS_VALUE(number), (ast_node*)p_number);
 }
 
 static bool compile_string_expression(compiler* p_compiler, ast_string_expression* p_string) {
+  string parsed_str = ast_string_expression_get_value(p_string);
+  if (parsed_str.chars == NULL) {
+    error_at(p_compiler, (ast_node*)p_string, create_string("failed to parse string.", STRING_IGNORE_LENGTH, false));
+    return false;
+  }
+  string copied_str = copy_string(parsed_str);
+  if (copied_str.chars == NULL) {
+    error_at(p_compiler,
+             (ast_node*)p_string,
+             create_string("failed to allocate memory for string.", STRING_IGNORE_LENGTH, false));
+    return false;
+  }
+  object_string* object_str = create_object_string(copied_str, p_compiler->objects_store);
+  if (object_str == NULL) {
+    error_at(
+        p_compiler, (ast_node*)p_string, create_string("failed create string object.", STRING_IGNORE_LENGTH, false));
+    string_deinit(&copied_str);
+    return false;
+  }
+  return emit_constant(p_compiler, OBJECT_AS_VALUE(object_str), (ast_node*)p_string);
 }
 
 static bool compile_prefix_unary_expression(compiler* p_compiler, ast_prefix_unary_expression* p_expression) {

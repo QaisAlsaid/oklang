@@ -15,6 +15,9 @@ static ast_empty_statement* parse_empty_statement(parser* p_parser);
 static ast_expression_statement* parse_expression_statement(parser* p_parser);
 static ast_eof_statement* parse_eof_statement(parser* p_parser);
 
+static void error_at(parser* p_parser, token p_token, string p_message);
+static void error_at_noted(parser* p_parser, token p_token, string p_message, string p_note);
+
 static bool advance(parser* p_parser);
 static bool expect(parser* p_parser, token_type p_type, string p_message);
 static token current(parser* p_parser);
@@ -163,6 +166,21 @@ void parse_result_deinit(parse_result* parse_result) {
   parse_result->root = NULL;
 }
 
+void error_at(parser* p_parser, token p_token, string p_message) {
+  error_at_noted(p_parser, p_token, p_message, create_string(NULL, 0, false));
+}
+
+void error_at_noted(parser* p_parser, token p_token, string p_message, string p_note) {
+  report_at_noted(&p_parser->panic,
+                  &p_parser->had_error,
+                  p_token.type == TOKEN_EOF,
+                  p_parser->source,
+                  &p_token,
+                  REPORT_SEVERITY_ERROR,
+                  p_message,
+                  p_note);
+}
+
 bool advance(parser* p_parser) {
   p_parser->previous = p_parser->current;
   for (;;) {
@@ -171,13 +189,7 @@ bool advance(parser* p_parser) {
       break;
     }
     string message = asprint("%*.s", p_parser->current.length, p_parser->current.start);
-    report_at(&p_parser->panic,
-              &p_parser->had_error,
-              p_parser->current.type == TOKEN_EOF,
-              p_parser->source,
-              &p_parser->current,
-              REPORT_SEVERITY_ERROR,
-              &message);
+    error_at(p_parser, p_parser->current, message);
     string_deinit(&message);
     return false;
   }
@@ -188,13 +200,7 @@ bool expect(parser* p_parser, token_type p_type, string p_message) {
   if (p_parser->current.type == p_type) {
     return advance(p_parser);
   }
-  report_at(&p_parser->panic,
-            &p_parser->had_error,
-            p_parser->current.type == TOKEN_EOF,
-            p_parser->source,
-            &p_parser->current,
-            REPORT_SEVERITY_ERROR,
-            &p_message);
+  error_at(p_parser, p_parser->current, p_message);
   return false;
 }
 
@@ -242,14 +248,7 @@ ast_expression* parse_expression(parser* p_parser, precedence p_precedence) {
   token tok = p_parser->previous;
   const parse_rule prefix_rule = parse_rules[tok.type];
   if (prefix_rule.prefix == NULL) {
-    string message = string_create("expected expression.", STRING_CALCULATE_LENGTH, false);
-    report_at(&p_parser->panic,
-              &p_parser->had_error,
-              p_parser->current.type == TOKEN_EOF,
-              p_parser->source,
-              &p_parser->current,
-              REPORT_SEVERITY_ERROR,
-              &message);
+    error_at(p_parser, p_parser->current, create_string("expected expression.", STRING_IGNORE_LENGTH, false));
     return NULL;
   }
   ast_expression* left = prefix_rule.prefix(p_parser, tok);
@@ -267,7 +266,7 @@ ast_expression* parse_expression(parser* p_parser, precedence p_precedence) {
     advance(p_parser);
     tok = p_parser->previous;
     lookahead = p_parser->current;
-    left = infix_rule.infix(p_parser, left, infix_rule.precedence, false, tok); // move ownership
+    left = infix_rule.infix(p_parser, left, infix_rule.precedence, false, tok);
     lookahead = p_parser->current;
   }
   return left;
@@ -294,7 +293,7 @@ ast_expression* parse_grouping(parser* p_parser, token p_trigger) {
   if (expr == NULL) {
     return NULL;
   }
-  if (expect(p_parser, TOKEN_RIGHT_PAREN, string_create("expected ')'.", STRING_CALCULATE_LENGTH, false))) {
+  if (expect(p_parser, TOKEN_RIGHT_PAREN, create_string("expected ')'.", STRING_CALCULATE_LENGTH, false))) {
     return expr;
   }
   ast_node_deinit((ast_node*)expr);
@@ -402,17 +401,12 @@ ast_expression_statement* parse_expression_statement(parser* p_parser) {
     return NULL;
   }
   if (p_parser->current.type != TOKEN_SEMICOLON) {
-    string message = string_create("expected ';' after expression statement.", STRING_CALCULATE_LENGTH, false);
-    report_at(&p_parser->panic,
-              &p_parser->had_error,
-              p_parser->current.type == TOKEN_EOF,
-              p_parser->source,
-              &p_parser->current,
-              REPORT_SEVERITY_ERROR,
-              &message);
+    error_at(p_parser,
+             p_parser->current,
+             create_string("expected ';' after expression statement.", STRING_IGNORE_LENGTH, false));
     return NULL;
   }
-  advance(p_parser);
+  advance(p_parser); // ;
   ast_expression_statement* expression_statement = (ast_expression_statement*)malloc(sizeof(ast_expression_statement));
   ast_expression_statement_init(expression_statement, trigger, expression);
   return expression_statement;

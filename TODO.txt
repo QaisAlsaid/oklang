@@ -1,2 +1,4 @@
 - support for config (custom loggers, custom allocators)
   and most importantly move the burden of getting the relevant line based on line_info to a custom config function, so we don't have to store source code till end of vm life.
+
+- compile time flags for the paranoid error checks

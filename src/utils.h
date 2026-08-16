@@ -18,13 +18,17 @@ typedef struct {
 } string;
 
 #define UINT56_MAX ((1ul << 56) - 1)
-#define STRING_CALCULATE_LENGTH UINT56_MAX
+#define STRING_MAX UINT56_MAX
+#define STRING_CALCULATE_LENGTH UINT56_MAX + 1
+#define STRING_IGNORE_LENGTH UINT56_MAX + 2
+#define STRING_FLAGS_TOP STRING_IGNORE_LENGTH
 
-string string_create(const char* p_chars, const uint64_t p_length, const bool p_is_dynamic);
 bool string_init(string* p_string, const char* p_chars, uint64_t p_length, const bool p_is_dynamic);
 void string_deinit(string* p_string);
 uint64_t string_get_length(const string* p_string);
 bool string_is_dynamic(const string* p_string);
+string create_string(const char* p_chars, const uint64_t p_length, const bool p_is_dynamic);
+string copy_string(string p_string);
 
 string asprint(const char* p_fmt, ...);
 
@@ -45,14 +49,14 @@ report_status report_at(bool* p_panic,
                         const source* p_source,
                         const token* p_token,
                         const report_severity p_severity,
-                        const string* p_message);
+                        const string p_message);
 report_status report_at_noted(bool* p_panic,
                               bool* p_had_error,
                               const bool p_is_eof,
                               const source* p_source,
                               const token* p_token,
                               const report_severity p_severity,
-                              const string* p_message,
-                              const string* p_note);
+                              const string p_message,
+                              const string p_note);
 
 #endif // OK_UTILS_H

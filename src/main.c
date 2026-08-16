@@ -38,7 +38,14 @@ void repl(ok* p_ok) {
     source.source = FROM_REPL;
     source.code = line;
     source.path = "";
-    ok_run(p_ok, source);
+    ok_result result = ok_run(p_ok, source);
+    if (result == OK_PARSE_ERROR) {
+      fprintf(stderr, "parse error occurred.\n");
+    } else if (result == OK_COMPILE_ERROR) {
+      fprintf(stderr, "compiler error occurred.\n");
+    } else if (result == OK_RUNTIME_ERROR) {
+      fprintf(stderr, "runtime error occurred.\n");
+    }
   }
 }
 
@@ -51,11 +58,11 @@ void run_file(ok* p_ok, const char* p_path) {
   source.source = FROM_REPL;
   source.code = src;
   source.path = p_path;
-  run_result result = ok_run(p_ok, source);
+  ok_result result = ok_run(p_ok, source);
   free(src);
-  if (result == RUN_PARSE_ERROR || result == RUN_COMPILE_ERROR) {
+  if (result == OK_PARSE_ERROR || result == OK_COMPILE_ERROR) {
     exit(65);
-  } else if (result == RUN_RUNTIME_ERROR) {
+  } else if (result == OK_RUNTIME_ERROR) {
     exit(70);
   }
 }

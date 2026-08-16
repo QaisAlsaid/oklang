@@ -2,12 +2,14 @@
 #define OK_COMPILER_H
 
 #include "chunk.h"
+#include "object_store.h"
 #include "parser.h"
 #include "source.h"
 
 typedef struct {
   chunk* current_chunk;
   source* source;
+  object_store* objects_store;
   bool had_error;
   bool panic;
 } compiler;
@@ -27,6 +29,7 @@ void compile_result_deinit(compile_result* p_result);
 typedef struct {
   source* source;
   ast_root* root;
+  object_store* objects_store;
 } compiler_specs;
 
 void compiler_init(compiler* compiler);

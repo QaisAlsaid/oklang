@@ -18,17 +18,17 @@
 #define IS_VALUE_NULL(value) ((value) == VALUE_NULL)
 #define IS_VALUE_BOOL(value) ((value) == VALUE_FALSE || (value) == VALUE_TRUE)
 #define IS_VALUE_NUMBER(value) (((value) & QNAN) != QNAN)
-#define IS_VALUE_OBJECT(value) (((value) & (QNANA | SIGN_BIT)) == (QNAN | SIGN_BIT))
+#define IS_VALUE_OBJECT(value) (((value) & (QNAN | SIGN_BIT)) == (QNAN | SIGN_BIT))
 
 #define NULL_AS_VALUE() VALUE_NULL
 #define BOOL_AS_VALUE(bool) (bool ? VALUE_TRUE : VALUE_FALSE)
 #define NUMBER_AS_VALUE(number) number_to_value(number)
-#define OBJECT_AS_VALUE(object) ((value) | SIGN_BIT | QNAN(uint64_t)(uintptr_t)(object))
+#define OBJECT_AS_VALUE(object) ((value)(SIGN_BIT | QNAN | (uint64_t)(uintptr_t)(object)))
 
 #define VALUE_AS_NULL(value) NULL
 #define VALUE_AS_BOOL(value) ((value) == VALUE_TRUE)
 #define VALUE_AS_NUMBER(value) value_to_number(value)
-#define VALUE_AS_OBJECT(value) ((object*)(uintptr_t)((value) & (SIGN_BIT | QNAN)))
+#define VALUE_AS_OBJECT(value) ((object*)(uintptr_t)((value) & ~(SIGN_BIT | QNAN)))
 
 typedef uint64_t value;
 
