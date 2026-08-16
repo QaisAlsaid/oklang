@@ -48,7 +48,7 @@ void objects_list_deinit(object* p_head) {
     object* temp = p_head->next; // copy now since object_deinit nullifies the next pointer.
     object_dispatch_deinit(p_head);
     free(p_head);
-    p_head = temp->next;
+    p_head = temp;
   }
 }
 
