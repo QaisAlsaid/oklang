@@ -267,10 +267,10 @@ static bool compile_prefix_unary_expression(compiler* p_compiler, ast_prefix_una
     return false;
   }
   switch (p_expression->_operator) {
-  case TOKEN_MINUS:
+  case OPERATOR_MINUS:
     return emit_byte(p_compiler, OP_NEGATE, (ast_node*)p_expression);
-  case TOKEN_NOT:
-  case TOKEN_BANG:
+  case OPERATOR_NOT:
+  case OPERATOR_BANG:
     return emit_byte(p_compiler, OP_NOT, (ast_node*)p_expression);
   default:;
   }
@@ -281,25 +281,25 @@ static bool compile_infix_binary_expression(compiler* p_compiler, ast_infix_bina
   if (compile_node(p_compiler, (ast_node*)p_expression->left)) {
     if (compile_node(p_compiler, (ast_node*)p_expression->right)) {
       switch (p_expression->_operator) {
-      case TOKEN_PLUS:
+      case OPERATOR_PLUS:
         return emit_byte(p_compiler, OP_ADD, (ast_node*)p_expression);
-      case TOKEN_MINUS:
+      case OPERATOR_MINUS:
         return emit_byte(p_compiler, OP_SUBTRACT, (ast_node*)p_expression);
-      case TOKEN_ASTERISK:
+      case OPERATOR_ASTERISK:
         return emit_byte(p_compiler, OP_MULTIPLY, (ast_node*)p_expression);
-      case TOKEN_SLASH:
+      case OPERATOR_SLASH:
         return emit_byte(p_compiler, OP_DIVIDE, (ast_node*)p_expression);
-      case TOKEN_EQUAL:
+      case OPERATOR_EQUAL:
         return emit_byte(p_compiler, OP_EQUAL, (ast_node*)p_expression);
-      case TOKEN_BANG_EQUAL:
+      case OPERATOR_BANG_EQUAL:
         return emit_byte(p_compiler, OP_NOT_EQUAL, (ast_node*)p_expression);
-      case TOKEN_LESS:
+      case OPERATOR_LESS:
         return emit_byte(p_compiler, OP_LESS, (ast_node*)p_expression);
-      case TOKEN_GREATER:
+      case OPERATOR_GREATER:
         return emit_byte(p_compiler, OP_GREATER, (ast_node*)p_expression);
-      case TOKEN_LESS_EQUAL:
+      case OPERATOR_LESS_EQUAL:
         return emit_byte(p_compiler, OP_LESS_EQUAL, (ast_node*)p_expression);
-      case TOKEN_GREATER_EQUAL:
+      case OPERATOR_GREATER_EQUAL:
         return emit_byte(p_compiler, OP_GREATER_EQUAL, (ast_node*)p_expression);
 
       default:;

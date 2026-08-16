@@ -427,7 +427,7 @@ string ast_null_expression_asprint(const ast_null_expression* p_null) {
 
 void ast_prefix_unary_expression_init(ast_prefix_unary_expression* p_prefix,
                                       token p_token,
-                                      token_type p_operator,
+                                      operator_type p_operator,
                                       ast_expression* p_right) {
   ast_expression_init(&p_prefix->expression, AST_PREFIX_UNARY_EXPRESSION, p_token);
   p_prefix->_operator = p_operator;
@@ -441,52 +441,26 @@ void ast_prefix_unary_expression_deinit(ast_prefix_unary_expression* p_prefix) {
   ast_expression_deinit(&p_prefix->expression);
 }
 
-#define OPERATOR_STRING                                                                                                \
-  switch (p_prefix->_operator) {                                                                                       \
-  case TOKEN_PLUS:                                                                                                     \
-    op = "+";                                                                                                          \
-    break;                                                                                                             \
-  case TOKEN_MINUS:                                                                                                    \
-    op = "-";                                                                                                          \
-    break;                                                                                                             \
-  case TOKEN_PLUS_PLUS:                                                                                                \
-    op = "++";                                                                                                         \
-    break;                                                                                                             \
-  case TOKEN_MINUS_MINUS:                                                                                              \
-    op = "--";                                                                                                         \
-    break;                                                                                                             \
-  case TOKEN_BANG:                                                                                                     \
-    op = "!";                                                                                                          \
-    break;                                                                                                             \
-  case TOKEN_NOT:                                                                                                      \
-    op = "not ";                                                                                                       \
-    break;                                                                                                             \
-  default:;                                                                                                            \
-  }
-
 bool ast_prefix_unary_expression_print(const ast_prefix_unary_expression* p_prefix) {
-  // TODO proper operator enum
-  const char* op;
-  OPERATOR_STRING;
-  return printf("%s", op) > 0 && ast_print((ast_node*)p_prefix->right);
+  return printf("%s", operator_type_to_string(p_prefix->_operator).chars) > 0 && ast_print((ast_node*)p_prefix->right);
 }
 
 string ast_prefix_unary_expression_asprint(const ast_prefix_unary_expression* p_prefix) {
-  const char* op;
-  OPERATOR_STRING;
   string right = ast_asprint((ast_node*)p_prefix->right);
   if (right.chars == NULL) {
     string_deinit(&right);
     return create_string(NULL, 0, false);
   }
-  return asprint("%s%s", op, right);
+  const string ret = asprint("%s%s", operator_type_to_string(p_prefix->_operator).chars, right.chars);
+  string_deinit(&right);
+  return ret;
 }
 
 #undef OPERATOR_STRING
 
 void ast_postfix_unary_expression_init(ast_postfix_unary_expression* p_postfix,
                                        token p_token,
-                                       token_type p_operator,
+                                       operator_type p_operator,
                                        ast_expression* p_left) {
   ast_expression_init(&p_postfix->expression, AST_POSTFIX_UNARY_EXPRESSION, p_token);
   p_postfix->_operator = p_operator;
@@ -500,40 +474,26 @@ void ast_postfix_unary_expression_deinit(ast_postfix_unary_expression* p_postfix
   ast_expression_deinit(&p_postfix->expression);
 }
 
-#define OPERATOR_STRING                                                                                                \
-  switch (p_postfix->_operator) {                                                                                      \
-  case TOKEN_PLUS_PLUS:                                                                                                \
-    op = "++";                                                                                                         \
-    break;                                                                                                             \
-  case TOKEN_MINUS_MINUS:                                                                                              \
-    op = "--";                                                                                                         \
-    break;                                                                                                             \
-  default:;                                                                                                            \
-  }
-
 bool ast_postfix_unary_expression_print(const ast_postfix_unary_expression* p_postfix) {
-  // TODO proper operator enum
-  const char* op = NULL;
-  OPERATOR_STRING;
-  return ast_print((ast_node*)p_postfix->left) && printf("%s", op);
+  return ast_print((ast_node*)p_postfix->left) && printf("%s", operator_type_to_string(p_postfix->_operator).chars);
 }
 
 string ast_postfix_unary_expression_asprint(const ast_postfix_unary_expression* p_postfix) {
-  const char* op;
-  OPERATOR_STRING;
   string left = ast_asprint((ast_node*)p_postfix->left);
   if (left.chars == NULL) {
     string_deinit(&left);
     return create_string(NULL, 0, false);
   }
-  return asprint("%s%s", left, op);
+  const string ret = asprint("%s%s", left.chars, operator_type_to_string(p_postfix->_operator).chars);
+  string_deinit(&left);
+  return ret;
 }
 
 #undef OPERATOR_STRING
 
 void ast_infix_binary_expression_init(ast_infix_binary_expression* p_infix,
                                       token p_token,
-                                      token_type p_operator,
+                                      operator_type p_operator,
                                       ast_expression* p_left,
                                       ast_expression* p_right) {
   ast_expression_init(&p_infix->expression, AST_INFIX_BINARY_EXPRESSION, p_token);
@@ -552,52 +512,12 @@ void ast_infix_binary_expression_deinit(ast_infix_binary_expression* p_infix) {
   ast_expression_deinit(&p_infix->expression);
 }
 
-#define OPERATOR_STRING                                                                                                \
-  switch (p_infix->_operator) {                                                                                        \
-  case TOKEN_PLUS:                                                                                                     \
-    op = "+";                                                                                                          \
-    break;                                                                                                             \
-  case TOKEN_MINUS:                                                                                                    \
-    op = "-";                                                                                                          \
-    break;                                                                                                             \
-  case TOKEN_ASTERISK:                                                                                                 \
-    op = "*";                                                                                                          \
-    break;                                                                                                             \
-  case TOKEN_SLASH:                                                                                                    \
-    op = "/";                                                                                                          \
-    break;                                                                                                             \
-  case TOKEN_EQUAL:                                                                                                    \
-    op = "==";                                                                                                         \
-    break;                                                                                                             \
-  case TOKEN_BANG_EQUAL:                                                                                               \
-    op = "!=";                                                                                                         \
-    break;                                                                                                             \
-  case TOKEN_LESS:                                                                                                     \
-    op = "<";                                                                                                          \
-    break;                                                                                                             \
-  case TOKEN_GREATER:                                                                                                  \
-    op = ">";                                                                                                          \
-    break;                                                                                                             \
-  case TOKEN_LESS_EQUAL:                                                                                               \
-    op = "<=";                                                                                                         \
-    break;                                                                                                             \
-  case TOKEN_GREATER_EQUAL:                                                                                            \
-    op = ">=";                                                                                                         \
-    break;                                                                                                             \
-  default:;                                                                                                            \
-  }
-
 bool ast_infix_binary_expression_print(const ast_infix_binary_expression* p_infix) {
-  // TODO proper operator enum
-  const char* op = NULL;
-  OPERATOR_STRING;
-  return ast_print((ast_node*)p_infix->left) && printf("%s", op) && ast_print((ast_node*)p_infix->right);
+  return ast_print((ast_node*)p_infix->left) && printf("%s", operator_type_to_string(p_infix->_operator).chars) &&
+         ast_print((ast_node*)p_infix->right);
 }
 
 string ast_infix_binary_expression_asprint(const ast_infix_binary_expression* p_infix) {
-  // i think this is ugly, but what do i know
-  const char* op = NULL;
-  OPERATOR_STRING;
   string left = ast_asprint((ast_node*)p_infix->left);
   if (left.chars == NULL) {
     string_deinit(&left);
@@ -609,7 +529,10 @@ string ast_infix_binary_expression_asprint(const ast_infix_binary_expression* p_
     string_deinit(&right);
     return create_string(NULL, 0, false);
   }
-  return asprint("%s%s%s", left, op, right);
+  const string ret = asprint("%s%s%s", left.chars, operator_type_to_string(p_infix->_operator).chars, right.chars);
+  string_deinit(&left);
+  string_deinit(&right);
+  return ret;
 }
 
 #undef OPERATOR_STRING

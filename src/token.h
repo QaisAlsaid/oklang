@@ -4,22 +4,108 @@
 #include "source.h"
 #include <stdint.h>
 
+#define TOKEN_LIST_X(X)                                                                                                \
+  X(TOKEN_ERROR, "error")                                                                                              \
+  X(TOKEN_ILLEGAL, "illegal")                                                                                          \
+  X(TOKEN_EOF, "")                                                                                                     \
+  X(TOKEN_ASSIGN, "=")                                                                                                 \
+  X(TOKEN_PLUS, "+")                                                                                                   \
+  X(TOKEN_MINUS, "-")                                                                                                  \
+  X(TOKEN_ASTERISK, "*")                                                                                               \
+  X(TOKEN_SLASH, "/")                                                                                                  \
+  X(TOKEN_MODULO, "%")                                                                                                 \
+  X(TOKEN_CARET, "^")                                                                                                  \
+  X(TOKEN_AMPERSAND, "&")                                                                                              \
+  X(TOKEN_BAR, "|")                                                                                                    \
+  X(TOKEN_TILED, "~")                                                                                                  \
+  X(TOKEN_PLUS_PLUS, "++")                                                                                             \
+  X(TOKEN_MINUS_MINUS, "--")                                                                                           \
+  X(TOKEN_PLUS_EQUAL, "+=")                                                                                            \
+  X(TOKEN_MINUS_EQUAL, "-=")                                                                                           \
+  X(TOKEN_ASTERISK_EQUAL, "*=")                                                                                        \
+  X(TOKEN_SLASH_EQUAL, "/=")                                                                                           \
+  X(TOKEN_MODULO_EQUAL, "%=")                                                                                          \
+  X(TOKEN_CARET_EQUAL, "^=")                                                                                           \
+  X(TOKEN_AMPERSAND_EQUAL, "&=")                                                                                       \
+  X(TOKEN_BAR_EQUAL, "|=")                                                                                             \
+  X(TOKEN_TILED_EQUAL, "~=")                                                                                           \
+  X(TOKEN_SHIFT_LEFT_EQUAL, "<<=")                                                                                     \
+  X(TOKEN_SHIFT_RIGHT_EQUAL, ">>=")                                                                                    \
+  X(TOKEN_SHIFT_LEFT, "<<")                                                                                            \
+  X(TOKEN_SHIFT_RIGHT, ">>")                                                                                           \
+  X(TOKEN_COMMA, ",")                                                                                                  \
+  X(TOKEN_COLON, ":")                                                                                                  \
+  X(TOKEN_SEMICOLON, ";")                                                                                              \
+  X(TOKEN_DOT, ".")                                                                                                    \
+  X(TOKEN_QUESTION, "?")                                                                                               \
+  X(TOKEN_BANG, "!")                                                                                                   \
+  X(TOKEN_BANG_EQUAL, "!=")                                                                                            \
+  X(TOKEN_EQUAL, "==")                                                                                                 \
+  X(TOKEN_LESS_EQUAL, "<=")                                                                                            \
+  X(TOKEN_GREATER_EQUAL, ">=")                                                                                         \
+  X(TOKEN_LESS, "<")                                                                                                   \
+  X(TOKEN_GREATER, ">")                                                                                                \
+  X(TOKEN_LEFT_PAREN, "(")                                                                                             \
+  X(TOKEN_RIGHT_PAREN, ")")                                                                                            \
+  X(TOKEN_LEFT_BRACE, "{")                                                                                             \
+  X(TOKEN_RIGHT_BRACE, "}")                                                                                            \
+  X(TOKEN_LEFT_BRACKET, "[")                                                                                           \
+  X(TOKEN_RIGHT_BRACKET, "]")                                                                                          \
+  X(TOKEN_ARROW, "->")                                                                                                 \
+  X(TOKEN_IDENTIFIER, "identifier")                                                                                    \
+  X(TOKEN_NUMBER, "number")                                                                                            \
+  X(TOKEN_STRING, "string")                                                                                            \
+  X(TOKEN_PRINT, "print")                                                                                              \
+  X(TOKEN_IMPORT, "import")                                                                                            \
+  X(TOKEN_AS, "as")                                                                                                    \
+  X(TOKEN_FU, "fu")                                                                                                    \
+  X(TOKEN_LET, "let")                                                                                                  \
+  X(TOKEN_WHILE, "while")                                                                                              \
+  X(TOKEN_FOR, "for")                                                                                                  \
+  X(TOKEN_BREAK, "break")                                                                                              \
+  X(TOKEN_CONTINUE, "continue")                                                                                        \
+  X(TOKEN_IF, "if")                                                                                                    \
+  X(TOKEN_ELSE, "else")                                                                                                \
+  X(TOKEN_AND, "and")                                                                                                  \
+  X(TOKEN_OR, "or")                                                                                                    \
+  X(TOKEN_CLASS, "class")                                                                                              \
+  X(TOKEN_SUPER, "super")                                                                                              \
+  X(TOKEN_INHERITS, "inherits")                                                                                        \
+  X(TOKEN_THIS, "this")                                                                                                \
+  X(TOKEN_NULL, "null")                                                                                                \
+  X(TOKEN_TRUE, "true")                                                                                                \
+  X(TOKEN_FALSE, "false")                                                                                              \
+  X(TOKEN_RETURN, "return")                                                                                            \
+  X(TOKEN_NOT, "not")                                                                                                  \
+  X(TOKEN_OK, "ok")                                                                                                    \
+  X(TOKEN_OPERATOR, "operator")                                                                                        \
+  X(TOKEN_GLOB, "glob")                                                                                                \
+  X(TOKEN_EXPORT, "export")                                                                                            \
+  X(TOKEN_MUT, "mut")                                                                                                  \
+  X(TOKEN_STATIC, "static")                                                                                            \
+  X(TOKEN_ASYNC, "async")                                                                                              \
+  X(TOKEN_TRY, "try")                                                                                                  \
+  X(TOKEN_CATCH, "catch")                                                                                              \
+  X(TOKEN_THROW, "throw")                                                                                              \
+  X(TOKEN_FINALIZE, "finalize")
+
 typedef enum {
   TOKEN_ERROR = 0,
-  TOKEN_ILLEGAL,     // invalid utf8
-  TOKEN_EOF,         // end of file
-  TOKEN_ASSIGN,      // =
-  TOKEN_PLUS,        // +
-  TOKEN_MINUS,       // -
-  TOKEN_ASTERISK,    // *
-  TOKEN_SLASH,       // /
-  TOKEN_MODULO,      // %
-  TOKEN_CARET,       // ^
-  TOKEN_AMPERSAND,   // &
-  TOKEN_BAR,         // |
-  TOKEN_PLUS_PLUS,   // ++
-  TOKEN_MINUS_MINUS, // --
-  TOKEN_PLUS_EQUAL,  // +=
+  TOKEN_ILLEGAL,
+  TOKEN_EOF,
+  TOKEN_ASSIGN,
+  TOKEN_PLUS,
+  TOKEN_MINUS,
+  TOKEN_ASTERISK,
+  TOKEN_SLASH,
+  TOKEN_MODULO,
+  TOKEN_CARET,
+  TOKEN_AMPERSAND,
+  TOKEN_BAR,
+  TOKEN_TILED,
+  TOKEN_PLUS_PLUS,
+  TOKEN_MINUS_MINUS,
+  TOKEN_PLUS_EQUAL,
   TOKEN_MINUS_EQUAL,
   TOKEN_ASTERISK_EQUAL,
   TOKEN_SLASH_EQUAL,
@@ -27,6 +113,7 @@ typedef enum {
   TOKEN_CARET_EQUAL,
   TOKEN_AMPERSAND_EQUAL,
   TOKEN_BAR_EQUAL,
+  TOKEN_TILED_EQUAL,
   TOKEN_SHIFT_LEFT_EQUAL,
   TOKEN_SHIFT_RIGHT_EQUAL,
   TOKEN_SHIFT_LEFT,

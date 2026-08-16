@@ -1,6 +1,7 @@
 #ifndef OK_AST_H
 #define OK_AST_H
 
+#include "operator.h"
 #include "token.h"
 #include "utils.h"
 #include "value.h" // for QNAN
@@ -174,13 +175,13 @@ string ast_null_expression_asprint(const ast_null_expression* p_null);
 
 typedef struct {
   ast_expression expression;
-  token_type _operator;
+  operator_type _operator;
   ast_expression* right;
 } ast_prefix_unary_expression;
 
 void ast_prefix_unary_expression_init(ast_prefix_unary_expression* p_prefix,
                                       const token p_token,
-                                      const token_type p_operator,
+                                      const operator_type p_operator,
                                       ast_expression* p_right);
 void ast_prefix_unary_expression_deinit(ast_prefix_unary_expression* p_prefix);
 bool ast_prefix_unary_expression_print(const ast_prefix_unary_expression* p_prefix);
@@ -188,13 +189,13 @@ string ast_prefix_unary_expression_asprint(const ast_prefix_unary_expression* p_
 
 typedef struct {
   ast_expression expression;
-  token_type _operator;
+  operator_type _operator;
   ast_expression* left;
 } ast_postfix_unary_expression;
 
 void ast_postfix_unary_expression_init(ast_postfix_unary_expression* p_postfix,
                                        const token p_token,
-                                       const token_type p_operator,
+                                       const operator_type p_operator,
                                        ast_expression* p_left);
 void ast_postfix_unary_expression_deinit(ast_postfix_unary_expression* p_postfix);
 bool ast_postfix_unary_expression_print(const ast_postfix_unary_expression* p_postfix);
@@ -202,14 +203,14 @@ string ast_postfix_unary_expression_asprint(const ast_postfix_unary_expression* 
 
 typedef struct {
   ast_expression expression;
-  token_type _operator;
+  operator_type _operator;
   ast_expression* left;
   ast_expression* right;
 } ast_infix_binary_expression;
 
 void ast_infix_binary_expression_init(ast_infix_binary_expression* p_infix,
                                       const token p_token,
-                                      const token_type p_operator,
+                                      const operator_type p_operator,
                                       ast_expression* p_left,
                                       ast_expression* p_right);
 void ast_infix_binary_expression_deinit(ast_infix_binary_expression* p_infix);
