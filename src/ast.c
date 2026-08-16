@@ -364,12 +364,12 @@ void ast_string_expression_deinit(ast_string_expression* p_string) {
 
 string ast_string_expression_get_value(const ast_string_expression* p_string) {
   const ast_node* node = &p_string->expression.node;
-  const size_t len = node->token.length;
+  const size_t len = node->token.length - 2;
   char* str = (char*)malloc(len + 1);
   if (str == NULL) {
     return create_string(NULL, 0, false);
   }
-  memcpy(str, node->token.start, node->token.length);
+  memcpy(str, node->token.start + 1, node->token.length - 2);
   str[node->token.length] = '\0';
   return create_string(str, len, true);
 }
