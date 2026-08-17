@@ -45,7 +45,7 @@ interpret_result vm_interpret(vm* p_vm, interpret_specs p_specs) {
 }
 
 interpret_result vm_run(vm* p_vm) {
-  register byte* ip = p_vm->chunk->code.code_array.data;
+  register byte* ip = p_vm->chunk->code.data;
 #define READ_BYTE() (*ip++)
 #define READ_CONSTANT() p_vm->chunk->constants.data[READ_BYTE()]
 #define BIN_OP(VALUE, op)                                                                                              \
@@ -70,7 +70,7 @@ interpret_result vm_run(vm* p_vm) {
       printf(" ]");
     }
     printf("\n");
-    debug_disassemble_instruction(p_vm->chunk, (uint32_t)(ip - p_vm->chunk->code.code_array.data));
+    debug_disassemble_instruction(p_vm->chunk, (uint32_t)(ip - p_vm->chunk->code.data));
 #endif // defined(OK_TRACE_EXECUTION)
 
     byte instruction = READ_BYTE();
@@ -172,7 +172,7 @@ interpret_result vm_run(vm* p_vm) {
 }
 
 void runtime_error(vm* p_vm, const char* p_fmt, ...) {
-  size_t instruction = p_vm->ip - p_vm->chunk->code.code_array.data - 1;
+  size_t instruction = p_vm->ip - p_vm->chunk->code.data - 1;
   line_info_repeated* info = source_info_find(&p_vm->chunk->source_info, instruction);
   if (info != NULL) {
     fprintf(stderr, "%s:%d:%d", p_vm->source->path, info->line_info.line, info->line_info.offset);
@@ -200,7 +200,7 @@ static bool values_equal(value p_lhs, value p_rhs) {
   return p_lhs == p_rhs;
 }
 
-ARRAY_DEFINE(stack, value, uint32_t)
+ARRAY_DEFINE(stack_array, value, uint32_t)
 
 void stack_init(stack* p_stack) {
   stack_array_init(&p_stack->array);

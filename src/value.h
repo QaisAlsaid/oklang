@@ -53,6 +53,6 @@ static double inline value_to_number(value p_value) {
 
 void value_debug_print(value p_value);
 
-ARRAY_DECLARE(value, value, uint32_t)
+ARRAY_DECLARE(value_array, value, uint32_t)
 
 #endif // OK_VALUE_H

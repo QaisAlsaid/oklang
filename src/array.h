@@ -5,32 +5,32 @@
 #include <string.h> // for memcpy
 
 #define ARRAY_DECLARE(name, type, size_type)                                                                           \
-  typedef struct name##_array name##_array;                                                                            \
-  struct name##_array {                                                                                                \
+  typedef struct name name;                                                                                            \
+  struct name {                                                                                                        \
     size_type count;                                                                                                   \
     size_type capacity;                                                                                                \
     type* data;                                                                                                        \
   };                                                                                                                   \
                                                                                                                        \
-  void name##_array_init(name##_array* p_array);                                                                       \
-  void name##_array_deinit(name##_array* p_array);                                                                     \
-  bool name##_array_grow(name##_array* p_array, const size_type p_new_capacity);                                       \
-  bool name##_array_append(name##_array* p_array, const type p_element);                                               \
-  bool name##_array_append_n(name##_array* p_array, const type* p_elements, const size_type p_elements_count);
+  void name##_init(name* p_array);                                                                                     \
+  void name##_deinit(name* p_array);                                                                                   \
+  bool name##_grow(name* p_array, const size_type p_new_capacity);                                                     \
+  bool name##_append(name* p_array, const type p_element);                                                             \
+  bool name##_append_n(name* p_array, const type* p_elements, const size_type p_elements_count);
 
 #define ARRAY_DEFINE(name, type, size_type)                                                                            \
-  void name##_array_init(name##_array* p_array) {                                                                      \
+  void name##_init(name* p_array) {                                                                                    \
     p_array->count = 0;                                                                                                \
     p_array->capacity = 0;                                                                                             \
     p_array->data = NULL;                                                                                              \
   }                                                                                                                    \
                                                                                                                        \
-  void name##_array_deinit(name##_array* p_array) {                                                                    \
+  void name##_deinit(name* p_array) {                                                                                  \
     reallocate(p_array->data, sizeof(type) * p_array->capacity, 0);                                                    \
-    name##_array_init(p_array);                                                                                        \
+    name##_init(p_array);                                                                                              \
   }                                                                                                                    \
                                                                                                                        \
-  bool name##_array_grow(name##_array* p_array, const size_type p_new_capacity) {                                      \
+  bool name##_grow(name* p_array, const size_type p_new_capacity) {                                                    \
     type* ptr = (type*)reallocate(p_array->data, sizeof(type) * p_array->capacity, sizeof(type) * p_new_capacity);     \
     if (ptr == NULL) {                                                                                                 \
       return false;                                                                                                    \
@@ -40,9 +40,9 @@
     return true;                                                                                                       \
   }                                                                                                                    \
                                                                                                                        \
-  bool name##_array_append(name##_array* p_array, const type p_element) {                                              \
+  bool name##_append(name* p_array, const type p_element) {                                                            \
     if (p_array->capacity < p_array->count + 1) {                                                                      \
-      if (!name##_array_grow(p_array, array_grow_capacity(p_array->capacity, 0))) {                                    \
+      if (!name##_grow(p_array, array_grow_capacity(p_array->capacity, 0))) {                                          \
         return false;                                                                                                  \
       }                                                                                                                \
     }                                                                                                                  \
@@ -50,9 +50,9 @@
     return true;                                                                                                       \
   }                                                                                                                    \
                                                                                                                        \
-  bool name##_array_append_n(name##_array* p_array, const type* p_elements, const size_type p_elements_count) {        \
+  bool name##_append_n(name* p_array, const type* p_elements, const size_type p_elements_count) {                      \
     if (p_array->capacity < p_array->count + p_elements_count + 1) {                                                   \
-      if (!name##_array_grow(p_array, array_grow_capacity(p_array->capacity, p_elements_count))) {                     \
+      if (!name##_grow(p_array, array_grow_capacity(p_array->capacity, p_elements_count))) {                           \
         return false;                                                                                                  \
       }                                                                                                                \
     }                                                                                                                  \

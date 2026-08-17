@@ -68,17 +68,11 @@ typedef enum {
 } OP_CODE;
 
 ARRAY_DECLARE(code, byte, uint32_t);
-typedef struct {
-  code_array code_array;
-} code;
-
-void code_init(code* p_code);
-void code_deinit(code* p_code);
 bool code_write_1byte(code* p_code, const byte p_byte);
 bool code_write_2bytes(code* p_code, const byte p_1st_byte, const byte p_2nd_byte);
 bool code_write(code* p_code, const byte* p_bytes, const size_t p_bytes_count);
 
-ARRAY_DECLARE(line_info, line_info_repeated, uint32_t);
+ARRAY_DECLARE(line_info_array, line_info_repeated, uint32_t);
 typedef struct {
   line_info_array line_info_array;
 } source_info;

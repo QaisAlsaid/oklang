@@ -15,4 +15,4 @@ void value_debug_print(value p_value) {
   }
 }
 
-ARRAY_DEFINE(value, value, uint32_t)
+ARRAY_DEFINE(value_array, value, uint32_t)
