@@ -1,68 +1,58 @@
 #include "chunk.h"
-#include "array.h"
-#include "mm.h"
 #include "utils.h"
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+ARRAY_DEFINE(code, byte, uint32_t)
 void code_init(code* p_code) {
-  OK_ARRAY_INIT(p_code->count, p_code->capacity, p_code->code_array);
+  code_array_init(&p_code->code_array);
 }
 
 void code_deinit(code* p_code) {
-  OK_ARRAY_FREE(byte, p_code->capacity, p_code->code_array);
-  code_init(p_code); // reset to known empty state.
+  code_array_deinit(&p_code->code_array);
 }
 
 bool code_write_1byte(code* p_code, byte p_byte) {
-  OK_ARRAY_APPEND(byte, uint32_t, p_code->count, p_code->capacity, p_code->code_array, p_byte);
-  return p_code->code_array != NULL;
+  return code_array_append(&p_code->code_array, p_byte);
 }
 
 bool code_write_2bytes(code* p_code, const byte p_1st_byte, const byte p_2nd_byte) {
   byte bytes[2] = {p_1st_byte, p_2nd_byte};
-  OK_ARRAY_APPEND_N(byte, uint32_t, p_code->count, p_code->capacity, p_code->code_array, bytes, 2);
-  return p_code->code_array != NULL;
+  return code_array_append_n(&p_code->code_array, bytes, 2);
 }
 
 bool code_write(code* p_code, const byte* p_bytes, const size_t p_bytes_count) {
-  OK_ARRAY_APPEND_N(byte, uint32_t, p_code->count, p_code->capacity, p_code->code_array, p_bytes, p_bytes_count);
-  return p_code->code_array != NULL;
+  return code_array_append_n(&p_code->code_array, p_bytes, p_bytes_count);
 }
 
+ARRAY_DEFINE(line_info, line_info_repeated, uint32_t)
 void source_info_init(source_info* p_source_info) {
-  OK_ARRAY_INIT(p_source_info->count, p_source_info->capacity, p_source_info->line_info_array);
+  line_info_array_init(&p_source_info->line_info_array);
 }
 
 void source_info_deinit(source_info* p_source_info) {
-  OK_ARRAY_FREE(line_info, p_source_info->capacity, p_source_info->line_info_array);
+  line_info_array_deinit(&p_source_info->line_info_array);
 }
 
 bool source_info_write(source_info* p_source_info, const line_info_repeated p_line_info) {
-  if (p_source_info->count == 0) {
+  if (p_source_info->line_info_array.count == 0) {
     goto append;
   }
-  line_info_repeated* back = &p_source_info->line_info_array[p_source_info->count - 1];
+  line_info_repeated* back = &p_source_info->line_info_array.data[p_source_info->line_info_array.count - 1];
   if (back->line_info.line == p_line_info.line_info.line && back->line_info.offset == p_line_info.line_info.offset) {
     back->reps += p_line_info.reps;
   } else {
   append:
-    OK_ARRAY_APPEND(line_info_repeated,
-                    uint32_t,
-                    p_source_info->count,
-                    p_source_info->capacity,
-                    p_source_info->line_info_array,
-                    p_line_info);
-    return p_source_info->line_info_array != NULL;
+    return line_info_array_append(&p_source_info->line_info_array, p_line_info);
   }
   return true;
 }
 
 line_info_repeated* source_info_find(const source_info* p_source_info, const uint32_t p_instruction_index) {
-  for (uint32_t num_instructions = 0, i = 0; i < p_source_info->count; ++i) {
-    line_info_repeated* info = &p_source_info->line_info_array[i];
+  for (uint32_t num_instructions = 0, i = 0; i < p_source_info->line_info_array.count; ++i) {
+    line_info_repeated* info = &p_source_info->line_info_array.data[i];
     num_instructions += info->reps;
     if (num_instructions > p_instruction_index) {
       return info;

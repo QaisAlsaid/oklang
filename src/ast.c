@@ -489,8 +489,6 @@ string ast_postfix_unary_expression_asprint(const ast_postfix_unary_expression* 
   return ret;
 }
 
-#undef OPERATOR_STRING
-
 void ast_infix_binary_expression_init(ast_infix_binary_expression* p_infix,
                                       token p_token,
                                       operator_type p_operator,
@@ -534,8 +532,6 @@ string ast_infix_binary_expression_asprint(const ast_infix_binary_expression* p_
   string_deinit(&right);
   return ret;
 }
-
-#undef OPERATOR_STRING
 
 void ast_eof_statement_init(ast_eof_statement* p_eof, token p_token) {
   ast_statement_init(&p_eof->statement, AST_EOF_STATEMENT, p_token);

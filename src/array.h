@@ -2,48 +2,67 @@
 #define OK_ARRAY_HPP
 
 #include "mm.h"
+#include <string.h> // for memcpy
 
-#define OK_ARRAY_GROW_CAPACITY(capacity, min)                                                                          \
-  ((capacity) < 8 ? 8 : (capacity) * 2 > (capacity) + (min) ? (capacity) * 2 : (capacity) + (min))
+#define ARRAY_DECLARE(name, type, size_type)                                                                           \
+  typedef struct name##_array name##_array;                                                                            \
+  struct name##_array {                                                                                                \
+    size_type count;                                                                                                   \
+    size_type capacity;                                                                                                \
+    type* data;                                                                                                        \
+  };                                                                                                                   \
+                                                                                                                       \
+  void name##_array_init(name##_array* p_array);                                                                       \
+  void name##_array_deinit(name##_array* p_array);                                                                     \
+  bool name##_array_grow(name##_array* p_array, const size_type p_new_capacity);                                       \
+  bool name##_array_append(name##_array* p_array, const type p_element);                                               \
+  bool name##_array_append_n(name##_array* p_array, const type* p_elements, const size_type p_elements_count);
 
-#define OK_ARRAY_GROW(type, data, old_capacity, new_capacity)                                                          \
-  (type*)reallocate(data, sizeof(type) * (old_capacity), sizeof(type) * (new_capacity))
-
-#define OK_ARRAY_FREE(type, capacity, data) reallocate(data, sizeof(type) * (capacity), 0)
-
-#define OK_ARRAY_INIT(count, capacity, data)                                                                           \
-  do {                                                                                                                 \
-    count = 0;                                                                                                         \
-    capacity = 0;                                                                                                      \
-    data = NULL;                                                                                                       \
-  } while (0)
-
-#define OK_ARRAY_APPEND(type, size_type, count, capacity, data, element)                                               \
-  do {                                                                                                                 \
-    if ((capacity) < (count) + 1) {                                                                                    \
-      size_type old_capacity = (capacity);                                                                             \
-      (capacity) = OK_ARRAY_GROW_CAPACITY(old_capacity, 0);                                                            \
-      (data) = OK_ARRAY_GROW(type, data, old_capacity, capacity);                                                      \
+#define ARRAY_DEFINE(name, type, size_type)                                                                            \
+  void name##_array_init(name##_array* p_array) {                                                                      \
+    p_array->count = 0;                                                                                                \
+    p_array->capacity = 0;                                                                                             \
+    p_array->data = NULL;                                                                                              \
+  }                                                                                                                    \
+                                                                                                                       \
+  void name##_array_deinit(name##_array* p_array) {                                                                    \
+    reallocate(p_array->data, sizeof(type) * p_array->capacity, 0);                                                    \
+    name##_array_init(p_array);                                                                                        \
+  }                                                                                                                    \
+                                                                                                                       \
+  bool name##_array_grow(name##_array* p_array, const size_type p_new_capacity) {                                      \
+    type* ptr = (type*)reallocate(p_array->data, sizeof(type) * p_array->capacity, sizeof(type) * p_new_capacity);     \
+    if (ptr == NULL) {                                                                                                 \
+      return false;                                                                                                    \
     }                                                                                                                  \
-    (data)[(count)++] = (element);                                                                                     \
-  } while (0)
+    p_array->data = ptr;                                                                                               \
+    p_array->capacity = p_new_capacity;                                                                                \
+    return true;                                                                                                       \
+  }                                                                                                                    \
+                                                                                                                       \
+  bool name##_array_append(name##_array* p_array, const type p_element) {                                              \
+    if (p_array->capacity < p_array->count + 1) {                                                                      \
+      if (!name##_array_grow(p_array, array_grow_capacity(p_array->capacity, 0))) {                                    \
+        return false;                                                                                                  \
+      }                                                                                                                \
+    }                                                                                                                  \
+    p_array->data[p_array->count++] = p_element;                                                                       \
+    return true;                                                                                                       \
+  }                                                                                                                    \
+                                                                                                                       \
+  bool name##_array_append_n(name##_array* p_array, const type* p_elements, const size_type p_elements_count) {        \
+    if (p_array->capacity < p_array->count + p_elements_count + 1) {                                                   \
+      if (!name##_array_grow(p_array, array_grow_capacity(p_array->capacity, p_elements_count))) {                     \
+        return false;                                                                                                  \
+      }                                                                                                                \
+    }                                                                                                                  \
+    memcpy(p_array->data + p_array->count, p_elements, p_elements_count);                                              \
+    p_array->count += p_elements_count;                                                                                \
+    return true;                                                                                                       \
+  }
 
-#define OK_ARRAY_APPEND_N(type, size_type, count, capacity, data, elements, elements_count)                            \
-  do {                                                                                                                 \
-    for (size_type i = 0; i < elements_count; ++i)                                                                     \
-      OK_ARRAY_APPEND(type, size_type, count, capacity, data, elements[i]);                                            \
-  } while (0)
-// it has a bug and couldn't locate it rn so..
-/*
-#define OK_ARRAY_APPEND_N(type, size_type, count, capacity, data, elements, elements_count) \
-  do { \
-    if ((capacity) < (count) + elements_count) { \
-        size_type old_capacity = (capacity); \
-        (capacity) = OK_ARRAY_GROW_CAPACITY(old_capacity, (elements_count)); \
-        (data) = OK_ARRAY_GROW(type, data, old_capacity, capacity); \
-    } \
-    memcpy((void*)(uintptr_t)(data)[count], (const void*)(elements), elements_count); \
-    (count) += (elements_count); \
-  } while(0)
-*/
+static inline size_t array_grow_capacity(size_t p_capacity, size_t p_min) {
+  return p_capacity < 8 ? 8 : p_capacity * 2 > p_capacity + p_min ? p_capacity * 2 : p_capacity + p_min + 8;
+}
+
 #endif // OK_ARRAY_HPP

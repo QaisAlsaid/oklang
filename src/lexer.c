@@ -46,7 +46,7 @@ static char advance(lexer* p_lexer) {
 }
 
 static bool match(lexer* p_lexer, char p_expect) {
-  if (at_end(p_lexer) && *p_lexer->current != p_expect) {
+  if (at_end(p_lexer) || *p_lexer->current != p_expect) {
     return false;
   }
   return ++p_lexer->current; // always true

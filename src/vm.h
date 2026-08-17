@@ -1,20 +1,20 @@
 #ifndef OK_VM_H
 #define OK_VM_H
 
+#include "array.h"
 #include "chunk.h"
 #include "object_store.h"
 
+ARRAY_DECLARE(stack, value, uint32_t);
 typedef struct {
-  uint32_t count;
-  uint32_t capacity;
   uint32_t top; // for keeping track of the top since we are using dynamic array, thus a pointer will be annoying to
                 // keep updating and kinda defeats the purpose. points one past the top most element so indexing becomes
                 // like values[top_index - 1] so you get the top most element.
-  value* values;
+  stack_array array;
 } stack;
 
 void stack_init(stack* p_stack);
-void stack_init_warm(stack* p_stack, uint32_t p_initial_capacity);
+bool stack_init_warm(stack* p_stack, uint32_t p_initial_capacity);
 // keeps allocated memory, only moves the top pointer
 void stack_resize(stack* p_stack, uint32_t p_new_size);
 // resizes the underlying array (fails if new size < top) or reallocation failed

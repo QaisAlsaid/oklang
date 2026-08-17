@@ -1,6 +1,7 @@
 #ifndef OK_VALUE_H
 #define OK_VALUE_H
 
+#include "array.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -52,14 +53,6 @@ static double inline value_to_number(value p_value) {
 
 void value_debug_print(value p_value);
 
-typedef struct {
-  uint32_t count;
-  uint32_t capacity;
-  value* value_array;
-} value_array;
-
-void value_array_init(value_array* p_values);
-void value_array_deinit(value_array* p_values);
-bool value_array_append(value_array* p_values, value p_value);
+ARRAY_DECLARE(value, value, uint32_t)
 
 #endif // OK_VALUE_H

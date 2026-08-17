@@ -15,7 +15,7 @@ static uint32_t constant_long_instruction(const char* p_opname, const uint32_t p
 const char* debug_disassemble_chunk(const chunk* p_chunk, const char* p_name) {
   printf("---> %s <---\n", p_name);
 
-  for (uint32_t offset = 0; offset < p_chunk->code.count;) {
+  for (uint32_t offset = 0; offset < p_chunk->code.code_array.count;) {
     offset = debug_disassemble_instruction(p_chunk, offset);
   }
 
@@ -52,7 +52,7 @@ uint32_t debug_disassemble_instruction(const chunk* p_chunk, uint32_t p_offset) 
     }
   }
 
-  uint8_t instruction = p_chunk->code.code_array[p_offset];
+  uint8_t instruction = p_chunk->code.code_array.data[p_offset];
   switch (instruction) {
   case OP_RETURN:
     return op_code_instruction("OP_RETURN", p_offset);
@@ -105,17 +105,17 @@ uint32_t op_code_instruction(const char* p_opname, const uint32_t p_offset) {
 }
 
 uint32_t constant_instruction(const char* p_opname, const uint32_t p_offset, const chunk* p_chunk) {
-  uint8_t constant = p_chunk->code.code_array[p_offset + OP_CONSTANT_OPERANDS_WIDTH];
+  uint8_t constant = p_chunk->code.code_array.data[p_offset + OP_CONSTANT_OPERANDS_WIDTH];
   printf("%-16s %4d '", p_opname, constant);
-  value_debug_print(p_chunk->constants.value_array[constant]);
+  value_debug_print(p_chunk->constants.data[constant]);
   printf("'\n");
   return p_offset + OP_CODE_WIDTH + OP_CONSTANT_OPERANDS_WIDTH;
 }
 
 uint32_t constant_long_instruction(const char* p_opname, const uint32_t p_offset, const chunk* p_chunk) {
-  const uint32_t constant = decode_int(p_chunk->code.code_array + OP_CODE_WIDTH, OP_CONSTANT_LONG_OPERANDS_WIDTH);
+  const uint32_t constant = decode_int(p_chunk->code.code_array.data + OP_CODE_WIDTH, OP_CONSTANT_LONG_OPERANDS_WIDTH);
   printf("%-16s %4d '", p_opname, constant);
-  value_debug_print(p_chunk->constants.value_array[constant]);
+  value_debug_print(p_chunk->constants.data[constant]);
   printf("'\n");
   return p_offset + OP_CODE_WIDTH + OP_CONSTANT_LONG_OPERANDS_WIDTH;
 }

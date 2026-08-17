@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "array.h"
 #include "source.h"
 #include "value.h"
 
@@ -66,10 +67,9 @@ typedef enum {
   OP_GREATER_EQUAL,
 } OP_CODE;
 
+ARRAY_DECLARE(code, byte, uint32_t);
 typedef struct {
-  uint32_t count;
-  uint32_t capacity;
-  byte* code_array;
+  code_array code_array;
 } code;
 
 void code_init(code* p_code);
@@ -78,10 +78,9 @@ bool code_write_1byte(code* p_code, const byte p_byte);
 bool code_write_2bytes(code* p_code, const byte p_1st_byte, const byte p_2nd_byte);
 bool code_write(code* p_code, const byte* p_bytes, const size_t p_bytes_count);
 
+ARRAY_DECLARE(line_info, line_info_repeated, uint32_t);
 typedef struct {
-  uint32_t count;
-  uint32_t capacity;
-  line_info_repeated* line_info_array;
+  line_info_array line_info_array;
 } source_info;
 
 void source_info_init(source_info* p_source_info);

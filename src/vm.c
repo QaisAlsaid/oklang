@@ -5,7 +5,6 @@
 #endif // defined(OK_TRACE_EXECUTION)
 
 #include "array.h"
-#include "mm.h"
 #include "object.h"
 #include <stdarg.h>
 #include <stdio.h>
@@ -46,9 +45,9 @@ interpret_result vm_interpret(vm* p_vm, interpret_specs p_specs) {
 }
 
 interpret_result vm_run(vm* p_vm) {
-  register byte* ip = p_vm->chunk->code.code_array;
+  register byte* ip = p_vm->chunk->code.code_array.data;
 #define READ_BYTE() (*ip++)
-#define READ_CONSTANT() p_vm->chunk->constants.value_array[READ_BYTE()]
+#define READ_CONSTANT() p_vm->chunk->constants.data[READ_BYTE()]
 #define BIN_OP(VALUE, op)                                                                                              \
   do {                                                                                                                 \
     if (!IS_VALUE_NUMBER(stack_top(&p_vm->stack, 0)) || !IS_VALUE_NUMBER(stack_top(&p_vm->stack, 1))) {                \
@@ -65,13 +64,13 @@ interpret_result vm_run(vm* p_vm) {
 
   for (;;) {
 #if defined(OK_TRACE_EXECUTION)
-    for (value* slot = p_vm->stack.values; slot < p_vm->stack.values + p_vm->stack.top; ++slot) {
+    for (value* slot = p_vm->stack.array.data; slot < p_vm->stack.array.data + p_vm->stack.top; ++slot) {
       printf("[ ");
       value_debug_print(*slot);
       printf(" ]");
     }
     printf("\n");
-    debug_disassemble_instruction(p_vm->chunk, (uint32_t)(ip - p_vm->chunk->code.code_array));
+    debug_disassemble_instruction(p_vm->chunk, (uint32_t)(ip - p_vm->chunk->code.code_array.data));
 #endif // defined(OK_TRACE_EXECUTION)
 
     byte instruction = READ_BYTE();
@@ -173,7 +172,7 @@ interpret_result vm_run(vm* p_vm) {
 }
 
 void runtime_error(vm* p_vm, const char* p_fmt, ...) {
-  size_t instruction = p_vm->ip - p_vm->chunk->code.code_array - 1;
+  size_t instruction = p_vm->ip - p_vm->chunk->code.code_array.data - 1;
   line_info_repeated* info = source_info_find(&p_vm->chunk->source_info, instruction);
   if (info != NULL) {
     fprintf(stderr, "%s:%d:%d", p_vm->source->path, info->line_info.line, info->line_info.offset);
@@ -201,17 +200,19 @@ static bool values_equal(value p_lhs, value p_rhs) {
   return p_lhs == p_rhs;
 }
 
+ARRAY_DEFINE(stack, value, uint32_t)
+
 void stack_init(stack* p_stack) {
-  OK_ARRAY_INIT(p_stack->count, p_stack->capacity, p_stack->values);
+  stack_array_init(&p_stack->array);
   p_stack->top = 0;
 }
 
-void stack_init_warm(stack* p_stack, uint32_t p_initial_capacity) {
-  OK_ARRAY_INIT(p_stack->count, p_stack->capacity, p_stack->values);
-  if (p_initial_capacity > 0) {
-    OK_ARRAY_GROW(value, p_stack->values, 0, p_initial_capacity);
+bool stack_init_warm(stack* p_stack, uint32_t p_initial_capacity) {
+  stack_init(p_stack);
+  if (p_initial_capacity > 0) { // so we dont trigger free in the reallocate function.
+    return stack_array_grow(&p_stack->array, p_initial_capacity);
   }
-  p_stack->top = 0;
+  return false;
 }
 
 void stack_resize(stack* p_stack, uint32_t p_new_size) {
@@ -219,8 +220,7 @@ void stack_resize(stack* p_stack, uint32_t p_new_size) {
 }
 
 bool stack_shrink(stack* p_stack, uint32_t p_new_size) {
-  OK_ARRAY_GROW(value, p_stack->values, p_stack->capacity, p_new_size);
-  return p_stack->values != NULL;
+  return stack_array_grow(&p_stack->array, p_new_size);
 }
 
 bool stack_sshrink(stack* p_stack, uint32_t p_new_size) {
@@ -231,24 +231,24 @@ bool stack_sshrink(stack* p_stack, uint32_t p_new_size) {
 }
 
 void stack_push(stack* p_stack, value p_value) {
-  if (p_stack->top == p_stack->count) {
-    OK_ARRAY_APPEND(value, uint32_t, p_stack->count, p_stack->capacity, p_stack->values, p_value);
+  if (p_stack->top == p_stack->array.count) {
+    stack_array_append(&p_stack->array, p_value);
     p_stack->top++;
   } else {
-    p_stack->values[p_stack->top] = p_value;
+    p_stack->array.data[p_stack->top] = p_value;
     p_stack->top++;
   }
 }
 
 value stack_top(stack* p_stack, uint32_t p_index) {
-  if (p_index >= p_stack->count) {
+  if (p_index >= p_stack->array.count) {
     return NULL_AS_VALUE();
   }
-  return p_stack->values[p_stack->top - 1 - p_index];
+  return p_stack->array.data[p_stack->top - 1 - p_index];
 }
 
 value* stack_top_ptr(stack* p_stack, uint32_t p_index) {
-  return &p_stack->values[p_stack->top - 1 - p_index];
+  return &p_stack->array.data[p_stack->top - 1 - p_index];
 }
 
 void stack_pop(stack* p_stack) {
@@ -259,12 +259,12 @@ void stack_pop(stack* p_stack) {
 
 value stack_popr(stack* p_stack) {
   if (p_stack->top != 0) {
-    return p_stack->values[--p_stack->top];
+    return p_stack->array.data[--p_stack->top];
   }
   return NULL_AS_VALUE();
 }
 
 void stack_free(stack* p_stack) {
-  OK_ARRAY_FREE(value, p_stack->capacity, p_stack->values);
+  stack_array_deinit(&p_stack->array);
   stack_init(p_stack);
 }
