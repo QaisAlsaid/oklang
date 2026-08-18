@@ -59,4 +59,12 @@ report_status report_at_noted(bool* p_panic,
                               const string p_message,
                               const string p_note);
 
+inline static size_t fnv1a_hash_str(const char* p_str, size_t p_hash) {
+  return (*p_str == 0) ? p_hash : fnv1a_hash_str(p_str + 1, (p_hash ^ (size_t)*p_str) * 1099511628211ULL);
+}
+
+inline static size_t default_hash_str(const char* p_str) {
+  return fnv1a_hash_str(p_str, 14695981039346656037ULL);
+}
+
 #endif // OK_UTILS_H
