@@ -11,7 +11,7 @@ void value_debug_print(value p_value) {
   } else if (IS_VALUE_OBJECT(p_value)) {
     object_debug_print(VALUE_AS_OBJECT(p_value));
   } else {
-    printf("null");
+    puts("null");
   }
 }
 

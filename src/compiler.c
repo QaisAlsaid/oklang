@@ -27,6 +27,7 @@ static bool compile_root(compiler* p_compiler, ast_root* p_root);
 static bool compile_statement(compiler* p_compiler, ast_statement* p_statement);
 static bool compile_expression_statement(compiler* p_compiler, ast_expression_statement* p_expression_statement);
 static bool compile_eof_statement(compiler* p_compiler, ast_eof_statement* p_eof);
+static bool compile_print_statement(compiler* p_compiler, ast_print_statement* p_print);
 
 static bool compile_expression(compiler* p_compiler, ast_expression* p_expression);
 static bool compile_identifier(compiler* p_compiler, ast_identifier_expression* p_identifier);
@@ -182,6 +183,7 @@ static bool compile_node(compiler* p_compiler, ast_node* p_node) {
   case AST_EXPRESSION_STATEMENT:
     return compile_expression_statement(p_compiler, (ast_expression_statement*)p_node);
   case AST_PRINT_STATEMENT:
+    return compile_print_statement(p_compiler, (ast_print_statement*)p_node);
   case AST_BLOCK_STATEMENT:
   case AST_IF_STATEMENT:
   case AST_FOR_STATEMENT:
@@ -229,6 +231,13 @@ static bool compile_identifier(compiler* p_compiler, ast_identifier_expression* 
 
 bool compile_eof_statement(compiler* p_compiler, ast_eof_statement* p_eof) {
   return emit_byte(p_compiler, OP_RETURN, (ast_node*)p_eof);
+}
+
+bool compile_print_statement(compiler* p_compiler, ast_print_statement* p_print) {
+  if (compile_node(p_compiler, (ast_node*)p_print->expression)) {
+    return emit_byte(p_compiler, OP_PRINT, (ast_node*)p_print);
+  }
+  return false;
 }
 
 static bool compile_number_expression(compiler* p_compiler, ast_number_expression* p_number) {

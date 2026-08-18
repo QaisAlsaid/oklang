@@ -37,7 +37,7 @@ void repl(ok* p_ok) {
     source source;
     source.source = FROM_REPL;
     source.code = line;
-    source.path = "";
+    source.path = "stdin";
     ok_result result = ok_run(p_ok, source);
     if (result == OK_PARSE_ERROR) {
       fprintf(stderr, "parse error occurred.\n");

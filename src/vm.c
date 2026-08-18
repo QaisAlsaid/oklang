@@ -164,6 +164,11 @@ interpret_result vm_run(vm* p_vm) {
       BIN_OP(BOOL_AS_VALUE, >=)
       break;
     }
+    case OP_PRINT: {
+      value_debug_print(stack_popr(&p_vm->stack));
+      puts("\n");
+      break;
+    }
     }
   }
 #undef READ_BYTE

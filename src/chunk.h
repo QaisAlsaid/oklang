@@ -41,6 +41,7 @@
 #define OP_GREATER_OPERANDS_WIDTH 0
 #define OP_LESS_EQUAL_OPERANDS_WIDTH 0
 #define OP_GREATER_EQUAL_OPERANDS_WIDTH 0
+#define OP_PRINT_OPERANDS_WIDTH 0
 
 typedef uint8_t byte;
 
@@ -65,6 +66,7 @@ typedef enum {
   OP_GREATER,
   OP_LESS_EQUAL,
   OP_GREATER_EQUAL,
+  OP_PRINT,
 } OP_CODE;
 
 ARRAY_DECLARE(code, byte, uint32_t)

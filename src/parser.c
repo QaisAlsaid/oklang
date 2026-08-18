@@ -14,6 +14,7 @@ static ast_statement* try_parse_declaration(parser* p_parser);
 static ast_empty_statement* parse_empty_statement(parser* p_parser);
 static ast_expression_statement* parse_expression_statement(parser* p_parser);
 static ast_eof_statement* parse_eof_statement(parser* p_parser);
+static ast_print_statement* parse_print_statement(parser* p_parser);
 
 static void error_at(parser* p_parser, token p_token, string p_message);
 static void error_at_noted(parser* p_parser, token p_token, string p_message, string p_note);
@@ -346,6 +347,7 @@ ast_expression* parse_binary_infix(
 ast_statement* parse_statement(parser* p_parser) {
   switch (p_parser->previous.type) {
   case TOKEN_PRINT:
+    return (ast_statement*)parse_print_statement(p_parser);
   case TOKEN_LEFT_BRACE:
   case TOKEN_IF:
   case TOKEN_WHILE:
@@ -416,4 +418,24 @@ ast_eof_statement* parse_eof_statement(parser* p_parser) {
   ast_eof_statement* eof = (ast_eof_statement*)malloc(sizeof(ast_eof_statement));
   ast_eof_statement_init(eof, p_parser->previous);
   return eof;
+}
+
+ast_print_statement* parse_print_statement(parser* p_parser) {
+  token trigger = p_parser->previous;
+  if (!advance(p_parser)) {
+    return NULL;
+  }
+  ast_expression* expression = parse_expression(p_parser, PREC_NONE);
+  if (expression == NULL) {
+    return NULL;
+  }
+  if (p_parser->current.type != TOKEN_SEMICOLON) {
+    error_at(
+        p_parser, p_parser->current, create_string("expected ';' after print statement.", STRING_IGNORE_LENGTH, false));
+    return NULL;
+  }
+  advance(p_parser);
+  ast_print_statement* print = (ast_print_statement*)malloc(sizeof(ast_print_statement));
+  ast_print_statement_init(print, trigger, expression);
+  return print;
 }

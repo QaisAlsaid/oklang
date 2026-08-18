@@ -247,6 +247,16 @@ void ast_eof_statement_deinit(ast_eof_statement* p_eof);
 bool ast_eof_statement_print(const ast_eof_statement* p_eof);
 string ast_eof_statement_asprint(const ast_eof_statement* p_eof);
 
+typedef struct {
+  ast_statement statement;
+  ast_expression* expression;
+} ast_print_statement;
+
+void ast_print_statement_init(ast_print_statement* p_print, const token p_token, ast_expression* p_expression);
+void ast_print_statement_deinit(ast_print_statement* p_print);
+bool ast_print_statement_print(const ast_print_statement* p_print);
+string ast_print_statement_asprint(const ast_print_statement* p_print);
+
 bool ast_print(ast_node* p_node);
 string ast_asprint(ast_node* p_node);
 void ast_deinit(ast_node* p_node);

@@ -92,6 +92,8 @@ uint32_t debug_disassemble_instruction(const chunk* p_chunk, uint32_t p_offset) 
     return op_code_instruction("OP_LESS_EQUAL", p_offset);
   case OP_GREATER_EQUAL:
     return op_code_instruction("OP_GREATER_EQUAL", p_offset);
+  case OP_PRINT:
+    return op_code_instruction("OP_PRINT", p_offset);
   default:
     printf("unknown opcode %d (assumed width: %u)\n", instruction, UNKNOWN_ASSUMED_WIDTH);
     return p_offset + UNKNOWN_ASSUMED_WIDTH; // should we even advance here? since it could also be multibyte

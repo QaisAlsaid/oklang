@@ -35,7 +35,7 @@
   /*X(AST_SUBSCRIPT_EXPRESSION, ast_subscript_expression)*/                                                            \
   X(AST_EMPTY_STATEMENT, ast_empty_statement)                                                                          \
   X(AST_EXPRESSION_STATEMENT, ast_expression_statement)                                                                \
-  /*X(AST_PRINT_STATEMENT, ast_print_statement)*/                                                                      \
+  X(AST_PRINT_STATEMENT, ast_print_statement)                                                                          \
   /*X(AST_BLOCK_STATEMENT, ast_block_statement)*/                                                                      \
   /*X(AST_IF_STATEMENT, ast_if_statement)*/                                                                            \
   /*X(AST_FOR_STATEMENT, ast_for_statement)*/                                                                          \
@@ -58,16 +58,6 @@ void ast_node_init(ast_node* p_node, ast_node_type p_type, token p_token) {
 }
 
 void ast_node_deinit(ast_node* p_node) {
-#define X(type, klass)                                                                                                 \
-  case type:                                                                                                           \
-    klass##_deinit((klass*)p_node);                                                                                    \
-    break;
-  switch (p_node->node_type) {
-    AST_LIST_X(X);
-  default:
-    assert(0);
-  }
-#undef X
 }
 
 #define PRINT_FMT "%.*s", p_node->token.length, p_node->token.start
@@ -515,10 +505,35 @@ string ast_expression_statement_asprint(const ast_expression_statement* p_expres
   return ast_asprint((ast_node*)p_expression_statement->expression);
 }
 
+void ast_print_statement_init(ast_print_statement* p_print, const token p_token, ast_expression* p_expression) {
+  ast_statement_init(&p_print->statement, AST_PRINT_STATEMENT, p_token);
+  p_print->expression = p_expression;
+}
+
+void ast_print_statement_deinit(ast_print_statement* p_print) {
+  ast_deinit((ast_node*)p_print->expression);
+  free(p_print->expression);
+  p_print->expression = NULL;
+}
+
+bool ast_print_statement_print(const ast_print_statement* p_print) {
+  bool status = printf("print") > 0;
+  status &= ast_print((ast_node*)p_print->expression);
+  return status;
+}
+
+string ast_print_statement_asprint(const ast_print_statement* p_print) {
+  string expr_str = ast_asprint((ast_node*)p_print->expression);
+  string result = asprint("print %s", expr_str.chars);
+  string_deinit(&expr_str);
+  return result;
+}
+
 void ast_deinit(ast_node* p_node) {
 #define X(type, klass)                                                                                                 \
   case type:                                                                                                           \
-    klass##_deinit((klass*)p_node);
+    klass##_deinit((klass*)p_node);                                                                                    \
+    break;
   switch (p_node->node_type) {
     AST_LIST_X(X)
   default:; // for now

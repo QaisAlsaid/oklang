@@ -5,7 +5,7 @@
 #include "chunk.h"
 #include "object_store.h"
 
-ARRAY_DECLARE(stack_array, value, uint32_t);
+ARRAY_DECLARE(stack_array, value, uint32_t)
 typedef struct {
   uint32_t top; // for keeping track of the top since we are using dynamic array, thus a pointer will be annoying to
                 // keep updating and kinda defeats the purpose. points one past the top most element so indexing becomes
