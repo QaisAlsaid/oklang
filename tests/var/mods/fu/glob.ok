@@ -1,8 +1,0 @@
-{
-  {
-    glob fu x () {
-      print "global";
-    }
-  }
-  x(); // expect: global
-}

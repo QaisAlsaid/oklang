@@ -86,11 +86,51 @@ void ast_statement_deinit(ast_statement* p_statement);
 bool ast_statement_print(const ast_statement* p_statement);
 string ast_statement_asprint(const ast_statement* p_statement);
 
+typedef enum {
+  BINDING_ERROR = 0,
+  BINDING_NONE,
+  BINDING_MUT,
+} ast_binding_modifiers;
+
+typedef uint8_t ast_binding_modifiers_t;
+string ast_binding_modifiers_asprint(ast_binding_modifiers_t p_modifiers);
+
+typedef struct {
+  ast_node node;
+  ast_expression* lvalue;
+  ast_binding_modifiers modifiers;
+} ast_binding;
+
+void ast_binding_init(ast_binding* p_binding,
+                      ast_expression* p_lvalue,
+                      ast_binding_modifiers_t p_modifiers,
+                      const token p_token);
+void ast_binding_deinit(ast_binding* p_binding);
+bool ast_binding_print(const ast_binding* p_binding);
+string ast_binding_asprint(const ast_binding* p_binding);
+
+typedef enum {
+  DECLARATION_ERROR = 0,
+  DECLARATION_NONE,
+  DECLARATION_GLOB,
+  DECLARATION_STATIC,
+  DECLARATION_ASYNC,
+  DECLARATION_EXPORT,
+  DECLARATION_COUNT, // just a counter
+} ast_declaration_modifiers;
+
+typedef uint8_t ast_declaration_modifiers_t;
+string ast_declaration_modifiers_asprint(ast_declaration_modifiers_t p_modifiers);
+
 typedef struct {
   ast_statement statement;
+  ast_declaration_modifiers_t modifiers;
 } ast_declaration;
 
-void ast_declaration_init(ast_declaration* p_declaration, const ast_node_type p_type, const token p_token);
+void ast_declaration_init(ast_declaration* p_declaration,
+                          const ast_node_type p_type,
+                          const token p_token,
+                          ast_declaration_modifiers_t p_modifiers);
 void ast_declaration_deinit(ast_declaration* p_declaration);
 bool ast_declaration_print(const ast_declaration* p_declaration);
 string ast_declaration_asprint(const ast_declaration* p_declaration);
@@ -218,6 +258,20 @@ bool ast_infix_binary_expression_print(const ast_infix_binary_expression* p_infi
 string ast_infix_binary_expression_asprint(const ast_infix_binary_expression* p_infix);
 
 typedef struct {
+  ast_expression expression;
+  ast_expression* left;
+  ast_expression* right;
+} ast_assign_expression;
+
+void ast_assign_expression_init(ast_assign_expression* p_assign,
+                                const token p_token,
+                                ast_expression* p_left,
+                                ast_expression* p_right);
+void ast_assign_expression_deinit(ast_assign_expression* p_assign);
+bool ast_assign_expression_print(const ast_assign_expression* p_assign);
+string ast_assign_expression_asprint(const ast_assign_expression* p_assign);
+
+typedef struct {
   ast_statement statement;
 } ast_empty_statement;
 
@@ -256,6 +310,22 @@ void ast_print_statement_init(ast_print_statement* p_print, const token p_token,
 void ast_print_statement_deinit(ast_print_statement* p_print);
 bool ast_print_statement_print(const ast_print_statement* p_print);
 string ast_print_statement_asprint(const ast_print_statement* p_print);
+
+typedef struct {
+  ast_declaration declaration;
+  ast_binding* binding;
+  ast_expression* value;
+} ast_let_declaration;
+
+void ast_let_declaration_init(ast_let_declaration* p_let,
+                              ast_binding* p_binding,
+                              ast_expression* p_value,
+                              ast_declaration_modifiers_t p_modifiers,
+                              const token p_token,
+                              ast_expression* p_expression);
+void ast_let_declaration_deinit(ast_let_declaration* p_let);
+bool ast_let_declaration_print(const ast_let_declaration* p_let);
+string ast_let_declaration_asprint(const ast_let_declaration* p_let);
 
 bool ast_print(ast_node* p_node);
 string ast_asprint(ast_node* p_node);

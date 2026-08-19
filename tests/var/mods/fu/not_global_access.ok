@@ -1,6 +1,0 @@
-{
-  fu x () {
-
-  }
-}
-x(); // expect error

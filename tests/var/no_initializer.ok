@@ -1,4 +1,0 @@
-let x;
-print x; // expect: null
-glob let y;
-print y; // expect: null

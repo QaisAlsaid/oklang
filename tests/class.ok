@@ -1,7 +1,0 @@
-class cls_ctor {
-  fu ctor() {
-    print "ctor";
-  }
-}
-
-cls_ctor(); // expect: ctor

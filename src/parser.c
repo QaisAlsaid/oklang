@@ -11,6 +11,7 @@ static ast_root* parse_root(parser* p_parser);
 static ast_expression* parse_expression(parser* p_parser, precedence p_precedence);
 static ast_statement* parse_statement(parser* p_parser);
 static ast_statement* try_parse_declaration(parser* p_parser);
+static ast_let_declaration* parse_let_declaration(parser* p_parser, ast_declaration_modifiers_t p_modifiers);
 static ast_empty_statement* parse_empty_statement(parser* p_parser);
 static ast_expression_statement* parse_expression_statement(parser* p_parser);
 static ast_eof_statement* parse_eof_statement(parser* p_parser);
@@ -373,6 +374,8 @@ ast_statement* try_parse_declaration(parser* p_parser) {
   ast_statement* statement;
   switch (p_parser->previous.type) {
   case TOKEN_LET: {
+    statement = (ast_statement*)parse_let_declaration(p_parser, 2);
+    break;
   }
   case TOKEN_FU: {
   }
@@ -388,6 +391,56 @@ ast_statement* try_parse_declaration(parser* p_parser) {
     sync_state(p_parser);
   }
   return statement;
+}
+
+static ast_binding_modifiers_t parse_binding_modifier(token p_token) {
+  switch (p_token.type) {
+  case TOKEN_MUT:
+    return BINDING_MUT;
+  default:
+    return BINDING_NONE;
+  }
+}
+
+static ast_binding_modifiers_t parse_binding_modifiers(parser* p_parser, ast_binding_modifiers_t p_allowed) {
+  ast_binding_modifiers_t modifiers;
+  while (p_parser->previous.type != TOKEN_EOF) {
+    ast_binding_modifiers_t mod = parse_binding_modifier(p_parser->current);
+    if (mod == BINDING_NONE) {
+      break;
+    }
+    if ((mod & p_allowed) != 0) {
+      string message = asprint("illegal binding modifier '%s', in %s binding.", "", "");
+      string allowed_str = ast_binding_modifiers_asprint(p_allowed);
+      string note = asprint("allowed are: [%s]", allowed_str.chars);
+      error_at_noted(p_parser, p_parser->previous, message, note);
+      string_deinit(&message);
+      string_deinit(&allowed_str);
+      string_deinit(&note);
+      return BINDING_ERROR;
+    } else if ((mod & modifiers) != 0) {
+      string mod_str = ast_binding_modifiers_asprint(mod);
+      string message = asprint("duplicated binding modifier %s.", mod);
+      error_at(p_parser, p_parser->previous, message);
+      string_deinit(&mod_str);
+      string_deinit(&message);
+      return BINDING_ERROR;
+    }
+    modifiers |= mod;
+  }
+  return modifiers;
+}
+
+ast_let_declaration* parse_let_declaration(parser* p_parser, ast_declaration_modifiers_t p_modifiers) {
+  const token let_tok = p_parser->previous;
+  parse_binding_modifiers(p_parser, BINDING_MUT);
+  ast_expression* expr = parse_expression(p_parser, PREC_NONE);
+  if (expr) {
+    if (expr->node.node_type == AST_ASSIGN_EXPRESSION) {
+    } else if (expr->node.node_type == AST_IDENTIFIER_EXPRESSION) {
+    }
+  } else {
+  }
 }
 
 ast_empty_statement* parse_empty_statement(parser* p_parser) {
