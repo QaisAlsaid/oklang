@@ -15,6 +15,7 @@ typedef enum {
 
 typedef struct {
   object_store objects_store;
+  globals_store globals_store;
   compiler compiler;
   vm vm;
   source source;

@@ -3,6 +3,7 @@
 
 #include "array.h"
 #include "chunk.h"
+#include "globals_store.h"
 #include "object_store.h"
 
 ARRAY_DECLARE(stack_array, value, uint32_t)
@@ -34,6 +35,7 @@ typedef struct {
   source* source;
   byte* ip;
   object_store* objects_store;
+  globals_store* globals_store;
 } vm;
 
 typedef enum {
@@ -52,6 +54,7 @@ typedef struct {
   source* source;
   chunk* chunk;
   object_store* objects_store;
+  globals_store* globals_store;
 } interpret_specs;
 
 void vm_init(vm* p_vm);

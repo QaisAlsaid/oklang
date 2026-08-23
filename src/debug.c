@@ -1,38 +1,48 @@
 #include "debug.h"
+#include "globals_store.h"
 #include "utils.h"
 #include <assert.h>
 #include <stdio.h>
-
-// this should ultimately use a custom logger so we can output to any stream we wish, but for now it is ok to just use
-// printf.
 
 #define UNKNOWN_ASSUMED_WIDTH 1
 
 static uint32_t op_code_instruction(const char* p_opname, const uint32_t p_offset);
 static uint32_t constant_instruction(const char* p_opname, const uint32_t p_offset, const chunk* p_chunk);
 static uint32_t constant_long_instruction(const char* p_opname, const uint32_t p_offset, const chunk* p_chunk);
+static uint32_t global_instruction(const char* p_opname, const uint32_t p_offset, const disassembler* p_disassembler);
+static uint32_t
+global_long_instruction(const char* p_opname, const uint32_t p_offset, const disassembler* p_disassembler);
 
-const char* debug_disassemble_chunk(const chunk* p_chunk, const char* p_name) {
-  printf("---> %s <---\n", p_name);
+void disassembler_init(disassembler* p_disassembler, disassembler_specs p_specs) {
+  p_disassembler->chunk = p_specs.chunk;
+  p_disassembler->globals_store = p_specs.globals_store;
+}
 
-  for (uint32_t offset = 0; offset < p_chunk->code.count;) {
-    offset = debug_disassemble_instruction(p_chunk, offset);
+void disassembler_deinit(disassembler* p_disassembler) {
+  p_disassembler->chunk = NULL;
+  p_disassembler->globals_store = NULL;
+}
+
+const char* debug_disassemble_chunk(disassembler* p_disassembler, const char* p_name) {
+  printf("--- %s ---\n", p_name);
+
+  for (uint32_t offset = 0; offset < p_disassembler->chunk->code.count;) {
+    offset = debug_disassemble_instruction(p_disassembler, offset);
   }
-
-  printf("<--- %s --->\n", p_name);
   return NULL;
 }
 
-uint32_t debug_disassemble_instruction(const chunk* p_chunk, uint32_t p_offset) {
+uint32_t debug_disassemble_instruction(disassembler* p_disassembler, uint32_t p_offset) {
+  const chunk* chunk = p_disassembler->chunk;
   printf("%04d ", p_offset);
 
-  line_info_repeated* info = source_info_find(&p_chunk->source_info, p_offset);
+  line_info_repeated* info = source_info_find(&chunk->source_info, p_offset);
   if (info && p_offset == 0) {
     printf("%4d:%-4d ", info->line_info.line, info->line_info.offset);
   }
   if (p_offset > 0) {
-    line_info_repeated* prev_info = source_info_find(&p_chunk->source_info, p_offset - 1);
-    line_info_repeated* info = source_info_find(&p_chunk->source_info, p_offset);
+    line_info_repeated* prev_info = source_info_find(&chunk->source_info, p_offset - 1);
+    line_info_repeated* info = source_info_find(&chunk->source_info, p_offset);
     if (info && prev_info) {
       if (info->line_info.line == prev_info->line_info.line) {
         if (info->line_info.offset == prev_info->line_info.offset) {
@@ -52,14 +62,14 @@ uint32_t debug_disassemble_instruction(const chunk* p_chunk, uint32_t p_offset) 
     }
   }
 
-  uint8_t instruction = p_chunk->code.data[p_offset];
+  uint8_t instruction = chunk->code.data[p_offset];
   switch (instruction) {
   case OP_RETURN:
     return op_code_instruction("OP_RETURN", p_offset);
   case OP_CONSTANT:
-    return constant_instruction("OP_CONSTANT", p_offset, p_chunk);
+    return constant_instruction("OP_CONSTANT", p_offset, chunk);
   case OP_CONSTANT_LONG:
-    return constant_long_instruction("OP_CONSTANT_LONG", p_offset, p_chunk);
+    return constant_long_instruction("OP_CONSTANT_LONG", p_offset, chunk);
   case OP_POP:
     return op_code_instruction("OP_POP", p_offset);
   case OP_NULL:
@@ -68,6 +78,14 @@ uint32_t debug_disassemble_instruction(const chunk* p_chunk, uint32_t p_offset) 
     return op_code_instruction("OP_FALSE", p_offset);
   case OP_TRUE:
     return op_code_instruction("OP_TRUE", p_offset);
+  case OP_GET_GLOBAL:
+    return global_instruction("OP_GET_GLOBAL", p_offset, p_disassembler);
+  case OP_GET_GLOBAL_LONG:
+    return global_long_instruction("OP_GET_GLOBAL_LONG", p_offset, p_disassembler);
+  case OP_SET_GLOBAL:
+    return global_instruction("OP_SET_GLOBAL", p_offset, p_disassembler);
+  case OP_SET_GLOBAL_LONG:
+    return global_long_instruction("OP_SET_GLOBAL_LONG", p_offset, p_disassembler);
   case OP_NOT:
     return op_code_instruction("OP_NOT", p_offset);
   case OP_NEGATE:
@@ -107,7 +125,7 @@ uint32_t op_code_instruction(const char* p_opname, const uint32_t p_offset) {
 }
 
 uint32_t constant_instruction(const char* p_opname, const uint32_t p_offset, const chunk* p_chunk) {
-  uint8_t constant = p_chunk->code.data[p_offset + OP_CONSTANT_OPERANDS_WIDTH];
+  uint8_t constant = p_chunk->code.data[p_offset + OP_CODE_WIDTH];
   printf("%-16s %4d '", p_opname, constant);
   value_debug_print(p_chunk->constants.data[constant]);
   printf("'\n");
@@ -115,9 +133,23 @@ uint32_t constant_instruction(const char* p_opname, const uint32_t p_offset, con
 }
 
 uint32_t constant_long_instruction(const char* p_opname, const uint32_t p_offset, const chunk* p_chunk) {
-  const uint32_t constant = decode_int(p_chunk->code.data + OP_CODE_WIDTH, OP_CONSTANT_LONG_OPERANDS_WIDTH);
+  const uint32_t constant = decode_int(p_offset + p_chunk->code.data + OP_CODE_WIDTH, OP_CONSTANT_LONG_OPERANDS_WIDTH);
   printf("%-16s %4d '", p_opname, constant);
   value_debug_print(p_chunk->constants.data[constant]);
   printf("'\n");
   return p_offset + OP_CODE_WIDTH + OP_CONSTANT_LONG_OPERANDS_WIDTH;
+}
+
+uint32_t global_instruction(const char* p_opname, const uint32_t p_offset, const disassembler* p_disassembler) {
+  // TODO get the identifier from debug info
+  const uint8_t index = p_disassembler->chunk->code.data[p_offset + OP_CODE_WIDTH];
+  printf("%-16s %4d\n", p_opname, index);
+  return p_offset + OP_CODE_WIDTH + OP_XX_GLOBAL_OPERANDS_WIDTH;
+}
+
+uint32_t global_long_instruction(const char* p_opname, const uint32_t p_offset, const disassembler* p_disassembler) {
+  const uint32_t index =
+      decode_int(p_offset + p_disassembler->chunk->code.data + OP_CODE_WIDTH, OP_XX_GLOBAL_LONG_OPERANDS_WIDTH);
+  printf("%-16s %4d\n", p_opname, index);
+  return p_offset + OP_CODE_WIDTH + OP_XX_GLOBAL_LONG_OPERANDS_WIDTH;
 }

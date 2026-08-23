@@ -37,9 +37,9 @@ struct object_string {
 };
 typedef struct object_string object_string;
 
-void object_string_init(object_string* p_object_string, string p_string);
+void object_string_init(object_string* p_object_string, const string_view p_string);
 void object_string_deinit(object_string* p_object_string);
-object_string* create_object_string(string p_string, object_store* p_store);
+object_string* create_object_string(const string_view p_string, object_store* p_store);
 
 void object_dispatch_deinit(object* p_object);
 void objects_list_deinit(object* p_head);

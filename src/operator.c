@@ -77,14 +77,14 @@ operator_type operator_type_from_token_type(const token_type p_token_type) {
   }
 }
 
-string operator_type_to_string(const operator_type p_operator_type) {
+string_view operator_type_to_string(const operator_type p_operator_type) {
   switch (p_operator_type) {
 #define X(type, str)                                                                                                   \
   case type:                                                                                                           \
-    return create_string(str, STRING_IGNORE_LENGTH, false);
+    return create_string_view(str, STRING_VIEW_CALCULATE_LENGTH, true);
     OPERATOR_LIST_X(X)
 #undef X
   default:
-    return create_string("UNKNOWN_OPERATOR", STRING_IGNORE_LENGTH, false);
+    return create_string_view("UNKNOWN_OPERATOR", STRING_VIEW_CALCULATE_LENGTH, true);
   }
 }

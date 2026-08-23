@@ -5,8 +5,22 @@
 
 #include "ast.h"
 #include "chunk.h"
+#include "globals_store.h"
 
-const char* debug_disassemble_chunk(const chunk* p_chunk, const char* p_name);
-uint32_t debug_disassemble_instruction(const chunk* p_chunk, uint32_t p_offset);
+typedef struct {
+  const chunk* chunk;
+  const globals_store* globals_store;
+} disassembler;
+
+typedef struct {
+  const chunk* chunk;
+  const globals_store* globals_store;
+} disassembler_specs;
+
+void disassembler_init(disassembler* p_disassembler, disassembler_specs p_specs);
+void disassembler_deinit(disassembler* p_disassembler);
+
+const char* debug_disassemble_chunk(disassembler* p_disassembler, const char* p_name);
+uint32_t debug_disassemble_instruction(disassembler* p_disassembler, uint32_t p_offset);
 
 #endif // OK_DEBUG_H

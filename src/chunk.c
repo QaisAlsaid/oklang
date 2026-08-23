@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-ARRAY_DEFINE(code, byte, uint32_t)
+ARRAY_DEFINE(code, byte, uint32_t, UINT32_MAX, ARRAY_DEFAULT_TYPE_DEINIT);
 
 bool code_write_1byte(code* p_code, byte p_byte) {
   return code_append(p_code, p_byte);
@@ -20,7 +20,7 @@ bool code_write(code* p_code, const byte* p_bytes, const size_t p_bytes_count) {
   return code_append_n(p_code, p_bytes, p_bytes_count);
 }
 
-ARRAY_DEFINE(line_info_array, line_info_repeated, uint32_t)
+ARRAY_DEFINE(line_info_array, line_info_repeated, uint32_t, UINT32_MAX, ARRAY_DEFAULT_TYPE_DEINIT)
 void source_info_init(source_info* p_source_info) {
   line_info_array_init(&p_source_info->line_info_array);
 }

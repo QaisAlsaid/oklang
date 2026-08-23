@@ -2,6 +2,7 @@
 #define OK_COMPILER_H
 
 #include "chunk.h"
+#include "globals_store.h"
 #include "object_store.h"
 #include "parser.h"
 #include "source.h"
@@ -10,6 +11,7 @@ typedef struct {
   chunk* current_chunk;
   source* source;
   object_store* objects_store;
+  globals_store* globals_store;
   bool had_error;
   bool panic;
 } compiler;
@@ -30,6 +32,7 @@ typedef struct {
   source* source;
   ast_root* root;
   object_store* objects_store;
+  globals_store* globals_store;
 } compiler_specs;
 
 void compiler_init(compiler* compiler);

@@ -22,6 +22,7 @@ void interpret_result_deinit(interpret_result* p_interpret_result) {
 void vm_init(vm* p_vm) {
   stack_init_warm(&p_vm->stack, STACK_SIZE);
   p_vm->objects_store = NULL;
+  p_vm->globals_store = NULL;
   p_vm->ip = NULL;
   p_vm->chunk = NULL;
   p_vm->source = NULL;
@@ -30,6 +31,7 @@ void vm_init(vm* p_vm) {
 void vm_deinit(vm* p_vm) {
   stack_free(&p_vm->stack);
   p_vm->objects_store = NULL;
+  p_vm->globals_store = NULL;
   p_vm->ip = NULL;
   p_vm->chunk = NULL;
   p_vm->source = NULL;
@@ -39,6 +41,7 @@ interpret_result vm_interpret(vm* p_vm, interpret_specs p_specs) {
   p_vm->chunk = p_specs.chunk;
   p_vm->source = p_specs.source; // having it this way means only one source per vm. but it's ok will fix soon.
   p_vm->objects_store = p_specs.objects_store;
+  p_vm->globals_store = p_specs.globals_store;
   interpret_result interpret_result = vm_run(p_vm);
   p_vm->chunk = NULL;
   return interpret_result;
@@ -62,6 +65,12 @@ interpret_result vm_run(vm* p_vm) {
     stack_push(&p_vm->stack, VALUE(lhs op rhs));                                                                       \
   } while (0);
 
+#if defined(OK_TRACE_EXECUTION)
+  disassembler disassembler;
+  disassembler_specs specs = {.chunk = p_vm->chunk, .globals_store = p_vm->globals_store};
+  disassembler_init(&disassembler, specs);
+#endif // defined(OK_TRACE_EXECUTION)
+
   for (;;) {
 #if defined(OK_TRACE_EXECUTION)
     for (value* slot = p_vm->stack.array.data; slot < p_vm->stack.array.data + p_vm->stack.top; ++slot) {
@@ -70,7 +79,7 @@ interpret_result vm_run(vm* p_vm) {
       printf(" ]");
     }
     printf("\n");
-    debug_disassemble_instruction(p_vm->chunk, (uint32_t)(ip - p_vm->chunk->code.data));
+    debug_disassemble_instruction(&disassembler, (uint32_t)(ip - p_vm->chunk->code.data));
 #endif // defined(OK_TRACE_EXECUTION)
 
     byte instruction = READ_BYTE();
@@ -101,6 +110,26 @@ interpret_result vm_run(vm* p_vm) {
     }
     case OP_TRUE: {
       stack_push(&p_vm->stack, BOOL_AS_VALUE(true));
+      break;
+    }
+    case OP_SET_GLOBAL: {
+      byte index = READ_BYTE();
+      p_vm->globals_store->global_values.data[index] = stack_popr(&p_vm->stack);
+      break;
+    }
+    case OP_SET_GLOBAL_LONG: {
+      uint32_t index = decode_int(p_vm->ip, OP_SET_GLOBAL_LONG_OPERANDS_WIDTH);
+      p_vm->globals_store->global_values.data[index] = stack_popr(&p_vm->stack);
+      break;
+    }
+    case OP_GET_GLOBAL: {
+      byte index = READ_BYTE();
+      stack_push(&p_vm->stack, p_vm->globals_store->global_values.data[index]);
+      break;
+    }
+    case OP_GET_GLOBAL_LONG: {
+      uint32_t index = decode_int(p_vm->ip, OP_GET_GLOBAL_LONG_OPERANDS_WIDTH);
+      stack_push(&p_vm->stack, p_vm->globals_store->global_values.data[index]);
       break;
     }
     case OP_NOT: {
@@ -166,7 +195,7 @@ interpret_result vm_run(vm* p_vm) {
     }
     case OP_PRINT: {
       value_debug_print(stack_popr(&p_vm->stack));
-      puts("\n");
+      puts("");
       break;
     }
     }
@@ -186,7 +215,7 @@ void runtime_error(vm* p_vm, const char* p_fmt, ...) {
   va_start(ap, p_fmt);
   vfprintf(stderr, p_fmt, ap);
   va_end(ap);
-  fputs("\n", stderr);
+  fputs("", stderr);
   stack_resize(&p_vm->stack, 0);
 }
 
@@ -205,7 +234,7 @@ static bool values_equal(value p_lhs, value p_rhs) {
   return p_lhs == p_rhs;
 }
 
-ARRAY_DEFINE(stack_array, value, uint32_t)
+ARRAY_DEFINE(stack_array, value, uint32_t, UINT32_MAX, ARRAY_DEFAULT_TYPE_DEINIT)
 
 void stack_init(stack* p_stack) {
   stack_array_init(&p_stack->array);

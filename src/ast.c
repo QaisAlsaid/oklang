@@ -77,7 +77,7 @@ void ast_expression_deinit(ast_expression* p_expression) {
 }
 
 bool ast_expression_print(const ast_expression* p_expression) {
-  false;
+  return false;
 }
 
 string ast_expression_asprint(const ast_expression* p_expression) {
@@ -105,7 +105,7 @@ string ast_binding_modifiers_asprint(ast_binding_modifiers_t p_modifiers) {
     return create_string("", 0, false);
   }
   if ((p_modifiers & BINDING_MUT) != 0) {
-    return create_string("mut", 3, false);
+    return create_string("mut", STRING_CALCULATE_LENGTH, false);
   }
   return create_string("unknown-binding-modifier", STRING_CALCULATE_LENGTH, false);
 }
@@ -120,7 +120,7 @@ void ast_binding_init(ast_binding* p_binding,
 }
 
 void ast_binding_deinit(ast_binding* p_binding) {
-  ast_deinit((ast_node*)p_binding->lvalue);
+  ast_dispatch_deinit((ast_node*)p_binding->lvalue);
   free(p_binding->lvalue);
   p_binding->lvalue = NULL;
   p_binding->modifiers = BINDING_NONE;
@@ -131,16 +131,17 @@ bool ast_binding_print(const ast_binding* p_binding) {
   bool res = printf("%s%s",
                     ast_binding_modifiers_asprint(p_binding->modifiers).chars,
                     p_binding->modifiers != BINDING_NONE ? " " : "") > 0;
-  return res && ast_print((ast_node*)p_binding->lvalue);
+  return res && ast_dispatch_print((ast_node*)p_binding->lvalue);
 }
 
 string ast_binding_asprint(const ast_binding* p_binding) {
-  string lvalue_str = ast_asprint((ast_node*)p_binding->lvalue);
+  string lvalue_str = ast_dispatch_asprint((ast_node*)p_binding->lvalue);
   if (lvalue_str.chars != NULL) {
     string result = asprint("%s%s%s",
-                            ast_binding_modifiers_asprint(p_binding->modifiers).chars,
+                            lvalue_str,
                             p_binding->modifiers != BINDING_NONE ? " " : "",
-                            lvalue_str);
+                            ast_binding_modifiers_asprint(p_binding->modifiers).chars);
+    string_deinit(&lvalue_str);
     return result;
   }
   return create_string(NULL, 0, false);
@@ -162,7 +163,7 @@ void ast_declaration_init(ast_declaration* p_declaration,
                           const token p_token,
                           ast_declaration_modifiers_t p_modifiers) {
   ast_statement_init(&p_declaration->statement, p_type, p_token);
-  p_modifiers = p_modifiers;
+  p_declaration->modifiers = p_modifiers;
 }
 
 void ast_declaration_deinit(ast_declaration* p_declaration) {
@@ -173,7 +174,9 @@ void ast_declaration_deinit(ast_declaration* p_declaration) {
 bool ast_declaration_print(const ast_declaration* p_declaration) {
   string mods_str = ast_declaration_modifiers_asprint(p_declaration->modifiers);
   if (mods_str.chars != NULL) {
-    return printf("%s", mods_str.chars);
+    const bool status = printf("%s", mods_str.chars) > 0;
+    string_deinit(&mods_str);
+    return status;
   }
   return false;
 }
@@ -202,9 +205,8 @@ bool ast_statements_list_append(ast_statements_list* p_list, ast_statement* p_st
     return true;
   }
 
-  ast_statements_list_node* tmp = p_list->tail;
+  p_list->tail->next = node;
   p_list->tail = node;
-  tmp->next = node;
   p_list->count++;
   return true;
 }
@@ -212,7 +214,7 @@ bool ast_statements_list_append(ast_statements_list* p_list, ast_statement* p_st
 void ast_statement_list_deinit(ast_statements_list* p_list) {
   ast_statements_list_node* node = p_list->head;
   while (node != NULL) {
-    ast_node_deinit((ast_node*)node->statement);
+    ast_dispatch_deinit((ast_node*)node->statement);
     free(node->statement);
     node->statement = NULL;
     ast_statements_list_node* temp = node->next;
@@ -238,7 +240,7 @@ void ast_root_deinit(ast_root* p_root) {
 bool ast_root_print(const ast_root* p_root) {
   bool status = true;
   for (ast_statements_list_node* node = p_root->statements.head; node != NULL; node = node->next) {
-    status &= ast_print((ast_node*)node->statement);
+    status &= ast_dispatch_print((ast_node*)node->statement);
   }
   return status;
 }
@@ -247,7 +249,7 @@ string ast_root_asprint(const ast_root* p_root) {
   char* chars = NULL;
   size_t len = 0;
   for (ast_statements_list_node* node = p_root->statements.head; node != NULL; node = node->next) {
-    string res = ast_asprint((ast_node*)node->statement);
+    string res = ast_dispatch_asprint((ast_node*)node->statement);
     if (res.chars != NULL) {
       len += string_get_length(&res);
       char* temp = malloc(len);
@@ -270,20 +272,13 @@ void ast_identifier_expression_deinit(ast_identifier_expression* p_identifier) {
   ast_expression_deinit(&p_identifier->expression);
 }
 
-string ast_identifier_expression_get_value(const ast_identifier_expression* p_identifier) {
+string_view ast_identifier_expression_get_value(const ast_identifier_expression* p_identifier) {
   const ast_node* node = &p_identifier->expression.node;
-  size_t len = node->token.length;
-  char* chars = (char*)malloc(len + 1);
-  if (chars == NULL) {
-    return create_string(NULL, 0, false);
-  }
-  memcpy(chars, node->token.start, node->token.length);
-  chars[node->token.length] = '\0';
-  return create_string(chars, len, true);
+  return create_string_view(node->token.start, node->token.length, false);
 }
 
 bool ast_identifier_expression_print(const ast_identifier_expression* p_identifier) {
-  string ident = ast_identifier_expression_get_value(p_identifier);
+  string ident = create_string_from_string_view(ast_identifier_expression_get_value(p_identifier));
   if (ident.chars != NULL) {
     bool printf_status = printf("%s", ident.chars) > 0;
     string_deinit(&ident);
@@ -293,7 +288,7 @@ bool ast_identifier_expression_print(const ast_identifier_expression* p_identifi
 }
 
 string ast_identifier_expression_asprint(const ast_identifier_expression* p_identifier) {
-  string ident = ast_identifier_expression_get_value(p_identifier);
+  string ident = create_string_from_string_view(ast_identifier_expression_get_value(p_identifier));
   if (ident.chars != NULL) {
     string str = asprint("%s", ident.chars);
     string_deinit(&ident);
@@ -344,20 +339,13 @@ void ast_string_expression_deinit(ast_string_expression* p_string) {
   ast_expression_deinit(&p_string->expression);
 }
 
-string ast_string_expression_get_value(const ast_string_expression* p_string) {
+string_view ast_string_expression_get_value(const ast_string_expression* p_string) {
   const ast_node* node = &p_string->expression.node;
-  const size_t len = node->token.length - 2;
-  char* str = (char*)malloc(len + 1);
-  if (str == NULL) {
-    return create_string(NULL, 0, false);
-  }
-  memcpy(str, node->token.start + 1, node->token.length - 2);
-  str[node->token.length] = '\0';
-  return create_string(str, len, true);
+  return create_string_view(node->token.start + 1, node->token.length - 2, false);
 }
 
 bool ast_string_expression_print(const ast_string_expression* p_string) {
-  string value = ast_string_expression_get_value(p_string);
+  string value = create_string_from_string_view(ast_string_expression_get_value(p_string));
   if (value.chars == NULL) {
     return false;
   }
@@ -367,7 +355,7 @@ bool ast_string_expression_print(const ast_string_expression* p_string) {
 }
 
 string ast_string_expression_asprint(const ast_string_expression* p_string) {
-  return ast_string_expression_get_value(p_string);
+  return create_string_from_string_view(ast_string_expression_get_value(p_string));
 }
 
 void ast_boolean_expression_init(ast_boolean_expression* p_boolean, token p_token) {
@@ -419,19 +407,20 @@ void ast_prefix_unary_expression_init(ast_prefix_unary_expression* p_prefix,
 }
 
 void ast_prefix_unary_expression_deinit(ast_prefix_unary_expression* p_prefix) {
-  ast_node_deinit((ast_node*)p_prefix->right);
+  ast_dispatch_deinit((ast_node*)p_prefix->right);
   free(p_prefix->right);
   p_prefix->right = NULL;
   ast_expression_deinit(&p_prefix->expression);
 }
 
 bool ast_prefix_unary_expression_print(const ast_prefix_unary_expression* p_prefix) {
-  return printf("%s", operator_type_to_string(p_prefix->_operator).chars) > 0 && ast_print((ast_node*)p_prefix->right);
+  return printf("%s", operator_type_to_string(p_prefix->_operator).chars) > 0 &&
+         ast_dispatch_print((ast_node*)p_prefix->right);
 }
 
 string ast_prefix_unary_expression_asprint(const ast_prefix_unary_expression* p_prefix) {
   string ret = create_string(NULL, 0, false);
-  string right = ast_asprint((ast_node*)p_prefix->right);
+  string right = ast_dispatch_asprint((ast_node*)p_prefix->right);
   if (right.chars == NULL) {
     return create_string(NULL, 0, false);
   }
@@ -452,19 +441,20 @@ void ast_postfix_unary_expression_init(ast_postfix_unary_expression* p_postfix,
 }
 
 void ast_postfix_unary_expression_deinit(ast_postfix_unary_expression* p_postfix) {
-  ast_node_deinit((ast_node*)p_postfix->left);
+  ast_dispatch_deinit((ast_node*)p_postfix->left);
   free(p_postfix->left);
   p_postfix->left = NULL;
   ast_expression_deinit(&p_postfix->expression);
 }
 
 bool ast_postfix_unary_expression_print(const ast_postfix_unary_expression* p_postfix) {
-  return ast_print((ast_node*)p_postfix->left) && printf("%s", operator_type_to_string(p_postfix->_operator).chars);
+  return ast_dispatch_print((ast_node*)p_postfix->left) &&
+         printf("%s", operator_type_to_string(p_postfix->_operator).chars);
 }
 
 string ast_postfix_unary_expression_asprint(const ast_postfix_unary_expression* p_postfix) {
   string ret = create_string(NULL, 0, false);
-  string left = ast_asprint((ast_node*)p_postfix->left);
+  string left = ast_dispatch_asprint((ast_node*)p_postfix->left);
   if (left.chars == NULL) {
     return create_string(NULL, 0, false);
   }
@@ -485,8 +475,8 @@ void ast_infix_binary_expression_init(ast_infix_binary_expression* p_infix,
 }
 
 void ast_infix_binary_expression_deinit(ast_infix_binary_expression* p_infix) {
-  ast_node_deinit((ast_node*)p_infix->left);
-  ast_node_deinit((ast_node*)p_infix->right);
+  ast_dispatch_deinit((ast_node*)p_infix->left);
+  ast_dispatch_deinit((ast_node*)p_infix->right);
   free(p_infix->left);
   free(p_infix->right);
   p_infix->left = NULL;
@@ -495,14 +485,15 @@ void ast_infix_binary_expression_deinit(ast_infix_binary_expression* p_infix) {
 }
 
 bool ast_infix_binary_expression_print(const ast_infix_binary_expression* p_infix) {
-  return ast_print((ast_node*)p_infix->left) && printf("%s", operator_type_to_string(p_infix->_operator).chars) &&
-         ast_print((ast_node*)p_infix->right);
+  return ast_dispatch_print((ast_node*)p_infix->left) &&
+         printf("%s", operator_type_to_string(p_infix->_operator).chars) &&
+         ast_dispatch_print((ast_node*)p_infix->right);
 }
 
 string ast_infix_binary_expression_asprint(const ast_infix_binary_expression* p_infix) {
   string ret = create_string(NULL, 0, false);
-  string left = ast_asprint((ast_node*)p_infix->left);
-  string right = ast_asprint((ast_node*)p_infix->right);
+  string left = ast_dispatch_asprint((ast_node*)p_infix->left);
+  string right = ast_dispatch_asprint((ast_node*)p_infix->right);
   if (left.chars != NULL && right.chars != NULL) {
     ret = asprint("%s%s%s", left.chars, operator_type_to_string(p_infix->_operator).chars, right.chars);
   }
@@ -521,8 +512,8 @@ void ast_assign_expression_init(ast_assign_expression* p_assign,
 }
 
 void ast_assign_expression_deinit(ast_assign_expression* p_assign) {
-  ast_deinit((ast_node*)p_assign->left);
-  ast_deinit((ast_node*)p_assign->right);
+  ast_dispatch_deinit((ast_node*)p_assign->left);
+  ast_dispatch_deinit((ast_node*)p_assign->right);
   free(p_assign->left);
   free(p_assign->right);
   p_assign->left = NULL;
@@ -531,16 +522,16 @@ void ast_assign_expression_deinit(ast_assign_expression* p_assign) {
 }
 
 bool ast_assign_expression_print(const ast_assign_expression* p_assign) {
-  bool ret = ast_print((ast_node*)p_assign->left);
+  bool ret = ast_dispatch_print((ast_node*)p_assign->left);
   ret &= puts(" = ");
-  ret &= ast_print((ast_node*)p_assign->right);
+  ret &= ast_dispatch_print((ast_node*)p_assign->right);
   return ret;
 }
 
 string ast_assign_expression_asprint(const ast_assign_expression* p_assign) {
   string ret = create_string(NULL, 0, false);
-  string left_str = ast_asprint((ast_node*)p_assign->left);
-  string right_str = ast_asprint((ast_node*)p_assign->right);
+  string left_str = ast_dispatch_asprint((ast_node*)p_assign->left);
+  string right_str = ast_dispatch_asprint((ast_node*)p_assign->right);
   if (left_str.chars != NULL && right_str.chars != NULL) {
     ret = asprint("%s = %s", left_str.chars, right_str.chars);
   }
@@ -589,18 +580,18 @@ void ast_expression_statement_init(ast_expression_statement* p_expression_statem
 }
 
 void ast_expression_statement_deinit(ast_expression_statement* p_expression_statement) {
-  ast_expression_deinit(p_expression_statement->expression);
+  ast_dispatch_deinit((ast_node*)p_expression_statement->expression);
   free(p_expression_statement->expression);
   p_expression_statement->expression = NULL;
   ast_statement_deinit(&p_expression_statement->statement);
 }
 
 bool ast_expression_statement_print(const ast_expression_statement* p_expression_statement) {
-  return ast_print((ast_node*)p_expression_statement->expression);
+  return ast_dispatch_print((ast_node*)p_expression_statement->expression);
 }
 
 string ast_expression_statement_asprint(const ast_expression_statement* p_expression_statement) {
-  return ast_asprint((ast_node*)p_expression_statement->expression);
+  return ast_dispatch_asprint((ast_node*)p_expression_statement->expression);
 }
 
 void ast_print_statement_init(ast_print_statement* p_print, const token p_token, ast_expression* p_expression) {
@@ -609,19 +600,19 @@ void ast_print_statement_init(ast_print_statement* p_print, const token p_token,
 }
 
 void ast_print_statement_deinit(ast_print_statement* p_print) {
-  ast_deinit((ast_node*)p_print->expression);
+  ast_dispatch_deinit((ast_node*)p_print->expression);
   free(p_print->expression);
   p_print->expression = NULL;
 }
 
 bool ast_print_statement_print(const ast_print_statement* p_print) {
   bool status = printf("print") > 0;
-  status &= ast_print((ast_node*)p_print->expression);
+  status &= ast_dispatch_print((ast_node*)p_print->expression);
   return status;
 }
 
 string ast_print_statement_asprint(const ast_print_statement* p_print) {
-  string expr_str = ast_asprint((ast_node*)p_print->expression);
+  string expr_str = ast_dispatch_asprint((ast_node*)p_print->expression);
   string result = asprint("print %s", expr_str.chars);
   string_deinit(&expr_str);
   return result;
@@ -631,16 +622,15 @@ void ast_let_declaration_init(ast_let_declaration* p_let,
                               ast_binding* p_binding,
                               ast_expression* p_value,
                               ast_declaration_modifiers_t p_modifiers,
-                              const token p_token,
-                              ast_expression* p_expression) {
+                              const token p_token) {
   ast_declaration_init(&p_let->declaration, AST_LET_DECLARATION, p_token, p_modifiers);
   p_let->binding = p_binding;
   p_let->value = p_value;
 }
 
 void ast_let_declaration_deinit(ast_let_declaration* p_let) {
-  ast_node_deinit((ast_node*)p_let->binding);
-  ast_node_deinit((ast_node*)p_let->value);
+  ast_dispatch_deinit((ast_node*)p_let->binding);
+  ast_dispatch_deinit((ast_node*)p_let->value);
   free(p_let->binding);
   free(p_let->value);
   ast_declaration_deinit(&p_let->declaration);
@@ -648,17 +638,17 @@ void ast_let_declaration_deinit(ast_let_declaration* p_let) {
 
 bool ast_let_declaration_print(const ast_let_declaration* p_let) {
   bool fail = ast_declaration_print(&p_let->declaration);
-  fail &= puts(" ");
+  fail &= printf("let ");
+  fail &= printf(" ");
   fail &= ast_binding_print(p_let->binding);
-  fail &= puts(" ");
-  fail &= puts("let ");
-  return fail && ast_node_print((ast_node*)p_let->value);
+  fail &= printf(" ");
+  return fail & ast_dispatch_print((ast_node*)p_let->value);
 }
 
 string ast_let_declaration_asprint(const ast_let_declaration* p_let) {
   string decl_str = ast_declaration_asprint(&p_let->declaration);
   string binding_str = ast_binding_asprint(p_let->binding);
-  string value_str = ast_asprint((ast_node*)p_let->value);
+  string value_str = ast_dispatch_asprint((ast_node*)p_let->value);
   const bool fail = decl_str.chars == NULL || binding_str.chars == NULL || value_str.chars == NULL;
   string ret = create_string(NULL, 0, false);
   if (!fail) {
@@ -670,7 +660,7 @@ string ast_let_declaration_asprint(const ast_let_declaration* p_let) {
   return ret;
 }
 
-void ast_deinit(ast_node* p_node) {
+void ast_dispatch_deinit(ast_node* p_node) {
 #define X(type, klass)                                                                                                 \
   case type:                                                                                                           \
     klass##_deinit((klass*)p_node);                                                                                    \
@@ -682,7 +672,7 @@ void ast_deinit(ast_node* p_node) {
 #undef X
 }
 
-bool ast_print(ast_node* p_node) {
+bool ast_dispatch_print(ast_node* p_node) {
 #define X(type, klass)                                                                                                 \
   case type:                                                                                                           \
     return klass##_print((klass*)p_node);
@@ -694,7 +684,7 @@ bool ast_print(ast_node* p_node) {
 #undef X
 }
 
-string ast_asprint(ast_node* p_node) {
+string ast_dispatch_asprint(ast_node* p_node) {
 #define X(type, klass)                                                                                                 \
   case type:                                                                                                           \
     return klass##_asprint((klass*)p_node);

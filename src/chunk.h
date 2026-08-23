@@ -7,9 +7,11 @@
 
 #include "array.h"
 #include "source.h"
+#include "utils.h"
 #include "value.h"
 
 #define UINT24_MAX ((1 << 24) - 1)
+#define UINT24_BYTE_COUNT 3
 
 #define CONSTANT_ALLOCATION_FAILED UINT32_MAX
 #define CONSTANT_OVERFLOW (UINT32_MAX - 1)
@@ -17,8 +19,23 @@
 #define CONSTANT_INVALID (CONSTANT_MAX + 1)
 #define IS_CONSTANT_VALID(c) ((c) < CONSTANT_INVALID)
 
+#define IDENTIFIER_ALLOCATION_FAILED UINT32_MAX
+#define IDENTIFIER_OVERFLOW (UINT32_MAX - 1)
+#define IDENTIFIER_MAX UINT24_MAX
+#define IDENTIFIER_INVALID (IDENTIFIER_MAX + 1)
+#define IS_IDENTIFIER_VALID(i) ((i) < IDENTIFIER_INVALID)
+
 #define OP_CONSTANT_MAX UINT8_MAX
 #define OP_CONSTANT_LONG_MAX UINT24_MAX
+
+#define OP_XX_GLOBAL_MAX UINT8_MAX
+#define OP_XX_GLOBAL_LONG_MAX UINT24_MAX
+#define OP_DEFINE_GLOBAL_MAX OP_XX_GLOBAL_MAX
+#define OP_DEFINE_GLOBAL_LONG_MAX OP_XX_GLOBAL_LONG_MAX
+#define OP_GET_GLOBAL_MAX OP_XX_GLOBAL_MAX
+#define OP_GET_GLOBAL_LONG_MAX OP_XX_GLOBAL_LONG_MAX
+#define OP_SET_GLOBAL_MAX OP_XX_GLOBAL_MAX
+#define OP_SET_GLOBAL_LONG_MAX OP_XX_GLOBAL_LONG_MAX
 
 #define OP_CODE_WIDTH 1
 #define OP_INVALID_OPERANDS_WIDTH 0
@@ -29,6 +46,12 @@
 #define OP_NULL_OPERANDS_WIDTH 0
 #define OP_FALSE_OPERANDS_WIDTH 0
 #define OP_TRUE_OPERANDS_WIDTH 0
+#define OP_XX_GLOBAL_OPERANDS_WIDTH 1
+#define OP_XX_GLOBAL_LONG_OPERANDS_WIDTH 3
+#define OP_GET_GLOBAL_OPERANDS_WIDTH 1
+#define OP_GET_GLOBAL_LONG_OPERANDS_WIDTH 3
+#define OP_SET_GLOBAL_OPERANDS_WIDTH 1
+#define OP_SET_GLOBAL_LONG_OPERANDS_WIDTH 3
 #define OP_NOT_OPERANDS_WIDTH 0
 #define OP_NEGATE_OPERANDS_WIDTH 0
 #define OP_ADD_OPERANDS_WIDTH 0
@@ -54,6 +77,10 @@ typedef enum {
   OP_NULL,
   OP_FALSE,
   OP_TRUE,
+  OP_GET_GLOBAL,
+  OP_GET_GLOBAL_LONG,
+  OP_SET_GLOBAL,
+  OP_SET_GLOBAL_LONG,
   OP_NOT,
   OP_NEGATE,
   OP_ADD,
@@ -84,11 +111,14 @@ void source_info_deinit(source_info* p_source_info);
 bool source_info_write(source_info* p_source_info, const line_info_repeated p_line_info);
 line_info_repeated* source_info_find(const source_info* p_source_info, const uint32_t p_instruction_index);
 
-typedef struct {
+ARRAY_DECLARE(identifiers, string, uint32_t)
+
+typedef struct chunk chunk;
+struct chunk {
   code code;
   value_array constants;
   source_info source_info;
-} chunk;
+};
 
 void chunk_init(chunk* p_chunk);
 void chunk_deinit(chunk* p_chunk);

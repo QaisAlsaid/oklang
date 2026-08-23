@@ -87,9 +87,9 @@ bool ast_statement_print(const ast_statement* p_statement);
 string ast_statement_asprint(const ast_statement* p_statement);
 
 typedef enum {
-  BINDING_ERROR = 0,
-  BINDING_NONE,
-  BINDING_MUT,
+  BINDING_NONE = 0,
+  BINDING_MUT = 1 << 0,
+  BINDING_ERROR = 1 << 2,
 } ast_binding_modifiers;
 
 typedef uint8_t ast_binding_modifiers_t;
@@ -111,13 +111,13 @@ string ast_binding_asprint(const ast_binding* p_binding);
 
 typedef enum {
   DECLARATION_ERROR = 0,
-  DECLARATION_NONE,
-  DECLARATION_GLOB,
-  DECLARATION_STATIC,
-  DECLARATION_ASYNC,
-  DECLARATION_EXPORT,
-  DECLARATION_COUNT, // just a counter
+  DECLARATION_NONE = 1,
+  DECLARATION_GLOB = 1 << 1,
+  DECLARATION_STATIC = 1 << 2,
+  DECLARATION_ASYNC = 1 << 3,
+  DECLARATION_EXPORT = 1 << 4,
 } ast_declaration_modifiers;
+#define DECLARATION_COUNT 5
 
 typedef uint8_t ast_declaration_modifiers_t;
 string ast_declaration_modifiers_asprint(ast_declaration_modifiers_t p_modifiers);
@@ -168,7 +168,7 @@ typedef struct {
 
 void ast_identifier_expression_init(ast_identifier_expression* p_identifier, const token p_token);
 void ast_identifier_expression_deinit(ast_identifier_expression* p_identifier);
-string ast_identifier_expression_get_value(const ast_identifier_expression* p_identifier);
+string_view ast_identifier_expression_get_value(const ast_identifier_expression* p_identifier);
 bool ast_identifier_expression_print(const ast_identifier_expression* p_expression);
 string ast_identifier_expression_asprint(const ast_identifier_expression* p_expression);
 
@@ -190,7 +190,7 @@ typedef struct {
 
 void ast_string_expression_init(ast_string_expression* p_string, const token p_token);
 void ast_string_expression_deinit(ast_string_expression* p_string);
-string ast_string_expression_get_value(const ast_string_expression* p_string);
+string_view ast_string_expression_get_value(const ast_string_expression* p_string);
 bool ast_string_expression_print(const ast_string_expression* p_string);
 string ast_string_expression_asprint(const ast_string_expression* p_string);
 
@@ -321,14 +321,13 @@ void ast_let_declaration_init(ast_let_declaration* p_let,
                               ast_binding* p_binding,
                               ast_expression* p_value,
                               ast_declaration_modifiers_t p_modifiers,
-                              const token p_token,
-                              ast_expression* p_expression);
+                              const token p_token);
 void ast_let_declaration_deinit(ast_let_declaration* p_let);
 bool ast_let_declaration_print(const ast_let_declaration* p_let);
 string ast_let_declaration_asprint(const ast_let_declaration* p_let);
 
-bool ast_print(ast_node* p_node);
-string ast_asprint(ast_node* p_node);
-void ast_deinit(ast_node* p_node);
+bool ast_dispatch_print(ast_node* p_node);
+string ast_dispatch_asprint(ast_node* p_node);
+void ast_dispatch_deinit(ast_node* p_node);
 
 #endif // OK_AST_H
