@@ -7,14 +7,15 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
 option(OK_BUILD_SHARED "build libok as a shared library" OFF) # no api yet
+option(OK_BUILD_TESTS "build tests" OFF)
 option(OK_BUILD_CLI "build the cli" ON)
-option(OK_ENABLE_SANITIZERS "enable asan and ubsan" OFF)
+option(OK_ENABLE_SANITIZERS "enable address sanitizer" OFF)
 option(OK_PARANOID "enable a lot of logging" ON)
 option(OK_PEDANTIC "enable checking every possible failure point" ON)
 
 if(OK_BUILD_SHARED)
   set(OK_LIBRARY_TYPE SHARED)
-  target_compile_definitions(ok PUBLIC OK_BUILD_SHARED) 
+  target_compile_definitions(ok PUBLIC OK_BUILD_SHARED)
 else()
   set(OK_LIBRARY_TYPE STATIC)
 endif()
@@ -52,7 +53,7 @@ target_sources(ok
 )
 
 target_include_directories(ok
-  #PUBLIC #TODO
+  #PUBLIC TODO
   #${PROJECT_SOURCE_DIR}/include
   PRIVATE
   ${PROJECT_SOURCE_DIR}/src
@@ -79,4 +80,10 @@ endif()
 
 if (OK_BUILD_CLI)
   add_subdirectory(cli)
+endif()
+
+if(OK_BUILD_TESTS)
+  add_subdirectory(vendor/unity)
+  enable_testing()
+  add_subdirectory(tests)
 endif()
