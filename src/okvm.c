@@ -1,14 +1,15 @@
-#include "vm.h"
-#define OK_TRACE_EXECUTION
-#if defined(OK_TRACE_EXECUTION)
-#include "debug.h"
-#endif // defined(OK_TRACE_EXECUTION)
-
-#include "array.h"
-#include "object.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+
+#include "okvm.h"
+#define OK_TRACE_EXECUTION
+#if defined(OK_TRACE_EXECUTION)
+#include "okdebug.h"
+#endif // defined(OK_TRACE_EXECUTION)
+
+#include "okarray.h"
+#include "okobject.h"
 
 #define STACK_SIZE 256
 

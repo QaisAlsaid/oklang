@@ -1,9 +1,9 @@
-#include "okstring.h"
-#include "utils.h"
-
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "okstring.h"
+#include "okutils.h"
 
 #define STRING_FLAGS_MASK 0x00ffffffffffffff
 

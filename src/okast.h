@@ -1,11 +1,12 @@
 #ifndef OK_AST_H
 #define OK_AST_H
 
-#include "operator.h"
-#include "token.h"
-#include "utils.h"
-#include "value.h" // for QNAN
 #include <stdbool.h>
+
+#include "okoperator.h"
+#include "oktoken.h"
+#include "okutils.h"
+#include "okvalue.h" // for QNAN
 
 typedef enum {
   AST_NODE = 0,

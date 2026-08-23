@@ -1,6 +1,7 @@
-#include "token.h"
 #include <stdlib.h>
 #include <string.h>
+
+#include "oktoken.h"
 
 const char* token_type_to_string(token_type p_type) {
   switch (p_type) {

@@ -1,8 +1,9 @@
-#include "lexer.h"
-#include "token.h"
 #include <ctype.h>
 #include <stdbool.h>
 #include <string.h>
+
+#include "oklexer.h"
+#include "oktoken.h"
 
 void lexer_init(lexer* p_lexer, const char* p_src) {
   p_lexer->start = p_src;

@@ -1,5 +1,5 @@
-#include "globals_store.h"
-#include "chunk.h"
+#include "okglobals_store.h"
+#include "okchunk.h"
 
 #define ARE_KEYS_EQUAL(lhs, rhs) (strncmp(lhs.string.chars, rhs.string.chars, string_get_length(&lhs.string)) == 0)
 #define IS_KEY_NULL(keu) false

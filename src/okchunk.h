@@ -5,10 +5,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "array.h"
-#include "source.h"
-#include "utils.h"
-#include "value.h"
+#include "okarray.h"
+#include "oksource.h"
+#include "okutils.h"
+#include "okvalue.h"
 
 #define UINT24_MAX ((1 << 24) - 1)
 #define UINT24_BYTE_COUNT 3

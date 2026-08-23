@@ -1,7 +1,8 @@
-#include "object.h"
-#include "object_store.h"
 #include <stdio.h>
 #include <stdlib.h>
+
+#include "okobject.h"
+#include "okobject_store.h"
 
 void object_init(object* p_object, uint32_t p_type) {
   p_object->info = p_type & 0x00ffffff;

@@ -12,21 +12,3 @@ foreach(name IN LISTS tests)
   target_include_directories(ok${name} PRIVATE ${PROJECT_SOURCE_DIR}/src)
   add_test(NAME ok.${name} COMMAND ok${name})
 endforeach()
-
-# add_executable(ok_unit_tests
-#   src/test_array.c
-# )
-#
-# target_link_libraries(ok_unit_tests
-#   PRIVATE
-#   ok
-#   ok_sanitizers
-#   unity
-# )
-#
-# target_include_directories(ok_unit_tests
-#   PRIVATE
-#   ${PROJECT_SOURCE_DIR}/src
-# )
-#
-# add_test(NAME ok_unit_tests COMMAND ok_unit_tests)

@@ -3,7 +3,7 @@
 // TODO: grow overflow.
 // injected allocation failure (when we implement custom allocators).
 
-#include <array.h>
+#include <okarray.h>
 
 ARRAY_DECLARE(test_array, uint32_t, uint32_t)
 ARRAY_DEFINE(test_array, uint32_t, uint32_t, UINT32_MAX, ARRAY_DEFAULT_TYPE_DEINIT)

@@ -5,9 +5,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "oksource.h"
 #include "okstring.h"
-#include "source.h"
-#include "token.h"
+#include "oktoken.h"
 
 void encode_int(uint8_t* p_bytes, const uint8_t p_bytes_count, const uint64_t p_value);
 uint64_t decode_int(const uint8_t* p_bytes, const uint8_t p_bytes_count);

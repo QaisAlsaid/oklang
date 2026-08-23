@@ -1,8 +1,8 @@
 #ifndef OK_OPERATOR_H
 #define OK_OPERATOR_H
 
-#include "token.h"
-#include "utils.h"
+#include "oktoken.h"
+#include "okutils.h"
 
 #define OPERATOR_LIST_X(X)                                                                                             \
   X(OPERATOR_PLUS, "+")                                                                                                \

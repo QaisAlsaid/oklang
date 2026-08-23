@@ -1,7 +1,7 @@
 #ifndef OK_TABLE_H
 #define OK_TABLE_H
 
-#include "array.h"
+#include "okarray.h"
 
 #define TABLE_DEFAULT_LOAD_NUM 3
 #define TABLE_DEFAULT_LOAD_DEN 4

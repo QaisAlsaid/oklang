@@ -1,7 +1,8 @@
-#include "value.h"
-#include "array.h"
-#include "object.h"
 #include <stdio.h>
+
+#include "okarray.h"
+#include "okobject.h"
+#include "okvalue.h"
 
 void value_debug_print(value p_value) {
   if (IS_VALUE_NUMBER(p_value)) {

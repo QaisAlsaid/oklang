@@ -1,11 +1,12 @@
-#include "compiler.h"
-#include "debug.h"
-#include "object.h"
-#include "utils.h"
-#include "value.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+#include "okcompiler.h"
+#include "okdebug.h"
+#include "okobject.h"
+#include "okutils.h"
+#include "okvalue.h"
 
 #define OK_DEBUG_DUMP_CODE
 

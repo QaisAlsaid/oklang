@@ -1,5 +1,5 @@
-#include "object_store.h"
-#include "object.h"
+#include "okobject_store.h"
+#include "okobject.h"
 
 void object_store_init(object_store* p_store) {
   p_store->objects = NULL;

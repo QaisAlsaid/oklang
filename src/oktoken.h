@@ -1,8 +1,9 @@
 #ifndef OK_TOKEN_HPP
 #define OK_TOKEN_HPP
 
-#include "source.h"
 #include <stdint.h>
+
+#include "oksource.h"
 
 #define TOKEN_LIST_X(X)                                                                                                \
   X(TOKEN_ERROR, "error")                                                                                              \

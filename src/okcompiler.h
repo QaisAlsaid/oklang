@@ -1,11 +1,11 @@
 #ifndef OK_COMPILER_H
 #define OK_COMPILER_H
 
-#include "chunk.h"
-#include "globals_store.h"
-#include "object_store.h"
-#include "parser.h"
-#include "source.h"
+#include "okchunk.h"
+#include "okglobals_store.h"
+#include "okobject_store.h"
+#include "okparser.h"
+#include "oksource.h"
 
 typedef struct {
   chunk* current_chunk;

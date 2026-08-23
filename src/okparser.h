@@ -1,12 +1,12 @@
 #ifndef OK_PARSER_H
 #define OK_PARSER_H
 
-#include "ast.h"
-#include "lexer.h"
-#include "source.h"
-#include "token.h"
-
 #include <stdbool.h>
+
+#include "okast.h"
+#include "oklexer.h"
+#include "oksource.h"
+#include "oktoken.h"
 
 typedef enum {
   PREC_NONE = (int)0,

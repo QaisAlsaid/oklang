@@ -3,9 +3,9 @@
 
 #include <stdint.h>
 
-#include "ast.h"
-#include "chunk.h"
-#include "globals_store.h"
+#include "okast.h"
+#include "okchunk.h"
+#include "okglobals_store.h"
 
 typedef struct {
   const chunk* chunk;

@@ -1,8 +1,9 @@
-#include "utils.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "okutils.h"
 
 void encode_int(uint8_t* p_bytes, const uint8_t p_bytes_count, const uint64_t p_value) {
   for (uint8_t i = 0; i < p_bytes_count; ++i) {

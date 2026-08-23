@@ -31,30 +31,29 @@ if(build_type STREQUAL "debug")
   endif()
 endif()
 
-target_sources(ok
-  PRIVATE
-  src/ast.c
-  src/chunk.c
-  src/compiler.c
-  src/debug.c
-  src/globals_store.c
-  src/lexer.c
-  src/mm.c
-  src/object.c
-  src/object_store.c
+target_sources(ok PRIVATE
   src/ok.c
-  src/operator.c
-  src/parser.c
-  src/token.c
-  src/utils.c
-  src/value.c
-  src/vm.c
+  src/okast.c
+  src/okchunk.c
+  src/okcompiler.c
+  src/okdebug.c
+  src/okglobals_store.c
+  src/oklexer.c
+  src/okmm.c
+  src/okobject.c
+  src/okobject_store.c
+  src/okoperator.c
+  src/okparser.c
+  src/oktoken.c
+  src/okutils.c
+  src/okvalue.c
+  src/okvm.c
   src/okstring.c
 )
 
-target_include_directories(ok
+target_include_directories(ok 
   #PUBLIC TODO
-  #${PROJECT_SOURCE_DIR}/include
+  #${PROJECT_SOURCE_DIR}/include 
   PRIVATE
   ${PROJECT_SOURCE_DIR}/src
 )

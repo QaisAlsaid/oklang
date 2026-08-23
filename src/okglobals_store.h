@@ -1,10 +1,10 @@
 #ifndef OK_GLOBALS_STORE_H
 #define OK_GLOBALS_STORE_H
 
-#include "array.h"
-#include "table.h"
-#include "utils.h"
-#include "value.h"
+#include "okarray.h"
+#include "oktable.h"
+#include "okutils.h"
+#include "okvalue.h"
 
 #define GLOBAL_ALLOCATION_FAILED UINT32_MAX
 #define GLOBAL_OVERFLOW (UINT32_MAX - 1)

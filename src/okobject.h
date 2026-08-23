@@ -1,11 +1,12 @@
 #ifndef OK_OBJECT_H
 #define OK_OBJECT_H
 
-#include "object_store.h"
-#include "utils.h"
-#include "value.h"
 #include <stdbool.h>
 #include <stdint.h>
+
+#include "okobject_store.h"
+#include "okutils.h"
+#include "okvalue.h"
 
 #define OBJECT_TYPE(value) object_get_type(VALUE_AS_OBJECT(value))
 

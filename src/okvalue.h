@@ -1,9 +1,10 @@
 #ifndef OK_VALUE_H
 #define OK_VALUE_H
 
-#include "array.h"
 #include <stdbool.h>
 #include <stdint.h>
+
+#include "okarray.h"
 
 #define QNAN ((uint64_t)0x7ffc000000000000)
 #define SIGN_BIT ((uint64_t)0x8000000000000000)

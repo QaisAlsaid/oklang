@@ -1,9 +1,10 @@
 #ifndef OK_ARRAY_HPP
 #define OK_ARRAY_HPP
 
-#include "mm.h"
 #include <stdbool.h>
 #include <string.h> // for memcpy
+
+#include "okmm.h"
 
 #define ARRAY_DEFAULT_TYPE_DEINIT(x)
 

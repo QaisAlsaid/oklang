@@ -1,10 +1,11 @@
 #ifndef OK_H
 #define OK_H
 
-#include "compiler.h"
-#include "object_store.h"
-#include "source.h"
-#include "vm.h"
+#include "okcompiler.h"
+#include "okglobals_store.h"
+#include "okobject_store.h"
+#include "oksource.h"
+#include "okvm.h"
 
 typedef enum {
   OK,

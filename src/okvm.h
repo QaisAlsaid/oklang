@@ -1,10 +1,10 @@
 #ifndef OK_VM_H
 #define OK_VM_H
 
-#include "array.h"
-#include "chunk.h"
-#include "globals_store.h"
-#include "object_store.h"
+#include "okarray.h"
+#include "okchunk.h"
+#include "okglobals_store.h"
+#include "okobject_store.h"
 
 ARRAY_DECLARE(stack_array, value, uint32_t)
 typedef struct {
