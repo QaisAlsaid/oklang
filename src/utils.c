@@ -19,6 +19,7 @@ uint64_t decode_int(const uint8_t* p_bytes, const uint8_t p_bytes_count) {
 }
 
 string asprint(const char* p_fmt, ...) {
+  // TODO this double copies make string accept taking ownership of already created buffer
   int n = 0;
   size_t size = 0;
   char* chars = NULL;
@@ -47,7 +48,9 @@ string asprint(const char* p_fmt, ...) {
     return create_string(NULL, 0, false);
   }
 
-  return create_string(chars, n, true);
+  string str = create_string(chars, n, true);
+  free(chars);
+  return str;
 }
 
 report_status report_at(bool* p_panic,
