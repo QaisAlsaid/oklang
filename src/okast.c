@@ -101,7 +101,7 @@ string ast_statement_asprint(const ast_statement* p_statement) {
 }
 
 string ast_binding_modifiers_asprint(ast_binding_modifiers_t p_modifiers) {
-  if ((p_modifiers & BINDING_NONE) != 0) {
+  if (p_modifiers == BINDING_NONE != 0) {
     return create_string("", 0, false);
   }
   if ((p_modifiers & BINDING_MUT) != 0) {

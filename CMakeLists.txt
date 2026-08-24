@@ -15,20 +15,26 @@ option(OK_PEDANTIC "enable checking every possible failure point" ON)
 
 if(OK_BUILD_SHARED)
   set(OK_LIBRARY_TYPE SHARED)
-  target_compile_definitions(ok PUBLIC OK_BUILD_SHARED)
 else()
   set(OK_LIBRARY_TYPE STATIC)
 endif()
 
 add_library(ok ${OK_LIBRARY_TYPE})
-
-if(build_type STREQUAL "debug")
+if (OK_BUILD_SHARED)
+  target_compile_definitions(ok PUBLIC OK_BUILD_SHARED)
+endif()
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   if (OK_PARANOID)
     target_compile_definitions(ok PUBLIC OK_PARANOID)
   endif()
-  if (OK_PEDANTIC)
-    target_compile_definitions(ok PUBLIC OK_PEDANTIC)
+elseif(build_type STREQUAL "Release")
+  if (OK_PARANOID)
+    message("can't be paranoid in release builds!")
   endif()
+endif()
+
+if (OK_PEDANTIC)
+    target_compile_definitions(ok PUBLIC OK_PEDANTIC)
 endif()
 
 target_sources(ok PRIVATE

@@ -8,6 +8,10 @@
 #include "okutils.h"
 #include "okvalue.h" // for QNAN
 
+#if defined(OK_PARANOID)
+#define OK_TRACE_AST
+#endif // defined(OK_PARANOID)
+
 typedef enum {
   AST_NODE = 0,
   AST_EXPRESSION,
