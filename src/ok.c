@@ -3,6 +3,7 @@
 
 #include "ok.h"
 #include "okchunk.h"
+#include "okparser.h"
 
 void ok_init(ok* p_ok) {
   object_store_init(&p_ok->objects_store);

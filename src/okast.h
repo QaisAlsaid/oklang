@@ -41,7 +41,7 @@ typedef enum {
   AST_EMPTY_STATEMENT,
   AST_EXPRESSION_STATEMENT,
   AST_PRINT_STATEMENT,
-  AST_BLOCK_STATEMENT,
+  AST_COMPOUND_STATEMENT,
   AST_IF_STATEMENT,
   AST_FOR_STATEMENT,
   AST_WHILE_STATEMENT,
@@ -136,22 +136,7 @@ void ast_declaration_deinit(ast_declaration* p_declaration);
 bool ast_declaration_print(const ast_declaration* p_declaration);
 string ast_declaration_asprint(const ast_declaration* p_declaration);
 
-typedef struct ast_statements_list_node ast_statements_list_node;
-
-struct ast_statements_list_node {
-  ast_statement* statement;
-  ast_statements_list_node* next;
-};
-
-typedef struct {
-  ast_statements_list_node* head;
-  ast_statements_list_node* tail;
-  uint32_t count;
-} ast_statements_list;
-
-void ast_statements_list_init(ast_statements_list* p_list);
-bool ast_statements_list_append(ast_statements_list* p_list, ast_statement* p_statement);
-void ast_statement_list_deinit(ast_statements_list* p_list);
+ARRAY_DECLARE_DEFAULT(ast_statements_list, ast_statement*)
 
 typedef struct {
   ast_statement statement;
@@ -311,6 +296,16 @@ void ast_print_statement_init(ast_print_statement* p_print, const token p_token,
 void ast_print_statement_deinit(ast_print_statement* p_print);
 bool ast_print_statement_print(const ast_print_statement* p_print);
 string ast_print_statement_asprint(const ast_print_statement* p_print);
+
+typedef struct {
+  ast_statement statement;
+  ast_statements_list statements;
+} ast_compound_statement;
+
+void ast_compound_statement_init(ast_compound_statement* p_compound, token p_token);
+void ast_compound_statement_deinit(ast_compound_statement* p_compound);
+bool ast_compound_statement_print(const ast_compound_statement* p_compound);
+string ast_compound_statement_asprint(const ast_compound_statement* p_compound);
 
 typedef struct {
   ast_declaration declaration;

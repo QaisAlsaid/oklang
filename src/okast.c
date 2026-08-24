@@ -35,7 +35,7 @@
   X(AST_EMPTY_STATEMENT, ast_empty_statement)                                                                          \
   X(AST_EXPRESSION_STATEMENT, ast_expression_statement)                                                                \
   X(AST_PRINT_STATEMENT, ast_print_statement)                                                                          \
-  /*X(AST_BLOCK_STATEMENT, ast_block_statement)*/                                                                      \
+  X(AST_COMPOUND_STATEMENT, ast_compound_statement)                                                                    \
   /*X(AST_IF_STATEMENT, ast_if_statement)*/                                                                            \
   /*X(AST_FOR_STATEMENT, ast_for_statement)*/                                                                          \
   /*X(AST_WHILE_STATEMENT, ast_while_statement)*/                                                                      \
@@ -185,47 +185,12 @@ string ast_declaration_asprint(const ast_declaration* p_declaration) {
   return ast_declaration_modifiers_asprint(p_declaration->modifiers);
 }
 
-void ast_statements_list_init(ast_statements_list* p_list) {
-  p_list->count = 0;
-  p_list->head = NULL;
-  p_list->tail = NULL;
-}
+#define STATEMENTS_LIST_DEINIT(element_ptr_ptr)                                                                        \
+  ast_dispatch_deinit((ast_node*)*element_ptr_ptr);                                                                    \
+  free(*element_ptr_ptr);                                                                                              \
+  *element_ptr_ptr = NULL;
 
-bool ast_statements_list_append(ast_statements_list* p_list, ast_statement* p_statement) {
-  ast_statements_list_node* node = (ast_statements_list_node*)malloc(sizeof(ast_statements_list_node));
-  if (node == NULL) {
-    return false;
-  }
-  node->next = NULL;
-  node->statement = p_statement;
-
-  if (p_list->head == NULL) {
-    p_list->head = node;
-    p_list->tail = node;
-    return true;
-  }
-
-  p_list->tail->next = node;
-  p_list->tail = node;
-  p_list->count++;
-  return true;
-}
-
-void ast_statement_list_deinit(ast_statements_list* p_list) {
-  ast_statements_list_node* node = p_list->head;
-  while (node != NULL) {
-    ast_dispatch_deinit((ast_node*)node->statement);
-    free(node->statement);
-    node->statement = NULL;
-    ast_statements_list_node* temp = node->next;
-    free(node);
-    node = temp;
-    p_list->count--;
-  }
-  p_list->head = NULL;
-  p_list->tail = NULL;
-  p_list->count = 0;
-}
+ARRAY_DEFINE_DEFAULT(ast_statements_list, ast_statement*, STATEMENTS_LIST_DEINIT)
 
 void ast_root_init(ast_root* p_root, token p_token) {
   ast_statement_init(&p_root->statement, AST_ROOT, p_token);
@@ -233,14 +198,14 @@ void ast_root_init(ast_root* p_root, token p_token) {
 }
 
 void ast_root_deinit(ast_root* p_root) {
-  ast_statement_list_deinit(&p_root->statements);
+  ast_statements_list_deinit(&p_root->statements);
   ast_statement_deinit(&p_root->statement);
 }
 
 bool ast_root_print(const ast_root* p_root) {
   bool status = true;
-  for (ast_statements_list_node* node = p_root->statements.head; node != NULL; node = node->next) {
-    status &= ast_dispatch_print((ast_node*)node->statement);
+  for (uint32_t i = 0; i < p_root->statements.count; ++i) {
+    status &= ast_dispatch_print((ast_node*)p_root->statements.data[i]);
   }
   return status;
 }
@@ -248,8 +213,8 @@ bool ast_root_print(const ast_root* p_root) {
 string ast_root_asprint(const ast_root* p_root) {
   char* chars = NULL;
   size_t len = 0;
-  for (ast_statements_list_node* node = p_root->statements.head; node != NULL; node = node->next) {
-    string res = ast_dispatch_asprint((ast_node*)node->statement);
+  for (uint32_t i = 0; i < p_root->statements.count; ++i) {
+    string res = ast_dispatch_asprint((ast_node*)p_root->statements.data[i]);
     if (res.chars != NULL) {
       len += string_get_length(&res);
       char* temp = malloc(len);
@@ -616,6 +581,43 @@ string ast_print_statement_asprint(const ast_print_statement* p_print) {
   string result = asprint("print %s", expr_str.chars);
   string_deinit(&expr_str);
   return result;
+}
+
+void ast_compound_statement_init(ast_compound_statement* p_compound, token p_token) {
+  ast_statement_init(&p_compound->statement, AST_COMPOUND_STATEMENT, p_token);
+  ast_statements_list_init(&p_compound->statements);
+}
+
+void ast_compound_statement_deinit(ast_compound_statement* p_compound) {
+  ast_statements_list_deinit(&p_compound->statements);
+  ast_statement_deinit(&p_compound->statement);
+}
+
+bool ast_compound_statement_print(const ast_compound_statement* p_compound) {
+  bool status = true;
+  for (uint32_t i = 0; i < p_compound->statements.count; ++i) {
+    status &= ast_dispatch_print((ast_node*)p_compound->statements.data[i]);
+  }
+  return status;
+}
+
+string ast_compound_statement_asprint(const ast_compound_statement* p_compound) {
+  char* chars = NULL;
+  size_t len = 0;
+  for (uint32_t i = 0; i < p_compound->statements.count; ++i) {
+    string res = ast_dispatch_asprint((ast_node*)p_compound->statements.data[i]);
+    if (res.chars != NULL) {
+      len += string_get_length(&res);
+      char* temp = malloc(len);
+      free(chars);
+      if (temp == NULL) {
+        string_deinit(&res);
+        return create_string(NULL, 0, false);
+      }
+      chars = temp;
+    }
+  }
+  return create_string(chars, len, true);
 }
 
 void ast_let_declaration_init(ast_let_declaration* p_let,

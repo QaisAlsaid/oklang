@@ -9,6 +9,7 @@
 #include "okvalue.h"
 
 #define OK_DEBUG_DUMP_CODE
+ARRAY_DEFINE(locals, local, uint32_t, UINT32_MAX, ARRAY_DEFAULT_TYPE_DEINIT)
 
 static void error_at(compiler* p_compiler, const ast_node* p_node, const string_view p_message);
 static void
@@ -21,6 +22,8 @@ static bool emit_constant(compiler* p_compiler, value p_value, ast_node* p_node)
 
 static bool end_compile(compiler* p_compiler, ast_node* p_node);
 static uint32_t create_constant(compiler* p_compiler, value p_value, ast_node* p_node);
+static void begin_scope(compiler* p_compiler);
+static void end_scope(compiler* p_compiler);
 
 static bool compile_node(compiler* p_compiler, ast_node* p_node);
 
@@ -28,10 +31,10 @@ static bool compile_root(compiler* p_compiler, ast_root* p_root);
 
 static bool compile_let_declration(compiler* p_compiler, ast_let_declaration* p_let);
 
-static bool compile_statement(compiler* p_compiler, ast_statement* p_statement);
 static bool compile_expression_statement(compiler* p_compiler, ast_expression_statement* p_expression_statement);
 static bool compile_eof_statement(compiler* p_compiler, ast_eof_statement* p_eof);
 static bool compile_print_statement(compiler* p_compiler, ast_print_statement* p_print);
+static bool compile_compound_statement(compiler* p_compiler, ast_compound_statement* p_compound);
 
 static bool compile_expression(compiler* p_compiler, ast_expression* p_expression);
 static bool compile_identifier(compiler* p_compiler, ast_identifier_expression* p_identifier);
@@ -54,6 +57,8 @@ void compiler_init(compiler* p_compiler) {
   p_compiler->current_chunk = NULL;
   p_compiler->objects_store = NULL;
   p_compiler->source = NULL;
+  p_compiler->scope_depth = 0;
+  locals_init(&p_compiler->locals);
   p_compiler->had_error = false;
   p_compiler->panic = false;
 }
@@ -64,6 +69,8 @@ void compiler_deinit(compiler* p_compiler) {
   p_compiler->objects_store = NULL;
   p_compiler->had_error = false;
   p_compiler->panic = false;
+  p_compiler->scope_depth = 0;
+  locals_deinit(&p_compiler->locals);
 }
 
 compile_result compiler_compile(compiler* p_compiler, compiler_specs p_specs) {
@@ -135,6 +142,14 @@ bool end_compile(compiler* p_compiler, ast_node* p_node) {
   return emit_byte(p_compiler, OP_RETURN, p_node);
 }
 
+void begin_scope(compiler* p_compiler) {
+  p_compiler->scope_depth++;
+}
+
+void end_scope(compiler* p_compiler) {
+  p_compiler->scope_depth--;
+}
+
 uint32_t create_constant(compiler* p_compiler, value p_value, ast_node* p_node) {
   chunk* chunk = current_chunk(p_compiler);
   const uint32_t index = chunk_write_constant_with_line_info(chunk, p_value, p_node->token.line_info);
@@ -204,7 +219,8 @@ static bool compile_node(compiler* p_compiler, ast_node* p_node) {
     return compile_expression_statement(p_compiler, (ast_expression_statement*)p_node);
   case AST_PRINT_STATEMENT:
     return compile_print_statement(p_compiler, (ast_print_statement*)p_node);
-  case AST_BLOCK_STATEMENT:
+  case AST_COMPOUND_STATEMENT:
+    return compile_compound_statement(p_compiler, (ast_compound_statement*)p_node);
   case AST_IF_STATEMENT:
   case AST_FOR_STATEMENT:
   case AST_WHILE_STATEMENT:
@@ -234,8 +250,8 @@ static bool compile_node(compiler* p_compiler, ast_node* p_node) {
 
 static bool compile_root(compiler* p_compiler, ast_root* p_root) {
   bool res = true;
-  for (ast_statements_list_node* node = p_root->statements.head; node != NULL; node = node->next) {
-    res &= compile_node(p_compiler, (ast_node*)node->statement);
+  for (uint32_t i = 0; i < p_root->statements.count; ++i) {
+    res &= compile_node(p_compiler, (ast_node*)p_root->statements.data[i]);
   }
   return res;
 }
@@ -392,6 +408,16 @@ bool compile_print_statement(compiler* p_compiler, ast_print_statement* p_print)
     return emit_byte(p_compiler, OP_PRINT, (ast_node*)p_print);
   }
   return false;
+}
+
+bool compile_compound_statement(compiler* p_compiler, ast_compound_statement* p_compound) {
+  bool status = true;
+  begin_scope(p_compiler);
+  for (uint32_t i = 0; i < p_compound->statements.count; ++i) {
+    status &= compile_node(p_compiler, (ast_node*)p_compound->statements.data[i]);
+  }
+  end_scope(p_compiler);
+  return status;
 }
 
 static bool compile_number_expression(compiler* p_compiler, ast_number_expression* p_number) {

@@ -8,6 +8,9 @@
 
 #define ARRAY_DEFAULT_TYPE_DEINIT(x)
 
+#define ARRAY_DECLARE_DEFAULT(name, type) ARRAY_DECLARE(name, type, uint32_t)
+#define ARRAY_DEFINE_DEFAULT(name, type, deinit_type) ARRAY_DEFINE(name, type, uint32_t, UINT32_MAX, deinit_type)
+
 #define ARRAY_DECLARE(name, type, size_type)                                                                           \
   typedef struct name name;                                                                                            \
   struct name {                                                                                                        \

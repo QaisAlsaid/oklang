@@ -17,6 +17,7 @@ static ast_empty_statement* parse_empty_statement(parser* p_parser);
 static ast_expression_statement* parse_expression_statement(parser* p_parser);
 static ast_eof_statement* parse_eof_statement(parser* p_parser);
 static ast_print_statement* parse_print_statement(parser* p_parser);
+static ast_compound_statement* parse_compound_statement(parser* p_parser);
 
 static void error_at(parser* p_parser, token p_token, const string_view p_message);
 static void error_at_noted(parser* p_parser, token p_token, const string_view p_message, const string_view p_note);
@@ -689,5 +690,37 @@ ast_print_statement* parse_print_statement(parser* p_parser) {
 fail:
   ast_dispatch_deinit((ast_node*)expression);
   free(expression);
+  return NULL;
+}
+
+ast_compound_statement* parse_compound_statement(parser* p_parser) {
+  token trigger = p_parser->previous;
+  ast_statements_list list;
+  ast_statements_list_init(&list);
+  while (p_parser->current.type != TOKEN_RIGHT_BRACE && p_parser->current.type != TOKEN_EOF) {
+    if (!advance(p_parser)) {
+      goto fail;
+    }
+    ast_statement* stmt = try_parse_declaration(p_parser);
+    if (stmt == NULL) {
+      goto fail;
+    }
+  }
+  if (p_parser->current.type != TOKEN_RIGHT_BRACE) {
+    error_at(p_parser, p_parser->current, create_string_view("expected '}'.", STRING_VIEW_CALCULATE_LENGTH, true));
+    goto fail;
+  }
+  if (!advance(p_parser)) {
+    goto fail;
+  }
+  ast_compound_statement* compound = (ast_compound_statement*)malloc(sizeof(ast_compound_statement));
+  if (compound == NULL) {
+    goto fail;
+  }
+  ast_compound_statement_init(compound, trigger);
+  compound->statements = list;
+  return compound;
+fail:
+  ast_statements_list_deinit(&list);
   return NULL;
 }
