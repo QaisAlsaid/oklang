@@ -10,10 +10,6 @@ void object_store_deinit(object_store* p_store) {
 }
 
 void object_store_append(object_store* p_store, struct object* p_object) {
-  if (p_store->objects == NULL) {
-    p_store->objects = p_object;
-  } else {
-    p_store->objects->next = p_store->objects;
-    p_store->objects = p_object;
-  }
+  p_object->next = p_store->objects;
+  p_store->objects = p_object;
 }

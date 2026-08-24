@@ -114,7 +114,7 @@
                                            const key_type p_key,                                                       \
                                            name##_entry** p_out,                                                       \
                                            bucket_size_type* p_index_in_bucket) {                                      \
-    table_size_type bucket_index = get_hash(p_key) % p_capacity;                                                       \
+    table_size_type bucket_index = get_hash(p_key) & (p_capacity - 1);                                                 \
     name##_entry* ptr = name##_bucket_get(&p_buckets->data[bucket_index], p_key, p_index_in_bucket);                   \
     *p_out = ptr;                                                                                                      \
     return bucket_index;                                                                                               \
@@ -140,23 +140,19 @@
         name##_entry* dest = NULL;                                                                                     \
         bucket_size_type _index = 0;                                                                                   \
         const table_size_type bucket_index = name##_find_entry(&buckets, p_capacity, entry->key, &dest, &_index);      \
-        if (dest == NULL) {                                                                                            \
-          name##_bucket* bucket = &buckets.data[bucket_index];                                                         \
-          if (!name##_bucket_grow(bucket, 1)) {                                                                        \
-            goto fail_add;                                                                                             \
-          }                                                                                                            \
-          if (!name##_bucket_append(bucket, *entry)) {                                                                 \
-          fail_add:                                                                                                    \
-            for (table_size_type i = 0; i < p_capacity; ++i) {                                                         \
-              name##_bucket_deinit(&buckets.data[i]);                                                                  \
-            }                                                                                                          \
-            name##_buckets_deinit(&buckets);                                                                           \
-            return false;                                                                                              \
-          }                                                                                                            \
-          buckets.count++;                                                                                             \
-        } else {                                                                                                       \
-          *dest = *entry;                                                                                              \
+        name##_bucket* bucket = &buckets.data[bucket_index];                                                           \
+        if (!name##_bucket_grow(bucket, 1)) {                                                                          \
+          goto fail_add;                                                                                               \
         }                                                                                                              \
+        if (!name##_bucket_append(bucket, *entry)) {                                                                   \
+        fail_add:                                                                                                      \
+          for (table_size_type i = 0; i < p_capacity; ++i) {                                                           \
+            name##_bucket_deinit(&buckets.data[i]);                                                                    \
+          }                                                                                                            \
+          name##_buckets_deinit(&buckets);                                                                             \
+          return false;                                                                                                \
+        }                                                                                                              \
+        buckets.count++;                                                                                               \
       }                                                                                                                \
     }                                                                                                                  \
     name##_buckets_deinit(&p_table->buckets);                                                                          \

@@ -322,8 +322,8 @@ static bool compile_expression_statement(compiler* p_compiler, ast_expression_st
   return false;
 }
 
-static uint32_t identifier_variable(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
-  const uint32_t index = globals_store_get(p_compiler->globals_store, p_identifier);
+static uint32_t find_global_index(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
+  uint32_t index = globals_store_get(p_compiler->globals_store, p_identifier);
   if (!IS_GLOBAL_VALID(index)) {
     if (index == GLOBAL_NOT_FOUND) { // always true now
       string identifier_str = create_string_from_string_view(p_identifier);
@@ -332,23 +332,54 @@ static uint32_t identifier_variable(compiler* p_compiler, const string_view p_id
       string_deinit(&message);
       string_deinit(&identifier_str);
     }
-  }
-  const bool is_long = index > OP_XX_GLOBAL_MAX ? true : false;
-  const byte op = is_long ? OP_GET_GLOBAL_LONG : OP_GET_GLOBAL;
-  if (is_long) {
-    emit_byte(p_compiler, op, p_node);
-    byte bytes[UINT24_BYTE_COUNT];
-    encode_int(bytes, UINT24_BYTE_COUNT, index);
-    emit_bytes(p_compiler, bytes, UINT24_BYTE_COUNT, p_node);
-  } else {
-    emit_2bytes(p_compiler, op, index, p_node);
+    index = IDENTIFIER_ERROR; // general error, report is guarnteed
   }
   return index;
 }
 
+static uint32_t get_global(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
+  const uint32_t index = find_global_index(p_compiler, p_identifier, p_node);
+  if (!IS_IDENTIFIER_VALID(index)) {
+    return index;
+  }
+  if (index > OP_GET_GLOBAL_MAX) {
+    emit_byte(p_compiler, OP_GET_GLOBAL_LONG, p_node);
+    byte bytes[UINT24_BYTE_COUNT];
+    encode_int(bytes, UINT24_BYTE_COUNT, index);
+    emit_bytes(p_compiler, bytes, UINT24_BYTE_COUNT, p_node);
+  } else {
+    emit_2bytes(p_compiler, OP_GET_GLOBAL, (byte)index, p_node);
+  }
+  return index;
+}
+
+static uint32_t set_global(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
+  const uint32_t index = find_global_index(p_compiler, p_identifier, p_node);
+  if (!IS_IDENTIFIER_VALID(index)) {
+    return index;
+  }
+  if (index > OP_SET_GLOBAL_MAX) {
+    emit_byte(p_compiler, OP_SET_GLOBAL_LONG, p_node);
+    byte bytes[UINT24_BYTE_COUNT];
+    encode_int(bytes, UINT24_BYTE_COUNT, index);
+    emit_bytes(p_compiler, bytes, UINT24_BYTE_COUNT, p_node);
+  } else {
+    emit_2bytes(p_compiler, OP_SET_GLOBAL, (byte)index, p_node);
+  }
+  return index;
+}
+
+static uint32_t get_variable(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
+  return get_global(p_compiler, p_identifier, p_node);
+}
+
+static uint32_t set_variable(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
+  return set_global(p_compiler, p_identifier, p_node);
+}
+
 static bool compile_identifier(compiler* p_compiler, ast_identifier_expression* p_identifier) {
   string_view ident_str = ast_identifier_expression_get_value(p_identifier);
-  uint32_t res = identifier_variable(p_compiler, ident_str, (ast_node*)p_identifier);
+  uint32_t res = get_variable(p_compiler, ident_str, (ast_node*)p_identifier);
   return IS_GLOBAL_VALID(res);
 }
 
@@ -445,7 +476,7 @@ static bool compile_assign_expression(compiler* p_compiler, ast_assign_expressio
   compile_node(p_compiler, (ast_node*)p_assign->right);
   ast_identifier_expression* ident = (ast_identifier_expression*)p_assign->left;
   string_view name = ast_identifier_expression_get_value(ident);
-  identifier_variable(p_compiler, name, (ast_node*)ident);
+  set_variable(p_compiler, name, (ast_node*)ident);
   return true;
 }
 
