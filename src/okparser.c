@@ -466,11 +466,51 @@ ast_statement* parse_statement(parser* p_parser) {
   }
 }
 
+static ast_declaration_modifiers_t parse_declaration_modifier(token p_token) {
+  switch (p_token.type) {
+  case TOKEN_GLOB:
+    return DECLARATION_GLOB;
+  case TOKEN_STATIC:
+    return DECLARATION_STATIC;
+  case TOKEN_ASYNC:
+    return DECLARATION_ASYNC;
+  case TOKEN_EXPORT:
+    return DECLARATION_EXPORT;
+  default:
+    return DECLARATION_NONE;
+  }
+}
+
+static ast_declaration_modifiers_t try_parse_declaration_modifiers(parser* p_parser) {
+  ast_binding_modifiers_t modifiers = DECLARATION_NONE;
+  while (p_parser->previous.type != TOKEN_EOF) {
+    ast_declaration_modifiers_t mod = parse_declaration_modifier(p_parser->previous);
+    if (mod == DECLARATION_NONE) {
+      break;
+    }
+    if ((mod & modifiers) != 0) { // this lowk should be a warning X2.
+      string mod_str = ast_declaration_modifiers_asprint(mod);
+      string message = asprint("duplicated declaration modifier '%s'.", mod_str.chars);
+      error_at(p_parser, p_parser->current, create_string_view_from_string(message));
+      string_deinit(&mod_str);
+      string_deinit(&message);
+      return DECLARATION_ERROR;
+    }
+    modifiers |= mod;
+    advance(p_parser);
+  }
+  return modifiers;
+}
+
 ast_statement* try_parse_declaration(parser* p_parser) {
   ast_statement* statement;
+  ast_declaration_modifiers_t mods = try_parse_declaration_modifiers(p_parser);
+  if (mods == DECLARATION_ERROR) {
+    return NULL;
+  }
   switch (p_parser->previous.type) {
   case TOKEN_LET: {
-    statement = (ast_statement*)parse_let_declaration(p_parser, DECLARATION_NONE /*TODO*/);
+    statement = (ast_statement*)parse_let_declaration(p_parser, mods);
     break;
   }
   case TOKEN_FU: {
@@ -479,6 +519,15 @@ ast_statement* try_parse_declaration(parser* p_parser) {
     assert(0);
   }
   default: {
+    if (mods != DECLARATION_NONE) {
+      error_at_noted(p_parser,
+                     p_parser->previous,
+                     create_string_view("illegal declaration modifier(s).", STRING_VIEW_CALCULATE_LENGTH, true),
+                     create_string_view("declaration modifiers can only appear before declarations.",
+                                        STRING_VIEW_CALCULATE_LENGTH,
+                                        true));
+      return NULL;
+    }
     statement = parse_statement(p_parser);
     break;
   }
@@ -517,7 +566,7 @@ static ast_binding_modifiers_t parse_binding_modifiers(parser* p_parser, ast_bin
       string_deinit(&allowed_str);
       string_deinit(&note);
       return BINDING_ERROR;
-    } else if ((mod & modifiers) != 0) { // this lowk should be a warnning.
+    } else if ((mod & modifiers) != 0) { // this lowk should be a warning.
       string mod_str = ast_binding_modifiers_asprint(mod);
       string message = asprint("duplicated binding modifier %s.", mod_str.chars);
       error_at(p_parser, p_parser->current, create_string_view_from_string(message));
@@ -533,6 +582,20 @@ static ast_binding_modifiers_t parse_binding_modifiers(parser* p_parser, ast_bin
 
 ast_let_declaration* parse_let_declaration(parser* p_parser, ast_declaration_modifiers_t p_declaration_modifiers) {
   const token let_tok = p_parser->previous;
+  const ast_declaration_modifiers_t let_allowed_decl_mods = DECLARATION_GLOB | DECLARATION_EXPORT;
+  if ((p_declaration_modifiers & ~let_allowed_decl_mods) != 0) {
+    string mods_str = ast_declaration_modifiers_asprint(p_declaration_modifiers);
+    string message = asprint("illegal declaration modifier(s): [%s] in let declaration.",
+                             mods_str.chars); // TODO: extract the offending only.
+    string allowed_str = ast_declaration_modifiers_asprint(let_allowed_decl_mods);
+    string note = asprint("allowed are: [%s]", allowed_str.chars);
+    error_at_noted(p_parser, let_tok, create_string_view_from_string(message), create_string_view_from_string(note));
+    string_deinit(&message);
+    string_deinit(&mods_str);
+    string_deinit(&note);
+    string_deinit(&allowed_str);
+    return NULL;
+  }
   const ast_binding_modifiers_t binding_mods = parse_binding_modifiers(p_parser, BINDING_MUT);
   if (binding_mods == BINDING_ERROR) {
     return NULL;

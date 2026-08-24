@@ -115,8 +115,8 @@ bool ast_binding_print(const ast_binding* p_binding);
 string ast_binding_asprint(const ast_binding* p_binding);
 
 typedef enum {
-  DECLARATION_ERROR = 0,
-  DECLARATION_NONE = 1,
+  DECLARATION_NONE = 0,
+  DECLARATION_ERROR = 1,
   DECLARATION_GLOB = 1 << 1,
   DECLARATION_STATIC = 1 << 2,
   DECLARATION_ASYNC = 1 << 3,
