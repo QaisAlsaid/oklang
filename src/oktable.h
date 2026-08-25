@@ -9,7 +9,7 @@
 #define TABLE_DECLARE_DEFAULT(name, key_type, value_type, hash_type)                                                   \
   TABLE_DECLARE(name, uint32_t, uint32_t, key_type, value_type, hash_type)
 #define TABLE_DEFINE_DEFAULT(                                                                                          \
-    name, key_type, value_type, hash_type, are_keys_equal, is_key_null, key_deinit, value_deinit, get_hash)            \
+    name, key_type, value_type, hash_type, are_keys_equal, key_deinit, value_deinit, get_hash)                         \
   TABLE_DEFINE(name,                                                                                                   \
                uint32_t,                                                                                               \
                uint32_t,                                                                                               \
@@ -21,7 +21,6 @@
                TABLE_DEFAULT_LOAD_NUM,                                                                                 \
                TABLE_DEFAULT_LOAD_DEN,                                                                                 \
                are_keys_equal,                                                                                         \
-               is_key_null,                                                                                            \
                key_deinit,                                                                                             \
                value_deinit,                                                                                           \
                get_hash)
@@ -35,7 +34,7 @@
     value_type value;                                                                                                  \
   };                                                                                                                   \
                                                                                                                        \
-  void name##_entry_init(name##_entry* p_entry, const key_type p_key, const value_type p_value);                       \
+  void name##_entry_init(name##_entry* p_entry, key_type p_key, value_type p_value);                                   \
   void name##_entry_deinit(name##_entry* p_entry);                                                                     \
                                                                                                                        \
   ARRAY_DECLARE(name##_bucket, name##_entry, bucket_size_type)                                                         \
@@ -47,9 +46,9 @@
                                                                                                                        \
   void name##_init(name* p_table);                                                                                     \
   void name##_deinit(name* p_table);                                                                                   \
-  bool name##_set(name* p_table, const key_type p_key, const value_type p_value);                                      \
-  value_type* name##_get(name* p_table, const key_type p_key);                                                         \
-  bool name##_remove(name* p_table, const key_type p_key);
+  bool name##_set(name* p_table, key_type p_key, value_type p_value);                                                  \
+  value_type* name##_get(name* p_table, key_type p_key);                                                               \
+  bool name##_remove(name* p_table, key_type p_key);
 
 #define TABLE_DEFINE(name,                                                                                             \
                      table_size_type,                                                                                  \
@@ -62,7 +61,6 @@
                      load_num,                                                                                         \
                      load_den,                                                                                         \
                      are_keys_equal,                                                                                   \
-                     is_key_null,                                                                                      \
                      key_deinit,                                                                                       \
                      value_deinit,                                                                                     \
                      get_hash /* called in hot paths, preferably the actuall hash is stroed in the key_type,*/         \
@@ -71,7 +69,7 @@
   ARRAY_DEFINE(name##_bucket, name##_entry, bucket_size_type, bucket_size_type_max, name##_entry_deinit)               \
   ARRAY_DEFINE(name##_buckets, name##_bucket, table_size_type, table_size_type_max, name##_bucket_deinit)              \
                                                                                                                        \
-  void name##_entry_init(name##_entry* p_entry, const key_type p_key, const value_type p_value) {                      \
+  void name##_entry_init(name##_entry* p_entry, key_type p_key, value_type p_value) {                                  \
     p_entry->key = p_key;                                                                                              \
     p_entry->value = p_value;                                                                                          \
   }                                                                                                                    \
@@ -82,8 +80,10 @@
   }                                                                                                                    \
   static name##_entry* name##_bucket_get(name##_bucket* p_bucket, const key_type p_key, bucket_size_type* p_index) {   \
     if (p_bucket->count == 1) {                                                                                        \
-      *p_index = 0;                                                                                                    \
-      return &p_bucket->data[0];                                                                                       \
+      if (get_hash(p_bucket->data[0].key) == get_hash(p_key) && are_keys_equal(p_bucket->data[0].key, p_key)) {        \
+        *p_index = 0;                                                                                                  \
+        return &p_bucket->data[0];                                                                                     \
+      }                                                                                                                \
     }                                                                                                                  \
     if (p_bucket->count == 0) {                                                                                        \
       return NULL;                                                                                                     \
@@ -111,7 +111,7 @@
                                                                                                                        \
   static table_size_type name##_find_entry(name##_buckets* p_buckets,                                                  \
                                            const table_size_type p_capacity,                                           \
-                                           const key_type p_key,                                                       \
+                                           key_type p_key,                                                             \
                                            name##_entry** p_out,                                                       \
                                            bucket_size_type* p_index_in_bucket) {                                      \
     table_size_type bucket_index = get_hash(p_key) & (p_capacity - 1);                                                 \
@@ -120,7 +120,7 @@
     return bucket_index;                                                                                               \
   }                                                                                                                    \
                                                                                                                        \
-  static bool name##_adjust_to_capacity(name* p_table, const table_size_type p_capacity) {                             \
+  static bool name##_adjust_to_capacity(name* p_table, table_size_type p_capacity) {                                   \
     name##_buckets buckets;                                                                                            \
     name##_buckets_init(&buckets);                                                                                     \
     if (!name##_buckets_grow(&buckets, p_capacity)) {                                                                  \
@@ -134,9 +134,6 @@
       name##_bucket* bucket = &p_table->buckets.data[i];                                                               \
       for (bucket_size_type i = 0; i < bucket->count; ++i) {                                                           \
         const name##_entry* entry = &bucket->data[i];                                                                  \
-        if (is_key_null(entry->key)) {                                                                                 \
-          continue;                                                                                                    \
-        }                                                                                                              \
         name##_entry* dest = NULL;                                                                                     \
         bucket_size_type _index = 0;                                                                                   \
         const table_size_type bucket_index = name##_find_entry(&buckets, p_capacity, entry->key, &dest, &_index);      \
@@ -160,7 +157,7 @@
     return true;                                                                                                       \
   }                                                                                                                    \
                                                                                                                        \
-  bool name##_set(name* p_table, const key_type p_key, const value_type p_value) {                                     \
+  bool name##_set(name* p_table, key_type p_key, value_type p_value) {                                                 \
     if ((p_table->buckets.count + 1) * (load_den) > (p_table->buckets.capacity * (load_num))) {                        \
       table_size_type capacity = array_grow_capacity(                                                                  \
           p_table->buckets.capacity,                                                                                   \
@@ -193,7 +190,7 @@
     return true;                                                                                                       \
   }                                                                                                                    \
                                                                                                                        \
-  value_type* name##_get(name* p_table, const key_type p_key) {                                                        \
+  value_type* name##_get(name* p_table, key_type p_key) {                                                              \
     if (p_table->count == 0) {                                                                                         \
       return NULL;                                                                                                     \
     }                                                                                                                  \
@@ -206,7 +203,7 @@
     return NULL;                                                                                                       \
   }                                                                                                                    \
                                                                                                                        \
-  bool name##_remove(name* p_table, const key_type p_key) {                                                            \
+  bool name##_remove(name* p_table, key_type p_key) {                                                                  \
     name##_entry* entry = NULL;                                                                                        \
     bucket_size_type index_in_bucket = 0;                                                                              \
     const table_size_type bucket_index =                                                                               \

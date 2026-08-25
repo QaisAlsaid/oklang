@@ -7,7 +7,6 @@
 // remove everything
 
 #define ARE_U_KEY_EQUAL(lhs, rhs) (lhs == rhs)
-#define IS_U_KEY_NULL(key) (key == UINT32_MAX)
 #define GET_U_HASH(key) (key)
 
 TABLE_DECLARE_DEFAULT(test_table, uint32_t, uint32_t, uint32_t)
@@ -16,7 +15,6 @@ TABLE_DEFINE_DEFAULT(test_table,
                      uint32_t,
                      uint32_t,
                      ARE_U_KEY_EQUAL,
-                     IS_U_KEY_NULL,
                      ARRAY_DEFAULT_TYPE_DEINIT,
                      ARRAY_DEFAULT_TYPE_DEINIT,
                      GET_U_HASH)
@@ -139,6 +137,16 @@ void test_set_1000_remove_1000() {
   TEST_ASSERT_EQUAL_UINT32(expected_count_after_remove, table.count);
 }
 
+void test_set_1_invalid_get_clear() {
+  test_table_deinit(&table);
+  test_table_init(&table);
+  test_init_state();
+
+  TEST_ASSERT_TRUE(test_table_set(&table, 67, 69));
+  TEST_ASSERT_NOT_NULL(test_table_get(&table, 67));
+  TEST_ASSERT_NULL(test_table_get(&table, 69));
+}
+
 #define GET_COLLISION_HASH(key) (67)
 
 TABLE_DECLARE_DEFAULT(test_table_collision, uint32_t, uint32_t, uint32_t)
@@ -147,12 +155,13 @@ TABLE_DEFINE_DEFAULT(test_table_collision,
                      uint32_t,
                      uint32_t,
                      ARE_U_KEY_EQUAL,
-                     IS_U_KEY_NULL,
                      ARRAY_DEFAULT_TYPE_DEINIT,
                      ARRAY_DEFAULT_TYPE_DEINIT,
                      GET_COLLISION_HASH)
 
 void test_set_a_set_b_retrive_a_retrive_b_clear_collision() {
+  test_table_collision table;
+  test_table_collision_init(&table);
   const uint32_t old_count = table.count;
   const uint32_t expected_count_after_a_add = old_count + 1;
   const uint32_t expected_count_after_b_add = expected_count_after_a_add + 1;
@@ -160,24 +169,47 @@ void test_set_a_set_b_retrive_a_retrive_b_clear_collision() {
   const uint32_t expected_count_after_all_remove = old_count;
   const uint32_t expected_bucket_count = 1;
 
-  TEST_ASSERT_TRUE(test_table_set(&table, 'a', 'a'));
+  TEST_ASSERT_TRUE(test_table_collision_set(&table, 'a', 'a'));
   TEST_ASSERT_EQUAL_UINT32(expected_count_after_a_add, table.count);
-  TEST_ASSERT_TRUE(test_table_set(&table, 'b', 'b'));
-  // TEST_ASSERT_TRUE(test_table_set(&table, 'm', 'b'));
+  TEST_ASSERT_TRUE(test_table_collision_set(&table, 'b', 'b'));
   TEST_ASSERT_EQUAL_UINT32(expected_count_after_b_add, table.count);
-  // TEST_ASSERT_EQUAL_UINT32(expected_bucket_count, table.buckets.count);
+  TEST_ASSERT_EQUAL_UINT32(expected_bucket_count, table.buckets.count);
   {
-    const uint32_t* a = test_table_get(&table, 'a');
-    const uint32_t* b = test_table_get(&table, 'b');
+    const uint32_t* a = test_table_collision_get(&table, 'a');
+    const uint32_t* b = test_table_collision_get(&table, 'b');
     TEST_ASSERT_NOT_NULL(a);
     TEST_ASSERT_NOT_NULL(b);
     TEST_ASSERT_EQUAL_UINT32('a', *a);
     TEST_ASSERT_EQUAL_UINT32('b', *b);
   }
-  TEST_ASSERT_TRUE(test_table_remove(&table, 'a'));
+  TEST_ASSERT_TRUE(test_table_collision_remove(&table, 'a'));
   TEST_ASSERT_EQUAL_UINT32(expected_count_after_a_remove, table.count);
-  TEST_ASSERT_TRUE(test_table_remove(&table, 'b'));
+  TEST_ASSERT_TRUE(test_table_collision_remove(&table, 'b'));
   TEST_ASSERT_EQUAL_UINT32(expected_count_after_all_remove, table.count);
+  test_table_collision_deinit(&table);
+}
+
+#define ARE_PTR_KEYS_EQUAL(lhs, rhs) ((lhs) == (rhs))
+#define GET_PTR_HASH(ptr) ((uint64_t)(ptr))
+
+#include <stdlib.h>
+
+void freekv(uint32_t** p_kv) {
+  free(*p_kv);
+  *p_kv = NULL;
+}
+
+TABLE_DECLARE_DEFAULT(needsfree, uint32_t*, uint32_t*, uint32_t)
+TABLE_DEFINE_DEFAULT(needsfree, uint32_t*, uint32_t*, uint32_t, ARE_PTR_KEYS_EQUAL, freekv, freekv, GET_PTR_HASH)
+
+void test_deinit() {
+  needsfree table;
+  needsfree_init(&table);
+
+  for (uint32_t i = 0; i < 1000; ++i) {
+    TEST_ASSERT_TRUE(needsfree_set(&table, malloc(sizeof(uint32_t)), malloc(sizeof(uint32_t))));
+  }
+  needsfree_deinit(&table);
 }
 
 int main() {
@@ -187,6 +219,8 @@ int main() {
   RUN_TEST(test_set_set_retrive_remove);
   RUN_TEST(test_set_a_set_b_remove_a_retrive_b_clear);
   RUN_TEST(test_set_1000_remove_1000);
+  RUN_TEST(test_set_1_invalid_get_clear);
   RUN_TEST(test_set_a_set_b_retrive_a_retrive_b_clear_collision);
+  RUN_TEST(test_deinit);
   return UNITY_END();
 }

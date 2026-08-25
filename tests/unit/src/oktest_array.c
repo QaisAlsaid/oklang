@@ -148,6 +148,25 @@ static void test_grow_overflow() {
   bytesized_deinit(&bs);
 }
 
+#include <stdlib.h>
+
+void deinit(int** p_int) {
+  free(*p_int);
+  *p_int = NULL;
+}
+
+ARRAY_DECLARE_DEFAULT(needsfree, int*)
+ARRAY_DEFINE_DEFAULT(needsfree, int*, deinit)
+
+void test_deinit() {
+  needsfree arr;
+  needsfree_init(&arr);
+  for (uint32_t i = 0; i < 1000; ++i) {
+    TEST_ASSERT_TRUE(needsfree_append(&arr, malloc(sizeof(int))));
+  }
+  needsfree_deinit(&arr); // if test fail there will be a leak and asan will trigger.
+}
+
 int main(void) {
   UNITY_BEGIN();
 
@@ -159,6 +178,7 @@ int main(void) {
   RUN_TEST(test_grow);
   RUN_TEST(test_invalid_remove);
   RUN_TEST(test_grow_overflow);
+  RUN_TEST(test_deinit);
 
   return UNITY_END();
 }

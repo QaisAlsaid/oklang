@@ -87,13 +87,13 @@
     if (p_first >= p_array->count || p_last >= p_array->count || p_last < p_first) {                                   \
       return false;                                                                                                    \
     }                                                                                                                  \
+    for (size_type i = p_first; i < p_last + 1; ++i) {                                                                 \
+      deinit_type(&p_array->data[i]);                                                                                  \
+    }                                                                                                                  \
     const size_type rmcount = p_last - p_first + 1;                                                                    \
     const size_type diff = p_array->count - p_last - 1;                                                                \
     memmove(p_array->data + p_first, p_array->data + p_last + 1, sizeof(type) * diff);                                 \
     p_array->count -= rmcount;                                                                                         \
-    for (size_type i = p_array->count + p_first; i < p_array->count + p_last + 1; i++) {                               \
-      deinit_type(&p_array->data[i]);                                                                                  \
-    }                                                                                                                  \
     return true;                                                                                                       \
   }
 
