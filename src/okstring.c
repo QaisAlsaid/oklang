@@ -19,7 +19,7 @@ static void remove_flag(uint8_t p_flag, uint64_t* p_info) {
   *p_info &= ~(UINT64_C(1) << (56 + p_flag));
 }
 
-#define STRING_FLAG_DYNAMIC 1
+#define STRING_FLAG_DYNAMIC 0
 bool string_init(string* p_string, const char* p_chars, uint64_t p_length, bool p_is_dynamic) {
   p_string->chars = p_chars;
   if (p_length == STRING_CALCULATE_LENGTH) {

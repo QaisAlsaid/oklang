@@ -331,11 +331,9 @@ typedef struct {
 
 static uint32_t add_global(compiler* p_compiler, variable_declaration p_declaration, ast_node* p_node) {
   chunk* chunk = current_chunk(p_compiler);
-  uint8_t flags = 0;
-  if ((p_declaration.flags & VARIABLE_DECLARATION_FLAGS_MUTABLE) != 0) {
-    flags |= GLOBAL_FLAG_MUTABLE;
-  }
-  uint32_t index = globals_store_add(p_compiler->globals_store, p_declaration.identifier, flags);
+  uint32_t index = globals_store_add(p_compiler->globals_store,
+                                     p_declaration.identifier,
+                                     (p_declaration.flags & VARIABLE_DECLARATION_FLAGS_MUTABLE) != 0);
   if (!IS_GLOBAL_VALID(index)) {
     if (index == GLOBAL_ALLOCATION_FAILED) {
       error_at(
@@ -352,7 +350,7 @@ static uint32_t add_global(compiler* p_compiler, variable_declaration p_declarat
       string_deinit(&note);
     }
   }
-  return index;
+  return global_get_raw_index(index);
 }
 
 static bool define_global(compiler* p_compiler,
@@ -372,16 +370,20 @@ static bool define_global(compiler* p_compiler,
   return true;
 }
 
-static bool uint32_test_flag_least(uint8_t p_flag, uint32_t p_from) {
-  return (p_from & (UINT32_C(1) << (24 + p_flag))) != 0;
+static inline uint32_t local_get_raw_index(uint32_t p_packed) {
+  return p_packed & 0x00ffffff;
 }
 
-static void uint32_set_flag_least(uint8_t p_flag, uint32_t* p_info) {
-  *p_info |= UINT32_C(1) << (24 + p_flag);
+static bool local_test_flag(uint32_t p_packed, uint8_t p_flag) {
+  return (p_packed & (UINT32_C(1) << (24 + p_flag))) != 0;
 }
 
-static void uint32_remove_flag_least(uint8_t p_flag, uint32_t* p_info) {
-  *p_info &= ~(UINT32_C(1) << (24 + p_flag));
+static void local_set_flag(uint32_t* p_packed, uint8_t p_flag) {
+  *p_packed |= UINT32_C(1) << (24 + p_flag);
+}
+
+static void local_remove_flag(uint32_t* p_packed, uint8_t p_flag) {
+  *p_packed &= ~(UINT32_C(1) << (24 + p_flag));
 }
 
 static uint32_t* resolve_local(compiler* p_compiler, hashed_string* p_identifier, ast_node* p_node) {
@@ -392,7 +394,7 @@ static uint32_t* resolve_local(compiler* p_compiler, hashed_string* p_identifier
     index = scope_locals_get(&fun->scopes.data[--depth].locals, *p_identifier);
     // TODO: report that we skipped if we couldn't resolve other local with same name.
     if (index != NULL &&
-        uint32_test_flag_least(LOCAL_FLAG_UNINITIALIZED, *index)) { // let x; { let x = x; /* skip the inner */ }
+        local_test_flag(*index, LOCAL_FLAG_UNINITIALIZED)) { // let x; { let x = x; /* skip the inner */ }
       index = NULL;
     }
   }
@@ -425,12 +427,9 @@ static uint32_t add_local(compiler* p_compiler, const variable_declaration p_dec
     }
     function* fun = current_function(p_compiler);
     local.depth = index & LOCAL_FLAGS_MASK;
-    uint32_set_flag_least(LOCAL_FLAG_UNINITIALIZED, &local.depth);
+    local_set_flag(&local.depth, LOCAL_FLAG_UNINITIALIZED);
     if ((p_declration.flags & VARIABLE_DECLARATION_FLAGS_MUTABLE) != 0) {
-      uint32_set_flag_least(LOCAL_FLAG_MUTABLE, &local.depth);
-    }
-    if ((p_declration.flags & VARIABLE_DECLARATION_FLAGS_MUTABLE) != 0) {
-      uint32_set_flag_least(LOCAL_FLAG_MUTABLE, &local.depth);
+      local_set_flag(&local.depth, LOCAL_FLAG_MUTABLE);
     }
     if (!locals_append(&fun->locals, local)) {
       error_at(p_compiler,
@@ -460,8 +459,7 @@ static uint32_t add_local(compiler* p_compiler, const variable_declaration p_dec
 
 static uint32_t declare_variable(compiler* p_compiler, const variable_declaration p_declration, ast_node* p_node) {
   if ((p_declration.flags & VARIABLE_DECLARATION_FLAGS_GLOBAL) == 0) {
-    const uint32_t index = add_local(p_compiler, p_declration, p_node);
-    return index;
+    return add_local(p_compiler, p_declration, p_node);
   }
   return add_global(p_compiler, p_declration, p_node);
 }
@@ -471,7 +469,7 @@ define_variable(compiler* p_compiler, const variable_declaration p_declration, u
   if ((p_declration.flags & VARIABLE_DECLARATION_FLAGS_GLOBAL) == 0) {
     function* fun = current_function(p_compiler);
     local* local = &fun->locals.data[p_index];
-    uint32_remove_flag_least(LOCAL_FLAG_UNINITIALIZED, &local->depth);
+    local_remove_flag(&local->depth, LOCAL_FLAG_UNINITIALIZED);
     return true;
   }
   return define_global(p_compiler, p_index, p_declration.flags, p_node);
@@ -526,35 +524,37 @@ static uint32_t get_global(compiler* p_compiler, const string_view p_identifier,
   if (!IS_GLOBAL_VALID(index)) {
     return index;
   }
-  if (index > OP_GET_GLOBAL_MAX) {
+  const uint32_t raw = global_get_raw_index(index);
+  if (raw > OP_GET_GLOBAL_MAX) {
     emit_byte(p_compiler, OP_GET_GLOBAL_LONG, p_node);
     byte bytes[UINT24_BYTE_COUNT];
-    encode_int(bytes, UINT24_BYTE_COUNT, index);
+    encode_int(bytes, UINT24_BYTE_COUNT, raw);
     emit_bytes(p_compiler, bytes, UINT24_BYTE_COUNT, p_node);
   } else {
-    emit_2bytes(p_compiler, OP_GET_GLOBAL, (byte)index, p_node);
+    emit_2bytes(p_compiler, OP_GET_GLOBAL, (byte)raw, p_node);
   }
   return index;
 }
 
 static uint32_t set_global(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
   const uint32_t index = find_global_index(p_compiler, p_identifier, p_node);
-  if (!IS_IDENTIFIER_VALID(index)) {
+  if (!IS_GLOBAL_VALID(index)) {
     return index;
   }
-  if (!uint32_test_flag_least(GLOBAL_FLAG_MUTABLE, index)) {
+  if (!global_test_flag(index, GLOBAL_FLAG_MUTABLE)) {
     error_at(
         p_compiler,
         p_node,
         create_string_view("attempting to mutate an immutable global variable.", STRING_VIEW_CALCULATE_LENGTH, true));
   }
-  if (index > OP_SET_GLOBAL_MAX) {
+  const uint32_t raw = global_get_raw_index(index);
+  if (raw > OP_SET_GLOBAL_MAX) {
     emit_byte(p_compiler, OP_SET_GLOBAL_LONG, p_node);
     byte bytes[UINT24_BYTE_COUNT] = {0};
-    encode_int(bytes, UINT24_BYTE_COUNT, index);
+    encode_int(bytes, UINT24_BYTE_COUNT, raw);
     emit_bytes(p_compiler, bytes, UINT24_BYTE_COUNT, p_node);
   } else {
-    emit_2bytes(p_compiler, OP_SET_GLOBAL, (byte)index, p_node);
+    emit_2bytes(p_compiler, OP_SET_GLOBAL, (byte)raw, p_node);
   }
   return index;
 }
@@ -585,7 +585,7 @@ static uint32_t set_local(compiler* p_compiler, const string_view p_identifier, 
     return UNDEFINED_LOCAL;
   }
   local local = current_function(p_compiler)->locals.data[*index];
-  if (!uint32_test_flag_least(LOCAL_FLAG_MUTABLE, local.depth)) {
+  if (!local_test_flag(local.depth, LOCAL_FLAG_MUTABLE)) {
     error_at(
         p_compiler,
         p_node,

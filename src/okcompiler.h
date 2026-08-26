@@ -17,7 +17,7 @@
 #define LOCAL_OVERFLOW (REDEFINED_LOCAL - 1)
 #define LOCAL_ILL_MUTATION (LOCAL_OVERFLOW - 1)
 #define LOCAL_ERROR (LOCAL_ILL_MUTATION - 1)
-#define IS_LOCAL_INDEX_VALID(index) (index < LOCAL_ERROR)
+#define IS_LOCAL_INDEX_VALID(index) (((index) & 0xf0000000) == 0)
 
 #define LOCALS_MAX UINT24_MAX
 
@@ -25,8 +25,8 @@
 #define IS_VARIABLE_DECLARATION_VALID(decl) (decl <= VARIABLES_MAX)
 
 typedef enum {
-  LOCAL_FLAG_UNINITIALIZED = 1,
-  LOCAL_FLAG_MUTABLE = 2,
+  LOCAL_FLAG_UNINITIALIZED = 0,
+  LOCAL_FLAG_MUTABLE = 1,
 } local_flags;
 
 typedef struct {
