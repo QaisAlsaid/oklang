@@ -13,6 +13,8 @@ static uint32_t constant_long_instruction(const char* p_opname, const uint32_t p
 static uint32_t global_instruction(const char* p_opname, const uint32_t p_offset, const disassembler* p_disassembler);
 static uint32_t
 global_long_instruction(const char* p_opname, const uint32_t p_offset, const disassembler* p_disassembler);
+uint32_t local_instruction(const char* p_opname, const uint32_t p_offset, const chunk* p_chunk);
+uint32_t local_long_instruction(const char* p_opname, const uint32_t p_offset, const chunk* p_chunk);
 
 void disassembler_init(disassembler* p_disassembler, disassembler_specs p_specs) {
   p_disassembler->chunk = p_specs.chunk;
@@ -87,6 +89,14 @@ uint32_t debug_disassemble_instruction(disassembler* p_disassembler, uint32_t p_
     return global_instruction("OP_SET_GLOBAL", p_offset, p_disassembler);
   case OP_SET_GLOBAL_LONG:
     return global_long_instruction("OP_SET_GLOBAL_LONG", p_offset, p_disassembler);
+  case OP_GET_LOCAL:
+    return local_instruction("OP_GET_LOCAL", p_offset, p_disassembler->chunk);
+  case OP_GET_LOCAL_LONG:
+    return local_long_instruction("OP_GET_LOCAL_LONG", p_offset, p_disassembler->chunk);
+  case OP_SET_LOCAL:
+    return local_instruction("OP_SET_LOCAL", p_offset, p_disassembler->chunk);
+  case OP_SET_LOCAL_LONG:
+    return local_long_instruction("OP_SET_LOCAL_LONG", p_offset, p_disassembler->chunk);
   case OP_NOT:
     return op_code_instruction("OP_NOT", p_offset);
   case OP_NEGATE:
@@ -153,4 +163,16 @@ uint32_t global_long_instruction(const char* p_opname, const uint32_t p_offset, 
       decode_int(p_offset + p_disassembler->chunk->code.data + OP_CODE_WIDTH, OP_XX_GLOBAL_LONG_OPERANDS_WIDTH);
   printf("%-16s %4d\n", p_opname, index);
   return p_offset + OP_CODE_WIDTH + OP_XX_GLOBAL_LONG_OPERANDS_WIDTH;
+}
+
+uint32_t local_instruction(const char* p_opname, const uint32_t p_offset, const chunk* p_chunk) {
+  const byte slot = p_chunk->code.data[p_offset + OP_CODE_WIDTH];
+  printf("%-16s %4d\n", p_opname, slot);
+  return p_offset + OP_CODE_WIDTH + OP_XX_LOCAL_OPERANDS_WIDTH;
+}
+
+uint32_t local_long_instruction(const char* p_opname, const uint32_t p_offset, const chunk* p_chunk) {
+  const uint32_t slot = decode_int(p_offset + p_chunk->code.data + OP_CODE_WIDTH, OP_XX_LOCAL_LONG_OPERANDS_WIDTH);
+  printf("%-16s %4d\n", p_opname, slot);
+  return p_offset + OP_CODE_WIDTH + OP_XX_LOCAL_LONG_OPERANDS_WIDTH;
 }

@@ -52,4 +52,8 @@ inline static hash_t default_hash_str(const string_view p_str) {
   return fnv1a_hash_str(p_str, 14695981039346656037ULL);
 }
 
+inline static hash_t hash_combine(const hash_t p_first, hash_t p_second) {
+  return p_first ^ p_second + 0x9e3779b9 + (p_first << 6) + (p_first >> 2);
+}
+
 #endif // OK_UTILS_H

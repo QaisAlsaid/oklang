@@ -2,7 +2,6 @@
 #include "okchunk.h"
 
 #define ARE_KEYS_EQUAL(lhs, rhs) (strncmp(lhs.string.chars, rhs.string.chars, string_get_length(&lhs.string)) == 0)
-#define IS_KEY_NULL(keu) false
 #define GET_HASH(key) (key.hash)
 
 // TODO memory arena
@@ -18,7 +17,6 @@ TABLE_DEFINE(globals_table,
              TABLE_DEFAULT_LOAD_NUM,
              TABLE_DEFAULT_LOAD_DEN,
              ARE_KEYS_EQUAL,
-             IS_KEY_NULL,
              hashed_string_deinit,
              ARRAY_DEFAULT_TYPE_DEINIT,
              GET_HASH)
@@ -32,7 +30,7 @@ void globals_store_deinit(globals_store* p_globals) {
   global_values_deinit(&p_globals->global_values);
 }
 
-uint32_t globals_store_add(globals_store* p_store, const string_view p_identifier) {
+uint32_t globals_store_add(globals_store* p_store, const string_view p_identifier, uint8_t p_flags) {
   hashed_string hs = create_hashed_string_hash(p_identifier);
   {
     uint32_t* index = globals_table_get(&p_store->table, hs);

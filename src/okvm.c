@@ -133,6 +133,26 @@ interpret_result vm_run(vm* p_vm) {
       stack_push(&p_vm->stack, p_vm->globals_store->global_values.data[index]);
       break;
     }
+    case OP_GET_LOCAL: {
+      byte slot = READ_BYTE();
+      stack_push(&p_vm->stack, p_vm->stack.array.data[slot]);
+      break;
+    }
+    case OP_GET_LOCAL_LONG: {
+      uint32_t slot = decode_int(p_vm->ip, OP_GET_LOCAL_LONG_OPERANDS_WIDTH);
+      stack_push(&p_vm->stack, p_vm->stack.array.data[slot]);
+      break;
+    }
+    case OP_SET_LOCAL: {
+      byte slot = READ_BYTE();
+      p_vm->stack.array.data[slot] = stack_top(&p_vm->stack, 0);
+      break;
+    }
+    case OP_SET_LOCAL_LONG: {
+      uint32_t slot = decode_int(p_vm->ip, OP_SET_LOCAL_LONG_OPERANDS_WIDTH);
+      p_vm->stack.array.data[slot] = stack_top(&p_vm->stack, 0);
+      break;
+    }
     case OP_NOT: {
       value* top = stack_top_ptr(&p_vm->stack, 0);
       *top = BOOL_AS_VALUE(is_falsy(*top));

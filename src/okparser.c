@@ -446,6 +446,7 @@ ast_statement* parse_statement(parser* p_parser) {
   case TOKEN_PRINT:
     return (ast_statement*)parse_print_statement(p_parser);
   case TOKEN_LEFT_BRACE:
+    return (ast_statement*)parse_compound_statement(p_parser);
   case TOKEN_IF:
   case TOKEN_WHILE:
   case TOKEN_FOR:
@@ -665,7 +666,6 @@ ast_let_declaration* parse_let_declaration(parser* p_parser, ast_declaration_mod
         null, p_parser->previous); // generated because there was an end to the declaration without a value "let x;"
                                    // thus the semicolon token is the one that authored the null node.
   }
-  advance(p_parser); // ;
   return let;
 free_let:
   ast_let_declaration_deinit(let);
@@ -766,6 +766,9 @@ ast_compound_statement* parse_compound_statement(parser* p_parser) {
     }
     ast_statement* stmt = try_parse_declaration(p_parser);
     if (stmt == NULL) {
+      goto fail;
+    }
+    if (!ast_statements_list_append(&list, stmt)) {
       goto fail;
     }
   }

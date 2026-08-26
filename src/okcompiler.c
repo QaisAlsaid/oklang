@@ -8,8 +8,26 @@
 #include "okutils.h"
 #include "okvalue.h"
 
-#define OK_DEBUG_DUMP_CODE
-ARRAY_DEFINE(locals, local, uint32_t, UINT32_MAX, ARRAY_DEFAULT_TYPE_DEINIT)
+#define LOCAL_FLAGS_MASK 0x00ffffff
+#define ARE_KEYS_EQUAL(lhs, rhs) (strncmp(lhs.string.chars, rhs.string.chars, string_get_length(&lhs.string)) == 0)
+#define GET_HASH(key) (key.hash)
+
+TABLE_DEFINE_DEFAULT(scope_locals,
+                     hashed_string,
+                     uint32_t,
+                     hash_t,
+                     ARE_KEYS_EQUAL,
+                     hashed_string_deinit,
+                     ARRAY_DEFAULT_TYPE_DEINIT,
+                     GET_HASH)
+
+static void scope_init(scope* p_scope);
+static void scope_deinit(scope* p_scope);
+static void function_init(function* p_function);
+static void function_deinit(function* p_function);
+ARRAY_DEFINE_DEFAULT(locals, local, ARRAY_DEFAULT_TYPE_DEINIT)
+ARRAY_DEFINE_DEFAULT(scopes, scope, scope_deinit)
+ARRAY_DEFINE_DEFAULT(functions, function, function_deinit)
 
 static void error_at(compiler* p_compiler, const ast_node* p_node, const string_view p_message);
 static void
@@ -23,7 +41,7 @@ static bool emit_constant(compiler* p_compiler, value p_value, ast_node* p_node)
 static bool end_compile(compiler* p_compiler, ast_node* p_node);
 static uint32_t create_constant(compiler* p_compiler, value p_value, ast_node* p_node);
 static void begin_scope(compiler* p_compiler);
-static void end_scope(compiler* p_compiler);
+static void end_scope(compiler* p_compiler, ast_node* p_node);
 
 static bool compile_node(compiler* p_compiler, ast_node* p_node);
 
@@ -57,10 +75,10 @@ void compiler_init(compiler* p_compiler) {
   p_compiler->current_chunk = NULL;
   p_compiler->objects_store = NULL;
   p_compiler->source = NULL;
-  p_compiler->scope_depth = 0;
-  locals_init(&p_compiler->locals);
   p_compiler->had_error = false;
   p_compiler->panic = false;
+  p_compiler->local_index = 0;
+  functions_init(&p_compiler->functions);
 }
 
 void compiler_deinit(compiler* p_compiler) {
@@ -69,8 +87,8 @@ void compiler_deinit(compiler* p_compiler) {
   p_compiler->objects_store = NULL;
   p_compiler->had_error = false;
   p_compiler->panic = false;
-  p_compiler->scope_depth = 0;
-  locals_deinit(&p_compiler->locals);
+  p_compiler->local_index = 0;
+  functions_deinit(&p_compiler->functions);
 }
 
 compile_result compiler_compile(compiler* p_compiler, compiler_specs p_specs) {
@@ -80,7 +98,12 @@ compile_result compiler_compile(compiler* p_compiler, compiler_specs p_specs) {
   p_compiler->source = p_specs.source;
   p_compiler->objects_store = p_specs.objects_store;
   p_compiler->globals_store = p_specs.globals_store;
+  function fun;
+  function_init(&fun);
+  functions_append(&p_compiler->functions, fun);
+  begin_scope(p_compiler);
   bool res = compile_node(p_compiler, (ast_node*)p_specs.root);
+  functions_remove(&p_compiler->functions, p_compiler->functions.count - 1, p_compiler->functions.count - 1);
   compile_result result;
   result.chunk = _chunk;
   if (p_compiler->had_error == false && res != false) {
@@ -95,6 +118,8 @@ compile_result compiler_compile(compiler* p_compiler, compiler_specs p_specs) {
   } else {
     result.status = COMPILE_ERROR;
   }
+  compiler_deinit(p_compiler);
+  compiler_init(p_compiler);
   return result;
 }
 
@@ -120,6 +145,15 @@ chunk* current_chunk(compiler* p_compiler) {
   return p_compiler->current_chunk;
 }
 
+function* current_function(compiler* p_compiler) {
+  return &p_compiler->functions.data[p_compiler->functions.count - 1];
+}
+
+scope* current_scope(compiler* p_compiler) {
+  function* fun = current_function(p_compiler);
+  return &fun->scopes.data[fun->scopes.count - 1];
+}
+
 bool emit_byte(compiler* p_compiler, byte p_byte, ast_node* p_node) {
   chunk* chunk = current_chunk(p_compiler);
   chunk_write_1byte_code_with_line_info(chunk, p_byte, p_node->token.line_info);
@@ -143,11 +177,37 @@ bool end_compile(compiler* p_compiler, ast_node* p_node) {
 }
 
 void begin_scope(compiler* p_compiler) {
-  p_compiler->scope_depth++;
+  scope scp;
+  scope_init(&scp);
+  function* fun = current_function(p_compiler);
+  scopes_append(&fun->scopes, scp);
 }
 
-void end_scope(compiler* p_compiler) {
-  p_compiler->scope_depth--;
+void end_scope(compiler* p_compiler, ast_node* p_node) {
+  function* fun = current_function(p_compiler);
+  scope* scp = &fun->scopes.data[fun->scopes.count - 1];
+  for (uint32_t i = 0; i < scp->locals.count; ++i) {
+    emit_byte(p_compiler, OP_POP, p_node);
+  }
+  scopes_remove(&fun->scopes, fun->scopes.count - 1, fun->scopes.count - 1); // TODO: pop
+}
+
+void scope_init(scope* p_scope) {
+  scope_locals_init(&p_scope->locals);
+}
+
+void scope_deinit(scope* p_scope) {
+  scope_locals_deinit(&p_scope->locals);
+}
+
+void function_init(function* p_function) {
+  locals_init(&p_function->locals);
+  scopes_init(&p_function->scopes);
+}
+
+static void function_deinit(function* p_function) {
+  scopes_deinit(&p_function->scopes);
+  locals_deinit(&p_function->locals);
 }
 
 uint32_t create_constant(compiler* p_compiler, value p_value, ast_node* p_node) {
@@ -155,7 +215,7 @@ uint32_t create_constant(compiler* p_compiler, value p_value, ast_node* p_node) 
   const uint32_t index = chunk_write_constant_with_line_info(chunk, p_value, p_node->token.line_info);
   if (!IS_CONSTANT_VALID(index)) {
     if (index == CONSTANT_OVERFLOW) {
-      string note = asprint("maximum number of constants is: %d", CONSTANT_MAX);
+      string note = asprint("limit is: %d", CONSTANT_MAX);
       error_at_noted(p_compiler,
                      p_node,
                      create_string_view("too many constants in single function.", STRING_VIEW_CALCULATE_LENGTH, true),
@@ -252,6 +312,7 @@ static bool compile_root(compiler* p_compiler, ast_root* p_root) {
   bool res = true;
   for (uint32_t i = 0; i < p_root->statements.count; ++i) {
     res &= compile_node(p_compiler, (ast_node*)p_root->statements.data[i]);
+    p_compiler->panic = false;
   }
   return res;
 }
@@ -268,9 +329,13 @@ typedef struct {
   variable_declaration_flags_t flags;
 } variable_declaration;
 
-static uint32_t add_global(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
+static uint32_t add_global(compiler* p_compiler, variable_declaration p_declaration, ast_node* p_node) {
   chunk* chunk = current_chunk(p_compiler);
-  uint32_t index = globals_store_add(p_compiler->globals_store, p_identifier);
+  uint8_t flags = 0;
+  if ((p_declaration.flags & VARIABLE_DECLARATION_FLAGS_MUTABLE) != 0) {
+    flags |= GLOBAL_FLAG_MUTABLE;
+  }
+  uint32_t index = globals_store_add(p_compiler->globals_store, p_declaration.identifier, flags);
   if (!IS_GLOBAL_VALID(index)) {
     if (index == GLOBAL_ALLOCATION_FAILED) {
       error_at(
@@ -307,12 +372,109 @@ static bool define_global(compiler* p_compiler,
   return true;
 }
 
-static uint32_t declare_variable(compiler* p_compiler, const variable_declaration p_declration, ast_node* p_node) {
-  return add_global(p_compiler, p_declration.identifier, p_node);
+static bool uint32_test_flag_least(uint8_t p_flag, uint32_t p_from) {
+  return (p_from & (UINT32_C(1) << (24 + p_flag))) != 0;
 }
 
-static bool define_variable(compiler* p_compiler, const variable_declaration p_declration, ast_node* p_node) {
-  return define_global(p_compiler, add_global(p_compiler, p_declration.identifier, p_node), p_declration.flags, p_node);
+static void uint32_set_flag_least(uint8_t p_flag, uint32_t* p_info) {
+  *p_info |= UINT32_C(1) << (24 + p_flag);
+}
+
+static void uint32_remove_flag_least(uint8_t p_flag, uint32_t* p_info) {
+  *p_info &= ~(UINT32_C(1) << (24 + p_flag));
+}
+
+static uint32_t* resolve_local(compiler* p_compiler, hashed_string* p_identifier, ast_node* p_node) {
+  uint32_t* index = NULL;
+  function* fun = current_function(p_compiler);
+  uint32_t depth = fun->scopes.count;
+  while (index == NULL && depth != 0) {
+    index = scope_locals_get(&fun->scopes.data[--depth].locals, *p_identifier);
+    // TODO: report that we skipped if we couldn't resolve other local with same name.
+    if (index != NULL &&
+        uint32_test_flag_least(LOCAL_FLAG_UNINITIALIZED, *index)) { // let x; { let x = x; /* skip the inner */ }
+      index = NULL;
+    }
+  }
+  return index;
+}
+
+static uint32_t add_local(compiler* p_compiler, const variable_declaration p_declration, ast_node* p_node) {
+  hashed_string hs = create_hashed_string_hash(p_declration.identifier);
+  if (hs.string.chars == NULL) {
+    error_at(p_compiler,
+             p_node,
+             create_string_view("failed to allocate memory for hashed string.", STRING_VIEW_CALCULATE_LENGTH, true));
+    return LOCAL_ERROR;
+  }
+  scope* scp = current_scope(p_compiler);
+  uint32_t* resolved = scope_locals_get(&scp->locals, hs);
+  if (resolved == NULL) {
+    local local;
+    uint32_t index = p_compiler->local_index++;
+    if (index > LOCALS_MAX) {
+      string note = asprint("limit is: %d.", LOCALS_MAX);
+      error_at_noted(
+          p_compiler,
+          p_node,
+          create_string_view("too many local variables in the same scope.", STRING_VIEW_CALCULATE_LENGTH, true),
+          create_string_view_from_string(note));
+      string_deinit(&note);
+      hashed_string_deinit(&hs);
+      return LOCAL_OVERFLOW;
+    }
+    function* fun = current_function(p_compiler);
+    local.depth = index & LOCAL_FLAGS_MASK;
+    uint32_set_flag_least(LOCAL_FLAG_UNINITIALIZED, &local.depth);
+    if ((p_declration.flags & VARIABLE_DECLARATION_FLAGS_MUTABLE) != 0) {
+      uint32_set_flag_least(LOCAL_FLAG_MUTABLE, &local.depth);
+    }
+    if ((p_declration.flags & VARIABLE_DECLARATION_FLAGS_MUTABLE) != 0) {
+      uint32_set_flag_least(LOCAL_FLAG_MUTABLE, &local.depth);
+    }
+    if (!locals_append(&fun->locals, local)) {
+      error_at(p_compiler,
+               p_node,
+               create_string_view("failed to add local to the locals array.", STRING_VIEW_CALCULATE_LENGTH, true));
+      hashed_string_deinit(&hs);
+      return LOCAL_ERROR;
+    }
+    if (!scope_locals_set(&current_scope(p_compiler)->locals, hs, fun->locals.count - 1)) {
+      error_at(p_compiler,
+               p_node,
+               create_string_view("failed to add local to the locals table.", STRING_VIEW_CALCULATE_LENGTH, true));
+      hashed_string_deinit(&hs);
+      locals_remove(&fun->locals, fun->locals.count - 1, fun->locals.count - 1);
+      return LOCAL_ERROR;
+    }
+    return index;
+  }
+  string name = create_string_from_string_view(p_declration.identifier);
+  string message = asprint("redefining local: '%s' in the same scope.", name.chars);
+  error_at(p_compiler, p_node, create_string_view_from_string(message));
+  string_deinit(&message);
+  string_deinit(&name);
+  hashed_string_deinit(&hs);
+  return REDEFINED_LOCAL;
+}
+
+static uint32_t declare_variable(compiler* p_compiler, const variable_declaration p_declration, ast_node* p_node) {
+  if ((p_declration.flags & VARIABLE_DECLARATION_FLAGS_GLOBAL) == 0) {
+    const uint32_t index = add_local(p_compiler, p_declration, p_node);
+    return index;
+  }
+  return add_global(p_compiler, p_declration, p_node);
+}
+
+static bool
+define_variable(compiler* p_compiler, const variable_declaration p_declration, uint32_t p_index, ast_node* p_node) {
+  if ((p_declration.flags & VARIABLE_DECLARATION_FLAGS_GLOBAL) == 0) {
+    function* fun = current_function(p_compiler);
+    local* local = &fun->locals.data[p_index];
+    uint32_remove_flag_least(LOCAL_FLAG_UNINITIALIZED, &local->depth);
+    return true;
+  }
+  return define_global(p_compiler, p_index, p_declration.flags, p_node);
 }
 
 static variable_declaration_flags_t variable_declaration_flags_from_modifiers(ast_declaration_modifiers_t p_declmods,
@@ -327,7 +489,11 @@ static bool compile_let_declration(compiler* p_compiler, ast_let_declaration* p_
       .identifier = name,
       .flags = variable_declaration_flags_from_modifiers(p_let->declaration.modifiers, p_let->binding->modifiers)};
   compile_node(p_compiler, (ast_node*)p_let->value);
-  bool result = define_variable(p_compiler, vardecl, (ast_node*)p_let);
+  uint32_t variable = declare_variable(p_compiler, vardecl, (ast_node*)p_let);
+  if (!IS_VARIABLE_DECLARATION_VALID(variable)) {
+    return false;
+  }
+  bool result = define_variable(p_compiler, vardecl, variable, (ast_node*)p_let);
   return result;
 }
 
@@ -341,21 +507,23 @@ static bool compile_expression_statement(compiler* p_compiler, ast_expression_st
 static uint32_t find_global_index(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
   uint32_t index = globals_store_get(p_compiler->globals_store, p_identifier);
   if (!IS_GLOBAL_VALID(index)) {
-    if (index == GLOBAL_NOT_FOUND) { // always true now
+    // TODO: add a small pass for global resoloutin so we preserve the late bound semantics, while keeping it compile
+    // time checked. (currentlly globals are not late bound).
+    if (index == GLOBAL_NOT_FOUND) { // no other errors emitted from get call, but it's ok.
       string identifier_str = create_string_from_string_view(p_identifier);
       string message = asprint("undefined global: '%s'.", identifier_str.chars);
       error_at(p_compiler, p_node, create_string_view_from_string(message));
       string_deinit(&message);
       string_deinit(&identifier_str);
     }
-    index = IDENTIFIER_ERROR; // general error, report is guarnteed
   }
   return index;
 }
 
+// duplicate better than abstract and eat the cost at runtime!
 static uint32_t get_global(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
   const uint32_t index = find_global_index(p_compiler, p_identifier, p_node);
-  if (!IS_IDENTIFIER_VALID(index)) {
+  if (!IS_GLOBAL_VALID(index)) {
     return index;
   }
   if (index > OP_GET_GLOBAL_MAX) {
@@ -374,9 +542,15 @@ static uint32_t set_global(compiler* p_compiler, const string_view p_identifier,
   if (!IS_IDENTIFIER_VALID(index)) {
     return index;
   }
+  if (!uint32_test_flag_least(GLOBAL_FLAG_MUTABLE, index)) {
+    error_at(
+        p_compiler,
+        p_node,
+        create_string_view("attempting to mutate an immutable global variable.", STRING_VIEW_CALCULATE_LENGTH, true));
+  }
   if (index > OP_SET_GLOBAL_MAX) {
     emit_byte(p_compiler, OP_SET_GLOBAL_LONG, p_node);
-    byte bytes[UINT24_BYTE_COUNT];
+    byte bytes[UINT24_BYTE_COUNT] = {0};
     encode_int(bytes, UINT24_BYTE_COUNT, index);
     emit_bytes(p_compiler, bytes, UINT24_BYTE_COUNT, p_node);
   } else {
@@ -385,22 +559,75 @@ static uint32_t set_global(compiler* p_compiler, const string_view p_identifier,
   return index;
 }
 
-static uint32_t get_variable(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
-  return get_global(p_compiler, p_identifier, p_node);
+static uint32_t get_local(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
+  hashed_string hs = create_hashed_string_hash(p_identifier);
+  uint32_t* index = resolve_local(p_compiler, &hs, p_node);
+  hashed_string_deinit(&hs);
+  if (index == NULL) {
+    return UNDEFINED_LOCAL;
+  }
+  if (*index > OP_GET_LOCAL_MAX) {
+    emit_byte(p_compiler, OP_GET_LOCAL_LONG, p_node);
+    byte bytes[UINT24_BYTE_COUNT] = {0};
+    encode_int(bytes, UINT24_BYTE_COUNT, *index);
+    emit_bytes(p_compiler, bytes, UINT24_BYTE_COUNT, p_node);
+  } else {
+    emit_2bytes(p_compiler, OP_GET_LOCAL, (byte)*index, p_node);
+  }
+  return *index;
 }
 
-static uint32_t set_variable(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
-  return set_global(p_compiler, p_identifier, p_node);
+static uint32_t set_local(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
+  hashed_string hs = create_hashed_string_hash(p_identifier);
+  uint32_t* index = resolve_local(p_compiler, &hs, p_node);
+  hashed_string_deinit(&hs);
+  if (index == NULL) {
+    return UNDEFINED_LOCAL;
+  }
+  local local = current_function(p_compiler)->locals.data[*index];
+  if (!uint32_test_flag_least(LOCAL_FLAG_MUTABLE, local.depth)) {
+    error_at(
+        p_compiler,
+        p_node,
+        create_string_view("attempting to mutate an immutable local variable.", STRING_VIEW_CALCULATE_LENGTH, true));
+    return LOCAL_ILL_MUTATION;
+  }
+  if (*index > OP_SET_LOCAL_MAX) {
+    emit_byte(p_compiler, OP_SET_LOCAL_LONG, p_node);
+    byte bytes[UINT24_BYTE_COUNT] = {0};
+    encode_int(bytes, UINT24_BYTE_COUNT, *index);
+    emit_bytes(p_compiler, bytes, UINT24_BYTE_COUNT, p_node);
+  } else {
+    emit_2bytes(p_compiler, OP_SET_LOCAL, (byte)*index, p_node);
+  }
+  return *index;
+}
+
+static bool get_variable(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
+  if (!IS_LOCAL_INDEX_VALID(get_local(p_compiler, p_identifier, p_node))) {
+    return IS_GLOBAL_VALID(get_global(p_compiler, p_identifier, p_node));
+  }
+  return true;
+}
+
+static bool set_variable(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
+  if (!IS_LOCAL_INDEX_VALID(set_local(p_compiler, p_identifier, p_node))) {
+    return IS_GLOBAL_VALID(set_global(p_compiler, p_identifier, p_node));
+  }
+  return true;
 }
 
 static bool compile_identifier(compiler* p_compiler, ast_identifier_expression* p_identifier) {
   string_view ident_str = ast_identifier_expression_get_value(p_identifier);
-  uint32_t res = get_variable(p_compiler, ident_str, (ast_node*)p_identifier);
-  return IS_GLOBAL_VALID(res);
+  return get_variable(p_compiler, ident_str, (ast_node*)p_identifier);
 }
 
 bool compile_eof_statement(compiler* p_compiler, ast_eof_statement* p_eof) {
-  return emit_byte(p_compiler, OP_RETURN, (ast_node*)p_eof);
+  bool res = emit_byte(p_compiler, OP_RETURN, (ast_node*)p_eof);
+  end_scope(p_compiler,
+            (ast_node*)p_eof); // TODO: we need to end scope at compile time but we dont really care about pops because
+                               // vm will automatically handle that, so this is just extra code bloat remove it.
+  return res;
 }
 
 bool compile_print_statement(compiler* p_compiler, ast_print_statement* p_print) {
@@ -416,7 +643,7 @@ bool compile_compound_statement(compiler* p_compiler, ast_compound_statement* p_
   for (uint32_t i = 0; i < p_compound->statements.count; ++i) {
     status &= compile_node(p_compiler, (ast_node*)p_compound->statements.data[i]);
   }
-  end_scope(p_compiler);
+  end_scope(p_compiler, (ast_node*)p_compound);
   return status;
 }
 
