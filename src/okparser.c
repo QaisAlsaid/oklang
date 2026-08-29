@@ -375,8 +375,9 @@ ast_expression* parse_boolean(parser* p_parser, token p_trigger) {
 ast_expression* parse_null(parser* p_parser, token p_trigger) {
   ast_null_expression* null = (ast_null_expression*)malloc(sizeof(ast_null_expression));
   if (null == NULL) {
-    error_at(
-        p_parser, p_trigger, create_string_view("failed to allocate memory for ", STRING_VIEW_CALCULATE_LENGTH, true));
+    error_at(p_parser,
+             p_trigger,
+             create_string_view("failed to allocate memory for null node", STRING_VIEW_CALCULATE_LENGTH, true));
     return NULL;
   }
   ast_null_expression_init(null, p_trigger);

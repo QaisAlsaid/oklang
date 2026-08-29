@@ -138,7 +138,7 @@ uint32_t debug_disassemble_instruction(disassembler* p_disassembler, uint32_t p_
 }
 
 uint32_t op_code_instruction(const char* p_opname, const uint32_t p_offset) {
-  printf("%s\n", p_opname);
+  printf("%-16s\n", p_opname);
   return p_offset + OP_CODE_WIDTH;
 }
 
