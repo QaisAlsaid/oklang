@@ -13,8 +13,9 @@ static uint32_t constant_long_instruction(const char* p_opname, const uint32_t p
 static uint32_t global_instruction(const char* p_opname, const uint32_t p_offset, const disassembler* p_disassembler);
 static uint32_t
 global_long_instruction(const char* p_opname, const uint32_t p_offset, const disassembler* p_disassembler);
-uint32_t local_instruction(const char* p_opname, const uint32_t p_offset, const chunk* p_chunk);
-uint32_t local_long_instruction(const char* p_opname, const uint32_t p_offset, const chunk* p_chunk);
+static uint32_t local_instruction(const char* p_opname, const uint32_t p_offset, const chunk* p_chunk);
+static uint32_t local_long_instruction(const char* p_opname, const uint32_t p_offset, const chunk* p_chunk);
+static uint32_t jump_instruction(const char* p_opname, bool p_fwd, const uint32_t p_offset, const chunk* p_chunk);
 
 void disassembler_init(disassembler* p_disassembler, disassembler_specs p_specs) {
   p_disassembler->chunk = p_specs.chunk;
@@ -75,6 +76,12 @@ uint32_t debug_disassemble_instruction(disassembler* p_disassembler, uint32_t p_
     return constant_long_instruction("OP_CONSTANT_LONG", p_offset, chunk);
   case OP_POP:
     return op_code_instruction("OP_POP", p_offset);
+  case OP_JUMP:
+    return jump_instruction("OP_JUMP", true, p_offset, chunk);
+  case OP_TRUTHY_JUMP:
+    return jump_instruction("OP_TRUTHY_JUMP", true, p_offset, chunk);
+  case OP_FALSY_JUMP:
+    return jump_instruction("OP_FALSY_JUMP", true, p_offset, chunk);
   case OP_NULL:
     return op_code_instruction("OP_NULL", p_offset);
   case OP_FALSE:
@@ -175,4 +182,10 @@ uint32_t local_long_instruction(const char* p_opname, const uint32_t p_offset, c
   const uint32_t slot = decode_int(p_offset + p_chunk->code.data + OP_CODE_WIDTH, OP_XX_LOCAL_LONG_OPERANDS_WIDTH);
   printf("%-16s %4d\n", p_opname, slot);
   return p_offset + OP_CODE_WIDTH + OP_XX_LOCAL_LONG_OPERANDS_WIDTH;
+}
+
+uint32_t jump_instruction(const char* p_opname, bool p_fwd, const uint32_t p_offset, const chunk* p_chunk) {
+  uint32_t jmp = decode_int(p_chunk->code.data + p_offset + OP_CODE_WIDTH, OP_XX_JUMP_OPERANDS_WIDTH);
+  printf("%-16s %4d -> %d\n", p_opname, p_offset, p_offset + OP_CODE_WIDTH + (uint32_t)p_fwd * jmp);
+  return p_offset + OP_CODE_WIDTH + OP_XX_JUMP_OPERANDS_WIDTH;
 }

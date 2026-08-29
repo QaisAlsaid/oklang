@@ -18,6 +18,7 @@ static ast_expression_statement* parse_expression_statement(parser* p_parser);
 static ast_eof_statement* parse_eof_statement(parser* p_parser);
 static ast_print_statement* parse_print_statement(parser* p_parser);
 static ast_compound_statement* parse_compound_statement(parser* p_parser);
+static ast_if_statement* parse_if_statement(parser* p_parser);
 
 static void error_at(parser* p_parser, token p_token, const string_view p_message);
 static void error_at_noted(parser* p_parser, token p_token, const string_view p_message, const string_view p_note);
@@ -448,6 +449,7 @@ ast_statement* parse_statement(parser* p_parser) {
   case TOKEN_LEFT_BRACE:
     return (ast_statement*)parse_compound_statement(p_parser);
   case TOKEN_IF:
+    return (ast_statement*)parse_if_statement(p_parser);
   case TOKEN_WHILE:
   case TOKEN_FOR:
   case TOKEN_BREAK:
@@ -776,9 +778,7 @@ ast_compound_statement* parse_compound_statement(parser* p_parser) {
     error_at(p_parser, p_parser->current, create_string_view("expected '}'.", STRING_VIEW_CALCULATE_LENGTH, true));
     goto fail;
   }
-  if (!advance(p_parser)) {
-    goto fail;
-  }
+  advance(p_parser);
   ast_compound_statement* compound = (ast_compound_statement*)malloc(sizeof(ast_compound_statement));
   if (compound == NULL) {
     goto fail;
@@ -789,4 +789,59 @@ ast_compound_statement* parse_compound_statement(parser* p_parser) {
 fail:
   ast_statements_list_deinit(&list);
   return NULL;
+}
+
+ast_if_statement* parse_if_statement(parser* p_parser) {
+  token if_tok = p_parser->previous;
+  advance(p_parser);
+  ast_expression* cond = parse_expression(p_parser, PREC_NONE);
+  if (cond == NULL) {
+    error_at(p_parser,
+             p_parser->previous,
+             create_string_view("expected an expression as if condition.", STRING_VIEW_CALCULATE_LENGTH, true));
+  }
+  if (p_parser->current.type != TOKEN_QUESTION) {
+    error_at(p_parser,
+             p_parser->current,
+             create_string_view("expected '?' after if condition.", STRING_VIEW_CALCULATE_LENGTH, true));
+    ast_dispatch_deinit((ast_node*)cond);
+    free(cond);
+    return NULL;
+  }
+  advance(p_parser);
+  advance(p_parser);
+  ast_statement* cons = parse_statement(p_parser);
+  if (cons == NULL) {
+    error_at(p_parser,
+             p_parser->previous,
+             create_string_view("expected a statement as if consequense.", STRING_VIEW_CALCULATE_LENGTH, true));
+    ast_dispatch_deinit((ast_node*)cond);
+    free(cond);
+    return NULL;
+  }
+  ast_statement* alt = NULL;
+  if (p_parser->current.type == TOKEN_ELSE) {
+    advance(p_parser);
+    if (p_parser->current.type == TOKEN_QUESTION) {
+      advance(p_parser);
+    }
+    advance(p_parser);
+    alt = parse_statement(p_parser);
+    if (alt == NULL) {
+      error_at(p_parser,
+               p_parser->previous,
+               create_string_view("expected a statement as if alternative.", STRING_VIEW_CALCULATE_LENGTH, true));
+      ast_dispatch_deinit((ast_node*)cond);
+      free(cond);
+      ast_dispatch_deinit((ast_node*)cons);
+      free(cons);
+      return NULL;
+    }
+  }
+  ast_if_statement* if_stmt = (ast_if_statement*)malloc(sizeof(ast_if_statement));
+  ast_if_statement_init(if_stmt, if_tok);
+  if_stmt->condition = cond;
+  if_stmt->consequence = cons;
+  if_stmt->alternative = alt;
+  return if_stmt;
 }

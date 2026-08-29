@@ -53,6 +53,7 @@ static bool compile_expression_statement(compiler* p_compiler, ast_expression_st
 static bool compile_eof_statement(compiler* p_compiler, ast_eof_statement* p_eof);
 static bool compile_print_statement(compiler* p_compiler, ast_print_statement* p_print);
 static bool compile_compound_statement(compiler* p_compiler, ast_compound_statement* p_compound);
+static bool compile_if_statement(compiler* p_compiler, ast_if_statement* p_if);
 
 static bool compile_expression(compiler* p_compiler, ast_expression* p_expression);
 static bool compile_identifier(compiler* p_compiler, ast_identifier_expression* p_identifier);
@@ -282,6 +283,7 @@ static bool compile_node(compiler* p_compiler, ast_node* p_node) {
   case AST_COMPOUND_STATEMENT:
     return compile_compound_statement(p_compiler, (ast_compound_statement*)p_node);
   case AST_IF_STATEMENT:
+    return compile_if_statement(p_compiler, (ast_if_statement*)p_node);
   case AST_FOR_STATEMENT:
   case AST_WHILE_STATEMENT:
   case AST_CONTROL_FLOW_STATEMENT:
@@ -644,6 +646,37 @@ bool compile_compound_statement(compiler* p_compiler, ast_compound_statement* p_
     status &= compile_node(p_compiler, (ast_node*)p_compound->statements.data[i]);
   }
   end_scope(p_compiler, (ast_node*)p_compound);
+  return status;
+}
+
+static uint32_t emit_jump(compiler* p_compiler, op_code p_instruction, ast_node* p_node) {
+  byte bytes[OP_CODE_WIDTH + OP_XX_JUMP_OPERANDS_WIDTH] = {p_instruction, 0x00, 0x00, 0x00};
+  const uint32_t size = OP_CODE_WIDTH + OP_XX_JUMP_OPERANDS_WIDTH;
+  emit_bytes(p_compiler, bytes, size, p_node);
+  return current_chunk(p_compiler)->code.count - OP_XX_JUMP_OPERANDS_WIDTH;
+}
+
+static bool patch_jump(compiler* p_compiler, uint32_t p_operands_start, uint32_t p_jump_end, ast_node* p_node) {
+  const int64_t jmp = p_jump_end - p_operands_start;
+  const uint32_t jmp_sz = jmp < 0 ? -jmp : jmp;
+  byte* code = current_chunk(p_compiler)->code.data;
+  encode_int(code + p_operands_start, UINT24_BYTE_COUNT, jmp_sz);
+  return true;
+}
+
+bool compile_if_statement(compiler* p_compiler, ast_if_statement* p_if) {
+  bool status = compile_node(p_compiler, (ast_node*)p_if->condition);
+  uint32_t cons_jmp = emit_jump(p_compiler, OP_FALSY_JUMP, (ast_node*)p_if);
+  status &= emit_byte(p_compiler, OP_POP, (ast_node*)p_if);
+  status &= compile_node(p_compiler, (ast_node*)p_if->consequence);
+  chunk* chunk = current_chunk(p_compiler);
+  uint32_t alt_jump = emit_jump(p_compiler, OP_JUMP, (ast_node*)p_if);
+  status &= patch_jump(p_compiler, cons_jmp, chunk->code.count, (ast_node*)p_if);
+  emit_byte(p_compiler, OP_POP, (ast_node*)p_if);
+  if (p_if->alternative != NULL) {
+    status &= compile_node(p_compiler, (ast_node*)p_if->alternative);
+  }
+  status &= patch_jump(p_compiler, alt_jump, chunk->code.count, (ast_node*)p_if);
   return status;
 }
 

@@ -3,3 +3,5 @@
 
 - compile time flags for the paranoid error checks
 - hide print statement behind debug flag
+
+- simplify all failure/cleanup paths by having all relevant functions accept NULL as no op. 

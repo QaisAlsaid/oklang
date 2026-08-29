@@ -123,6 +123,9 @@ static bool is_allowed_identifier(char c) {
   case '%':
   case '^':
   case '&':
+  case '|':
+  case '~':
+  case '?':
   case '`':
   case ' ':
   case '\t':
@@ -287,8 +290,6 @@ static token_type lookup_identifier(lexer* p_lexer) {
         return check_keyword(p_lexer, 2, 4, "port", TOKEN_EXPORT);
       case 'l':
         return check_keyword(p_lexer, 2, 2, "se", TOKEN_ELSE);
-      case 'r':
-        return check_keyword(p_lexer, 2, 0, "", TOKEN_OR);
       }
     }
     break;

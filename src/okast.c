@@ -36,7 +36,7 @@
   X(AST_EXPRESSION_STATEMENT, ast_expression_statement)                                                                \
   X(AST_PRINT_STATEMENT, ast_print_statement)                                                                          \
   X(AST_COMPOUND_STATEMENT, ast_compound_statement)                                                                    \
-  /*X(AST_IF_STATEMENT, ast_if_statement)*/                                                                            \
+  X(AST_IF_STATEMENT, ast_if_statement)                                                                                \
   /*X(AST_FOR_STATEMENT, ast_for_statement)*/                                                                          \
   /*X(AST_WHILE_STATEMENT, ast_while_statement)*/                                                                      \
   /*X(AST_CONTROL_FLOW_STATEMENT, ast_control_flow_statement)*/                                                        \
@@ -618,6 +618,52 @@ string ast_compound_statement_asprint(const ast_compound_statement* p_compound) 
     }
   }
   return create_string(chars, len, true);
+}
+
+void ast_if_statement_init(ast_if_statement* p_if, token p_token) {
+  ast_statement_init(&p_if->statement, AST_IF_STATEMENT, p_token);
+  p_if->condition = NULL;
+  p_if->consequence = NULL;
+  p_if->alternative = NULL;
+}
+
+void ast_if_statement_deinit(ast_if_statement* p_if) {
+  if (p_if->alternative) {
+    ast_dispatch_deinit((ast_node*)p_if->alternative);
+  }
+  ast_dispatch_deinit((ast_node*)p_if->consequence);
+  ast_dispatch_deinit((ast_node*)p_if->condition);
+  ast_statement_deinit(&p_if->statement);
+  p_if->alternative = NULL;
+  p_if->consequence = NULL;
+  p_if->condition = NULL;
+}
+
+bool ast_if_statement_print(const ast_if_statement* p_if) {
+  bool res = printf("if ") > 0;
+  res &= ast_dispatch_print((ast_node*)p_if->condition);
+  res &= ast_dispatch_print((ast_node*)p_if->consequence);
+  if (p_if->alternative != NULL) {
+    res &= printf("else ");
+    res &= ast_dispatch_print((ast_node*)p_if->alternative);
+  }
+  return res;
+}
+
+string ast_if_statement_asprint(const ast_if_statement* p_if) {
+  string cond_str = ast_dispatch_asprint((ast_node*)p_if->condition);
+  string cons_str = ast_dispatch_asprint((ast_node*)p_if->consequence);
+  string res;
+  if (p_if->alternative != NULL) {
+    string alt_str = ast_dispatch_asprint((ast_node*)p_if->alternative);
+    res = asprint("if %s %s else %s", cond_str.chars, cons_str.chars, alt_str.chars);
+    string_deinit(&alt_str);
+  } else {
+    res = asprint("if %s %s", cond_str.chars, cons_str.chars);
+  }
+  string_deinit(&cond_str);
+  string_deinit(&cons_str);
+  return res;
 }
 
 void ast_let_declaration_init(ast_let_declaration* p_let,

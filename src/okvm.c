@@ -101,6 +101,23 @@ interpret_result vm_run(vm* p_vm) {
       stack_pop(&p_vm->stack);
       break;
     }
+    case OP_JUMP: {
+      const uint32_t jmp = decode_int(ip, OP_JUMP_OPERANDS_WIDTH);
+      ip += jmp;
+      break;
+    }
+    case OP_TRUTHY_JUMP: {
+      const uint32_t jmp = decode_int(ip, OP_TRUTHY_JUMP_OPERANDS_WIDTH);
+      const bool truthy = !is_falsy(stack_top(&p_vm->stack, 0));
+      ip += truthy * jmp + (!truthy * OP_TRUTHY_JUMP_OPERANDS_WIDTH);
+      break;
+    }
+    case OP_FALSY_JUMP: {
+      const uint32_t jmp = decode_int(ip, OP_FALSY_JUMP_OPERANDS_WIDTH);
+      const bool falsy = is_falsy(stack_top(&p_vm->stack, 0));
+      ip += falsy * jmp + (!falsy * OP_TRUTHY_JUMP_OPERANDS_WIDTH);
+      break;
+    }
     case OP_NULL: {
       stack_push(&p_vm->stack, NULL_AS_VALUE());
       break;
@@ -121,6 +138,7 @@ interpret_result vm_run(vm* p_vm) {
     case OP_SET_GLOBAL_LONG: {
       uint32_t index = decode_int(p_vm->ip, OP_SET_GLOBAL_LONG_OPERANDS_WIDTH);
       p_vm->globals_store->global_values.data[index] = stack_popr(&p_vm->stack);
+      ip += OP_SET_GLOBAL_LONG_OPERANDS_WIDTH;
       break;
     }
     case OP_GET_GLOBAL: {
@@ -130,6 +148,7 @@ interpret_result vm_run(vm* p_vm) {
     }
     case OP_GET_GLOBAL_LONG: {
       uint32_t index = decode_int(p_vm->ip, OP_GET_GLOBAL_LONG_OPERANDS_WIDTH);
+      ip += OP_GET_GLOBAL_LONG_OPERANDS_WIDTH;
       stack_push(&p_vm->stack, p_vm->globals_store->global_values.data[index]);
       break;
     }
@@ -140,6 +159,7 @@ interpret_result vm_run(vm* p_vm) {
     }
     case OP_GET_LOCAL_LONG: {
       uint32_t slot = decode_int(p_vm->ip, OP_GET_LOCAL_LONG_OPERANDS_WIDTH);
+      ip += OP_GET_LOCAL_LONG_OPERANDS_WIDTH;
       stack_push(&p_vm->stack, p_vm->stack.array.data[slot]);
       break;
     }
@@ -150,6 +170,7 @@ interpret_result vm_run(vm* p_vm) {
     }
     case OP_SET_LOCAL_LONG: {
       uint32_t slot = decode_int(p_vm->ip, OP_SET_LOCAL_LONG_OPERANDS_WIDTH);
+      ip += OP_SET_LOCAL_LONG_OPERANDS_WIDTH;
       p_vm->stack.array.data[slot] = stack_top(&p_vm->stack, 0);
       break;
     }

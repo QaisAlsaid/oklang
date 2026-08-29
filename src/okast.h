@@ -312,6 +312,18 @@ bool ast_compound_statement_print(const ast_compound_statement* p_compound);
 string ast_compound_statement_asprint(const ast_compound_statement* p_compound);
 
 typedef struct {
+  ast_statement statement;
+  ast_expression* condition;
+  ast_statement* consequence;
+  ast_statement* alternative;
+} ast_if_statement;
+
+void ast_if_statement_init(ast_if_statement* p_if, token p_token);
+void ast_if_statement_deinit(ast_if_statement* p_if);
+bool ast_if_statement_print(const ast_if_statement* p_if);
+string ast_if_statement_asprint(const ast_if_statement* p_if);
+
+typedef struct {
   ast_declaration declaration;
   ast_binding* binding;
   ast_expression* value;
