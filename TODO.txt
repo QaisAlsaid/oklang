@@ -5,5 +5,3 @@
 - hide print statement behind debug flag
 
 - simplify all failure/cleanup paths by having all relevant functions accept NULL as no op.
-
-- fix leak in if statement node.

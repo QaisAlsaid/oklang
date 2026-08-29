@@ -630,10 +630,13 @@ void ast_if_statement_init(ast_if_statement* p_if, token p_token) {
 void ast_if_statement_deinit(ast_if_statement* p_if) {
   if (p_if->alternative) {
     ast_dispatch_deinit((ast_node*)p_if->alternative);
+    free(p_if->alternative);
   }
   ast_dispatch_deinit((ast_node*)p_if->consequence);
   ast_dispatch_deinit((ast_node*)p_if->condition);
   ast_statement_deinit(&p_if->statement);
+  free(p_if->consequence);
+  free(p_if->condition);
   p_if->alternative = NULL;
   p_if->consequence = NULL;
   p_if->condition = NULL;
