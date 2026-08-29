@@ -367,9 +367,12 @@ start:
   case '^':
     return create_token(p_lexer, match(p_lexer, '=') ? TOKEN_CARET_EQUAL : TOKEN_CARET);
   case '|':
-    return create_token(p_lexer, match(p_lexer, '=') ? TOKEN_BAR_EQUAL : TOKEN_BAR);
+    return create_token(p_lexer, match(p_lexer, '|') ? TOKEN_OR : match(p_lexer, '=') ? TOKEN_BAR_EQUAL : TOKEN_BAR);
   case '&':
-    return create_token(p_lexer, match(p_lexer, '=') ? TOKEN_AMPERSAND_EQUAL : TOKEN_AMPERSAND);
+    return create_token(p_lexer,
+                        match(p_lexer, '&')   ? TOKEN_AND
+                        : match(p_lexer, '=') ? TOKEN_AMPERSAND_EQUAL
+                                              : TOKEN_AMPERSAND);
   case '%':
     return create_token(p_lexer, match(p_lexer, '=') ? TOKEN_MODULO_EQUAL : TOKEN_MODULO);
   case '/': {

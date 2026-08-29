@@ -120,8 +120,8 @@ static const parse_rule parse_rules[] = {
     [TOKEN_CONTINUE] = {NULL, NULL, PREC_NONE},
     [TOKEN_IF] = {NULL, NULL, PREC_NONE},
     [TOKEN_ELSE] = {NULL, NULL, PREC_NONE},
-    [TOKEN_AND] = {NULL, NULL, PREC_NONE},
-    [TOKEN_OR] = {NULL, NULL, PREC_NONE},
+    [TOKEN_AND] = {NULL, parse_binary_infix, PREC_AND},
+    [TOKEN_OR] = {NULL, parse_binary_infix, PREC_OR},
     [TOKEN_CLASS] = {NULL, NULL, PREC_NONE},
     [TOKEN_SUPER] = {NULL, NULL, PREC_NONE},
     [TOKEN_INHERITS] = {NULL, NULL, PREC_NONE},
@@ -386,10 +386,11 @@ ast_expression* parse_null(parser* p_parser, token p_trigger) {
 
 ast_expression* parse_binary_infix(
     parser* p_parser, ast_expression* p_left, precedence p_precedence, bool is_right_associative, token p_trigger) {
-  // TODO clear left on failure
   advance(p_parser);
   ast_expression* right = parse_expression(p_parser, p_precedence - (is_right_associative ? 1 : 0));
   if (right == NULL) {
+    ast_dispatch_deinit((ast_node*)p_left);
+    free(p_left);
     return NULL;
   }
   ast_infix_binary_expression* infix = (ast_infix_binary_expression*)malloc(sizeof(ast_infix_binary_expression));
@@ -398,6 +399,8 @@ ast_expression* parse_binary_infix(
     error_at(p_parser,
              p_trigger,
              create_string_view("failed to allocate memory for infix node.", STRING_VIEW_CALCULATE_LENGTH, true));
+    ast_dispatch_deinit((ast_node*)p_left);
+    free(p_left);
     return NULL;
   }
   ast_infix_binary_expression_init(infix, p_trigger, operator_type_from_token_type(p_trigger.type), p_left, right);

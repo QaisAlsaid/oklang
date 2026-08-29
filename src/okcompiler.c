@@ -62,6 +62,7 @@ static bool compile_string_expression(compiler* p_compiler, ast_string_expressio
 static bool compile_prefix_unary_expression(compiler* p_compiler, ast_prefix_unary_expression* p_expression);
 static bool compile_infix_binary_expression(compiler* p_compiler, ast_infix_binary_expression* p_expression);
 static bool compile_assign_expression(compiler* p_compiler, ast_assign_expression* p_assign);
+static bool compile_logical_operator(compiler* p_compiler, ast_infix_binary_expression* p_logical);
 static bool compile_postfix_unary_expression(compiler* p_compiler, ast_postfix_unary_expression* p_expression);
 static bool compile_boolean_expression(compiler* p_compiler, ast_boolean_expression* p_boolean);
 static bool compile_null_expression(compiler* p_compiler, ast_null_expression* p_null);
@@ -724,6 +725,9 @@ static bool compile_prefix_unary_expression(compiler* p_compiler, ast_prefix_una
 }
 
 static bool compile_infix_binary_expression(compiler* p_compiler, ast_infix_binary_expression* p_expression) {
+  if (p_expression->_operator == OPERATOR_AND || p_expression->_operator == OPERATOR_OR) {
+    return compile_logical_operator(p_compiler, p_expression);
+  }
   if (compile_node(p_compiler, (ast_node*)p_expression->left)) {
     if (compile_node(p_compiler, (ast_node*)p_expression->right)) {
       switch (p_expression->_operator) {
@@ -747,8 +751,8 @@ static bool compile_infix_binary_expression(compiler* p_compiler, ast_infix_bina
         return emit_byte(p_compiler, OP_LESS_EQUAL, (ast_node*)p_expression);
       case OPERATOR_GREATER_EQUAL:
         return emit_byte(p_compiler, OP_GREATER_EQUAL, (ast_node*)p_expression);
-
-      default:;
+      default:
+        assert(false);
       }
     }
   }
@@ -764,6 +768,15 @@ static bool compile_assign_expression(compiler* p_compiler, ast_assign_expressio
   string_view name = ast_identifier_expression_get_value(ident);
   set_variable(p_compiler, name, (ast_node*)ident);
   return true;
+}
+
+bool compile_logical_operator(compiler* p_compiler, ast_infix_binary_expression* p_logical) {
+  bool result = compile_node(p_compiler, (ast_node*)p_logical->left);
+  op_code instruction = p_logical->_operator == OPERATOR_AND ? OP_FALSY_JUMP : OP_TRUTHY_JUMP;
+  uint32_t jmp = emit_jump(p_compiler, instruction, (ast_node*)p_logical);
+  result &= emit_byte(p_compiler, OP_POP, (ast_node*)p_logical);
+  result &= compile_node(p_compiler, (ast_node*)p_logical->right);
+  return result & patch_jump(p_compiler, jmp, current_chunk(p_compiler)->code.count, (ast_node*)p_logical);
 }
 
 static bool compile_postfix_unary_expression(compiler* p_compiler, ast_postfix_unary_expression* p_expression) {
