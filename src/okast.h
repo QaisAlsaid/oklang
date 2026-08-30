@@ -324,6 +324,30 @@ bool ast_if_statement_print(const ast_if_statement* p_if);
 string ast_if_statement_asprint(const ast_if_statement* p_if);
 
 typedef struct {
+  ast_statement statement;
+  ast_expression* condition;
+  ast_statement* body;
+} ast_while_statement;
+
+void ast_while_statement_init(ast_while_statement* p_while, token p_token);
+void ast_while_statement_deinit(ast_while_statement* p_while);
+bool ast_while_statement_print(const ast_while_statement* p_while);
+string ast_while_statement_asprint(const ast_while_statement* p_while);
+
+typedef struct {
+  ast_statement statement;
+  ast_statement* initializer;
+  ast_expression* condition;
+  ast_expression* update;
+  ast_statement* body;
+} ast_for_statement;
+
+void ast_for_statement_init(ast_for_statement* p_for, token p_token);
+void ast_for_statement_deinit(ast_for_statement* p_for);
+bool ast_for_statement_print(const ast_for_statement* p_for);
+string ast_for_statement_asprint(const ast_for_statement* p_for);
+
+typedef struct {
   ast_declaration declaration;
   ast_binding* binding;
   ast_expression* value;

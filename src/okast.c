@@ -37,8 +37,8 @@
   X(AST_PRINT_STATEMENT, ast_print_statement)                                                                          \
   X(AST_COMPOUND_STATEMENT, ast_compound_statement)                                                                    \
   X(AST_IF_STATEMENT, ast_if_statement)                                                                                \
-  /*X(AST_FOR_STATEMENT, ast_for_statement)*/                                                                          \
-  /*X(AST_WHILE_STATEMENT, ast_while_statement)*/                                                                      \
+  X(AST_WHILE_STATEMENT, ast_while_statement)                                                                          \
+  X(AST_FOR_STATEMENT, ast_for_statement)                                                                              \
   /*X(AST_CONTROL_FLOW_STATEMENT, ast_control_flow_statement)*/                                                        \
   /*X(AST_RETURN_STATEMENT, ast_return_statement)*/                                                                    \
   /*X(AST_THROW_STATEMENT, ast_throw_statement)*/                                                                      \
@@ -534,7 +534,7 @@ bool ast_empty_statement_print(const ast_empty_statement* p_empty) {
 }
 
 string ast_empty_statement_asprint(const ast_empty_statement* p_empty) {
-  return create_string(NULL, 0, false);
+  return create_string("", 0, false);
 }
 
 void ast_expression_statement_init(ast_expression_statement* p_expression_statement,
@@ -666,6 +666,108 @@ string ast_if_statement_asprint(const ast_if_statement* p_if) {
   }
   string_deinit(&cond_str);
   string_deinit(&cons_str);
+  return res;
+}
+
+void ast_while_statement_init(ast_while_statement* p_while, token p_token) {
+  ast_statement_init(&p_while->statement, AST_WHILE_STATEMENT, p_token);
+  p_while->condition = NULL;
+  p_while->body = NULL;
+}
+
+void ast_while_statement_deinit(ast_while_statement* p_while) {
+  ast_dispatch_deinit((ast_node*)p_while->condition);
+  ast_dispatch_deinit((ast_node*)p_while->body);
+  ast_statement_deinit(&p_while->statement);
+  free(p_while->condition);
+  free(p_while->body);
+  p_while->condition = NULL;
+  p_while->body = NULL;
+}
+
+bool ast_while_statement_print(const ast_while_statement* p_while) {
+  bool res = printf("while ") > 0;
+  res &= ast_dispatch_print((ast_node*)p_while->condition);
+  res &= ast_dispatch_print((ast_node*)p_while->body);
+  return res;
+}
+
+string ast_while_statement_asprint(const ast_while_statement* p_while) {
+  string cond_str = ast_dispatch_asprint((ast_node*)p_while->condition);
+  string body_str = ast_dispatch_asprint((ast_node*)p_while->body);
+  string res = asprint("while %s? %s");
+  string_deinit(&cond_str);
+  string_deinit(&body_str);
+  return res;
+}
+
+void ast_for_statement_init(ast_for_statement* p_for, token p_token) {
+  ast_statement_init(&p_for->statement, AST_FOR_STATEMENT, p_token);
+  p_for->initializer = NULL;
+  p_for->condition = NULL;
+  p_for->update = NULL;
+  p_for->body = NULL;
+}
+
+void ast_for_statement_deinit(ast_for_statement* p_for) {
+  if (p_for->initializer != NULL) {
+    ast_dispatch_deinit((ast_node*)p_for->initializer);
+    free(p_for->initializer);
+    p_for->initializer = NULL;
+  }
+  if (p_for->condition != NULL) {
+    ast_dispatch_deinit((ast_node*)p_for->condition);
+    free(p_for->condition);
+    p_for->condition = NULL;
+  }
+  if (p_for->update != NULL) {
+    ast_dispatch_deinit((ast_node*)p_for->update);
+    free(p_for->update);
+    p_for->update = NULL;
+  }
+  ast_dispatch_deinit((ast_node*)p_for->body);
+  free(p_for->body);
+  p_for->body = NULL;
+  ast_statement_deinit(&p_for->statement);
+}
+
+bool ast_for_statement_print(const ast_for_statement* p_for) {
+  bool res = printf("for ") > 0;
+  if (p_for->initializer != NULL) {
+    res &= ast_dispatch_print((ast_node*)p_for->initializer);
+    printf(";");
+  }
+  if (p_for->condition != NULL) {
+    res &= ast_dispatch_print((ast_node*)p_for->condition);
+    printf(";");
+  }
+  if (p_for->update != NULL) {
+    res &= ast_dispatch_print((ast_node*)p_for->update);
+    printf(";");
+  }
+  res &= ast_dispatch_print((ast_node*)p_for->body);
+  return res;
+}
+
+string ast_for_statement_asprint(const ast_for_statement* p_for) {
+  string init_str = create_string("", 0, false);
+  string cond_str = create_string("", 0, false);
+  string inc_str = create_string("", 0, false);
+  if (p_for->initializer != NULL) {
+    init_str = ast_dispatch_asprint((ast_node*)p_for->initializer);
+  }
+  if (p_for->condition != NULL) {
+    cond_str = ast_dispatch_asprint((ast_node*)p_for->condition);
+  }
+  if (p_for->update != NULL) {
+    inc_str = ast_dispatch_asprint((ast_node*)p_for->update);
+  }
+  string body_str = ast_dispatch_asprint((ast_node*)p_for->body);
+  string res = asprint("for %s;%s;%s? %s", init_str.chars, cond_str.chars, inc_str.chars, body_str.chars);
+  string_deinit(&init_str);
+  string_deinit(&cond_str);
+  string_deinit(&inc_str);
+  string_deinit(&body_str);
   return res;
 }
 

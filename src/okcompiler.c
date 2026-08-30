@@ -54,6 +54,8 @@ static bool compile_eof_statement(compiler* p_compiler, ast_eof_statement* p_eof
 static bool compile_print_statement(compiler* p_compiler, ast_print_statement* p_print);
 static bool compile_compound_statement(compiler* p_compiler, ast_compound_statement* p_compound);
 static bool compile_if_statement(compiler* p_compiler, ast_if_statement* p_if);
+static bool compile_while_statement(compiler* p_compiler, ast_while_statement* p_while);
+static bool compile_for_statement(compiler* p_compiler, ast_for_statement* p_for);
 
 static bool compile_expression(compiler* p_compiler, ast_expression* p_expression);
 static bool compile_identifier(compiler* p_compiler, ast_identifier_expression* p_identifier);
@@ -285,8 +287,10 @@ static bool compile_node(compiler* p_compiler, ast_node* p_node) {
     return compile_compound_statement(p_compiler, (ast_compound_statement*)p_node);
   case AST_IF_STATEMENT:
     return compile_if_statement(p_compiler, (ast_if_statement*)p_node);
-  case AST_FOR_STATEMENT:
   case AST_WHILE_STATEMENT:
+    return compile_while_statement(p_compiler, (ast_while_statement*)p_node);
+  case AST_FOR_STATEMENT:
+    return compile_for_statement(p_compiler, (ast_for_statement*)p_node);
   case AST_CONTROL_FLOW_STATEMENT:
   case AST_RETURN_STATEMENT:
   case AST_THROW_STATEMENT:
@@ -294,6 +298,7 @@ static bool compile_node(compiler* p_compiler, ast_node* p_node) {
   case AST_CATCH_STATEMENT:
   case AST_FINALIZE_STATEMENT:
   case AST_TRY_CATCH_STATEMENT:
+    assert(0);
 
   case AST_LET_DECLARATION:
     return compile_let_declration(p_compiler, (ast_let_declaration*)p_node);
@@ -659,10 +664,28 @@ static uint32_t emit_jump(compiler* p_compiler, op_code p_instruction, ast_node*
 
 static bool patch_jump(compiler* p_compiler, uint32_t p_operands_start, uint32_t p_jump_end, ast_node* p_node) {
   const int64_t jmp = p_jump_end - p_operands_start;
-  const uint32_t jmp_sz = jmp < 0 ? -jmp : jmp;
   byte* code = current_chunk(p_compiler)->code.data;
-  encode_int(code + p_operands_start, UINT24_BYTE_COUNT, jmp_sz);
+  encode_int(code + p_operands_start, UINT24_BYTE_COUNT, jmp);
   return true;
+}
+
+static bool emit_loop(compiler* p_compiler, const uint32_t p_loop_start, ast_node* p_node) {
+  bool status = emit_byte(p_compiler, OP_LOOP, p_node);
+  byte bytes[OP_LOOP_OPERANDS_WIDTH] = {0x00, 0x00, 0x00};
+  status &= emit_bytes(p_compiler, bytes, OP_LOOP_OPERANDS_WIDTH, p_node);
+  chunk* chunk = current_chunk(p_compiler);
+  const uint32_t loop_length = chunk->code.count - p_loop_start;
+  if (loop_length > OP_LOOP_MAX) {
+    string note = asprint("limit is: %d.", OP_LOOP_MAX);
+    error_at_noted(p_compiler,
+                   p_node,
+                   create_string_view("too many instructions to loop over.", STRING_VIEW_CALCULATE_LENGTH, true),
+                   create_string_view_from_string(note));
+    string_deinit(&note);
+    return false;
+  }
+  encode_int(chunk->code.data + chunk->code.count - OP_LOOP_OPERANDS_WIDTH, OP_LOOP_OPERANDS_WIDTH, loop_length);
+  return status;
 }
 
 bool compile_if_statement(compiler* p_compiler, ast_if_statement* p_if) {
@@ -678,6 +701,45 @@ bool compile_if_statement(compiler* p_compiler, ast_if_statement* p_if) {
     status &= compile_node(p_compiler, (ast_node*)p_if->alternative);
   }
   status &= patch_jump(p_compiler, alt_jump, chunk->code.count, (ast_node*)p_if);
+  return status;
+}
+
+bool compile_while_statement(compiler* p_compiler, ast_while_statement* p_while) {
+  const uint32_t loop_start = current_chunk(p_compiler)->code.count;
+  bool status = compile_node(p_compiler, (ast_node*)p_while->condition);
+  const uint32_t exit_jmp = emit_jump(p_compiler, OP_FALSY_JUMP, (ast_node*)p_while);
+  emit_byte(p_compiler, OP_POP, (ast_node*)p_while);
+  status &= compile_node(p_compiler, (ast_node*)p_while->body);
+  status &= emit_loop(p_compiler, loop_start, (ast_node*)p_while);
+  status &= patch_jump(p_compiler, exit_jmp, current_chunk(p_compiler)->code.count, (ast_node*)p_while);
+  status &= emit_byte(p_compiler, OP_POP, (ast_node*)p_while);
+  return status;
+}
+
+bool compile_for_statement(compiler* p_compiler, ast_for_statement* p_for) {
+  begin_scope(p_compiler);
+  bool status = true;
+  if (p_for->initializer != NULL) {
+    status &= compile_node(p_compiler, (ast_node*)p_for->initializer);
+  }
+  uint32_t exit_jump = UINT32_MAX;
+  const uint32_t loop_start = current_chunk(p_compiler)->code.count;
+  if (p_for->condition != NULL) {
+    status &= compile_node(p_compiler, (ast_node*)p_for->condition);
+    exit_jump = emit_jump(p_compiler, OP_FALSY_JUMP, (ast_node*)p_for->condition);
+    status &= emit_byte(p_compiler, OP_POP, (ast_node*)p_for);
+  }
+  status &= compile_node(p_compiler, (ast_node*)p_for->body);
+  if (p_for->update != NULL) {
+    status &= compile_node(p_compiler, (ast_node*)p_for->update);
+    status &= emit_byte(p_compiler, OP_POP, (ast_node*)p_for);
+  }
+  emit_loop(p_compiler, loop_start, (ast_node*)p_for);
+  if (exit_jump != UINT32_MAX) {
+    status &= patch_jump(p_compiler, exit_jump, current_chunk(p_compiler)->code.count, (ast_node*)p_for);
+    status &= emit_byte(p_compiler, OP_POP, (ast_node*)p_for);
+  }
+  end_scope(p_compiler, (ast_node*)p_for);
   return status;
 }
 

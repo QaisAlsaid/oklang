@@ -118,6 +118,11 @@ interpret_result vm_run(vm* p_vm) {
       ip += falsy * jmp + (!falsy * OP_TRUTHY_JUMP_OPERANDS_WIDTH);
       break;
     }
+    case OP_LOOP: {
+      const uint32_t loop = decode_int(ip, OP_LOOP_OPERANDS_WIDTH);
+      ip -= -OP_LOOP_OPERANDS_WIDTH + loop;
+      break;
+    }
     case OP_NULL: {
       stack_push(&p_vm->stack, NULL_AS_VALUE());
       break;

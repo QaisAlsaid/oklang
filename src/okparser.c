@@ -19,6 +19,8 @@ static ast_eof_statement* parse_eof_statement(parser* p_parser);
 static ast_print_statement* parse_print_statement(parser* p_parser);
 static ast_compound_statement* parse_compound_statement(parser* p_parser);
 static ast_if_statement* parse_if_statement(parser* p_parser);
+static ast_while_statement* parse_while_statement(parser* p_parser);
+static ast_for_statement* parse_for_statement(parser* p_parser);
 
 static void error_at(parser* p_parser, token p_token, const string_view p_message);
 static void error_at_noted(parser* p_parser, token p_token, const string_view p_message, const string_view p_note);
@@ -455,7 +457,9 @@ ast_statement* parse_statement(parser* p_parser) {
   case TOKEN_IF:
     return (ast_statement*)parse_if_statement(p_parser);
   case TOKEN_WHILE:
+    return (ast_statement*)parse_while_statement(p_parser);
   case TOKEN_FOR:
+    return (ast_statement*)parse_for_statement(p_parser);
   case TOKEN_BREAK:
   case TOKEN_CONTINUE:
   case TOKEN_RETURN:
@@ -803,14 +807,13 @@ ast_if_statement* parse_if_statement(parser* p_parser) {
     error_at(p_parser,
              p_parser->previous,
              create_string_view("expected an expression as if condition.", STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL;
   }
   if (p_parser->current.type != TOKEN_QUESTION) {
     error_at(p_parser,
              p_parser->current,
              create_string_view("expected '?' after if condition.", STRING_VIEW_CALCULATE_LENGTH, true));
-    ast_dispatch_deinit((ast_node*)cond);
-    free(cond);
-    return NULL;
+    goto fail_cond;
   }
   advance(p_parser);
   advance(p_parser);
@@ -819,9 +822,7 @@ ast_if_statement* parse_if_statement(parser* p_parser) {
     error_at(p_parser,
              p_parser->previous,
              create_string_view("expected a statement as if consequense.", STRING_VIEW_CALCULATE_LENGTH, true));
-    ast_dispatch_deinit((ast_node*)cond);
-    free(cond);
-    return NULL;
+    goto fail_cond;
   }
   ast_statement* alt = NULL;
   if (p_parser->current.type == TOKEN_ELSE) {
@@ -835,17 +836,156 @@ ast_if_statement* parse_if_statement(parser* p_parser) {
       error_at(p_parser,
                p_parser->previous,
                create_string_view("expected a statement as if alternative.", STRING_VIEW_CALCULATE_LENGTH, true));
-      ast_dispatch_deinit((ast_node*)cond);
-      free(cond);
-      ast_dispatch_deinit((ast_node*)cons);
-      free(cons);
-      return NULL;
+      goto fail;
     }
   }
   ast_if_statement* if_stmt = (ast_if_statement*)malloc(sizeof(ast_if_statement));
+  if (if_stmt == NULL) {
+  fail:
+    ast_dispatch_deinit((ast_node*)cons);
+    free(cons);
+  fail_cond:
+    ast_dispatch_deinit((ast_node*)cond);
+    free(cond);
+    return NULL;
+  }
   ast_if_statement_init(if_stmt, if_tok);
   if_stmt->condition = cond;
   if_stmt->consequence = cons;
   if_stmt->alternative = alt;
   return if_stmt;
+}
+
+ast_while_statement* parse_while_statement(parser* p_parser) {
+  token while_tok = p_parser->previous;
+  advance(p_parser);
+  ast_expression* cond = parse_expression(p_parser, PREC_NONE);
+  if (cond == NULL) {
+    error_at(p_parser,
+             p_parser->previous,
+             create_string_view("expected an expression as while condition.", STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL;
+  }
+  if (p_parser->current.type != TOKEN_QUESTION) {
+    error_at(p_parser,
+             p_parser->current,
+             create_string_view("expected '?' after while condition.", STRING_VIEW_CALCULATE_LENGTH, true));
+    goto fail_cond;
+  }
+  advance(p_parser);
+  advance(p_parser);
+  ast_statement* body = parse_statement(p_parser);
+  if (body == NULL) {
+    error_at(p_parser,
+             p_parser->previous,
+             create_string_view("expected a statement as while body.", STRING_VIEW_CALCULATE_LENGTH, true));
+    goto fail_cond;
+  }
+  ast_while_statement* _while = (ast_while_statement*)malloc(sizeof(ast_while_statement));
+  if (_while == NULL) {
+    error_at(p_parser,
+             p_parser->previous,
+             create_string_view("failed to allocate memory for while node.", STRING_VIEW_CALCULATE_LENGTH, true));
+  fail:
+    ast_dispatch_deinit((ast_node*)body);
+    free(body);
+  fail_cond:
+    ast_dispatch_deinit((ast_node*)cond);
+    free(cond);
+    return NULL;
+  }
+  ast_while_statement_init(_while, while_tok);
+  _while->condition = cond;
+  _while->body = body;
+  return _while;
+}
+
+ast_for_statement* parse_for_statement(parser* p_parser) {
+  token for_tok = p_parser->previous;
+  advance(p_parser);
+  ast_statement* init = NULL;
+  ast_expression* cond = NULL;
+  ast_expression* up = NULL;
+
+  if (p_parser->previous.type != TOKEN_SEMICOLON) {
+    init = try_parse_declaration(p_parser);
+    if (init == NULL) {
+      error_at(p_parser,
+               p_parser->previous,
+               create_string_view("invalid for initializer.", STRING_VIEW_CALCULATE_LENGTH, true));
+      return NULL;
+    }
+  }
+
+  advance(p_parser);
+  if (p_parser->previous.type != TOKEN_SEMICOLON) {
+    cond = parse_expression(p_parser, PREC_NONE);
+    if (cond == NULL) {
+      error_at(p_parser,
+               p_parser->previous,
+               create_string_view("expected an expression as for condition.", STRING_VIEW_CALCULATE_LENGTH, true));
+      goto free_init;
+    }
+    advance(p_parser);
+  }
+
+  if (p_parser->previous.type != TOKEN_SEMICOLON) {
+    error_at(p_parser,
+             p_parser->previous,
+             create_string_view("expected ';' after if condition.", STRING_VIEW_CALCULATE_LENGTH, true));
+    goto free_cond;
+  }
+  advance(p_parser);
+
+  if (p_parser->previous.type != TOKEN_QUESTION) {
+    up = parse_expression(p_parser, PREC_NONE);
+    if (up == NULL) {
+      error_at(p_parser,
+               p_parser->previous,
+               create_string_view("expected an expression as for increment.", STRING_VIEW_CALCULATE_LENGTH, true));
+      goto free_cond;
+    }
+    advance(p_parser);
+  }
+
+  if (p_parser->previous.type != TOKEN_QUESTION) {
+    error_at(p_parser,
+             p_parser->previous,
+             create_string_view("excpected '?' after for clauses", STRING_VIEW_CALCULATE_LENGTH, true));
+    goto free_up;
+  }
+  advance(p_parser);
+
+  ast_statement* body = parse_statement(p_parser);
+  if (body == NULL) {
+    error_at(p_parser,
+             p_parser->previous,
+             create_string_view("expected a statement as for body.", STRING_VIEW_CALCULATE_LENGTH, true));
+    goto free_up;
+  }
+
+  ast_for_statement* _for = (ast_for_statement*)malloc(sizeof(ast_for_statement));
+  if (_for == NULL) {
+    error_at(p_parser,
+             p_parser->previous,
+             create_string_view("failed to allocate memory for for node.", STRING_VIEW_CALCULATE_LENGTH, true));
+    ast_dispatch_deinit((ast_node*)body);
+    free(body);
+  free_up:
+    ast_dispatch_deinit((ast_node*)up);
+    free(up);
+  free_cond:
+    ast_dispatch_deinit((ast_node*)cond);
+    free(cond);
+  free_init:
+    ast_dispatch_deinit((ast_node*)init);
+    free(init);
+    return NULL;
+  }
+  ast_for_statement_init(_for, for_tok);
+  _for->initializer = init;
+  _for->condition = cond;
+  _for->update = up;
+  _for->body = body;
+  return _for;
 }

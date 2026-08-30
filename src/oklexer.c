@@ -169,6 +169,8 @@ static token_type lookup_identifier(lexer* p_lexer) {
         return check_keyword(p_lexer, 2, 0, "", TOKEN_FU);
       case 'a':
         return check_keyword(p_lexer, 2, 3, "lse", TOKEN_FALSE);
+      case 'o':
+        return check_keyword(p_lexer, 2, 1, "r", TOKEN_FOR);
       case 'i':
         return check_keyword(p_lexer, 2, 6, "nalize", TOKEN_FINALIZE);
       }
