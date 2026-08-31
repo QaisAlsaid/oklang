@@ -6,7 +6,6 @@
 #include "okglobals_store.h"
 #include "okobject_store.h"
 #include "oksource.h"
-#include "okutils.h"
 
 #if defined(OK_PARANOID)
 #define OK_DEBUG_DUMP_CODE
@@ -35,7 +34,7 @@ typedef struct {
 } local;
 
 TABLE_DECLARE_DEFAULT(scope_locals, hashed_string, uint32_t /* index to the locals array */, hash_t)
-ARRAY_DECLARE_DEFAULT(locals, local);
+ARRAY_DECLARE_DEFAULT(locals, local)
 
 typedef struct {
   scope_locals locals;
@@ -43,9 +42,22 @@ typedef struct {
 
 ARRAY_DECLARE_DEFAULT(scopes, scope)
 
+ARRAY_DECLARE_DEFAULT(uint32_array, uint32_t)
+typedef struct {
+  uint32_t scope_depth;
+  uint32_t continue_target;
+  uint32_t break_target;
+  uint32_array continues;
+  uint32_array breaks;
+  bool continue_forward;
+} loop_context;
+
+ARRAY_DECLARE_DEFAULT(loop_stack, loop_context)
+
 typedef struct {
   scopes scopes;
   locals locals;
+  loop_stack loop_stack;
 } function;
 
 ARRAY_DECLARE_DEFAULT(functions, function)

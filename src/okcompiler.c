@@ -25,9 +25,13 @@ static void scope_init(scope* p_scope);
 static void scope_deinit(scope* p_scope);
 static void function_init(function* p_function);
 static void function_deinit(function* p_function);
+static void loop_context_init(loop_context* p_context);
+static void loop_context_deinit(loop_context* p_context);
 ARRAY_DEFINE_DEFAULT(locals, local, ARRAY_DEFAULT_TYPE_DEINIT)
 ARRAY_DEFINE_DEFAULT(scopes, scope, scope_deinit)
 ARRAY_DEFINE_DEFAULT(functions, function, function_deinit)
+ARRAY_DEFINE_DEFAULT(uint32_array, uint32_t, ARRAY_DEFAULT_TYPE_DEINIT)
+ARRAY_DEFINE_DEFAULT(loop_stack, loop_context, loop_context_deinit)
 
 static void error_at(compiler* p_compiler, const ast_node* p_node, const string_view p_message);
 static void
@@ -56,6 +60,7 @@ static bool compile_compound_statement(compiler* p_compiler, ast_compound_statem
 static bool compile_if_statement(compiler* p_compiler, ast_if_statement* p_if);
 static bool compile_while_statement(compiler* p_compiler, ast_while_statement* p_while);
 static bool compile_for_statement(compiler* p_compiler, ast_for_statement* p_for);
+static bool compile_control_flow_statement(compiler* p_compiler, ast_control_flow_statement* p_control);
 
 static bool compile_expression(compiler* p_compiler, ast_expression* p_expression);
 static bool compile_identifier(compiler* p_compiler, ast_identifier_expression* p_identifier);
@@ -207,11 +212,26 @@ void scope_deinit(scope* p_scope) {
 void function_init(function* p_function) {
   locals_init(&p_function->locals);
   scopes_init(&p_function->scopes);
+  loop_stack_init(&p_function->loop_stack);
 }
 
-static void function_deinit(function* p_function) {
+void function_deinit(function* p_function) {
   scopes_deinit(&p_function->scopes);
   locals_deinit(&p_function->locals);
+  loop_stack_deinit(&p_function->loop_stack);
+}
+
+void loop_context_init(loop_context* p_context) {
+  p_context->break_target = 0;
+  p_context->continue_target = 0;
+  p_context->continue_forward = false;
+  uint32_array_init(&p_context->continues);
+  uint32_array_init(&p_context->breaks);
+}
+
+void loop_context_deinit(loop_context* p_context) {
+  uint32_array_deinit(&p_context->continues);
+  uint32_array_deinit(&p_context->breaks);
 }
 
 uint32_t create_constant(compiler* p_compiler, value p_value, ast_node* p_node) {
@@ -292,6 +312,7 @@ static bool compile_node(compiler* p_compiler, ast_node* p_node) {
   case AST_FOR_STATEMENT:
     return compile_for_statement(p_compiler, (ast_for_statement*)p_node);
   case AST_CONTROL_FLOW_STATEMENT:
+    return compile_control_flow_statement(p_compiler, (ast_control_flow_statement*)p_node);
   case AST_RETURN_STATEMENT:
   case AST_THROW_STATEMENT:
   case AST_TRY_STATEMENT:
@@ -440,16 +461,18 @@ static uint32_t add_local(compiler* p_compiler, const variable_declaration p_dec
       local_set_flag(&local.depth, LOCAL_FLAG_MUTABLE);
     }
     if (!locals_append(&fun->locals, local)) {
-      error_at(p_compiler,
-               p_node,
-               create_string_view("failed to add local to the locals array.", STRING_VIEW_CALCULATE_LENGTH, true));
+      error_at_noted(p_compiler,
+                     p_node,
+                     create_string_view("failed to add local to the locals array.", STRING_VIEW_CALCULATE_LENGTH, true),
+                     create_string_view("you might be out of memory.", STRING_VIEW_CALCULATE_LENGTH, true));
       hashed_string_deinit(&hs);
       return LOCAL_ERROR;
     }
     if (!scope_locals_set(&current_scope(p_compiler)->locals, hs, fun->locals.count - 1)) {
-      error_at(p_compiler,
-               p_node,
-               create_string_view("failed to add local to the locals table.", STRING_VIEW_CALCULATE_LENGTH, true));
+      error_at_noted(p_compiler,
+                     p_node,
+                     create_string_view("failed to add local to the locals table.", STRING_VIEW_CALCULATE_LENGTH, true),
+                     create_string_view("you might be out of memory.", STRING_VIEW_CALCULATE_LENGTH, true));
       hashed_string_deinit(&hs);
       locals_remove(&fun->locals, fun->locals.count - 1, fun->locals.count - 1);
       return LOCAL_ERROR;
@@ -663,7 +686,14 @@ static uint32_t emit_jump(compiler* p_compiler, op_code p_instruction, ast_node*
 }
 
 static bool patch_jump(compiler* p_compiler, uint32_t p_operands_start, uint32_t p_jump_end, ast_node* p_node) {
-  const int64_t jmp = p_jump_end - p_operands_start;
+  const uint32_t jmp = p_jump_end - p_operands_start;
+  byte* code = current_chunk(p_compiler)->code.data;
+  encode_int(code + p_operands_start, UINT24_BYTE_COUNT, jmp);
+  return true;
+}
+
+static bool patch_loop(compiler* p_compiler, uint32_t p_operands_start, uint32_t p_jump_end, ast_node* p_node) {
+  const uint32_t jmp = p_operands_start - p_jump_end;
   byte* code = current_chunk(p_compiler)->code.data;
   encode_int(code + p_operands_start, UINT24_BYTE_COUNT, jmp);
   return true;
@@ -672,9 +702,10 @@ static bool patch_jump(compiler* p_compiler, uint32_t p_operands_start, uint32_t
 static bool emit_loop(compiler* p_compiler, const uint32_t p_loop_start, ast_node* p_node) {
   bool status = emit_byte(p_compiler, OP_LOOP, p_node);
   byte bytes[OP_LOOP_OPERANDS_WIDTH] = {0x00, 0x00, 0x00};
-  status &= emit_bytes(p_compiler, bytes, OP_LOOP_OPERANDS_WIDTH, p_node);
   chunk* chunk = current_chunk(p_compiler);
   const uint32_t loop_length = chunk->code.count - p_loop_start;
+  encode_int(bytes, OP_LOOP_OPERANDS_WIDTH, loop_length);
+  status &= emit_bytes(p_compiler, bytes, OP_LOOP_OPERANDS_WIDTH, p_node);
   if (loop_length > OP_LOOP_MAX) {
     string note = asprint("limit is: %d.", OP_LOOP_MAX);
     error_at_noted(p_compiler,
@@ -684,7 +715,6 @@ static bool emit_loop(compiler* p_compiler, const uint32_t p_loop_start, ast_nod
     string_deinit(&note);
     return false;
   }
-  encode_int(chunk->code.data + chunk->code.count - OP_LOOP_OPERANDS_WIDTH, OP_LOOP_OPERANDS_WIDTH, loop_length);
   return status;
 }
 
@@ -704,42 +734,136 @@ bool compile_if_statement(compiler* p_compiler, ast_if_statement* p_if) {
   return status;
 }
 
+static bool patch_loop_context(compiler* p_compiler, loop_context* p_ctx, ast_node* p_node) {
+  chunk* chunk = current_chunk(p_compiler);
+  for (uint32_t i = 0; i < p_ctx->breaks.count; ++i) {
+    patch_jump(p_compiler, p_ctx->breaks.data[i], p_ctx->break_target, p_node);
+  }
+  for (uint32_t i = 0; i < p_ctx->continues.count; ++i) {
+    uint32_t cont = p_ctx->continues.data[i];
+    if (p_ctx->continue_forward) {
+      patch_jump(p_compiler, cont, p_ctx->continue_target, p_node);
+    } else {
+      patch_loop(p_compiler, cont, p_ctx->continue_target, p_node);
+    }
+  }
+  return true;
+}
+
 bool compile_while_statement(compiler* p_compiler, ast_while_statement* p_while) {
-  const uint32_t loop_start = current_chunk(p_compiler)->code.count;
+  function* fun = current_function(p_compiler);
+  {
+    loop_context ctx;
+    loop_context_init(&ctx);
+    if (!loop_stack_append(&fun->loop_stack, ctx)) {
+      error_at_noted(p_compiler,
+                     (ast_node*)p_while,
+                     create_string_view("failed to push a new loop context.", STRING_VIEW_CALCULATE_LENGTH, true),
+                     create_string_view("you might be out of memory.", STRING_VIEW_CALCULATE_LENGTH, true));
+      loop_context_deinit(&ctx);
+      return false;
+    }
+  }
+#define CTX fun->loop_stack.data[fun->loop_stack.count - 1]
+  CTX.scope_depth = fun->scopes.count - 1;
+  chunk* chunk = current_chunk(p_compiler);
+  const uint32_t loop_start = chunk->code.count;
   bool status = compile_node(p_compiler, (ast_node*)p_while->condition);
   const uint32_t exit_jmp = emit_jump(p_compiler, OP_FALSY_JUMP, (ast_node*)p_while);
   emit_byte(p_compiler, OP_POP, (ast_node*)p_while);
   status &= compile_node(p_compiler, (ast_node*)p_while->body);
   status &= emit_loop(p_compiler, loop_start, (ast_node*)p_while);
   status &= patch_jump(p_compiler, exit_jmp, current_chunk(p_compiler)->code.count, (ast_node*)p_while);
+  CTX.continue_target = loop_start;
+  CTX.break_target = chunk->code.count;
   status &= emit_byte(p_compiler, OP_POP, (ast_node*)p_while);
+  status &= patch_loop_context(p_compiler, &CTX, (ast_node*)p_while);
+  loop_stack_remove(&fun->loop_stack, fun->loop_stack.count - 1, fun->loop_stack.count - 1);
+#undef CTX
   return status;
 }
 
 bool compile_for_statement(compiler* p_compiler, ast_for_statement* p_for) {
+  function* fun = current_function(p_compiler);
+  {
+    loop_context ctx;
+    loop_context_init(&ctx);
+    if (!loop_stack_append(&fun->loop_stack, ctx)) {
+      error_at_noted(p_compiler,
+                     (ast_node*)p_for,
+                     create_string_view("failed to push a new loop context.", STRING_VIEW_CALCULATE_LENGTH, true),
+                     create_string_view("you might be out of memory.", STRING_VIEW_CALCULATE_LENGTH, true));
+      loop_context_deinit(&ctx);
+      return false;
+    }
+  }
+#define CTX fun->loop_stack.data[fun->loop_stack.count - 1]
   begin_scope(p_compiler);
+  chunk* chunk = current_chunk(p_compiler);
+  CTX.scope_depth = fun->scopes.count - 1;
   bool status = true;
   if (p_for->initializer != NULL) {
     status &= compile_node(p_compiler, (ast_node*)p_for->initializer);
   }
   uint32_t exit_jump = UINT32_MAX;
-  const uint32_t loop_start = current_chunk(p_compiler)->code.count;
+  const uint32_t loop_start = chunk->code.count;
   if (p_for->condition != NULL) {
     status &= compile_node(p_compiler, (ast_node*)p_for->condition);
     exit_jump = emit_jump(p_compiler, OP_FALSY_JUMP, (ast_node*)p_for->condition);
     status &= emit_byte(p_compiler, OP_POP, (ast_node*)p_for);
   }
-  status &= compile_node(p_compiler, (ast_node*)p_for->body);
   if (p_for->update != NULL) {
+    CTX.continue_forward = true;
+  }
+  status &= compile_node(p_compiler, (ast_node*)p_for->body);
+  CTX.continue_target = loop_start;
+  if (p_for->update != NULL) {
+    CTX.continue_target = chunk->code.count;
     status &= compile_node(p_compiler, (ast_node*)p_for->update);
     status &= emit_byte(p_compiler, OP_POP, (ast_node*)p_for);
   }
   emit_loop(p_compiler, loop_start, (ast_node*)p_for);
+  CTX.break_target = chunk->code.count;
   if (exit_jump != UINT32_MAX) {
     status &= patch_jump(p_compiler, exit_jump, current_chunk(p_compiler)->code.count, (ast_node*)p_for);
     status &= emit_byte(p_compiler, OP_POP, (ast_node*)p_for);
   }
+  patch_loop_context(p_compiler, &CTX, (ast_node*)p_for);
+  loop_stack_remove(&fun->loop_stack, fun->loop_stack.count - 1, fun->loop_stack.count - 1);
   end_scope(p_compiler, (ast_node*)p_for);
+  return status;
+#undef CTX
+}
+
+bool compile_control_flow_statement(compiler* p_compiler, ast_control_flow_statement* p_control) {
+  function* fun = current_function(p_compiler);
+  if (fun->loop_stack.count == 0) {
+    error_at(p_compiler,
+             (ast_node*)p_control,
+             create_string_view("illegal control flow outside of loop.", STRING_VIEW_CALCULATE_LENGTH, true));
+    return false;
+  }
+  bool status = true;
+  loop_context* ctx = &fun->loop_stack.data[fun->loop_stack.count - 1];
+  uint32_t curr_depth = fun->scopes.count - 1;
+  if (curr_depth > ctx->scope_depth && fun->locals.count > 0) {
+    uint32_t pops = 0;
+    for (uint32_t i = fun->locals.count - 1; i-- > 0;) {
+      if (fun->locals.data[i].depth > ctx->scope_depth) {
+        pops++;
+      }
+    }
+    for (uint32_t i = 0; i < pops; ++i) {
+      status &= emit_byte(p_compiler, OP_POP, (ast_node*)p_control);
+    }
+  }
+  if (p_control->type == CONTROL_FLOW_BREAK) {
+    uint32_t jmp = emit_jump(p_compiler, OP_JUMP, (ast_node*)p_control);
+    status &= uint32_array_append(&ctx->breaks, jmp);
+  } else if (p_control->type == CONTROL_FLOW_CONTINUE) {
+    uint32_t jmp = emit_jump(p_compiler, ctx->continue_forward ? OP_JUMP : OP_LOOP, (ast_node*)p_control);
+    status &= uint32_array_append(&ctx->continues, jmp);
+  }
   return status;
 }
 

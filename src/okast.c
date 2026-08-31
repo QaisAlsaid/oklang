@@ -771,6 +771,35 @@ string ast_for_statement_asprint(const ast_for_statement* p_for) {
   return res;
 }
 
+string control_flow_type_asprint(control_flow_type p_type) {
+  switch (p_type) {
+  case CONTROL_FLOW_BREAK:
+    return create_string("break", STRING_CALCULATE_LENGTH, false);
+  case CONTROL_FLOW_CONTINUE:
+    return create_string("continue", STRING_CALCULATE_LENGTH, false);
+  default:
+    return create_string("", 0, false);
+  }
+}
+
+void ast_control_flow_statement_init(ast_control_flow_statement* p_control_flow, token p_token) {
+  ast_statement_init(&p_control_flow->statement, AST_CONTROL_FLOW_STATEMENT, p_token);
+  p_control_flow->type = CONTROL_FLOW_NONE;
+}
+
+void ast_control_flow_statement_deinit(ast_control_flow_statement* p_control_flow) {
+  ast_statement_deinit(&p_control_flow->statement);
+  p_control_flow->type = CONTROL_FLOW_NONE;
+}
+
+bool ast_control_flow_statement_print(const ast_control_flow_statement* p_control_flow) {
+  return printf("%s", control_flow_type_asprint(p_control_flow->type).chars) > 0;
+}
+
+string ast_control_flow_statement_asprint(const ast_control_flow_statement* p_control_flow) {
+  return control_flow_type_asprint(p_control_flow->type);
+}
+
 void ast_let_declaration_init(ast_let_declaration* p_let,
                               ast_binding* p_binding,
                               ast_expression* p_value,

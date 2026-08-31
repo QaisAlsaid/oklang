@@ -120,7 +120,7 @@ interpret_result vm_run(vm* p_vm) {
     }
     case OP_LOOP: {
       const uint32_t loop = decode_int(ip, OP_LOOP_OPERANDS_WIDTH);
-      ip -= -OP_LOOP_OPERANDS_WIDTH + loop;
+      ip -= loop;
       break;
     }
     case OP_NULL: {

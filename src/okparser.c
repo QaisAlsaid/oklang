@@ -21,6 +21,7 @@ static ast_compound_statement* parse_compound_statement(parser* p_parser);
 static ast_if_statement* parse_if_statement(parser* p_parser);
 static ast_while_statement* parse_while_statement(parser* p_parser);
 static ast_for_statement* parse_for_statement(parser* p_parser);
+static ast_control_flow_statement* parse_control_flow_statement(parser* p_parser);
 
 static void error_at(parser* p_parser, token p_token, const string_view p_message);
 static void error_at_noted(parser* p_parser, token p_token, const string_view p_message, const string_view p_note);
@@ -462,6 +463,7 @@ ast_statement* parse_statement(parser* p_parser) {
     return (ast_statement*)parse_for_statement(p_parser);
   case TOKEN_BREAK:
   case TOKEN_CONTINUE:
+    return (ast_statement*)parse_control_flow_statement(p_parser);
   case TOKEN_RETURN:
   case TOKEN_THROW:
   case TOKEN_TRY:
@@ -988,4 +990,25 @@ ast_for_statement* parse_for_statement(parser* p_parser) {
   _for->update = up;
   _for->body = body;
   return _for;
+}
+
+ast_control_flow_statement* parse_control_flow_statement(parser* p_parser) {
+  control_flow_type type = CONTROL_FLOW_NONE;
+  if (p_parser->previous.type == TOKEN_BREAK) {
+    type = CONTROL_FLOW_BREAK;
+  } else if (p_parser->previous.type == TOKEN_CONTINUE) {
+    type = CONTROL_FLOW_CONTINUE;
+  }
+  if (p_parser->current.type != TOKEN_SEMICOLON) {
+    error_at(p_parser,
+             p_parser->current,
+             create_string_view("expected ';' after control flow statement.", STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL;
+  }
+  advance(p_parser);
+  ast_control_flow_statement* control = (ast_control_flow_statement*)malloc(sizeof(ast_control_flow_statement));
+  ast_control_flow_statement_init(control, p_parser->previous);
+  control->type = type;
+
+  return control;
 }

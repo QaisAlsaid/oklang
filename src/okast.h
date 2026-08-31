@@ -5,7 +5,6 @@
 
 #include "okoperator.h"
 #include "oktoken.h"
-#include "okutils.h"
 #include "okvalue.h" // for QNAN
 
 #if defined(OK_PARANOID)
@@ -346,6 +345,24 @@ void ast_for_statement_init(ast_for_statement* p_for, token p_token);
 void ast_for_statement_deinit(ast_for_statement* p_for);
 bool ast_for_statement_print(const ast_for_statement* p_for);
 string ast_for_statement_asprint(const ast_for_statement* p_for);
+
+typedef enum {
+  CONTROL_FLOW_NONE,
+  CONTROL_FLOW_BREAK,
+  CONTROL_FLOW_CONTINUE,
+} control_flow_type;
+
+string control_flow_type_asprint(control_flow_type p_type);
+
+typedef struct {
+  ast_statement statement;
+  control_flow_type type;
+} ast_control_flow_statement;
+
+void ast_control_flow_statement_init(ast_control_flow_statement* p_control_flow, token p_token);
+void ast_control_flow_statement_deinit(ast_control_flow_statement* p_control_flow);
+bool ast_control_flow_statement_print(const ast_control_flow_statement* p_control_flow);
+string ast_control_flow_statement_asprint(const ast_control_flow_statement* p_control_flow);
 
 typedef struct {
   ast_declaration declaration;
