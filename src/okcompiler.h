@@ -4,6 +4,7 @@
 #include "okast.h"
 #include "okchunk.h"
 #include "okglobals_store.h"
+#include "okobject.h"
 #include "okobject_store.h"
 #include "oksource.h"
 
@@ -54,21 +55,31 @@ typedef struct {
 
 ARRAY_DECLARE_DEFAULT(loop_stack, loop_context)
 
+typedef enum {
+  FUNCTION_NONE = 0,
+  FUNCTION_SCRIPT,
+  FUNCTION_FUNCTION,
+} function_type;
+
+typedef struct {
+  object_function* function;
+  function_type type;
+} compile_function;
+
 typedef struct {
   scopes scopes;
   locals locals;
   loop_stack loop_stack;
+  compile_function function;
 } function;
 
 ARRAY_DECLARE_DEFAULT(functions, function)
 
 typedef struct {
-  chunk* current_chunk;
   source* source;
   object_store* objects_store;
   globals_store* globals_store;
   functions functions;
-  uint32_t local_index; // runtime local slot
   bool had_error;
   bool panic;
 } compiler;
@@ -80,10 +91,8 @@ typedef enum {
 
 typedef struct {
   compile_status status;
-  chunk* chunk;
+  object_function* function;
 } compile_result;
-
-void compile_result_deinit(compile_result* p_result);
 
 typedef struct {
   source* source;

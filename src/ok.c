@@ -35,17 +35,14 @@ ok_result ok_run(ok* p_ok, source p_source) {
   compile_result compile_result = compiler_compile(&p_ok->compiler, compiler_specs);
   parse_result_deinit(&parse_result);
   if (compile_result.status != COMPILE_OK) {
-    compile_result_deinit(&compile_result);
     return OK_COMPILE_ERROR;
   }
   interpret_specs interpret_specs;
-  interpret_specs.chunk = compile_result.chunk;
+  interpret_specs.function = compile_result.function;
   interpret_specs.source = &p_source;
   interpret_specs.objects_store = &p_ok->objects_store;
   interpret_specs.globals_store = &p_ok->globals_store;
   interpret_result interpret_result = vm_interpret(&p_ok->vm, interpret_specs);
-  compile_result_deinit(&compile_result);
-
   if (interpret_result.status != RUNTIME_OK) {
     interpret_result_deinit(&interpret_result);
     return OK_RUNTIME_ERROR;

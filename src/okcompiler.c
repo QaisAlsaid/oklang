@@ -23,7 +23,7 @@ TABLE_DEFINE_DEFAULT(scope_locals,
 
 static void scope_init(scope* p_scope);
 static void scope_deinit(scope* p_scope);
-static void function_init(function* p_function);
+static void function_init(function* p_function, object_function* p_obj_function, function_type p_type);
 static void function_deinit(function* p_function);
 static void loop_context_init(loop_context* p_context);
 static void loop_context_deinit(loop_context* p_context);
@@ -36,6 +36,8 @@ ARRAY_DEFINE_DEFAULT(loop_stack, loop_context, loop_context_deinit)
 static void error_at(compiler* p_compiler, const ast_node* p_node, const string_view p_message);
 static void
 error_at_noted(compiler* p_compiler, const ast_node* p_node, const string_view p_message, const string_view p_note);
+static function* current_function(compiler* p_compiler);
+static scope* current_scope(compiler* p_compiler);
 static chunk* current_chunk(compiler* p_compiler);
 static bool emit_byte(compiler* p_compiler, byte p_byte, ast_node* p_node);
 static bool emit_2bytes(compiler* p_compiler, byte p_1st_byte, byte p_2nd_byte, ast_node* p_node);
@@ -74,59 +76,59 @@ static bool compile_postfix_unary_expression(compiler* p_compiler, ast_postfix_u
 static bool compile_boolean_expression(compiler* p_compiler, ast_boolean_expression* p_boolean);
 static bool compile_null_expression(compiler* p_compiler, ast_null_expression* p_null);
 
-void compile_result_deinit(compile_result* p_result) {
-  chunk_deinit(p_result->chunk);
-  free(p_result->chunk);
-  p_result->chunk = NULL;
-}
-
 void compiler_init(compiler* p_compiler) {
-  p_compiler->current_chunk = NULL;
   p_compiler->objects_store = NULL;
   p_compiler->source = NULL;
   p_compiler->had_error = false;
   p_compiler->panic = false;
-  p_compiler->local_index = 0;
   functions_init(&p_compiler->functions);
 }
 
 void compiler_deinit(compiler* p_compiler) {
-  p_compiler->current_chunk = NULL;
   p_compiler->source = NULL;
   p_compiler->objects_store = NULL;
   p_compiler->had_error = false;
   p_compiler->panic = false;
-  p_compiler->local_index = 0;
   functions_deinit(&p_compiler->functions);
 }
 
 compile_result compiler_compile(compiler* p_compiler, compiler_specs p_specs) {
-  chunk* _chunk = (chunk*)malloc(sizeof(chunk));
-  chunk_init(_chunk);
-  p_compiler->current_chunk = _chunk;
+  compile_result result;
+  result.function = NULL;
+  result.status = COMPILE_ERROR;
   p_compiler->source = p_specs.source;
   p_compiler->objects_store = p_specs.objects_store;
   p_compiler->globals_store = p_specs.globals_store;
   function fun;
-  function_init(&fun);
+  object_string* obj_str =
+      create_object_string(create_string_view("main", STRING_VIEW_CALCULATE_LENGTH, true), p_specs.objects_store);
+  if (obj_str == NULL) {
+    goto ret;
+  }
+  object_function* obj_fu = create_object_function(obj_str, 0, p_specs.objects_store);
+  if (obj_fu == NULL) {
+    goto ret;
+  }
+  function_init(&fun, obj_fu, FUNCTION_SCRIPT);
   functions_append(&p_compiler->functions, fun);
   begin_scope(p_compiler);
+  function* func = current_function(p_compiler);
+  local main = {.depth = 0};
+  locals_append(&func->locals, main); // makes it unreachable via name.
   bool res = compile_node(p_compiler, (ast_node*)p_specs.root);
+  result.function = current_function(p_compiler)->function.function;
   functions_remove(&p_compiler->functions, p_compiler->functions.count - 1, p_compiler->functions.count - 1);
-  compile_result result;
-  result.chunk = _chunk;
   if (p_compiler->had_error == false && res != false) {
     result.status = COMPILE_OK;
 #if defined(OK_DEBUG_DUMP_CODE)
     disassembler disassembler;
-    disassembler_specs specs = {.chunk = _chunk, .globals_store = p_compiler->globals_store};
+    disassembler_specs specs = {.chunk = &result.function->chunk, .globals_store = p_compiler->globals_store};
     disassembler_init(&disassembler, specs);
     debug_disassemble_chunk(&disassembler, "code");
     disassembler_deinit(&disassembler);
 #endif // defined (OK_DEBUG_DUMP_CODE)
-  } else {
-    result.status = COMPILE_ERROR;
   }
+ret:
   compiler_deinit(p_compiler);
   compiler_init(p_compiler);
   return result;
@@ -150,12 +152,12 @@ void error_at_noted(compiler* p_compiler,
                   p_note);
 }
 
-chunk* current_chunk(compiler* p_compiler) {
-  return p_compiler->current_chunk;
-}
-
 function* current_function(compiler* p_compiler) {
   return &p_compiler->functions.data[p_compiler->functions.count - 1];
+}
+
+chunk* current_chunk(compiler* p_compiler) {
+  return &current_function(p_compiler)->function.function->chunk;
 }
 
 scope* current_scope(compiler* p_compiler) {
@@ -209,16 +211,20 @@ void scope_deinit(scope* p_scope) {
   scope_locals_deinit(&p_scope->locals);
 }
 
-void function_init(function* p_function) {
+void function_init(function* p_function, object_function* p_obj_function, function_type p_type) {
   locals_init(&p_function->locals);
   scopes_init(&p_function->scopes);
   loop_stack_init(&p_function->loop_stack);
+  p_function->function.function = p_obj_function;
+  p_function->function.type = p_type;
 }
 
 void function_deinit(function* p_function) {
   scopes_deinit(&p_function->scopes);
   locals_deinit(&p_function->locals);
   loop_stack_deinit(&p_function->loop_stack);
+  p_function->function.function = NULL;
+  p_function->function.type = FUNCTION_NONE;
 }
 
 void loop_context_init(loop_context* p_context) {
@@ -441,8 +447,9 @@ static uint32_t add_local(compiler* p_compiler, const variable_declaration p_dec
   scope* scp = current_scope(p_compiler);
   uint32_t* resolved = scope_locals_get(&scp->locals, hs);
   if (resolved == NULL) {
+    function* fun = current_function(p_compiler);
     local local;
-    uint32_t index = p_compiler->local_index++;
+    uint32_t index = fun->locals.count;
     if (index > LOCALS_MAX) {
       string note = asprint("limit is: %d.", LOCALS_MAX);
       error_at_noted(
@@ -454,7 +461,6 @@ static uint32_t add_local(compiler* p_compiler, const variable_declaration p_dec
       hashed_string_deinit(&hs);
       return LOCAL_OVERFLOW;
     }
-    function* fun = current_function(p_compiler);
     local.depth = index & LOCAL_FLAGS_MASK;
     local_set_flag(&local.depth, LOCAL_FLAG_UNINITIALIZED);
     if ((p_declration.flags & VARIABLE_DECLARATION_FLAGS_MUTABLE) != 0) {

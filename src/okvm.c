@@ -16,42 +16,43 @@
 static void runtime_error(vm* p_vm, const char* p_fmt, ...);
 static bool is_falsy(value p_value);
 static bool values_equal(value p_lhs, value p_rhs);
+static value* read_local(vm* p_vm, call_frame* p_frame);
+static value* read_local_long(vm* p_vm, call_frame* p_frame);
 
 void interpret_result_deinit(interpret_result* p_interpret_result) {
 }
 
 void vm_init(vm* p_vm) {
   stack_init_warm(&p_vm->stack, STACK_SIZE);
+  call_stack_init(&p_vm->call_stack);
   p_vm->objects_store = NULL;
   p_vm->globals_store = NULL;
-  p_vm->ip = NULL;
-  p_vm->chunk = NULL;
   p_vm->source = NULL;
 }
 
 void vm_deinit(vm* p_vm) {
-  stack_free(&p_vm->stack);
-  p_vm->objects_store = NULL;
-  p_vm->globals_store = NULL;
-  p_vm->ip = NULL;
-  p_vm->chunk = NULL;
   p_vm->source = NULL;
+  p_vm->globals_store = NULL;
+  p_vm->objects_store = NULL;
+  call_stack_deinit(&p_vm->call_stack);
+  stack_free(&p_vm->stack);
 }
 
 interpret_result vm_interpret(vm* p_vm, interpret_specs p_specs) {
-  p_vm->chunk = p_specs.chunk;
   p_vm->source = p_specs.source; // having it this way means only one source per vm. but it's ok will fix soon.
   p_vm->objects_store = p_specs.objects_store;
   p_vm->globals_store = p_specs.globals_store;
+  call_frame frame = {.function = p_specs.function, .ip = p_specs.function->chunk.code.data, .slots = 0, .top = 0};
+  stack_push(&p_vm->stack, OBJECT_AS_VALUE(frame.function));
+  call_stack_append(&p_vm->call_stack, frame);
   interpret_result interpret_result = vm_run(p_vm);
-  p_vm->chunk = NULL;
   return interpret_result;
 }
 
 interpret_result vm_run(vm* p_vm) {
-  register byte* ip = p_vm->chunk->code.data;
-#define READ_BYTE() (*ip++)
-#define READ_CONSTANT() p_vm->chunk->constants.data[READ_BYTE()]
+  call_frame* frame = &p_vm->call_stack.data[p_vm->call_stack.count - 1];
+#define READ_BYTE() (*frame->ip++)
+#define READ_CONSTANT() frame->function->chunk.constants.data[READ_BYTE()]
 #define BIN_OP(VALUE, op)                                                                                              \
   do {                                                                                                                 \
     if (!IS_VALUE_NUMBER(stack_top(&p_vm->stack, 0)) || !IS_VALUE_NUMBER(stack_top(&p_vm->stack, 1))) {                \
@@ -68,7 +69,7 @@ interpret_result vm_run(vm* p_vm) {
 
 #if defined(OK_TRACE_EXECUTION)
   disassembler disassembler;
-  disassembler_specs specs = {.chunk = p_vm->chunk, .globals_store = p_vm->globals_store};
+  disassembler_specs specs = {.chunk = &frame->function->chunk, .globals_store = p_vm->globals_store};
   disassembler_init(&disassembler, specs);
 #endif // defined(OK_TRACE_EXECUTION)
 
@@ -80,7 +81,7 @@ interpret_result vm_run(vm* p_vm) {
       printf(" ]");
     }
     printf("\n");
-    debug_disassemble_instruction(&disassembler, (uint32_t)(ip - p_vm->chunk->code.data));
+    debug_disassemble_instruction(&disassembler, (uint32_t)(frame->ip - frame->function->chunk.code.data));
 #endif // defined(OK_TRACE_EXECUTION)
 
     byte instruction = READ_BYTE();
@@ -102,25 +103,25 @@ interpret_result vm_run(vm* p_vm) {
       break;
     }
     case OP_JUMP: {
-      const uint32_t jmp = decode_int(ip, OP_JUMP_OPERANDS_WIDTH);
-      ip += jmp;
+      const uint32_t jmp = decode_int(frame->ip, OP_JUMP_OPERANDS_WIDTH);
+      frame->ip += jmp;
       break;
     }
     case OP_TRUTHY_JUMP: {
-      const uint32_t jmp = decode_int(ip, OP_TRUTHY_JUMP_OPERANDS_WIDTH);
+      const uint32_t jmp = decode_int(frame->ip, OP_TRUTHY_JUMP_OPERANDS_WIDTH);
       const bool truthy = !is_falsy(stack_top(&p_vm->stack, 0));
-      ip += truthy * jmp + (!truthy * OP_TRUTHY_JUMP_OPERANDS_WIDTH);
+      frame->ip += truthy * jmp + (!truthy * OP_TRUTHY_JUMP_OPERANDS_WIDTH);
       break;
     }
     case OP_FALSY_JUMP: {
-      const uint32_t jmp = decode_int(ip, OP_FALSY_JUMP_OPERANDS_WIDTH);
+      const uint32_t jmp = decode_int(frame->ip, OP_FALSY_JUMP_OPERANDS_WIDTH);
       const bool falsy = is_falsy(stack_top(&p_vm->stack, 0));
-      ip += falsy * jmp + (!falsy * OP_TRUTHY_JUMP_OPERANDS_WIDTH);
+      frame->ip += falsy * jmp + (!falsy * OP_TRUTHY_JUMP_OPERANDS_WIDTH);
       break;
     }
     case OP_LOOP: {
-      const uint32_t loop = decode_int(ip, OP_LOOP_OPERANDS_WIDTH);
-      ip -= loop;
+      const uint32_t loop = decode_int(frame->ip, OP_LOOP_OPERANDS_WIDTH);
+      frame->ip -= loop;
       break;
     }
     case OP_NULL: {
@@ -141,9 +142,9 @@ interpret_result vm_run(vm* p_vm) {
       break;
     }
     case OP_SET_GLOBAL_LONG: {
-      uint32_t index = decode_int(p_vm->ip, OP_SET_GLOBAL_LONG_OPERANDS_WIDTH);
+      uint32_t index = decode_int(frame->ip, OP_SET_GLOBAL_LONG_OPERANDS_WIDTH);
       p_vm->globals_store->global_values.data[index] = stack_popr(&p_vm->stack);
-      ip += OP_SET_GLOBAL_LONG_OPERANDS_WIDTH;
+      frame->ip += OP_SET_GLOBAL_LONG_OPERANDS_WIDTH;
       break;
     }
     case OP_GET_GLOBAL: {
@@ -152,31 +153,25 @@ interpret_result vm_run(vm* p_vm) {
       break;
     }
     case OP_GET_GLOBAL_LONG: {
-      uint32_t index = decode_int(p_vm->ip, OP_GET_GLOBAL_LONG_OPERANDS_WIDTH);
-      ip += OP_GET_GLOBAL_LONG_OPERANDS_WIDTH;
+      uint32_t index = decode_int(frame->ip, OP_GET_GLOBAL_LONG_OPERANDS_WIDTH);
+      frame->ip += OP_GET_GLOBAL_LONG_OPERANDS_WIDTH;
       stack_push(&p_vm->stack, p_vm->globals_store->global_values.data[index]);
       break;
     }
     case OP_GET_LOCAL: {
-      byte slot = READ_BYTE();
-      stack_push(&p_vm->stack, p_vm->stack.array.data[slot]);
+      stack_push(&p_vm->stack, *read_local(p_vm, frame));
       break;
     }
     case OP_GET_LOCAL_LONG: {
-      uint32_t slot = decode_int(p_vm->ip, OP_GET_LOCAL_LONG_OPERANDS_WIDTH);
-      ip += OP_GET_LOCAL_LONG_OPERANDS_WIDTH;
-      stack_push(&p_vm->stack, p_vm->stack.array.data[slot]);
+      stack_push(&p_vm->stack, *read_local_long(p_vm, frame));
       break;
     }
     case OP_SET_LOCAL: {
-      byte slot = READ_BYTE();
-      p_vm->stack.array.data[slot] = stack_top(&p_vm->stack, 0);
+      *read_local(p_vm, frame) = stack_top(&p_vm->stack, 0);
       break;
     }
     case OP_SET_LOCAL_LONG: {
-      uint32_t slot = decode_int(p_vm->ip, OP_SET_LOCAL_LONG_OPERANDS_WIDTH);
-      ip += OP_SET_LOCAL_LONG_OPERANDS_WIDTH;
-      p_vm->stack.array.data[slot] = stack_top(&p_vm->stack, 0);
+      *read_local_long(p_vm, frame) = stack_top(&p_vm->stack, 0);
       break;
     }
     case OP_NOT: {
@@ -253,8 +248,9 @@ interpret_result vm_run(vm* p_vm) {
 }
 
 void runtime_error(vm* p_vm, const char* p_fmt, ...) {
-  size_t instruction = p_vm->ip - p_vm->chunk->code.data - 1;
-  line_info_repeated* info = source_info_find(&p_vm->chunk->source_info, instruction);
+  call_frame* frame = &p_vm->call_stack.data[p_vm->call_stack.count - 1];
+  size_t instruction = frame->ip - frame->function->chunk.code.data - 1;
+  line_info_repeated* info = source_info_find(&frame->function->chunk.source_info, instruction);
   if (info != NULL) {
     fprintf(stderr, "%s:%d:%d", p_vm->source->path, info->line_info.line, info->line_info.offset);
   }
@@ -264,6 +260,16 @@ void runtime_error(vm* p_vm, const char* p_fmt, ...) {
   va_end(ap);
   fputs("", stderr);
   stack_resize(&p_vm->stack, 0);
+}
+
+static value* read_local(vm* p_vm, call_frame* p_frame) {
+  return &p_vm->stack.array.data[p_frame->slots + *p_frame->ip++];
+}
+
+static value* read_local_long(vm* p_vm, call_frame* p_frame) {
+  value* ret = &p_vm->stack.array.data[p_frame->slots + decode_int(p_frame->ip, OP_XX_LOCAL_LONG_OPERANDS_WIDTH)];
+  p_frame->ip += OP_XX_LOCAL_LONG_OPERANDS_WIDTH;
+  return ret;
 }
 
 bool is_falsy(value p_value) {
@@ -281,7 +287,8 @@ static bool values_equal(value p_lhs, value p_rhs) {
   return p_lhs == p_rhs;
 }
 
-ARRAY_DEFINE(stack_array, value, uint32_t, UINT32_MAX, ARRAY_DEFAULT_TYPE_DEINIT)
+ARRAY_DEFINE_DEFAULT(stack_array, value, ARRAY_DEFAULT_TYPE_DEINIT)
+ARRAY_DEFINE_DEFAULT(call_stack, call_frame, ARRAY_DEFAULT_TYPE_DEINIT);
 
 void stack_init(stack* p_stack) {
   stack_array_init(&p_stack->array);

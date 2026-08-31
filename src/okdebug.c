@@ -34,6 +34,7 @@ const char* debug_disassemble_chunk(disassembler* p_disassembler, const char* p_
   for (uint32_t offset = 0; offset < p_disassembler->chunk->code.count;) {
     offset = debug_disassemble_instruction(p_disassembler, offset);
   }
+  printf("--- %s ---\n", p_name);
   return NULL;
 }
 

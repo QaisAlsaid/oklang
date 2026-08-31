@@ -4,6 +4,7 @@
 #include "okarray.h"
 #include "okchunk.h"
 #include "okglobals_store.h"
+#include "okobject.h"
 #include "okobject_store.h"
 
 ARRAY_DECLARE(stack_array, value, uint32_t)
@@ -30,10 +31,18 @@ value stack_popr(stack* p_stack);
 void stack_free(stack* p_stack);
 
 typedef struct {
-  stack stack;
-  chunk* chunk;
-  source* source;
+  object_function* function;
   byte* ip;
+  uint32_t slots;
+  uint32_t top;
+} call_frame;
+
+ARRAY_DECLARE_DEFAULT(call_stack, call_frame)
+
+typedef struct {
+  stack stack;
+  call_stack call_stack;
+  source* source;
   object_store* objects_store;
   globals_store* globals_store;
 } vm;
@@ -52,7 +61,7 @@ void interpret_result_deinit(interpret_result* p_interpret_result);
 
 typedef struct {
   source* source;
-  chunk* chunk;
+  object_function* function;
   object_store* objects_store;
   globals_store* globals_store;
 } interpret_specs;
