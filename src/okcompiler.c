@@ -753,7 +753,7 @@ static uint32_t add_upvalue(compiler* p_compiler, uint32_t p_upvalue, bool p_is_
 
 static uint32_t resolve_upvalue(compiler* p_compiler, hashed_string p_identifier, uint32_t p_index, ast_node* p_node) {
   const uint32_t functions = p_compiler->functions.count;
-  if (functions - p_index - 2 < 0) {
+  if (functions < p_index + 2) {
     return UINT32_MAX;
   }
 
