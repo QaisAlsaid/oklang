@@ -10,6 +10,12 @@
 #include <string_view>
 #include <sys/wait.h>
 
+#define COLOR_RED "\x1b[31m"
+#define COLOR_GREEN "\x1b[32m"
+#define COLOR_YELLOW "\x1b[33m"
+#define COLOR_BLUE "\x1b[34m"
+#define COLOR_RESET "\x1b[0m"
+
 std::string read_file(const std::string_view path) {
   std::ifstream f(path.data());
   std::stringstream ss;
@@ -79,11 +85,11 @@ test_case parse_test_file(const std::filesystem::path& p_path) {
 
 void fail(uint32_t& p_notok, const std::string_view p_ok_debug_path, const std::string_view p_path) {
   p_notok++;
-  if (!p_ok_debug_path.empty()) {
-    std::println("running failed test using debug build");
-    auto res = run_oklang(p_path, p_ok_debug_path);
-    std::println("exit code: {}\nstdout:\n{}\nstderr:\n{}", res.exit_code, res.std_out, res.std_err);
-  }
+  // if (!p_ok_debug_path.empty()) {
+  //   std::println("running failed test using debug build");
+  //   auto res = run_oklang(p_path, p_ok_debug_path);
+  //   std::println("exit code: {}\nstdout:\n{}\nstderr:\n{}", res.exit_code, res.std_out, res.std_err);
+  // }
 }
 
 bool is_quarantined(const std::filesystem::path& path) {
@@ -122,7 +128,7 @@ int main(int argc, char** argv) {
     std::string test_path = entry.path();
     if (is_quarantined(entry.path())) {
       skipped++;
-      std::println("[SKIP]: {}", test_path);
+      std::println("{}[SKIP]{}: {}", COLOR_BLUE, COLOR_RESET, test_path);
       continue;
     }
 
@@ -130,7 +136,7 @@ int main(int argc, char** argv) {
     auto rr = run_oklang(test_path, okpath);
 
     if (!tc.has_expectation) {
-      std::println("[NOTOK]: '{}'", test_path);
+      std::println("{}[NOTOK]{}: '{}'", COLOR_RED, COLOR_RESET, test_path);
       std::println("no // expect or // expect error directive");
       fail(notok, ok_debug_path, test_path);
       continue;
@@ -138,35 +144,35 @@ int main(int argc, char** argv) {
 
     if (tc.expected_error.has_value()) {
       if (rr.exit_code == 0) {
-        std::println("[NOTOK]: '{}'", test_path);
+        std::println("{}[NOTOK]{}: '{}'", COLOR_RED, COLOR_RESET, test_path);
         std::println("expected error, but non occurred");
         std::println("got:\nstdout: {}\nstderr: {}", rr.std_out, rr.std_err);
         fail(notok, ok_debug_path, test_path);
       } else if (!tc.expected_error->empty() && rr.std_err.find(tc.expected_error.value()) == std::string::npos) {
-        std::println("[NOTOK]: '{}'", test_path);
+        std::println("{}[NOTOK]{}: '{}'", COLOR_RED, COLOR_RESET, test_path);
         std::println("error message mismatch");
         std::println("expected:\n{}", tc.expected_error.value());
         std::println("got:\n{}", rr.std_err);
         fail(notok, ok_debug_path, test_path);
       } else {
         ok++;
-        std::println("[OK]: {}", test_path);
+        std::println("{}[OK]{}: {}", COLOR_GREEN, COLOR_RESET, test_path);
       }
     } else {
       if (rr.exit_code != 0) {
-        std::println("[NOTOK]: '{}'", test_path);
+        std::println("{}[NOTOK]{}: '{}'", COLOR_RED, COLOR_RESET, test_path);
         std::println("expected success (exit 0), got exit {}", rr.exit_code);
         std::println("got:\nstdout: {}\nstderr: {}", rr.std_out, rr.std_err);
         fail(notok, ok_debug_path, test_path);
       } else if (rr.std_out != tc.expected_result) {
-        std::println("[NOTOK]: '{}'", test_path);
+        std::println("{}[NOTOK]{}: '{}'", COLOR_RED, COLOR_RESET, test_path);
         std::println("output mismatch");
         std::println("expected:\n{}", tc.expected_result);
         std::println("got:\nstdout: {}\nstderr: {}", rr.std_out, rr.std_err);
         fail(notok, ok_debug_path, test_path);
       } else {
         ok++;
-        std::println("[OK]: {}", test_path);
+        std::println("{}[OK]{}: {}", COLOR_GREEN, COLOR_RESET, test_path);
       }
     }
   }
