@@ -42,7 +42,7 @@ report_status report_at_noted(bool* p_panic,
                               const string_view p_note);
 
 inline static hash_t fnv1a_hash_str(const string_view p_str, hash_t p_hash) {
-  for (uint64_t i = 0; i < p_str.info; ++i) {
+  for (uint64_t i = 0; i < string_view_get_length(&p_str); ++i) {
     p_hash ^= (uint8_t)p_str.chars[i] * 1099511628211ULL;
   }
   return p_hash;

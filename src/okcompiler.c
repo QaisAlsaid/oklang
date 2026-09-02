@@ -8,6 +8,18 @@
 #include "okutils.h"
 #include "okvalue.h"
 
+typedef enum {
+  VARIABLE_DECLRATION_FLAGS_NONE = 0,
+  VARIABLE_DECLARATION_FLAGS_MUTABLE = 1 << 0,
+  VARIABLE_DECLARATION_FLAGS_GLOBAL = 1 << 1,
+} variable_declaration_flags;
+typedef uint8_t variable_declaration_flags_t;
+
+typedef struct {
+  string_view identifier;
+  variable_declaration_flags_t flags;
+} variable_declaration;
+
 #define LOCAL_FLAGS_MASK 0x00ffffff
 #define ARE_KEYS_EQUAL(lhs, rhs) (strncmp(lhs.string.chars, rhs.string.chars, string_get_length(&lhs.string)) == 0)
 #define GET_HASH(key) (key.hash)
@@ -43,17 +55,21 @@ static bool emit_byte(compiler* p_compiler, byte p_byte, ast_node* p_node);
 static bool emit_2bytes(compiler* p_compiler, byte p_1st_byte, byte p_2nd_byte, ast_node* p_node);
 static bool emit_bytes(compiler* p_compiler, byte* p_bytes, size_t p_bytes_count, ast_node* p_node);
 static bool emit_constant(compiler* p_compiler, value p_value, ast_node* p_node);
+static bool emit_default_return(compiler* p_compiler, ast_node* p_node);
 
-static bool end_compile(compiler* p_compiler, ast_node* p_node);
 static uint32_t create_constant(compiler* p_compiler, value p_value, ast_node* p_node);
 static void begin_scope(compiler* p_compiler);
-static void end_scope(compiler* p_compiler, ast_node* p_node);
+static void end_scope(compiler* p_compiler, ast_node* p_node, bool p_needs_pop);
+static bool
+push_function(compiler* p_compiler, string_view p_name, function_type p_type, uint8_t p_arity, ast_node* p_node);
+static uint32_t add_local(compiler* p_compiler, const variable_declaration p_declration, ast_node* p_node);
 
 static bool compile_node(compiler* p_compiler, ast_node* p_node);
 
 static bool compile_root(compiler* p_compiler, ast_root* p_root);
 
 static bool compile_let_declration(compiler* p_compiler, ast_let_declaration* p_let);
+static bool compile_function_declaration(compiler* p_compiler, ast_function_declaration* p_fu);
 
 static bool compile_expression_statement(compiler* p_compiler, ast_expression_statement* p_expression_statement);
 static bool compile_eof_statement(compiler* p_compiler, ast_eof_statement* p_eof);
@@ -63,6 +79,7 @@ static bool compile_if_statement(compiler* p_compiler, ast_if_statement* p_if);
 static bool compile_while_statement(compiler* p_compiler, ast_while_statement* p_while);
 static bool compile_for_statement(compiler* p_compiler, ast_for_statement* p_for);
 static bool compile_control_flow_statement(compiler* p_compiler, ast_control_flow_statement* p_control);
+static bool compile_return_statement(compiler* p_compiler, ast_return_statement* p_return);
 
 static bool compile_expression(compiler* p_compiler, ast_expression* p_expression);
 static bool compile_identifier(compiler* p_compiler, ast_identifier_expression* p_identifier);
@@ -71,10 +88,19 @@ static bool compile_string_expression(compiler* p_compiler, ast_string_expressio
 static bool compile_prefix_unary_expression(compiler* p_compiler, ast_prefix_unary_expression* p_expression);
 static bool compile_infix_binary_expression(compiler* p_compiler, ast_infix_binary_expression* p_expression);
 static bool compile_assign_expression(compiler* p_compiler, ast_assign_expression* p_assign);
+static bool compile_call_expression(compiler* p_compiler, ast_call_expression* p_call);
 static bool compile_logical_operator(compiler* p_compiler, ast_infix_binary_expression* p_logical);
 static bool compile_postfix_unary_expression(compiler* p_compiler, ast_postfix_unary_expression* p_expression);
 static bool compile_boolean_expression(compiler* p_compiler, ast_boolean_expression* p_boolean);
 static bool compile_null_expression(compiler* p_compiler, ast_null_expression* p_null);
+static bool compile_function_expression(compiler* p_compiler, ast_function_expression* p_fu);
+
+static bool compile_function_impl(compiler* p_compiler,
+                                  string_view p_name,
+                                  function_type p_type,
+                                  ast_bindings_list p_params,
+                                  ast_statement* p_body,
+                                  ast_node* p_node);
 
 void compiler_init(compiler* p_compiler) {
   p_compiler->objects_store = NULL;
@@ -99,24 +125,22 @@ compile_result compiler_compile(compiler* p_compiler, compiler_specs p_specs) {
   p_compiler->source = p_specs.source;
   p_compiler->objects_store = p_specs.objects_store;
   p_compiler->globals_store = p_specs.globals_store;
-  function fun;
-  object_string* obj_str =
-      create_object_string(create_string_view("main", STRING_VIEW_CALCULATE_LENGTH, true), p_specs.objects_store);
-  if (obj_str == NULL) {
+  variable_declaration decl = {.identifier = "", .flags = VARIABLE_DECLRATION_FLAGS_NONE};
+  if (!push_function(p_compiler,
+                     create_string_view("<main>", STRING_VIEW_CALCULATE_LENGTH, true),
+                     FUNCTION_SCRIPT,
+                     0,
+                     (ast_node*)p_specs.root)) {
     goto ret;
   }
-  object_function* obj_fu = create_object_function(obj_str, 0, p_specs.objects_store);
-  if (obj_fu == NULL) {
-    goto ret;
-  }
-  function_init(&fun, obj_fu, FUNCTION_SCRIPT);
-  functions_append(&p_compiler->functions, fun);
   begin_scope(p_compiler);
-  function* func = current_function(p_compiler);
-  local main = {.depth = 0};
-  locals_append(&func->locals, main); // makes it unreachable via name.
+  if (!IS_LOCAL_INDEX_VALID(add_local(p_compiler, decl, (ast_node*)p_specs.root))) {
+    goto ret;
+  }
   bool res = compile_node(p_compiler, (ast_node*)p_specs.root);
   result.function = current_function(p_compiler)->function.function;
+  emit_default_return(p_compiler, (ast_node*)p_specs.root);
+  end_scope(p_compiler, (ast_node*)p_specs.root, false);
   functions_remove(&p_compiler->functions, p_compiler->functions.count - 1, p_compiler->functions.count - 1);
   if (p_compiler->had_error == false && res != false) {
     result.status = COMPILE_OK;
@@ -124,7 +148,7 @@ compile_result compiler_compile(compiler* p_compiler, compiler_specs p_specs) {
     disassembler disassembler;
     disassembler_specs specs = {.chunk = &result.function->chunk, .globals_store = p_compiler->globals_store};
     disassembler_init(&disassembler, specs);
-    debug_disassemble_chunk(&disassembler, "code");
+    debug_disassemble_chunk(&disassembler, "<main>");
     disassembler_deinit(&disassembler);
 #endif // defined (OK_DEBUG_DUMP_CODE)
   }
@@ -183,10 +207,6 @@ bool emit_bytes(compiler* p_compiler, byte* p_bytes, size_t p_bytes_count, ast_n
   return true;
 }
 
-bool end_compile(compiler* p_compiler, ast_node* p_node) {
-  return emit_byte(p_compiler, OP_RETURN, p_node);
-}
-
 void begin_scope(compiler* p_compiler) {
   scope scp;
   scope_init(&scp);
@@ -194,11 +214,13 @@ void begin_scope(compiler* p_compiler) {
   scopes_append(&fun->scopes, scp);
 }
 
-void end_scope(compiler* p_compiler, ast_node* p_node) {
+void end_scope(compiler* p_compiler, ast_node* p_node, bool p_needs_pop) {
   function* fun = current_function(p_compiler);
   scope* scp = &fun->scopes.data[fun->scopes.count - 1];
-  for (uint32_t i = 0; i < scp->locals.count; ++i) {
-    emit_byte(p_compiler, OP_POP, p_node);
+  if (p_needs_pop) {
+    for (uint32_t i = 0; i < scp->locals.count; ++i) {
+      emit_byte(p_compiler, OP_POP, p_node);
+    }
   }
   scopes_remove(&fun->scopes, fun->scopes.count - 1, fun->scopes.count - 1); // TODO: pop
 }
@@ -264,6 +286,10 @@ bool emit_constant(compiler* p_compiler, value p_value, ast_node* p_node) {
   return IS_CONSTANT_VALID(create_constant(p_compiler, p_value, p_node));
 }
 
+bool emit_default_return(compiler* p_compiler, ast_node* p_node) {
+  return emit_2bytes(p_compiler, OP_NULL, OP_RETURN, p_node);
+}
+
 static bool compile_node(compiler* p_compiler, ast_node* p_node) {
   if (p_node == NULL) {
     return false;
@@ -286,6 +312,7 @@ static bool compile_node(compiler* p_compiler, ast_node* p_node) {
   case AST_POSTFIX_UNARY_EXPRESSION:
     return compile_postfix_unary_expression(p_compiler, (ast_postfix_unary_expression*)p_node);
   case AST_CALL_EXPRESSION:
+    return compile_call_expression(p_compiler, (ast_call_expression*)p_node);
   case AST_ASSIGN_EXPRESSION:
     return compile_assign_expression(p_compiler, (ast_assign_expression*)p_node);
   case AST_COMPOUND_ASSIGN_EXPRESSION:
@@ -296,14 +323,17 @@ static bool compile_node(compiler* p_compiler, ast_node* p_node) {
     return compile_boolean_expression(p_compiler, (ast_boolean_expression*)p_node);
   case AST_NULL_EXPRESSION:
     return compile_null_expression(p_compiler, (ast_null_expression*)p_node);
+  case AST_FUNCTION_EXPRESSION:
+    return compile_function_expression(p_compiler, (ast_function_expression*)p_node);
   case AST_ACCESS_EXPRESSION:
   case AST_THIS_EXPRESSION:
   case AST_SUPER_EXPRESSION:
   case AST_ARRAY_EXPRESSION:
   case AST_MAP_EXPRESSION:
   case AST_SUBSCRIPT_EXPRESSION:
-
+    assert(0);
   case AST_EMPTY_STATEMENT:
+    // return true;
     assert(0); // parser bug
   case AST_EXPRESSION_STATEMENT:
     return compile_expression_statement(p_compiler, (ast_expression_statement*)p_node);
@@ -330,6 +360,7 @@ static bool compile_node(compiler* p_compiler, ast_node* p_node) {
   case AST_LET_DECLARATION:
     return compile_let_declration(p_compiler, (ast_let_declaration*)p_node);
   case AST_FUNCTION_DECLARATION:
+    return compile_function_declaration(p_compiler, (ast_function_declaration*)p_node);
   case AST_CLASS_DECLARATION:
     assert(0);
   case AST_EOF_STATEMENT:
@@ -351,18 +382,6 @@ static bool compile_root(compiler* p_compiler, ast_root* p_root) {
   }
   return res;
 }
-
-typedef enum {
-  VARIABLE_DECLRATION_FLAGS_NONE = 0,
-  VARIABLE_DECLARATION_FLAGS_MUTABLE = 1 << 0,
-  VARIABLE_DECLARATION_FLAGS_GLOBAL = 1 << 1,
-} variable_declaration_flags;
-typedef uint8_t variable_declaration_flags_t;
-
-typedef struct {
-  string_view identifier;
-  variable_declaration_flags_t flags;
-} variable_declaration;
 
 static uint32_t add_global(compiler* p_compiler, variable_declaration p_declaration, ast_node* p_node) {
   chunk* chunk = current_chunk(p_compiler);
@@ -436,7 +455,7 @@ static uint32_t* resolve_local(compiler* p_compiler, hashed_string* p_identifier
   return index;
 }
 
-static uint32_t add_local(compiler* p_compiler, const variable_declaration p_declration, ast_node* p_node) {
+uint32_t add_local(compiler* p_compiler, const variable_declaration p_declration, ast_node* p_node) {
   hashed_string hs = create_hashed_string_hash(p_declration.identifier);
   if (hs.string.chars == NULL) {
     error_at(p_compiler,
@@ -494,6 +513,20 @@ static uint32_t add_local(compiler* p_compiler, const variable_declaration p_dec
   return REDEFINED_LOCAL;
 }
 
+bool push_function(compiler* p_compiler, string_view p_name, function_type p_type, uint8_t p_arity, ast_node* p_node) {
+  function fun;
+  object_string* obj_str = create_object_string(p_name, p_compiler->objects_store);
+  if (obj_str == NULL) {
+    return false;
+  }
+  object_function* obj_fu = create_object_function(obj_str, p_arity, p_compiler->objects_store);
+  if (obj_fu == NULL) {
+    return false;
+  }
+  function_init(&fun, obj_fu, p_type);
+  return functions_append(&p_compiler->functions, fun);
+}
+
 static uint32_t declare_variable(compiler* p_compiler, const variable_declaration p_declration, ast_node* p_node) {
   if ((p_declration.flags & VARIABLE_DECLARATION_FLAGS_GLOBAL) == 0) {
     return add_local(p_compiler, p_declration, p_node);
@@ -530,6 +563,20 @@ static bool compile_let_declration(compiler* p_compiler, ast_let_declaration* p_
   }
   bool result = define_variable(p_compiler, vardecl, variable, (ast_node*)p_let);
   return result;
+}
+
+static bool compile_function_declaration(compiler* p_compiler, ast_function_declaration* p_fu) {
+  string_view name = ast_identifier_expression_get_value((ast_identifier_expression*)p_fu->binding->lvalue);
+  variable_declaration vardecl = {
+      .identifier = name,
+      .flags = variable_declaration_flags_from_modifiers(p_fu->declaration.modifiers, p_fu->binding->modifiers)};
+  uint32_t index = declare_variable(p_compiler, vardecl, (ast_node*)p_fu);
+  if (IS_VARIABLE_DECLARATION_VALID(index)) {
+    bool status =
+        compile_function_impl(p_compiler, name, FUNCTION_FUNCTION, p_fu->parameters, p_fu->body, (ast_node*)p_fu);
+    return status & define_variable(p_compiler, vardecl, index, (ast_node*)p_fu);
+  }
+  return false;
 }
 
 static bool compile_expression_statement(compiler* p_compiler, ast_expression_statement* p_expression_statement) {
@@ -660,11 +707,12 @@ static bool compile_identifier(compiler* p_compiler, ast_identifier_expression* 
 }
 
 bool compile_eof_statement(compiler* p_compiler, ast_eof_statement* p_eof) {
-  bool res = emit_byte(p_compiler, OP_RETURN, (ast_node*)p_eof);
-  end_scope(p_compiler,
-            (ast_node*)p_eof); // TODO: we need to end scope at compile time but we dont really care about pops because
-                               // vm will automatically handle that, so this is just extra code bloat remove it.
-  return res;
+  // bool res = emit_byte(p_compiler, OP_RETURN, (ast_node*)p_eof);
+  // end_scope(p_compiler,
+  //           (ast_node*)p_eof); // TODO: we need to end scope at compile time but we dont really care about pops
+  //           because
+  //  vm will automatically handle that, so this is just extra code bloat remove it.
+  return true;
 }
 
 bool compile_print_statement(compiler* p_compiler, ast_print_statement* p_print) {
@@ -680,7 +728,7 @@ bool compile_compound_statement(compiler* p_compiler, ast_compound_statement* p_
   for (uint32_t i = 0; i < p_compound->statements.count; ++i) {
     status &= compile_node(p_compiler, (ast_node*)p_compound->statements.data[i]);
   }
-  end_scope(p_compiler, (ast_node*)p_compound);
+  end_scope(p_compiler, (ast_node*)p_compound, true);
   return status;
 }
 
@@ -836,7 +884,7 @@ bool compile_for_statement(compiler* p_compiler, ast_for_statement* p_for) {
   }
   patch_loop_context(p_compiler, &CTX, (ast_node*)p_for);
   loop_stack_remove(&fun->loop_stack, fun->loop_stack.count - 1, fun->loop_stack.count - 1);
-  end_scope(p_compiler, (ast_node*)p_for);
+  end_scope(p_compiler, (ast_node*)p_for, true);
   return status;
 #undef CTX
 }
@@ -871,6 +919,14 @@ bool compile_control_flow_statement(compiler* p_compiler, ast_control_flow_state
     status &= uint32_array_append(&ctx->continues, jmp);
   }
   return status;
+}
+
+static bool compile_return_statement(compiler* p_compiler, ast_return_statement* p_return) {
+  if (p_return->returned == NULL) {
+    return emit_default_return(p_compiler, (ast_node*)p_return);
+  }
+  bool status = compile_node(p_compiler, (ast_node*)p_return->returned);
+  return status & emit_byte(p_compiler, OP_RETURN, (ast_node*)p_return);
 }
 
 static bool compile_number_expression(compiler* p_compiler, ast_number_expression* p_number) {
@@ -962,6 +1018,31 @@ static bool compile_assign_expression(compiler* p_compiler, ast_assign_expressio
   return true;
 }
 
+static uint32_t
+compile_expressions_list(compiler* p_compiler, ast_expressions_list* p_list, uint32_t p_limit, ast_node* p_node) {
+  if (p_list->count > p_limit) {
+    string note = asprint("limit is: %d.", p_limit);
+    error_at_noted(p_compiler,
+                   (ast_node*)p_node,
+                   create_string_view("too many arguments.", STRING_VIEW_CALCULATE_LENGTH, true),
+                   create_string_view_from_string(note));
+    string_deinit(&note);
+    return UINT32_MAX;
+  }
+  for (uint32_t i = 0; i < p_list->count; ++i) {
+    ast_expression* arg = p_list->data[i];
+    compile_node(p_compiler, (ast_node*)arg);
+  }
+  return p_list->count;
+}
+
+bool compile_call_expression(compiler* p_compiler, ast_call_expression* p_call) {
+  bool status = compile_node(p_compiler, (ast_node*)p_call->callable);
+  uint32_t count = compile_expressions_list(p_compiler, &p_call->arguments, OP_CALL_MAX, (ast_node*)p_call);
+  status &= count != UINT32_MAX;
+  return status & emit_2bytes(p_compiler, OP_CALL, count, (ast_node*)p_call);
+}
+
 bool compile_logical_operator(compiler* p_compiler, ast_infix_binary_expression* p_logical) {
   bool result = compile_node(p_compiler, (ast_node*)p_logical->left);
   op_code instruction = p_logical->_operator == OPERATOR_AND ? OP_FALSY_JUMP : OP_TRUTHY_JUMP;
@@ -980,4 +1061,65 @@ static bool compile_boolean_expression(compiler* p_compiler, ast_boolean_express
 
 static bool compile_null_expression(compiler* p_compiler, ast_null_expression* p_null) {
   return emit_byte(p_compiler, OP_NULL, (ast_node*)p_null);
+}
+
+bool compile_function_expression(compiler* p_compiler, ast_function_expression* p_fu) {
+  return compile_function_impl(p_compiler,
+                               create_string_view("<lambda>", STRING_VIEW_CALCULATE_LENGTH, true),
+                               FUNCTION_FUNCTION,
+                               p_fu->parameters,
+                               p_fu->body,
+                               (ast_node*)p_fu);
+}
+
+static bool compile_function_impl(compiler* p_compiler,
+                                  string_view p_name,
+                                  function_type p_type,
+                                  ast_bindings_list p_params,
+                                  ast_statement* p_body,
+                                  ast_node* p_node) {
+  if (p_params.count > UINT8_MAX) {
+    string note = asprint("limit is: %d", UINT8_MAX);
+    error_at_noted(p_compiler,
+                   p_node,
+                   create_string_view("too many function parameters.", STRING_VIEW_CALCULATE_LENGTH, true),
+                   create_string_view_from_string(note));
+    string_deinit(&note);
+    return false;
+  }
+  bool status = push_function(p_compiler, p_name, p_type, p_params.count, p_node);
+  begin_scope(p_compiler);
+  printf("name is: \"%.*s\".\n", string_view_get_length(&p_name), p_name.chars);
+  variable_declaration decl = {.identifier = p_name, .flags = DECLARATION_NONE};
+  status &= IS_LOCAL_INDEX_VALID(add_local(p_compiler, decl, p_node));
+  for (uint32_t i = 0; i < p_params.count; ++i) {
+    ast_binding* binding = p_params.data[i];
+    variable_declaration decl = {
+        .identifier = ast_identifier_expression_get_value((ast_identifier_expression*)binding->lvalue),
+        .flags = variable_declaration_flags_from_modifiers(DECLARATION_NONE, binding->modifiers)};
+    uint32_t index = declare_variable(p_compiler, decl, (ast_node*)binding);
+    status &= IS_VARIABLE_DECLARATION_VALID(index);
+    if (status) {
+      status &= define_variable(p_compiler, decl, index, (ast_node*)binding);
+    } else {
+      error_at(p_compiler,
+               (ast_node*)binding,
+               create_string_view("failed to bind function parameter.", STRING_VIEW_CALCULATE_LENGTH, true));
+      break;
+    }
+  }
+  status &= compile_node(p_compiler, (ast_node*)p_body);
+  status &= emit_default_return(p_compiler, p_node);
+  end_scope(p_compiler, p_node, false);
+  object_function* funct = current_function(p_compiler)->function.function;
+  status &= functions_remove(&p_compiler->functions, p_compiler->functions.count - 1, p_compiler->functions.count - 1);
+  emit_constant(p_compiler, OBJECT_AS_VALUE(funct), p_node);
+#if defined(OK_DEBUG_DUMP_CODE)
+  disassembler disassembler;
+  disassembler_specs specs = {.chunk = &funct->chunk, .globals_store = p_compiler->globals_store};
+  disassembler_init(&disassembler, specs);
+  debug_disassemble_chunk(&disassembler, funct->name->string.chars);
+  disassembler_deinit(&disassembler);
+#endif // defined (OK_DEBUG_DUMP_CODE)
+  return status;
 }

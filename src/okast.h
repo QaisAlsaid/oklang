@@ -40,6 +40,7 @@ typedef enum {
   AST_ARRAY_EXPRESSION,
   AST_MAP_EXPRESSION,
   AST_SUBSCRIPT_EXPRESSION,
+  AST_FUNCTION_EXPRESSION,
 
   AST_EMPTY_STATEMENT,
   AST_EXPRESSION_STATEMENT,
@@ -260,6 +261,38 @@ void ast_assign_expression_deinit(ast_assign_expression* p_assign);
 bool ast_assign_expression_print(const ast_assign_expression* p_assign);
 string ast_assign_expression_asprint(const ast_assign_expression* p_assign);
 
+ARRAY_DECLARE_DEFAULT(ast_bindings_list, ast_binding*)
+
+typedef struct {
+  ast_expression expression;
+  ast_bindings_list parameters;
+  ast_statement* body;
+} ast_function_expression;
+
+void ast_function_expression_init(ast_function_expression* p_function,
+                                  const token p_token,
+                                  ast_bindings_list p_params,
+                                  ast_statement* p_body);
+void ast_function_expression_deinit(ast_function_expression* p_function);
+bool ast_function_expression_print(const ast_function_expression* p_function);
+string ast_function_expression_asprint(const ast_function_expression* p_function);
+
+ARRAY_DECLARE_DEFAULT(ast_expressions_list, ast_expression*)
+
+typedef struct {
+  ast_expression expression;
+  ast_expression* callable;
+  ast_expressions_list arguments;
+} ast_call_expression;
+
+void ast_call_expression_init(ast_call_expression* p_call,
+                              const token p_token,
+                              ast_expression* p_callable,
+                              ast_expressions_list p_args);
+void ast_call_expression_deinit(ast_call_expression* p_call);
+bool ast_call_expression_print(const ast_call_expression* p_call);
+string ast_call_expression_asprint(const ast_call_expression* p_call);
+
 typedef struct {
   ast_statement statement;
 } ast_empty_statement;
@@ -365,6 +398,16 @@ bool ast_control_flow_statement_print(const ast_control_flow_statement* p_contro
 string ast_control_flow_statement_asprint(const ast_control_flow_statement* p_control_flow);
 
 typedef struct {
+  ast_statement statement;
+  ast_expression* returned;
+} ast_return_statement;
+
+void ast_return_statement_init(ast_return_statement* p_return, ast_expression* p_returned, token p_token);
+void ast_return_statement_deinit(ast_return_statement* p_return);
+bool ast_return_statement_print(const ast_return_statement* p_return);
+string ast_return_statement_asprint(const ast_return_statement* p_return);
+
+typedef struct {
   ast_declaration declaration;
   ast_binding* binding;
   ast_expression* value;
@@ -378,6 +421,23 @@ void ast_let_declaration_init(ast_let_declaration* p_let,
 void ast_let_declaration_deinit(ast_let_declaration* p_let);
 bool ast_let_declaration_print(const ast_let_declaration* p_let);
 string ast_let_declaration_asprint(const ast_let_declaration* p_let);
+
+typedef struct {
+  ast_declaration declaration;
+  ast_binding* binding;
+  ast_bindings_list parameters;
+  ast_statement* body;
+} ast_function_declaration;
+
+void ast_function_declaration_init(ast_function_declaration* p_fu,
+                                   ast_binding* p_binding,
+                                   ast_bindings_list p_params,
+                                   ast_statement* p_body,
+                                   ast_declaration_modifiers_t p_modifiers,
+                                   const token p_token);
+void ast_function_declaration_deinit(ast_function_declaration* p_fu);
+bool ast_function_declaration_print(const ast_function_declaration* p_fu);
+string ast_function_declaration_asprint(const ast_function_declaration* p_fu);
 
 bool ast_dispatch_print(ast_node* p_node);
 string ast_dispatch_asprint(ast_node* p_node);

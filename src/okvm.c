@@ -18,6 +18,8 @@ static bool is_falsy(value p_value);
 static bool values_equal(value p_lhs, value p_rhs);
 static value* read_local(vm* p_vm, call_frame* p_frame);
 static value* read_local_long(vm* p_vm, call_frame* p_frame);
+static bool call_value(vm* p_vm, value p_callee, uint32_t p_argc);
+static bool call(vm* p_vm, object_function* p_fu, uint32_t p_argc);
 
 void interpret_result_deinit(interpret_result* p_interpret_result) {
 }
@@ -42,9 +44,8 @@ interpret_result vm_interpret(vm* p_vm, interpret_specs p_specs) {
   p_vm->source = p_specs.source; // having it this way means only one source per vm. but it's ok will fix soon.
   p_vm->objects_store = p_specs.objects_store;
   p_vm->globals_store = p_specs.globals_store;
-  call_frame frame = {.function = p_specs.function, .ip = p_specs.function->chunk.code.data, .slots = 0, .top = 0};
-  stack_push(&p_vm->stack, OBJECT_AS_VALUE(frame.function));
-  call_stack_append(&p_vm->call_stack, frame);
+  stack_push(&p_vm->stack, OBJECT_AS_VALUE(p_specs.function));
+  call_value(p_vm, stack_top(&p_vm->stack, 0), 0);
   interpret_result interpret_result = vm_run(p_vm);
   return interpret_result;
 }
@@ -67,20 +68,19 @@ interpret_result vm_run(vm* p_vm) {
     stack_push(&p_vm->stack, VALUE(lhs op rhs));                                                                       \
   } while (0);
 
-#if defined(OK_TRACE_EXECUTION)
-  disassembler disassembler;
-  disassembler_specs specs = {.chunk = &frame->function->chunk, .globals_store = p_vm->globals_store};
-  disassembler_init(&disassembler, specs);
-#endif // defined(OK_TRACE_EXECUTION)
-
   for (;;) {
 #if defined(OK_TRACE_EXECUTION)
+    disassembler disassembler;
+    disassembler_specs specs = {.chunk = &frame->function->chunk, .globals_store = p_vm->globals_store};
+    disassembler_init(&disassembler, specs);
+
+    printf("[ ");
     for (value* slot = p_vm->stack.array.data; slot < p_vm->stack.array.data + p_vm->stack.top; ++slot) {
-      printf("[ ");
+      printf("[");
       value_debug_print(*slot);
-      printf(" ]");
+      printf("]");
     }
-    printf("\n");
+    printf(" ]\n");
     debug_disassemble_instruction(&disassembler, (uint32_t)(frame->ip - frame->function->chunk.code.data));
 #endif // defined(OK_TRACE_EXECUTION)
 
@@ -88,10 +88,26 @@ interpret_result vm_run(vm* p_vm) {
     switch (instruction) {
     case OP_RETURN: {
       value returned = stack_popr(&p_vm->stack);
-      interpret_result result;
-      result.top_level_return = returned;
-      result.status = RUNTIME_OK;
-      return result;
+      stack_resize(&p_vm->stack, frame->slots);
+      call_stack_remove(&p_vm->call_stack, p_vm->call_stack.count - 1, p_vm->call_stack.count - 1);
+      if (p_vm->call_stack.count == 0) {
+#if defined(OK_TRACE_EXECUTION)
+        printf("[ ");
+        for (value* slot = p_vm->stack.array.data; slot < p_vm->stack.array.data + p_vm->stack.top; ++slot) {
+          printf("[ ");
+          value_debug_print(*slot);
+          printf(" ]");
+        }
+        printf(" ]\n");
+#endif // defined(OK_TRACE_EXECUTION)
+        interpret_result result;
+        result.top_level_return = returned;
+        result.status = RUNTIME_OK;
+        return result;
+      }
+      stack_push(&p_vm->stack, returned);
+      frame = &p_vm->call_stack.data[p_vm->call_stack.count - 1];
+      break;
     }
     case OP_CONSTANT: {
       value constant = READ_CONSTANT();
@@ -174,6 +190,17 @@ interpret_result vm_run(vm* p_vm) {
       *read_local_long(p_vm, frame) = stack_top(&p_vm->stack, 0);
       break;
     }
+    case OP_CALL: {
+      const uint8_t argc = READ_BYTE();
+      if (!call_value(p_vm, stack_top(&p_vm->stack, argc), argc)) {
+        interpret_result result;
+        result.status = RUNTIME_ERROR;
+        result.top_level_return = NULL_AS_VALUE();
+        return result;
+      }
+      frame = &p_vm->call_stack.data[p_vm->call_stack.count - 1];
+      break;
+    }
     case OP_NOT: {
       value* top = stack_top_ptr(&p_vm->stack, 0);
       *top = BOOL_AS_VALUE(is_falsy(*top));
@@ -252,31 +279,68 @@ void runtime_error(vm* p_vm, const char* p_fmt, ...) {
   size_t instruction = frame->ip - frame->function->chunk.code.data - 1;
   line_info_repeated* info = source_info_find(&frame->function->chunk.source_info, instruction);
   if (info != NULL) {
-    fprintf(stderr, "%s:%d:%d", p_vm->source->path, info->line_info.line, info->line_info.offset);
+    fprintf(stderr, "\n%s:%d:%d ", p_vm->source->path, info->line_info.line, info->line_info.offset);
   }
   va_list ap;
   va_start(ap, p_fmt);
   vfprintf(stderr, p_fmt, ap);
   va_end(ap);
-  fputs("", stderr);
+  fputs("\nstack trace (most recent call last):\n", stderr);
+  for (uint32_t i = 0; i < p_vm->call_stack.count; ++i) {
+    call_frame* frame = &p_vm->call_stack.data[i];
+    uint32_t instruction = frame->ip - frame->function->chunk.code.data - 1;
+    fprintf(stderr,
+            "%s:%d:%d in %s\n",
+            p_vm->source->path,
+            info->line_info.line,
+            info->line_info.offset,
+            frame->function->name->string.chars);
+  }
   stack_resize(&p_vm->stack, 0);
+  p_vm->call_stack.count = 0;
 }
 
-static value* read_local(vm* p_vm, call_frame* p_frame) {
+value* read_local(vm* p_vm, call_frame* p_frame) {
   return &p_vm->stack.array.data[p_frame->slots + *p_frame->ip++];
 }
 
-static value* read_local_long(vm* p_vm, call_frame* p_frame) {
+value* read_local_long(vm* p_vm, call_frame* p_frame) {
   value* ret = &p_vm->stack.array.data[p_frame->slots + decode_int(p_frame->ip, OP_XX_LOCAL_LONG_OPERANDS_WIDTH)];
   p_frame->ip += OP_XX_LOCAL_LONG_OPERANDS_WIDTH;
   return ret;
+}
+
+bool call_value(vm* p_vm, value p_callee, uint32_t p_argc) {
+  if (IS_VALUE_OBJECT(p_callee)) {
+    object* obj = VALUE_AS_OBJECT(p_callee);
+    switch (object_get_type(obj)) {
+    case OBJ_FUNCTION:
+      return call(p_vm, VALUE_AS_FUNCTION(p_callee), p_argc);
+    default:;
+    }
+  }
+  runtime_error(p_vm, "invalid call: value is not callable.");
+  return false;
+}
+
+bool call(vm* p_vm, object_function* p_fu, uint32_t p_argc) {
+  if (p_argc != p_fu->arity) {
+    runtime_error(p_vm, "invalid call: expected %d arguments, got: %d", p_fu->arity, p_argc);
+    return false;
+  }
+  call_frame frame;
+  frame.function = p_fu;
+  frame.ip = p_fu->chunk.code.data;
+  frame.slots = p_vm->stack.top - p_argc - 1;
+  frame.top = frame.slots;
+  return call_stack_append(&p_vm->call_stack, frame);
 }
 
 bool is_falsy(value p_value) {
   return (IS_VALUE_BOOL(p_value) && !VALUE_AS_BOOL(p_value)) || IS_VALUE_NULL(p_value);
 }
 
-static bool values_equal(value p_lhs, value p_rhs) {
+bool values_equal(value p_lhs, value p_rhs) {
   if (IS_VALUE_NUMBER(p_lhs) && IS_VALUE_NUMBER(p_rhs))
     return VALUE_AS_NUMBER(p_lhs) == VALUE_AS_NUMBER(p_rhs);
   else if (IS_VALUE_STRING(p_lhs) && IS_VALUE_STRING(p_rhs)) {
