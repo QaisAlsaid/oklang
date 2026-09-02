@@ -774,10 +774,10 @@ static uint32_t resolve_upvalue(compiler* p_compiler, hashed_string p_identifier
 static uint32_t get_upvalue(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
   hashed_string hs = create_hashed_string_hash(p_identifier);
   uint32_t up = resolve_upvalue(p_compiler, hs, p_compiler->functions.count - 1, p_node);
+  hashed_string_deinit(&hs);
   if (!IS_UPVALUE_INDEX_VALID(up)) {
     return up;
   }
-  hashed_string_deinit(&hs);
   if (up > OP_GET_UPVALUE_MAX) {
     emit_byte(p_compiler, OP_GET_UPVALUE_LONG, p_node);
     byte bytes[UINT24_BYTE_COUNT] = {0};
@@ -792,10 +792,10 @@ static uint32_t get_upvalue(compiler* p_compiler, const string_view p_identifier
 static uint32_t set_upvalue(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
   hashed_string hs = create_hashed_string_hash(p_identifier);
   uint32_t up = resolve_upvalue(p_compiler, hs, p_compiler->functions.count - 1, p_node);
+  hashed_string_deinit(&hs);
   if (!IS_UPVALUE_INDEX_VALID(up)) {
     return up;
   }
-  hashed_string_deinit(&hs);
   if (up > OP_SET_UPVALUE_MAX) {
     emit_byte(p_compiler, OP_SET_UPVALUE_LONG, p_node);
     byte bytes[UINT24_BYTE_COUNT] = {0};
