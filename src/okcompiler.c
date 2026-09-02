@@ -401,6 +401,7 @@ static bool compile_node(compiler* p_compiler, ast_node* p_node) {
   case AST_CONTROL_FLOW_STATEMENT:
     return compile_control_flow_statement(p_compiler, (ast_control_flow_statement*)p_node);
   case AST_RETURN_STATEMENT:
+    return compile_return_statement(p_compiler, (ast_return_statement*)p_node);
   case AST_THROW_STATEMENT:
   case AST_TRY_STATEMENT:
   case AST_CATCH_STATEMENT:

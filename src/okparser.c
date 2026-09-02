@@ -1189,21 +1189,21 @@ ast_control_flow_statement* parse_control_flow_statement(parser* p_parser) {
 
 static ast_return_statement* parse_return_statement(parser* p_parser) {
   token return_tok = p_parser->previous;
-  advance(p_parser);
   ast_expression* returned = NULL;
-  if (p_parser->current.type == TOKEN_SEMICOLON) {
-    ast_expression* returned = parse_expression(p_parser, PREC_NONE);
+  if (p_parser->current.type != TOKEN_SEMICOLON) {
+    advance(p_parser);
+    returned = parse_expression(p_parser, PREC_NONE);
     if (returned == NULL) {
       return NULL;
     }
-
-    if (p_parser->current.type != TOKEN_SEMICOLON) {
-      error_at(p_parser,
-               p_parser->current,
-               create_string_view("expected ';' after return statement.", STRING_VIEW_CALCULATE_LENGTH, true));
-      goto free;
-    }
   }
+  if (p_parser->current.type != TOKEN_SEMICOLON) {
+    error_at(p_parser,
+             p_parser->current,
+             create_string_view("expected ';' after return statement.", STRING_VIEW_CALCULATE_LENGTH, true));
+    goto free;
+  }
+
   advance(p_parser);
   ast_return_statement* ret = (ast_return_statement*)malloc(sizeof(ast_return_statement));
   if (ret == NULL) {

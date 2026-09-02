@@ -957,22 +957,31 @@ void ast_return_statement_init(ast_return_statement* p_return, ast_expression* p
 }
 
 void ast_return_statement_deinit(ast_return_statement* p_return) {
-  ast_dispatch_deinit((ast_node*)p_return->returned);
-  free(p_return->returned);
-  p_return->returned = NULL;
+  if (p_return->returned != NULL) {
+    ast_dispatch_deinit((ast_node*)p_return->returned);
+    free(p_return->returned);
+    p_return->returned = NULL;
+  }
   ast_statement_deinit(&p_return->statement);
 }
 
 bool ast_return_statement_print(const ast_return_statement* p_return) {
   bool res = printf("return ") > 0;
-  return ast_dispatch_print((ast_node*)p_return->returned) & res;
+  if (p_return->returned != NULL) {
+    res &= ast_dispatch_print((ast_node*)p_return->returned);
+  }
+  return res;
 }
 
 string ast_return_statement_asprint(const ast_return_statement* p_return) {
-  string returned_str = ast_dispatch_asprint((ast_node*)p_return->returned);
-  string res = asprint("return %s", returned_str.chars);
-  string_deinit(&returned_str);
-  return res;
+  if (p_return->returned != NULL) {
+    string returned_str = ast_dispatch_asprint((ast_node*)p_return->returned);
+
+    string res = asprint("return %s", returned_str.chars);
+    string_deinit(&returned_str);
+    return res;
+  }
+  return create_string("return", STRING_CALCULATE_LENGTH, false);
 }
 
 void ast_let_declaration_init(ast_let_declaration* p_let,
