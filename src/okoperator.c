@@ -26,6 +26,8 @@ operator_type operator_type_from_token_type(const token_type p_token_type) {
     return OPERATOR_GREATER_EQUAL;
   case TOKEN_LESS:
     return OPERATOR_LESS;
+  case TOKEN_LESS_EQUAL:
+    return OPERATOR_LESS_EQUAL;
   case TOKEN_LEFT_PAREN:
     return OPERATOR_CALL;
   case TOKEN_LEFT_BRACKET:

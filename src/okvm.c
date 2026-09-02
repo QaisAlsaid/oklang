@@ -3,7 +3,9 @@
 #include <string.h>
 
 #include "okvm.h"
+#if defined(OK_PARANDOID)
 #define OK_TRACE_EXECUTION
+#endif // defined(OK_PARANOID)
 #if defined(OK_TRACE_EXECUTION)
 #include "okdebug.h"
 #endif // defined(OK_TRACE_EXECUTION)
