@@ -3,7 +3,7 @@
 #include <string.h>
 
 #include "okvm.h"
-#if defined(OK_PARANDOID)
+#if defined(OK_PARANOID)
 #define OK_TRACE_EXECUTION
 #endif // defined(OK_PARANOID)
 #if defined(OK_TRACE_EXECUTION)
@@ -294,7 +294,7 @@ interpret_result vm_run(vm* p_vm) {
         result.top_level_return = NULL_AS_VALUE();
         return result;
       }
-      *top = -*top;
+      *top = NUMBER_AS_VALUE(-VALUE_AS_NUMBER(*top));
       break;
     }
     case OP_ADD: {
