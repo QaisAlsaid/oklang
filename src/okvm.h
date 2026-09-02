@@ -31,7 +31,7 @@ value stack_popr(stack* p_stack);
 void stack_free(stack* p_stack);
 
 typedef struct {
-  object_function* function;
+  object_closure* closure;
   byte* ip;
   uint32_t slots;
   uint32_t top;
@@ -45,6 +45,7 @@ typedef struct {
   source* source;
   object_store* objects_store;
   globals_store* globals_store;
+  object_upvalue* open_upvalues;
 } vm;
 
 typedef enum {

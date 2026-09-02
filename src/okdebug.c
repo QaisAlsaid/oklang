@@ -3,6 +3,7 @@
 
 #include "okdebug.h"
 #include "okglobals_store.h"
+#include "okobject.h"
 #include "okutils.h"
 
 #define UNKNOWN_ASSUMED_WIDTH 1
@@ -18,6 +19,9 @@ static uint32_t local_long_instruction(const char* p_opname, const uint32_t p_of
 static uint32_t jump_instruction(const char* p_opname, const uint32_t p_offset, const chunk* p_chunk);
 static uint32_t loop_instruction(const char* p_opname, const uint32_t p_offset, const chunk* p_chunk);
 static uint32_t call_instruction(const char* p_opname, const uint32_t p_offset, const chunk* p_chunk);
+static uint32_t upvalue_instruction(const char* p_opname, const uint32_t p_offset, const chunk* p_chunk);
+static uint32_t upvalue_long_instruction(const char* p_opname, const uint32_t p_offset, const chunk* p_chunk);
+static uint32_t closure_instruction(const char* p_opname, uint32_t p_offset, const chunk* p_chunk);
 
 void disassembler_init(disassembler* p_disassembler, disassembler_specs p_specs) {
   p_disassembler->chunk = p_specs.chunk;
@@ -109,8 +113,20 @@ uint32_t debug_disassemble_instruction(disassembler* p_disassembler, uint32_t p_
     return local_instruction("OP_SET_LOCAL", p_offset, p_disassembler->chunk);
   case OP_SET_LOCAL_LONG:
     return local_long_instruction("OP_SET_LOCAL_LONG", p_offset, p_disassembler->chunk);
+  case OP_GET_UPVALUE:
+    return upvalue_instruction("OP_GET_UPVALUE", p_offset, chunk);
+  case OP_GET_UPVALUE_LONG:
+    return upvalue_long_instruction("OP_GET_UPVALUE_LONG", p_offset, chunk);
+  case OP_SET_UPVALUE:
+    return upvalue_instruction("OP_SET_UPVALUE", p_offset, chunk);
+  case OP_SET_UPVALUE_LONG:
+    return upvalue_long_instruction("OP_SET_UPVALUE_LONG", p_offset, chunk);
+  case OP_CLOSE_UPVALUE:
+    return op_code_instruction("OP_CLOSE_UPVALUE", p_offset);
   case OP_CALL:
-    return call_instruction("OP_CALL", p_offset, p_disassembler->chunk);
+    return call_instruction("OP_CALL", p_offset, chunk);
+  case OP_CLOSURE:
+    return closure_instruction("OP_CLOSURE", p_offset, chunk);
   case OP_NOT:
     return op_code_instruction("OP_NOT", p_offset);
   case OP_NEGATE:
@@ -207,4 +223,32 @@ uint32_t call_instruction(const char* p_opname, const uint32_t p_offset, const c
   const byte argc = p_chunk->code.data[p_offset + OP_CODE_WIDTH];
   printf("%-16s %4d\n", p_opname, argc);
   return p_offset + OP_CODE_WIDTH + OP_CALL_OPERANDS_WIDTH;
+}
+
+uint32_t upvalue_instruction(const char* p_opname, const uint32_t p_offset, const chunk* p_chunk) {
+  const byte up = p_chunk->code.data[p_offset + OP_XX_UPVALUE_OPERANDS_WIDTH];
+  printf("%-16s %4d\n", p_opname, up);
+  return p_offset + OP_CODE_WIDTH + OP_XX_UPVALUE_OPERANDS_WIDTH;
+}
+
+uint32_t upvalue_long_instruction(const char* p_opname, const uint32_t p_offset, const chunk* p_chunk) {
+  const uint32_t up = decode_int(p_chunk->code.data + p_offset + OP_CODE_WIDTH, OP_XX_UPVALUE_LONG_OPERANDS_WIDTH);
+  printf("%-16s %4d\n", p_opname, up);
+  return p_offset + OP_CODE_WIDTH + OP_XX_UPVALUE_LONG_OPERANDS_WIDTH;
+}
+
+uint32_t closure_instruction(const char* p_opname, uint32_t p_offset, const chunk* p_chunk) {
+  uint32_t constant = decode_int(p_chunk->code.data + ++p_offset, OP_CONSTANT_LONG_OPERANDS_WIDTH);
+  p_offset += 3;
+  printf("%-16s %4d ", p_opname, constant);
+  value val = p_chunk->constants.data[constant];
+  value_debug_print(val);
+  object_function* fu = VALUE_AS_FUNCTION(val);
+  for (uint32_t i = 0; i < fu->upvalues; ++i) {
+    bool is_local = (bool)p_chunk->code.data[++p_offset];                            // one byte is_local;
+    uint32_t index = decode_int(p_chunk->code.data + ++p_offset, UINT24_BYTE_COUNT); // 3 bytes index
+    printf("%04d | %s %d\n", p_offset - 2, is_local ? "local" : "upvalue", index);
+    p_offset += 3;
+  }
+  return ++p_offset;
 }

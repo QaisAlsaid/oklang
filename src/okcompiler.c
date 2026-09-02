@@ -20,6 +20,22 @@ typedef struct {
   variable_declaration_flags_t flags;
 } variable_declaration;
 
+static inline uint32_t local_get_raw_index(uint32_t p_packed) {
+  return p_packed & 0x00ffffff;
+}
+
+static bool local_test_flag(uint32_t p_packed, uint8_t p_flag) {
+  return (p_packed & (UINT32_C(1) << (24 + p_flag))) != 0;
+}
+
+static void local_set_flag(uint32_t* p_packed, uint8_t p_flag) {
+  *p_packed |= UINT32_C(1) << (24 + p_flag);
+}
+
+static void local_remove_flag(uint32_t* p_packed, uint8_t p_flag) {
+  *p_packed &= ~(UINT32_C(1) << (24 + p_flag));
+}
+
 #define LOCAL_FLAGS_MASK 0x00ffffff
 #define ARE_KEYS_EQUAL(lhs, rhs) (strncmp(lhs.string.chars, rhs.string.chars, string_get_length(&lhs.string)) == 0)
 #define GET_HASH(key) (key.hash)
@@ -39,7 +55,11 @@ static void function_init(function* p_function, object_function* p_obj_function,
 static void function_deinit(function* p_function);
 static void loop_context_init(loop_context* p_context);
 static void loop_context_deinit(loop_context* p_context);
+static upvalue create_upvalue(uint32_t p_index, bool p_is_local);
+static uint32_t upvalue_get_index(upvalue* p_upvalue);
+static bool upvalue_is_local(upvalue* p_upvalue);
 ARRAY_DEFINE_DEFAULT(locals, local, ARRAY_DEFAULT_TYPE_DEINIT)
+ARRAY_DEFINE_DEFAULT(upvalues, upvalue, ARRAY_DEFAULT_TYPE_DEINIT)
 ARRAY_DEFINE_DEFAULT(scopes, scope, scope_deinit)
 ARRAY_DEFINE_DEFAULT(functions, function, function_deinit)
 ARRAY_DEFINE_DEFAULT(uint32_array, uint32_t, ARRAY_DEFAULT_TYPE_DEINIT)
@@ -217,24 +237,30 @@ void begin_scope(compiler* p_compiler) {
 void end_scope(compiler* p_compiler, ast_node* p_node, bool p_needs_pop) {
   function* fun = current_function(p_compiler);
   scope* scp = &fun->scopes.data[fun->scopes.count - 1];
-  if (p_needs_pop) {
-    for (uint32_t i = 0; i < scp->locals.count; ++i) {
+  for (uint32_t i = 0; i < scp->locals_array.count; ++i) {
+    if (local_test_flag(fun->locals.data[scp->locals_array.data[i]].info, LOCAL_FLAG_CAPTURED)) {
+      emit_byte(p_compiler, OP_CLOSE_UPVALUE, p_node);
+    } else if (p_needs_pop) {
       emit_byte(p_compiler, OP_POP, p_node);
     }
   }
+
   scopes_remove(&fun->scopes, fun->scopes.count - 1, fun->scopes.count - 1); // TODO: pop
 }
 
 void scope_init(scope* p_scope) {
-  scope_locals_init(&p_scope->locals);
+  scope_locals_init(&p_scope->locals_table);
+  uint32_array_init(&p_scope->locals_array);
 }
 
 void scope_deinit(scope* p_scope) {
-  scope_locals_deinit(&p_scope->locals);
+  scope_locals_deinit(&p_scope->locals_table);
+  uint32_array_deinit(&p_scope->locals_array);
 }
 
 void function_init(function* p_function, object_function* p_obj_function, function_type p_type) {
   locals_init(&p_function->locals);
+  upvalues_init(&p_function->upvalues);
   scopes_init(&p_function->scopes);
   loop_stack_init(&p_function->loop_stack);
   p_function->function.function = p_obj_function;
@@ -242,9 +268,10 @@ void function_init(function* p_function, object_function* p_obj_function, functi
 }
 
 void function_deinit(function* p_function) {
-  scopes_deinit(&p_function->scopes);
-  locals_deinit(&p_function->locals);
   loop_stack_deinit(&p_function->loop_stack);
+  scopes_deinit(&p_function->scopes);
+  upvalues_deinit(&p_function->upvalues);
+  locals_deinit(&p_function->locals);
   p_function->function.function = NULL;
   p_function->function.type = FUNCTION_NONE;
 }
@@ -262,7 +289,35 @@ void loop_context_deinit(loop_context* p_context) {
   uint32_array_deinit(&p_context->breaks);
 }
 
+upvalue create_upvalue(uint32_t p_index, bool p_is_local) {
+  upvalue up;
+  up.info = p_index & 0x00ffffff;
+  if (p_is_local) {
+    up.info |= UINT32_C(1) << 24;
+  }
+  return up;
+}
+
+uint32_t upvalue_get_index(upvalue* p_upvalue) {
+  return p_upvalue->info & 0x00ffffff;
+}
+
+bool upvalue_is_local(upvalue* p_upvalue) {
+  return (p_upvalue->info & (UINT32_C(1) << 24)) != 0;
+}
+
 uint32_t create_constant(compiler* p_compiler, value p_value, ast_node* p_node) {
+  value_array* constants = &current_function(p_compiler)->function.function->chunk.constants;
+  if (constants->count >= CONSTANT_MAX) {
+    return CONSTANT_OVERFLOW;
+  }
+  if (!value_array_append(constants, p_value)) {
+    return CONSTANT_OVERFLOW;
+  }
+  return constants->count - 1;
+}
+
+bool emit_constant(compiler* p_compiler, value p_value, ast_node* p_node) {
   chunk* chunk = current_chunk(p_compiler);
   const uint32_t index = chunk_write_constant_with_line_info(chunk, p_value, p_node->token.line_info);
   if (!IS_CONSTANT_VALID(index)) {
@@ -279,11 +334,7 @@ uint32_t create_constant(compiler* p_compiler, value p_value, ast_node* p_node) 
                create_string_view("failed to allocate memory for constant.", STRING_VIEW_CALCULATE_LENGTH, true));
     }
   }
-  return index;
-}
-
-bool emit_constant(compiler* p_compiler, value p_value, ast_node* p_node) {
-  return IS_CONSTANT_VALID(create_constant(p_compiler, p_value, p_node));
+  return IS_CONSTANT_VALID(index);
 }
 
 bool emit_default_return(compiler* p_compiler, ast_node* p_node) {
@@ -424,28 +475,12 @@ static bool define_global(compiler* p_compiler,
   return true;
 }
 
-static inline uint32_t local_get_raw_index(uint32_t p_packed) {
-  return p_packed & 0x00ffffff;
-}
-
-static bool local_test_flag(uint32_t p_packed, uint8_t p_flag) {
-  return (p_packed & (UINT32_C(1) << (24 + p_flag))) != 0;
-}
-
-static void local_set_flag(uint32_t* p_packed, uint8_t p_flag) {
-  *p_packed |= UINT32_C(1) << (24 + p_flag);
-}
-
-static void local_remove_flag(uint32_t* p_packed, uint8_t p_flag) {
-  *p_packed &= ~(UINT32_C(1) << (24 + p_flag));
-}
-
-static uint32_t* resolve_local(compiler* p_compiler, hashed_string* p_identifier, ast_node* p_node) {
+static uint32_t*
+resolve_local(compiler* p_compiler, hashed_string* p_identifier, function* p_function, ast_node* p_node) {
   uint32_t* index = NULL;
-  function* fun = current_function(p_compiler);
-  uint32_t depth = fun->scopes.count;
+  uint32_t depth = p_function->scopes.count;
   while (index == NULL && depth != 0) {
-    index = scope_locals_get(&fun->scopes.data[--depth].locals, *p_identifier);
+    index = scope_locals_get(&p_function->scopes.data[--depth].locals_table, *p_identifier);
     // TODO: report that we skipped if we couldn't resolve other local with same name.
     if (index != NULL &&
         local_test_flag(*index, LOCAL_FLAG_UNINITIALIZED)) { // let x; { let x = x; /* skip the inner */ }
@@ -464,7 +499,7 @@ uint32_t add_local(compiler* p_compiler, const variable_declaration p_declration
     return LOCAL_ERROR;
   }
   scope* scp = current_scope(p_compiler);
-  uint32_t* resolved = scope_locals_get(&scp->locals, hs);
+  uint32_t* resolved = scope_locals_get(&scp->locals_table, hs);
   if (resolved == NULL) {
     function* fun = current_function(p_compiler);
     local local;
@@ -480,10 +515,10 @@ uint32_t add_local(compiler* p_compiler, const variable_declaration p_declration
       hashed_string_deinit(&hs);
       return LOCAL_OVERFLOW;
     }
-    local.depth = index & LOCAL_FLAGS_MASK;
-    local_set_flag(&local.depth, LOCAL_FLAG_UNINITIALIZED);
+    local.info = index & LOCAL_FLAGS_MASK;
+    local_set_flag(&local.info, LOCAL_FLAG_UNINITIALIZED);
     if ((p_declration.flags & VARIABLE_DECLARATION_FLAGS_MUTABLE) != 0) {
-      local_set_flag(&local.depth, LOCAL_FLAG_MUTABLE);
+      local_set_flag(&local.info, LOCAL_FLAG_MUTABLE);
     }
     if (!locals_append(&fun->locals, local)) {
       error_at_noted(p_compiler,
@@ -493,7 +528,15 @@ uint32_t add_local(compiler* p_compiler, const variable_declaration p_declration
       hashed_string_deinit(&hs);
       return LOCAL_ERROR;
     }
-    if (!scope_locals_set(&current_scope(p_compiler)->locals, hs, fun->locals.count - 1)) {
+    if (!uint32_array_append(&current_scope(p_compiler)->locals_array, fun->locals.count - 1)) {
+      error_at_noted(p_compiler,
+                     p_node,
+                     create_string_view("failed to add local to the locals array.", STRING_VIEW_CALCULATE_LENGTH, true),
+                     create_string_view("you might be out of memory.", STRING_VIEW_CALCULATE_LENGTH, true));
+      locals_remove(&fun->locals, fun->locals.count - 1, fun->locals.count - 1);
+      return LOCAL_ERROR;
+    }
+    if (!scope_locals_set(&current_scope(p_compiler)->locals_table, hs, fun->locals.count - 1)) {
       error_at_noted(p_compiler,
                      p_node,
                      create_string_view("failed to add local to the locals table.", STRING_VIEW_CALCULATE_LENGTH, true),
@@ -539,7 +582,7 @@ define_variable(compiler* p_compiler, const variable_declaration p_declration, u
   if ((p_declration.flags & VARIABLE_DECLARATION_FLAGS_GLOBAL) == 0) {
     function* fun = current_function(p_compiler);
     local* local = &fun->locals.data[p_index];
-    local_remove_flag(&local->depth, LOCAL_FLAG_UNINITIALIZED);
+    local_remove_flag(&local->info, LOCAL_FLAG_UNINITIALIZED);
     return true;
   }
   return define_global(p_compiler, p_index, p_declration.flags, p_node);
@@ -645,7 +688,7 @@ static uint32_t set_global(compiler* p_compiler, const string_view p_identifier,
 
 static uint32_t get_local(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
   hashed_string hs = create_hashed_string_hash(p_identifier);
-  uint32_t* index = resolve_local(p_compiler, &hs, p_node);
+  uint32_t* index = resolve_local(p_compiler, &hs, current_function(p_compiler), p_node);
   hashed_string_deinit(&hs);
   if (index == NULL) {
     return UNDEFINED_LOCAL;
@@ -663,13 +706,13 @@ static uint32_t get_local(compiler* p_compiler, const string_view p_identifier, 
 
 static uint32_t set_local(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
   hashed_string hs = create_hashed_string_hash(p_identifier);
-  uint32_t* index = resolve_local(p_compiler, &hs, p_node);
+  uint32_t* index = resolve_local(p_compiler, &hs, current_function(p_compiler), p_node);
   hashed_string_deinit(&hs);
   if (index == NULL) {
     return UNDEFINED_LOCAL;
   }
   local local = current_function(p_compiler)->locals.data[*index];
-  if (!local_test_flag(local.depth, LOCAL_FLAG_MUTABLE)) {
+  if (!local_test_flag(local.info, LOCAL_FLAG_MUTABLE)) {
     error_at(
         p_compiler,
         p_node,
@@ -687,16 +730,97 @@ static uint32_t set_local(compiler* p_compiler, const string_view p_identifier, 
   return *index;
 }
 
+static uint32_t add_upvalue(compiler* p_compiler, uint32_t p_upvalue, bool p_is_local, ast_node* p_node) {
+  function* fcn = current_function(p_compiler);
+  upvalue up = create_upvalue(p_upvalue, p_is_local);
+  for (uint32_t i = 0; i < fcn->upvalues.count; ++i) {
+    if (fcn->upvalues.data[i].info == up.info) {
+      return i;
+    }
+  }
+  if (fcn->upvalues.count >= OP_XX_UPVALUE_LONG_MAX) {
+    string note = asprint("limit is: %d.", OP_XX_UPVALUE_LONG_MAX);
+    error_at_noted(p_compiler,
+                   p_node,
+                   create_string_view("too many upvalues in a single function.", STRING_VIEW_CALCULATE_LENGTH, true),
+                   create_string_view_from_string(note));
+    string_deinit(&note);
+  }
+  upvalues_append(&fcn->upvalues, up);
+  fcn->function.function->upvalues = fcn->upvalues.count;
+  return fcn->upvalues.count - 1;
+}
+
+static uint32_t resolve_upvalue(compiler* p_compiler, hashed_string p_identifier, uint32_t p_index, ast_node* p_node) {
+  const uint32_t functions = p_compiler->functions.count;
+  if (functions - p_index - 2 < 0) {
+    return UINT32_MAX;
+  }
+
+  function* current = &p_compiler->functions.data[functions - p_index - 1];
+  function* up = &p_compiler->functions.data[functions - p_index - 2];
+  uint32_t* local = resolve_local(p_compiler, &p_identifier, up, p_node);
+  if (local != NULL) {
+    local_set_flag(local, LOCAL_FLAG_CAPTURED);
+    return add_upvalue(p_compiler, *local, true, p_node);
+  }
+  uint32_t upvalue = resolve_upvalue(p_compiler, p_identifier, p_index + 1, p_node);
+  if (upvalue != UINT32_MAX) {
+    return add_upvalue(p_compiler, upvalue, false, p_node);
+  }
+  return UINT32_MAX;
+}
+
+static uint32_t get_upvalue(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
+  hashed_string hs = create_hashed_string_hash(p_identifier);
+  uint32_t up = resolve_upvalue(p_compiler, hs, p_compiler->functions.count - 1, p_node);
+  if (!IS_UPVALUE_INDEX_VALID(up)) {
+    return up;
+  }
+  hashed_string_deinit(&hs);
+  if (up > OP_GET_UPVALUE_MAX) {
+    emit_byte(p_compiler, OP_GET_UPVALUE_LONG, p_node);
+    byte bytes[UINT24_BYTE_COUNT] = {0};
+    encode_int(bytes, UINT24_BYTE_COUNT, up);
+    emit_bytes(p_compiler, bytes, UINT24_BYTE_COUNT, p_node);
+  } else {
+    emit_2bytes(p_compiler, OP_GET_UPVALUE, (byte)up, p_node);
+  }
+  return up;
+}
+
+static uint32_t set_upvalue(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
+  hashed_string hs = create_hashed_string_hash(p_identifier);
+  uint32_t up = resolve_upvalue(p_compiler, hs, p_compiler->functions.count - 1, p_node);
+  if (!IS_UPVALUE_INDEX_VALID(up)) {
+    return up;
+  }
+  hashed_string_deinit(&hs);
+  if (up > OP_SET_UPVALUE_MAX) {
+    emit_byte(p_compiler, OP_SET_UPVALUE_LONG, p_node);
+    byte bytes[UINT24_BYTE_COUNT] = {0};
+    encode_int(bytes, UINT24_BYTE_COUNT, up);
+    emit_bytes(p_compiler, bytes, UINT24_BYTE_COUNT, p_node);
+  } else {
+    emit_2bytes(p_compiler, OP_SET_UPVALUE, (byte)up, p_node);
+  }
+  return up;
+}
+
 static bool get_variable(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
   if (!IS_LOCAL_INDEX_VALID(get_local(p_compiler, p_identifier, p_node))) {
-    return IS_GLOBAL_VALID(get_global(p_compiler, p_identifier, p_node));
+    if (!IS_UPVALUE_INDEX_VALID(get_upvalue(p_compiler, p_identifier, p_node))) {
+      return IS_GLOBAL_VALID(get_global(p_compiler, p_identifier, p_node));
+    }
   }
   return true;
 }
 
 static bool set_variable(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
   if (!IS_LOCAL_INDEX_VALID(set_local(p_compiler, p_identifier, p_node))) {
-    return IS_GLOBAL_VALID(set_global(p_compiler, p_identifier, p_node));
+    if (!IS_UPVALUE_INDEX_VALID(set_upvalue(p_compiler, p_identifier, p_node))) {
+      return IS_GLOBAL_VALID(set_global(p_compiler, p_identifier, p_node));
+    }
   }
   return true;
 }
@@ -903,7 +1027,7 @@ bool compile_control_flow_statement(compiler* p_compiler, ast_control_flow_state
   if (curr_depth > ctx->scope_depth && fun->locals.count > 0) {
     uint32_t pops = 0;
     for (uint32_t i = fun->locals.count - 1; i-- > 0;) {
-      if (fun->locals.data[i].depth > ctx->scope_depth) {
+      if (local_get_raw_index(fun->locals.data[i].info) > ctx->scope_depth) {
         pops++;
       }
     }
@@ -1089,7 +1213,6 @@ static bool compile_function_impl(compiler* p_compiler,
   }
   bool status = push_function(p_compiler, p_name, p_type, p_params.count, p_node);
   begin_scope(p_compiler);
-  printf("name is: \"%.*s\".\n", string_view_get_length(&p_name), p_name.chars);
   variable_declaration decl = {.identifier = p_name, .flags = DECLARATION_NONE};
   status &= IS_LOCAL_INDEX_VALID(add_local(p_compiler, decl, p_node));
   for (uint32_t i = 0; i < p_params.count; ++i) {
@@ -1111,10 +1234,31 @@ static bool compile_function_impl(compiler* p_compiler,
   status &= compile_node(p_compiler, (ast_node*)p_body);
   status &= emit_default_return(p_compiler, p_node);
   end_scope(p_compiler, p_node, false);
-  object_function* funct = current_function(p_compiler)->function.function;
+  function* current = current_function(p_compiler);
+  object_function* funct = current->function.function; // TODO guard in gc.
+  upvalues ups = current->upvalues;
+  upvalues_init(&current->upvalues); // poor man's move construction
   status &= functions_remove(&p_compiler->functions, p_compiler->functions.count - 1, p_compiler->functions.count - 1);
-  emit_constant(p_compiler, OBJECT_AS_VALUE(funct), p_node);
-#if defined(OK_DEBUG_DUMP_CODE)
+  status &= emit_byte(p_compiler, OP_CLOSURE, p_node);
+  byte bytes[OP_CONSTANT_LONG_OPERANDS_WIDTH] = {0};
+  uint32_t cons = create_constant(p_compiler, OBJECT_AS_VALUE(funct), p_node);
+  if (!IS_CONSTANT_VALID(cons)) {
+    error_at(p_compiler,
+             p_node,
+             create_string_view("failed to create constant for function.", STRING_VIEW_CALCULATE_LENGTH, true));
+    status = false;
+  }
+  encode_int(bytes, OP_CONSTANT_LONG_OPERANDS_WIDTH, cons);
+  status &= emit_bytes(p_compiler, bytes, OP_CONSTANT_LONG_OPERANDS_WIDTH, p_node);
+  for (uint32_t i = 0; i < ups.count; ++i) {
+    status &= emit_byte(p_compiler, (byte)upvalue_is_local(&ups.data[i]), p_node);
+    byte bytes[UINT24_BYTE_COUNT] = {0};
+    encode_int(bytes, UINT24_BYTE_COUNT, upvalue_get_index(&ups.data[i]));
+    status &= emit_bytes(p_compiler, bytes, UINT24_BYTE_COUNT, p_node);
+  }
+  upvalues_deinit(&ups);
+
+#if defined(OK_DEBUG_DUMP_CODE) // this is really useful
   disassembler disassembler;
   disassembler_specs specs = {.chunk = &funct->chunk, .globals_store = p_compiler->globals_store};
   disassembler_init(&disassembler, specs);

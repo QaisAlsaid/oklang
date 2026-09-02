@@ -19,7 +19,9 @@ static bool values_equal(value p_lhs, value p_rhs);
 static value* read_local(vm* p_vm, call_frame* p_frame);
 static value* read_local_long(vm* p_vm, call_frame* p_frame);
 static bool call_value(vm* p_vm, value p_callee, uint32_t p_argc);
-static bool call(vm* p_vm, object_function* p_fu, uint32_t p_argc);
+static bool call(vm* p_vm, object_closure* p_closure, uint32_t p_argc);
+static object_upvalue* capture_upvalue(vm* p_vm, uint32_t p_local_index);
+static void close_upvalues(vm* p_vm, uint32_t p_last);
 
 void interpret_result_deinit(interpret_result* p_interpret_result) {
 }
@@ -30,9 +32,11 @@ void vm_init(vm* p_vm) {
   p_vm->objects_store = NULL;
   p_vm->globals_store = NULL;
   p_vm->source = NULL;
+  p_vm->open_upvalues = NULL;
 }
 
 void vm_deinit(vm* p_vm) {
+  p_vm->open_upvalues = NULL;
   p_vm->source = NULL;
   p_vm->globals_store = NULL;
   p_vm->objects_store = NULL;
@@ -45,6 +49,12 @@ interpret_result vm_interpret(vm* p_vm, interpret_specs p_specs) {
   p_vm->objects_store = p_specs.objects_store;
   p_vm->globals_store = p_specs.globals_store;
   stack_push(&p_vm->stack, OBJECT_AS_VALUE(p_specs.function));
+  object_closure* closure = create_object_closure(p_specs.function, p_specs.objects_store);
+  if (closure == NULL) {
+    interpret_result res = {.status = RUNTIME_ERROR, NULL_AS_VALUE()};
+    return res;
+  }
+  *stack_top_ptr(&p_vm->stack, 0) = OBJECT_AS_VALUE(closure);
   call_value(p_vm, stack_top(&p_vm->stack, 0), 0);
   interpret_result interpret_result = vm_run(p_vm);
   return interpret_result;
@@ -53,7 +63,7 @@ interpret_result vm_interpret(vm* p_vm, interpret_specs p_specs) {
 interpret_result vm_run(vm* p_vm) {
   call_frame* frame = &p_vm->call_stack.data[p_vm->call_stack.count - 1];
 #define READ_BYTE() (*frame->ip++)
-#define READ_CONSTANT() frame->function->chunk.constants.data[READ_BYTE()]
+#define READ_CONSTANT() frame->closure->function->chunk.constants.data[READ_BYTE()]
 #define BIN_OP(VALUE, op)                                                                                              \
   do {                                                                                                                 \
     if (!IS_VALUE_NUMBER(stack_top(&p_vm->stack, 0)) || !IS_VALUE_NUMBER(stack_top(&p_vm->stack, 1))) {                \
@@ -71,7 +81,7 @@ interpret_result vm_run(vm* p_vm) {
   for (;;) {
 #if defined(OK_TRACE_EXECUTION)
     disassembler disassembler;
-    disassembler_specs specs = {.chunk = &frame->function->chunk, .globals_store = p_vm->globals_store};
+    disassembler_specs specs = {.chunk = &frame->closure->function->chunk, .globals_store = p_vm->globals_store};
     disassembler_init(&disassembler, specs);
 
     printf("[ ");
@@ -81,13 +91,14 @@ interpret_result vm_run(vm* p_vm) {
       printf("]");
     }
     printf(" ]\n");
-    debug_disassemble_instruction(&disassembler, (uint32_t)(frame->ip - frame->function->chunk.code.data));
+    debug_disassemble_instruction(&disassembler, (uint32_t)(frame->ip - frame->closure->function->chunk.code.data));
 #endif // defined(OK_TRACE_EXECUTION)
 
     byte instruction = READ_BYTE();
     switch (instruction) {
     case OP_RETURN: {
       value returned = stack_popr(&p_vm->stack);
+      close_upvalues(p_vm, frame->slots);
       stack_resize(&p_vm->stack, frame->slots);
       call_stack_remove(&p_vm->call_stack, p_vm->call_stack.count - 1, p_vm->call_stack.count - 1);
       if (p_vm->call_stack.count == 0) {
@@ -111,6 +122,13 @@ interpret_result vm_run(vm* p_vm) {
     }
     case OP_CONSTANT: {
       value constant = READ_CONSTANT();
+      stack_push(&p_vm->stack, constant);
+      break;
+    }
+    case OP_CONSTANT_LONG: {
+      value constant =
+          frame->closure->function->chunk.constants.data[decode_int(frame->ip, OP_CONSTANT_LONG_OPERANDS_WIDTH)];
+      frame->ip += OP_CONSTANT_LONG_OPERANDS_WIDTH;
       stack_push(&p_vm->stack, constant);
       break;
     }
@@ -188,6 +206,65 @@ interpret_result vm_run(vm* p_vm) {
     }
     case OP_SET_LOCAL_LONG: {
       *read_local_long(p_vm, frame) = stack_top(&p_vm->stack, 0);
+      break;
+    }
+    case OP_GET_UPVALUE: {
+      uint32_t index = READ_BYTE();
+      stack_push(&p_vm->stack, *object_upvalue_get_value(frame->closure->upvalues.data[index], p_vm->stack.array.data));
+      break;
+    }
+    case OP_GET_UPVALUE_LONG: {
+      uint32_t index = decode_int(frame->ip, OP_GET_UPVALUE_LONG_OPERANDS_WIDTH);
+      frame->ip += OP_GET_UPVALUE_LONG_OPERANDS_WIDTH;
+      stack_push(&p_vm->stack, *object_upvalue_get_value(frame->closure->upvalues.data[index], p_vm->stack.array.data));
+
+      break;
+    }
+    case OP_SET_UPVALUE: {
+      uint32_t index = READ_BYTE();
+      stack_push(&p_vm->stack, *object_upvalue_get_value(frame->closure->upvalues.data[index], p_vm->stack.array.data));
+
+      break;
+    }
+    case OP_SET_UPVALUE_LONG: {
+      uint32_t index = decode_int(frame->ip, OP_GET_UPVALUE_LONG_OPERANDS_WIDTH);
+      frame->ip += OP_GET_UPVALUE_LONG_OPERANDS_WIDTH;
+      *object_upvalue_get_value(frame->closure->upvalues.data[index], p_vm->stack.array.data) =
+          stack_top(&p_vm->stack, 0);
+      break;
+    }
+    case OP_CLOSE_UPVALUE: {
+      close_upvalues(p_vm, p_vm->stack.top);
+      stack_pop(&p_vm->stack);
+      break;
+    }
+    case OP_CLOSURE: {
+      object_function* function = VALUE_AS_FUNCTION(
+          frame->closure->function->chunk.constants.data[decode_int(frame->ip, OP_CONSTANT_LONG_OPERANDS_WIDTH)]);
+      frame->ip += 3;
+      object_closure* closure = create_object_closure(function, p_vm->objects_store);
+      if (closure == NULL) {
+        runtime_error(p_vm, "out of memory: failed to allocate closure object.");
+        interpret_result result = {.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
+        return result;
+      }
+      stack_push(&p_vm->stack, OBJECT_AS_VALUE(closure));
+      for (uint32_t i = 0; i < closure->function->upvalues; ++i) {
+        bool is_local = (bool)READ_BYTE();
+        uint32_t index = decode_int(frame->ip, UINT24_BYTE_COUNT);
+        frame->ip += UINT24_BYTE_COUNT;
+        bool status = true;
+        if (is_local) {
+          status = upvalue_array_append(&closure->upvalues, capture_upvalue(p_vm, frame->slots + index));
+        } else {
+          status = upvalue_array_append(&closure->upvalues, frame->closure->upvalues.data[index]);
+        }
+        if (!status) {
+          runtime_error(p_vm, "out of memory: failed to add upvalue.");
+          interpret_result result = {.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
+          return result;
+        }
+      }
       break;
     }
     case OP_CALL: {
@@ -276,8 +353,8 @@ interpret_result vm_run(vm* p_vm) {
 
 void runtime_error(vm* p_vm, const char* p_fmt, ...) {
   call_frame* frame = &p_vm->call_stack.data[p_vm->call_stack.count - 1];
-  size_t instruction = frame->ip - frame->function->chunk.code.data - 1;
-  line_info_repeated* info = source_info_find(&frame->function->chunk.source_info, instruction);
+  size_t instruction = frame->ip - frame->closure->function->chunk.code.data - 1;
+  line_info_repeated* info = source_info_find(&frame->closure->function->chunk.source_info, instruction);
   if (info != NULL) {
     fprintf(stderr, "\n%s:%d:%d ", p_vm->source->path, info->line_info.line, info->line_info.offset);
   }
@@ -288,13 +365,13 @@ void runtime_error(vm* p_vm, const char* p_fmt, ...) {
   fputs("\nstack trace (most recent call last):\n", stderr);
   for (uint32_t i = 0; i < p_vm->call_stack.count; ++i) {
     call_frame* frame = &p_vm->call_stack.data[i];
-    uint32_t instruction = frame->ip - frame->function->chunk.code.data - 1;
+    uint32_t instruction = frame->ip - frame->closure->function->chunk.code.data - 1;
     fprintf(stderr,
             "%s:%d:%d in %s\n",
             p_vm->source->path,
             info->line_info.line,
             info->line_info.offset,
-            frame->function->name->string.chars);
+            frame->closure->function->name->string.chars);
   }
   stack_resize(&p_vm->stack, 0);
   p_vm->call_stack.count = 0;
@@ -314,8 +391,8 @@ bool call_value(vm* p_vm, value p_callee, uint32_t p_argc) {
   if (IS_VALUE_OBJECT(p_callee)) {
     object* obj = VALUE_AS_OBJECT(p_callee);
     switch (object_get_type(obj)) {
-    case OBJ_FUNCTION:
-      return call(p_vm, VALUE_AS_FUNCTION(p_callee), p_argc);
+    case OBJ_CLOSURE:
+      return call(p_vm, VALUE_AS_CLOSURE(p_callee), p_argc);
     default:;
     }
   }
@@ -323,17 +400,46 @@ bool call_value(vm* p_vm, value p_callee, uint32_t p_argc) {
   return false;
 }
 
-bool call(vm* p_vm, object_function* p_fu, uint32_t p_argc) {
-  if (p_argc != p_fu->arity) {
-    runtime_error(p_vm, "invalid call: expected %d arguments, got: %d", p_fu->arity, p_argc);
+bool call(vm* p_vm, object_closure* p_closure, uint32_t p_argc) {
+  if (p_argc != p_closure->function->arity) {
+    runtime_error(p_vm, "invalid call: expected %d arguments, got: %d", p_closure->function->arity, p_argc);
     return false;
   }
   call_frame frame;
-  frame.function = p_fu;
-  frame.ip = p_fu->chunk.code.data;
+  frame.closure = p_closure;
+  frame.ip = p_closure->function->chunk.code.data;
   frame.slots = p_vm->stack.top - p_argc - 1;
   frame.top = frame.slots;
   return call_stack_append(&p_vm->call_stack, frame);
+}
+
+object_upvalue* capture_upvalue(vm* p_vm, uint32_t p_local_index) {
+  object_upvalue* prev = NULL;
+  object_upvalue* upvalue = p_vm->open_upvalues;
+  while (upvalue != NULL && object_upvalue_get_location(upvalue) > p_local_index) {
+    prev = upvalue;
+    upvalue = upvalue->next;
+  }
+  if (upvalue != NULL && object_upvalue_get_location(upvalue) == p_local_index) {
+    return upvalue;
+  }
+  object_upvalue* captured = create_object_upvalue(p_local_index, p_vm->objects_store);
+  captured->next = upvalue;
+  if (prev == NULL) {
+    p_vm->open_upvalues = captured;
+  } else {
+    prev->next = captured;
+  }
+  return captured;
+}
+
+static void close_upvalues(vm* p_vm, uint32_t p_last) {
+  while (p_vm->open_upvalues != NULL && object_upvalue_get_location(p_vm->open_upvalues) >= p_last) {
+    object_upvalue* upvalue = p_vm->open_upvalues;
+    upvalue->closed = p_vm->stack.array.data[p_last];
+    object_upvalue_set_closed(upvalue);
+    p_vm->open_upvalues = upvalue->next;
+  }
 }
 
 bool is_falsy(value p_value) {

@@ -19,6 +19,11 @@
 #define LOCAL_ERROR (LOCAL_ILL_MUTATION - 1)
 #define IS_LOCAL_INDEX_VALID(index) (((index) & 0xf0000000) == 0)
 
+#define UNDEFINED_UPVALUE UINT32_MAX
+#define UPVALUE_OVERFLOW (UNDEFINED_UPVALUE - 1)
+#define UPVALUE_ERROR (UPVALUE_OVERFLOW - 1)
+#define IS_UPVALUE_INDEX_VALID(index) (((index) & 0xf0000000) == 0)
+
 #define LOCALS_MAX UINT24_MAX
 
 #define VARIABLES_MAX UINT24_MAX
@@ -27,23 +32,30 @@
 typedef enum {
   LOCAL_FLAG_UNINITIALIZED = 0,
   LOCAL_FLAG_MUTABLE = 1,
+  LOCAL_FLAG_CAPTURED = 2,
 } local_flags;
 
 typedef struct {
-  uint32_t depth; // 24 bit depth, 2 bits for variable declaration flags (currentl only 1 for mutable), 1 bit for
-                  // uninitialized + 4 higher bits for error propagation (errors discard the lower bits).
+  uint32_t
+      info; // 24 bit depth, 1 bits for variable declaration flags, 1 bit for
+            // uninitialized 1 bit for captured + 4 higher bits for error propagation (errors discard the lower bits).
 } local;
 
+typedef struct {
+  uint32_t info;
+} upvalue;
+
+ARRAY_DECLARE_DEFAULT(uint32_array, uint32_t)
 TABLE_DECLARE_DEFAULT(scope_locals, hashed_string, uint32_t /* index to the locals array */, hash_t)
 ARRAY_DECLARE_DEFAULT(locals, local)
-
+ARRAY_DECLARE_DEFAULT(upvalues, upvalue)
 typedef struct {
-  scope_locals locals;
+  scope_locals locals_table;
+  uint32_array locals_array;
 } scope;
 
 ARRAY_DECLARE_DEFAULT(scopes, scope)
 
-ARRAY_DECLARE_DEFAULT(uint32_array, uint32_t)
 typedef struct {
   uint32_t scope_depth;
   uint32_t continue_target;
@@ -69,6 +81,7 @@ typedef struct {
 typedef struct {
   scopes scopes;
   locals locals;
+  upvalues upvalues;
   loop_stack loop_stack;
   compile_function function;
 } function;
