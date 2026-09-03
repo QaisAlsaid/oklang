@@ -1,0 +1,23 @@
+for let mut i = 0; i < 2; i = i + 1? {
+    print("outer");
+    print(i);
+
+    for let mut j = 0; j < 3; j = j + 1? {
+        if j == 1 ? continue;
+        print("inner");
+	print(j);
+    }
+}
+
+// expect: outer
+// expect: 0
+// expect: inner
+// expect: 0
+// expect: inner
+// expect: 2
+// expect: outer
+// expect: 1
+// expect: inner
+// expect: 0
+// expect: inner
+// expect: 2

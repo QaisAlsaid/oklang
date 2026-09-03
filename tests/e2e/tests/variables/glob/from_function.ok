@@ -1,0 +1,7 @@
+glob let x = 42;
+
+fu foo() {
+  print(x); // expect: 42
+}
+
+foo();

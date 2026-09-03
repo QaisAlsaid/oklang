@@ -1,0 +1,2 @@
+glob let x = 1;
+x = 2; // expect error: immutable

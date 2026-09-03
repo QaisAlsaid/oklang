@@ -1,0 +1,21 @@
+fu make() {
+    let mut x = 0;
+
+    return fu() {
+        x = x + 1;
+        return x;
+    };
+}
+
+let f = make();
+
+let mut i = 0;
+
+while i < 3? {
+    print(f());
+    i = i + 1;
+}
+
+// expect: 1
+// expect: 2
+// expect: 3

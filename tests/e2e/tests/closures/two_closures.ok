@@ -1,0 +1,18 @@
+fu make_counter() {
+    let mut count = 0;
+
+    fu increment() {
+        count = count + 1;
+        return count;
+    }
+
+    return increment;
+}
+
+let a = make_counter();
+let b = make_counter();
+
+print(a()); // expect: 1
+print(b()); // expect: 1
+print(a()); // expect: 2
+print(b()); // expect: 2

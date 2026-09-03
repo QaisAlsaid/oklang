@@ -1,0 +1,15 @@
+fu make(n) {
+    fu get() {
+        return n;
+    }
+
+    return get;
+}
+
+let a = make(0);
+let b = make(1);
+let c = make(2);
+
+print(a()); // expect: 0
+print(b()); // expect: 1
+print(c()); // expect: 2

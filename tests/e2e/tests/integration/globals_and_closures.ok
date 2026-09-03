@@ -1,0 +1,13 @@
+glob let g = 10;
+
+fu outer() {
+    let x = 5;
+
+    return fu() {
+        return g + x;
+    };
+}
+
+let f = outer();
+
+print(f()); // expect: 15

@@ -1,0 +1,5 @@
+fu mul(a, b) {
+  return a * b;
+}
+
+print(mul(22, 2)); // expect: 44

@@ -1,0 +1,5 @@
+fu opposingfork() {
+    return 44;
+}
+
+print(opposingfork()); // expect: 44

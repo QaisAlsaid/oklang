@@ -1,0 +1,5 @@
+let f = fu() {
+  return 44;
+};
+
+print(f()); // expect: 44

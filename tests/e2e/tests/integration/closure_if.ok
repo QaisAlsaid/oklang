@@ -1,0 +1,15 @@
+fu make() {
+    let x = 44;
+
+    return fu(flag) {
+        if flag ? {
+            return x;
+        }
+
+        return 0;
+    };
+}
+
+let f = make();
+
+print(f(true)); // expect: 44

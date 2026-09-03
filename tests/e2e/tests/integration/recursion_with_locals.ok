@@ -1,0 +1,11 @@
+fu sum(n) {
+    let x = n;
+
+    if x <= 0 ? {
+        return 0;
+    }
+
+    return x + sum(x - 1);
+}
+
+print(sum(5)); // expect: 15

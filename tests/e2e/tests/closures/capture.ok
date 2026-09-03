@@ -1,0 +1,11 @@
+fu outer() {
+    let x = 44;
+
+    fu inner() {
+        print(x); // expect: 44
+    }
+
+    inner();
+}
+
+outer();

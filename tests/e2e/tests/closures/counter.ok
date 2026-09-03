@@ -1,0 +1,16 @@
+fu make_counter() {
+    let mut count = 0;
+
+    fu increment() {
+        count = count + 1;
+        return count;
+    }
+
+    return increment;
+}
+
+let counter = make_counter();
+
+print(counter()); // expect: 1
+print(counter()); // expect: 2
+print(counter()); // expect: 3

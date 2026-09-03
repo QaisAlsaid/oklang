@@ -1,0 +1,13 @@
+fu outer() {
+    let mut x = 1;
+
+    fu inner() {
+        x = 2;
+    }
+
+    inner();
+
+    print(x); // expect: 2
+}
+
+outer();

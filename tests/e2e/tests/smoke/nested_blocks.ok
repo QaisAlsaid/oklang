@@ -1,0 +1,9 @@
+{
+    {
+        {
+            print 67; // expect: 67
+        }
+        print 44; //  expect: 44
+    }
+    print 69; // expect: 69
+}

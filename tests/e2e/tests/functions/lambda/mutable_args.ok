@@ -1,0 +1,6 @@
+let func = fu (mut x) {
+  x = 22;
+  return x;
+};
+
+print func(44); // expect: 22
