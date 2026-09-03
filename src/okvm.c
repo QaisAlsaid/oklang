@@ -224,8 +224,8 @@ interpret_result vm_run(vm* p_vm) {
     }
     case OP_SET_UPVALUE: {
       uint32_t index = READ_BYTE();
-      stack_push(&p_vm->stack, *object_upvalue_get_value(frame->closure->upvalues.data[index], p_vm->stack.array.data));
-
+      *object_upvalue_get_value(frame->closure->upvalues.data[index], p_vm->stack.array.data) =
+          stack_top(&p_vm->stack, 0);
       break;
     }
     case OP_SET_UPVALUE_LONG: {
@@ -236,7 +236,7 @@ interpret_result vm_run(vm* p_vm) {
       break;
     }
     case OP_CLOSE_UPVALUE: {
-      close_upvalues(p_vm, p_vm->stack.top);
+      close_upvalues(p_vm, p_vm->stack.top - 1);
       stack_pop(&p_vm->stack);
       break;
     }
@@ -438,7 +438,7 @@ object_upvalue* capture_upvalue(vm* p_vm, uint32_t p_local_index) {
 static void close_upvalues(vm* p_vm, uint32_t p_last) {
   while (p_vm->open_upvalues != NULL && object_upvalue_get_location(p_vm->open_upvalues) >= p_last) {
     object_upvalue* upvalue = p_vm->open_upvalues;
-    upvalue->closed = p_vm->stack.array.data[p_last];
+    upvalue->closed = p_vm->stack.array.data[object_upvalue_get_location(upvalue)];
     object_upvalue_set_closed(upvalue);
     p_vm->open_upvalues = upvalue->next;
   }

@@ -731,15 +731,15 @@ static uint32_t set_local(compiler* p_compiler, const string_view p_identifier, 
   return *index;
 }
 
-static uint32_t add_upvalue(compiler* p_compiler, uint32_t p_upvalue, bool p_is_local, ast_node* p_node) {
-  function* fcn = current_function(p_compiler);
+static uint32_t
+add_upvalue(compiler* p_compiler, uint32_t p_upvalue, bool p_is_local, function* p_function, ast_node* p_node) {
   upvalue up = create_upvalue(p_upvalue, p_is_local);
-  for (uint32_t i = 0; i < fcn->upvalues.count; ++i) {
-    if (fcn->upvalues.data[i].info == up.info) {
+  for (uint32_t i = 0; i < p_function->upvalues.count; ++i) {
+    if (p_function->upvalues.data[i].info == up.info) {
       return i;
     }
   }
-  if (fcn->upvalues.count >= OP_XX_UPVALUE_LONG_MAX) {
+  if (p_function->upvalues.count >= OP_XX_UPVALUE_LONG_MAX) {
     string note = asprint("limit is: %d.", OP_XX_UPVALUE_LONG_MAX);
     error_at_noted(p_compiler,
                    p_node,
@@ -747,34 +747,35 @@ static uint32_t add_upvalue(compiler* p_compiler, uint32_t p_upvalue, bool p_is_
                    create_string_view_from_string(note));
     string_deinit(&note);
   }
-  upvalues_append(&fcn->upvalues, up);
-  fcn->function.function->upvalues = fcn->upvalues.count;
-  return fcn->upvalues.count - 1;
+  upvalues_append(&p_function->upvalues, up);
+  p_function->function.function->upvalues = p_function->upvalues.count;
+  return p_function->upvalues.count - 1;
 }
 
-static uint32_t resolve_upvalue(compiler* p_compiler, hashed_string p_identifier, uint32_t p_index, ast_node* p_node) {
+static uint32_t
+resolve_upvalue(compiler* p_compiler, hashed_string p_identifier, uint32_t p_function_index, ast_node* p_node) {
   const uint32_t functions = p_compiler->functions.count;
-  if (functions < p_index + 2) {
+  if (functions < p_function_index + 2) {
     return UINT32_MAX;
   }
 
-  function* current = &p_compiler->functions.data[functions - p_index - 1];
-  function* up = &p_compiler->functions.data[functions - p_index - 2];
+  function* current = &p_compiler->functions.data[functions - p_function_index - 1];
+  function* up = &p_compiler->functions.data[functions - p_function_index - 2];
   uint32_t* local = resolve_local(p_compiler, &p_identifier, up, p_node);
   if (local != NULL) {
     local_set_flag(local, LOCAL_FLAG_CAPTURED);
-    return add_upvalue(p_compiler, *local, true, p_node);
+    return add_upvalue(p_compiler, *local, true, current, p_node);
   }
-  uint32_t upvalue = resolve_upvalue(p_compiler, p_identifier, p_index + 1, p_node);
+  uint32_t upvalue = resolve_upvalue(p_compiler, p_identifier, p_function_index + 1, p_node);
   if (upvalue != UINT32_MAX) {
-    return add_upvalue(p_compiler, upvalue, false, p_node);
+    return add_upvalue(p_compiler, upvalue, false, current, p_node);
   }
   return UINT32_MAX;
 }
 
 static uint32_t get_upvalue(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
   hashed_string hs = create_hashed_string_hash(p_identifier);
-  uint32_t up = resolve_upvalue(p_compiler, hs, p_compiler->functions.count - 1, p_node);
+  uint32_t up = resolve_upvalue(p_compiler, hs, 0, p_node);
   hashed_string_deinit(&hs);
   if (!IS_UPVALUE_INDEX_VALID(up)) {
     return up;
@@ -792,7 +793,7 @@ static uint32_t get_upvalue(compiler* p_compiler, const string_view p_identifier
 
 static uint32_t set_upvalue(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
   hashed_string hs = create_hashed_string_hash(p_identifier);
-  uint32_t up = resolve_upvalue(p_compiler, hs, p_compiler->functions.count - 1, p_node);
+  uint32_t up = resolve_upvalue(p_compiler, hs, 0, p_node);
   hashed_string_deinit(&hs);
   if (!IS_UPVALUE_INDEX_VALID(up)) {
     return up;

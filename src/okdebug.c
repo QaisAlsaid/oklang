@@ -238,17 +238,20 @@ uint32_t upvalue_long_instruction(const char* p_opname, const uint32_t p_offset,
 }
 
 uint32_t closure_instruction(const char* p_opname, uint32_t p_offset, const chunk* p_chunk) {
-  uint32_t constant = decode_int(p_chunk->code.data + ++p_offset, OP_CONSTANT_LONG_OPERANDS_WIDTH);
-  p_offset += 3;
+  p_offset += OP_CODE_WIDTH;
+  uint32_t constant = decode_int(p_chunk->code.data + p_offset, OP_CONSTANT_LONG_OPERANDS_WIDTH);
+  p_offset += OP_CONSTANT_LONG_OPERANDS_WIDTH;
   printf("%-16s %4d ", p_opname, constant);
   value val = p_chunk->constants.data[constant];
   value_debug_print(val);
+  puts("");
   object_function* fu = VALUE_AS_FUNCTION(val);
   for (uint32_t i = 0; i < fu->upvalues; ++i) {
-    bool is_local = (bool)p_chunk->code.data[++p_offset];                            // one byte is_local;
-    uint32_t index = decode_int(p_chunk->code.data + ++p_offset, UINT24_BYTE_COUNT); // 3 bytes index
-    printf("%04d | %s %d\n", p_offset - 2, is_local ? "local" : "upvalue", index);
+    p_offset++;
+    bool is_local = (bool)p_chunk->code.data[p_offset];                            // one byte is_local;
+    uint32_t index = decode_int(p_chunk->code.data + p_offset, UINT24_BYTE_COUNT); // 3 bytes index
+    printf("%04d           |  %s %d\n", p_offset - 2, is_local ? "local" : "upvalue", index);
     p_offset += 3;
   }
-  return ++p_offset;
+  return p_offset;
 }
