@@ -97,6 +97,13 @@
     return NULL;                                                                                                       \
   }                                                                                                                    \
                                                                                                                        \
+  static void name##_free_buckets_storage(name##_buckets* p_buckets) {                                                 \
+    for (uint32_t i = 0; i < p_buckets->capacity; ++i) {                                                               \
+      name##_bucket_free_storage(&p_buckets->data[i]);                                                                 \
+    }                                                                                                                  \
+    name##_buckets_free_storage(p_buckets);                                                                            \
+  }                                                                                                                    \
+                                                                                                                       \
   void name##_init(name* p_table) {                                                                                    \
     name##_buckets_init(&p_table->buckets);                                                                            \
     p_table->count = 0;                                                                                                \
@@ -143,16 +150,13 @@
         }                                                                                                              \
         if (!name##_bucket_append(bucket, *entry)) {                                                                   \
         fail_add:                                                                                                      \
-          for (table_size_type i = 0; i < p_capacity; ++i) {                                                           \
-            name##_bucket_deinit(&buckets.data[i]);                                                                    \
-          }                                                                                                            \
-          name##_buckets_deinit(&buckets);                                                                             \
+          name##_free_buckets_storage(&buckets);                                                                       \
           return false;                                                                                                \
         }                                                                                                              \
         buckets.count++;                                                                                               \
       }                                                                                                                \
     }                                                                                                                  \
-    name##_buckets_deinit(&p_table->buckets);                                                                          \
+    name##_free_buckets_storage(&p_table->buckets);                                                                    \
     p_table->buckets = buckets;                                                                                        \
     return true;                                                                                                       \
   }                                                                                                                    \
@@ -173,7 +177,8 @@
     const table_size_type index =                                                                                      \
         name##_find_entry(&p_table->buckets, p_table->buckets.capacity, p_key, &entry, &_index);                       \
     if (entry != NULL) {                                                                                               \
-      entry->key = p_key;                                                                                              \
+      value_deinit(&entry->value);                                                                                     \
+      key_deinit(&p_key);                                                                                              \
       entry->value = p_value;                                                                                          \
       return true;                                                                                                     \
     }                                                                                                                  \

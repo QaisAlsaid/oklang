@@ -2,10 +2,6 @@
 
 #include <oktable.h>
 
-// 1000 keys with identical hashes
-// rehash
-// remove everything
-
 #define ARE_U_KEY_EQUAL(lhs, rhs) (lhs == rhs)
 #define GET_U_HASH(key) (key)
 

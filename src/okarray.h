@@ -21,6 +21,7 @@
                                                                                                                        \
   void name##_init(name* p_array);                                                                                     \
   void name##_deinit(name* p_array);                                                                                   \
+  void name##_free_storage(name* p_array);                                                                             \
   bool name##_grow(name* p_array, const size_type p_new_capacity);                                                     \
   bool name##_append(name* p_array, type p_element);                                                                   \
   bool name##_append_n(name* p_array, const type* p_elements, const size_type p_elements_count);                       \
@@ -37,7 +38,13 @@
     for (size_type i = 0; i < p_array->count; ++i) {                                                                   \
       deinit_type(&p_array->data[i]);                                                                                  \
     }                                                                                                                  \
-    reallocate(p_array->data, sizeof(type) * p_array->capacity, 0);                                                    \
+    name##_free_storage(p_array);                                                                                      \
+  }                                                                                                                    \
+                                                                                                                       \
+  void name##_free_storage(name* p_array) {                                                                            \
+    if (p_array->data != NULL) {                                                                                       \
+      reallocate(p_array->data, sizeof(type) * p_array->capacity, 0);                                                  \
+    }                                                                                                                  \
     name##_init(p_array);                                                                                              \
   }                                                                                                                    \
                                                                                                                        \
