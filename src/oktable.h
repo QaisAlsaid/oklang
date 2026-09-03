@@ -148,12 +148,14 @@
         if (!name##_bucket_grow(bucket, 1)) {                                                                          \
           goto fail_add;                                                                                               \
         }                                                                                                              \
+        if (bucket->count == 0) {                                                                                      \
+          buckets.count++;                                                                                             \
+        }                                                                                                              \
         if (!name##_bucket_append(bucket, *entry)) {                                                                   \
         fail_add:                                                                                                      \
           name##_free_buckets_storage(&buckets);                                                                       \
           return false;                                                                                                \
         }                                                                                                              \
-        buckets.count++;                                                                                               \
       }                                                                                                                \
     }                                                                                                                  \
     name##_free_buckets_storage(&p_table->buckets);                                                                    \
