@@ -1,7 +1,7 @@
 fu make_counter() {
     let mut x = 0;
 
-    return fun() {
+    return fu() {
         x = x + 1;
         return x;
     };

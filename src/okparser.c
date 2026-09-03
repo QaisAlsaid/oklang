@@ -853,6 +853,7 @@ free_bind_list:
 free_bind:
   ast_binding_deinit(binding);
   free(binding);
+  return NULL; // if binding successfully initialized it will free ident.
 free_ident:
   ast_identifier_expression_deinit(ident);
   free(ident);
