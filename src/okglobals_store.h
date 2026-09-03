@@ -41,7 +41,7 @@ static inline uint32_t global_get_raw_index(uint32_t p_packed) {
 }
 
 static inline bool global_test_flag(uint32_t p_packed, uint8_t p_flag) {
-  return ((p_packed & UINT32_C(1)) << (24 + p_flag)) != 0;
+  return (p_packed & UINT32_C(1) << (24 + p_flag)) != 0;
 }
 
 static inline void global_set_flag(uint32_t* p_packed, uint8_t p_flag) {
