@@ -955,8 +955,8 @@ bool compile_while_statement(compiler* p_compiler, ast_while_statement* p_while)
   status &= emit_loop(p_compiler, loop_start, (ast_node*)p_while);
   status &= patch_jump(p_compiler, exit_jmp, current_chunk(p_compiler)->code.count, (ast_node*)p_while);
   CTX.continue_target = loop_start;
-  CTX.break_target = chunk->code.count;
   status &= emit_byte(p_compiler, OP_POP, (ast_node*)p_while);
+  CTX.break_target = chunk->code.count;
   status &= patch_loop_context(p_compiler, &CTX, (ast_node*)p_while);
   loop_stack_remove(&fun->loop_stack, fun->loop_stack.count - 1, fun->loop_stack.count - 1);
 #undef CTX
@@ -1003,11 +1003,11 @@ bool compile_for_statement(compiler* p_compiler, ast_for_statement* p_for) {
     status &= emit_byte(p_compiler, OP_POP, (ast_node*)p_for);
   }
   emit_loop(p_compiler, loop_start, (ast_node*)p_for);
-  CTX.break_target = chunk->code.count;
   if (exit_jump != UINT32_MAX) {
     status &= patch_jump(p_compiler, exit_jump, current_chunk(p_compiler)->code.count, (ast_node*)p_for);
     status &= emit_byte(p_compiler, OP_POP, (ast_node*)p_for);
   }
+  CTX.break_target = chunk->code.count;
   patch_loop_context(p_compiler, &CTX, (ast_node*)p_for);
   loop_stack_remove(&fun->loop_stack, fun->loop_stack.count - 1, fun->loop_stack.count - 1);
   end_scope(p_compiler, (ast_node*)p_for, true);
