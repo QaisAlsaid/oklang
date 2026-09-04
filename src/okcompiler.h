@@ -1,12 +1,13 @@
 #ifndef OK_COMPILER_H
 #define OK_COMPILER_H
 
+#include "ok/ok_source.h"
 #include "okast.h"
 #include "okchunk.h"
+#include "okfwd.h"
 #include "okglobals_store.h"
 #include "okobject.h"
 #include "okobject_store.h"
-#include "oksource.h"
 
 #if defined(OK_PARANOID)
 #define OK_DEBUG_DUMP_CODE
@@ -88,14 +89,15 @@ typedef struct {
 
 ARRAY_DECLARE_DEFAULT(functions, function)
 
-typedef struct {
-  source* source;
+struct compiler {
+  ok_source* source;
+  allocators* alloc;
   object_store* objects_store;
   globals_store* globals_store;
   functions functions;
   bool had_error;
   bool panic;
-} compiler;
+};
 
 typedef enum {
   COMPILE_OK,
@@ -108,14 +110,18 @@ typedef struct {
 } compile_result;
 
 typedef struct {
-  source* source;
-  ast_root* root;
+  allocators* alloc;
   object_store* objects_store;
   globals_store* globals_store;
 } compiler_specs;
 
-void compiler_init(compiler* compiler);
+typedef struct {
+  ok_source* source;
+  ast_root* root;
+} compile_specs;
+
+void compiler_init(compiler* compiler, compiler_specs p_specs);
 void compiler_deinit(compiler* p_compiler);
-compile_result compiler_compile(compiler* p_compiler, compiler_specs p_specs);
+compile_result compiler_compile(compiler* p_compiler, compile_specs p_specs);
 
 #endif // OK_COMPILER_H

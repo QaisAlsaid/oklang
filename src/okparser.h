@@ -3,14 +3,14 @@
 
 #include <stdbool.h>
 
+#include "ok/ok_source.h"
 #include "okast.h"
 #include "oklexer.h"
-#include "oksource.h"
 #include "oktoken.h"
 
 typedef enum {
   PREC_NONE = (int)0,
-  PREC_ASSIGNMENT, // ? :
+  PREC_ASSIGNMENT,
   PREC_CONDITIONAL,
   PREC_OR,
   PREC_AND,
@@ -32,7 +32,8 @@ typedef enum {
 } precedence;
 
 typedef struct {
-  source* source;
+  ok_source* source;
+  allocators* alloc;
   lexer lexer;
   token current;
   token previous;
@@ -45,11 +46,17 @@ typedef enum { PARSE_OK, PARSE_ERROR } parse_status;
 typedef struct {
   parse_status status;
   ast_root* root;
+  allocators* alloc;
 } parse_result;
 
 void parse_result_deinit(parse_result* parse_result);
 
-void parser_init(parser* p_parser, source* p_source);
+typedef struct {
+  ok_source* source;
+  allocators* alloc;
+} parser_specs;
+
+void parser_init(parser* p_parser, parser_specs p_specs);
 void parser_deinit(parser* p_parser);
 parse_result parser_parse(parser* p_parser);
 

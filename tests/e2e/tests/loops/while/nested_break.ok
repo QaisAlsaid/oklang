@@ -1,0 +1,22 @@
+let mut i = 0;
+
+while i < 2? {
+    print("outer");
+
+    let mut j = 0;
+
+    while j < 2? {
+        print("inner");
+        break;
+    }
+
+    print("after-inner");
+    i = i + 1;
+}
+
+// expect: outer
+// expect: inner
+// expect: after-inner
+// expect: outer
+// expect: inner
+// expect: after-inner

@@ -1,5 +1,7 @@
 #include <unity.h>
 
+#include <ok/ok_specs.h>
+#include <okspecs.h>
 #include <oktable.h>
 
 #define ARE_U_KEY_EQUAL(lhs, rhs) (lhs == rhs)
@@ -17,8 +19,13 @@ TABLE_DEFINE_DEFAULT(test_table,
 
 test_table table;
 
+ok_specs specs = {0};
+allocators alloc = {0};
+
 void setUp() {
-  test_table_init(&table);
+  patch_specs(&specs);
+  alloc = create_allocators(&specs.allocators);
+  test_table_init(&table, &alloc);
 }
 
 void tearDown() {
@@ -135,7 +142,7 @@ void test_set_1000_remove_1000() {
 
 void test_set_1_invalid_get_clear() {
   test_table_deinit(&table);
-  test_table_init(&table);
+  test_table_init(&table, &alloc);
   test_init_state();
 
   TEST_ASSERT_TRUE(test_table_set(&table, 67, 69));
@@ -157,7 +164,7 @@ TABLE_DEFINE_DEFAULT(test_table_collision,
 
 void test_set_a_set_b_retrive_a_retrive_b_clear_collision() {
   test_table_collision table;
-  test_table_collision_init(&table);
+  test_table_collision_init(&table, &alloc);
   const uint32_t old_count = table.count;
   const uint32_t expected_count_after_a_add = old_count + 1;
   const uint32_t expected_count_after_b_add = expected_count_after_a_add + 1;
@@ -190,8 +197,8 @@ void test_set_a_set_b_retrive_a_retrive_b_clear_collision() {
 
 #include <stdlib.h>
 
-void freekv(uint32_t** p_kv) {
-  free(*p_kv);
+void freekv(uint32_t** p_kv, allocators* p_alloc) {
+  p_alloc->release(p_alloc, *p_kv);
   *p_kv = NULL;
 }
 
@@ -200,7 +207,7 @@ TABLE_DEFINE_DEFAULT(needsfree, uint32_t*, uint32_t*, uint32_t, ARE_PTR_KEYS_EQU
 
 void test_deinit() {
   needsfree table;
-  needsfree_init(&table);
+  needsfree_init(&table, &alloc);
 
   for (uint32_t i = 0; i < 1000; ++i) {
     TEST_ASSERT_TRUE(needsfree_set(&table, malloc(sizeof(uint32_t)), malloc(sizeof(uint32_t))));

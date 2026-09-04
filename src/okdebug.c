@@ -2,6 +2,7 @@
 #include <stdio.h>
 
 #include "okdebug.h"
+#include "okgc.h"
 #include "okglobals_store.h"
 #include "okobject.h"
 #include "okutils.h"
@@ -34,12 +35,14 @@ void disassembler_deinit(disassembler* p_disassembler) {
 }
 
 const char* debug_disassemble_chunk(disassembler* p_disassembler, const char* p_name) {
+  gc_pause(p_disassembler->chunk->alloc->gc);
   printf("--- %s ---\n", p_name);
 
   for (uint32_t offset = 0; offset < p_disassembler->chunk->code.count;) {
     offset = debug_disassemble_instruction(p_disassembler, offset);
   }
   printf("--- %s ---\n", p_name);
+  gc_resume(p_disassembler->chunk->alloc->gc);
   return NULL;
 }
 
@@ -47,13 +50,13 @@ uint32_t debug_disassemble_instruction(disassembler* p_disassembler, uint32_t p_
   const chunk* chunk = p_disassembler->chunk;
   printf("%04d ", p_offset);
 
-  line_info_repeated* info = source_info_find(&chunk->source_info, p_offset);
+  ok_line_info_repeated* info = source_info_find(&chunk->source_info, p_offset);
   if (info && p_offset == 0) {
     printf("%4d:%-4d ", info->line_info.line, info->line_info.offset);
   }
   if (p_offset > 0) {
-    line_info_repeated* prev_info = source_info_find(&chunk->source_info, p_offset - 1);
-    line_info_repeated* info = source_info_find(&chunk->source_info, p_offset);
+    ok_line_info_repeated* prev_info = source_info_find(&chunk->source_info, p_offset - 1);
+    ok_line_info_repeated* info = source_info_find(&chunk->source_info, p_offset);
     if (info && prev_info) {
       if (info->line_info.line == prev_info->line_info.line) {
         if (info->line_info.offset == prev_info->line_info.offset) {

@@ -3,17 +3,17 @@
 
 #include <stdint.h>
 
-#include "oksource.h"
+#include "ok/ok_source.h"
 #include "oktoken.h"
 
 typedef struct {
   const char* start;
   const char* current;
-  line_info line_info;
+  ok_line_info line_info;
 } lexer;
 
 void lexer_init(lexer* p_lexer, const char* p_src);
-void lexer_free(lexer* p_lexer);
+void lexer_deinit(lexer* p_lexer);
 token lexer_lex(lexer* p_lexer);
 
 #endif // OK_LEXER_H

@@ -12,6 +12,7 @@ option(OK_BUILD_CLI "build the cli" ON)
 option(OK_ENABLE_SANITIZERS "enable address sanitizer" OFF)
 option(OK_PARANOID "enable a lot of logging" ON)
 option(OK_PEDANTIC "enable checking every possible failure point" ON)
+option(OK_AGRESSIVE_GC "gc triggers for each allocation." OFF)
 
 if(OK_BUILD_SHARED)
   set(OK_LIBRARY_TYPE SHARED)
@@ -23,15 +24,13 @@ add_library(ok ${OK_LIBRARY_TYPE})
 if (OK_BUILD_SHARED)
   target_compile_definitions(ok PUBLIC OK_BUILD_SHARED)
 endif()
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   if (OK_PARANOID)
     target_compile_definitions(ok PUBLIC OK_PARANOID)
   endif()
-elseif(build_type STREQUAL "Release")
-  if (OK_PARANOID)
-    message("can't be paranoid in release builds!")
+
+  if (OK_AGRESSIVE_GC)
+    target_compile_definitions(ok PUBLIC OK_AGRESSIVE_GC)
   endif()
-endif()
 
 if (OK_PEDANTIC)
     target_compile_definitions(ok PUBLIC OK_PEDANTIC)
@@ -55,13 +54,17 @@ target_sources(ok PRIVATE
   src/okvalue.c
   src/okvm.c
   src/okstring.c
+  src/okspecs.c
+  src/okgc.c
 )
 
 target_include_directories(ok 
-  #PUBLIC TODO
-  #${PROJECT_SOURCE_DIR}/include 
   PRIVATE
   ${PROJECT_SOURCE_DIR}/src
+)
+
+target_include_directories(ok PUBLIC 
+  ${PROJECT_SOURCE_DIR}/include
 )
 
 target_compile_options(ok PRIVATE

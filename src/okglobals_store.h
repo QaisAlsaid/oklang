@@ -2,8 +2,10 @@
 #define OK_GLOBALS_STORE_H
 
 #include "okarray.h"
+#include "okchunk.h" // for UINT24_MAX
+#include "okfwd.h"
+#include "okstring.h"
 #include "oktable.h"
-#include "okutils.h"
 #include "okvalue.h"
 
 #define GLOBAL_ALLOCATION_FAILED UINT32_MAX
@@ -26,12 +28,13 @@ TABLE_DECLARE(globals_table, uint32_t, uint32_t, hashed_string, uint32_t, hash_t
 TABLE_DECLARE(debug_table, uint32_t, uint32_t, uint32_t, hashed_string, hash_t)
 #endif
 
-typedef struct {
+struct globals_store {
   global_values global_values;
   globals_table table;
-} globals_store;
+  allocators* alloc;
+};
 
-void globals_store_init(globals_store* p_store);
+void globals_store_init(globals_store* p_store, allocators* p_alloc);
 void globals_store_deinit(globals_store* p_store);
 uint32_t globals_store_add(globals_store* p_store, const string_view p_identifier, bool p_is_mutable);
 uint32_t globals_store_get(globals_store* p_store, const string_view p_identifier);

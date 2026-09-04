@@ -4,24 +4,24 @@
 #include <stdint.h>
 
 typedef enum {
-  FROM_FILE,
-  FROM_REPL,
-} sourced;
+  OK_FROM_FILE,
+  OK_FROM_REPL,
+} ok_from;
 
 typedef struct {
-  sourced source;
+  ok_from from;
   const char* code;
   const char* path;
-} source;
+} ok_source;
 
 typedef struct {
   uint32_t offset;
   uint32_t line;
-} line_info;
+} ok_line_info;
 
 typedef struct {
-  line_info line_info;
+  ok_line_info line_info;
   uint32_t reps;
-} line_info_repeated;
+} ok_line_info_repeated;
 
 #endif // OK_SOURCE_H

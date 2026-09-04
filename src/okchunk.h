@@ -5,8 +5,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "ok/ok_source.h"
 #include "okarray.h"
-#include "oksource.h"
+#include "okfwd.h"
 #include "okstring.h"
 #include "okvalue.h"
 
@@ -150,36 +151,36 @@ bool code_write_1byte(code* p_code, const byte p_byte);
 bool code_write_2bytes(code* p_code, const byte p_1st_byte, const byte p_2nd_byte);
 bool code_write(code* p_code, const byte* p_bytes, const size_t p_bytes_count);
 
-ARRAY_DECLARE(line_info_array, line_info_repeated, uint32_t)
+ARRAY_DECLARE(line_info_array, ok_line_info_repeated, uint32_t)
 typedef struct {
   line_info_array line_info_array;
 } source_info;
 
-void source_info_init(source_info* p_source_info);
-void source_info_deinit(source_info* p_source_info);
-bool source_info_write(source_info* p_source_info, const line_info_repeated p_line_info);
-line_info_repeated* source_info_find(const source_info* p_source_info, const uint32_t p_instruction_index);
+void source_info_init(source_info* p_source_info, allocators* p_alloc);
+void source_info_deinit(source_info* p_source_info, allocators* p_alloc);
+bool source_info_write(source_info* p_source_info, const ok_line_info_repeated p_line_info);
+ok_line_info_repeated* source_info_find(const source_info* p_source_info, const uint32_t p_instruction_index);
 
 ARRAY_DECLARE(identifiers, string, uint32_t)
 
-typedef struct chunk chunk;
 struct chunk {
   code code;
   value_array constants;
   source_info source_info;
+  allocators* alloc;
 };
 
-void chunk_init(chunk* p_chunk);
+void chunk_init(chunk* p_chunk, allocators* p_alloc);
 void chunk_deinit(chunk* p_chunk);
-bool chunk_write_1byte_code_with_line_info(chunk* p_chunk, const byte p_byte, const line_info p_line_info);
+bool chunk_write_1byte_code_with_line_info(chunk* p_chunk, const byte p_byte, const ok_line_info p_line_info);
 bool chunk_write_2bytes_code_with_line_info(chunk* p_chunk,
                                             const byte p_1st_byte,
                                             const byte p_2nd_byte,
-                                            const line_info p_line_info);
+                                            const ok_line_info p_line_info);
 bool chunk_write_code_with_line_info(chunk* p_chunk,
                                      const byte* p_bytes,
                                      const size_t p_bytes_count,
-                                     const line_info p_line_info);
-uint32_t chunk_write_constant_with_line_info(chunk* p_chunk, const value p_constant, const line_info p_line_info);
+                                     const ok_line_info p_line_info);
+uint32_t chunk_write_constant_with_line_info(chunk* p_chunk, const value p_constant, const ok_line_info p_line_info);
 
 #endif // OK_CHUNK_HPP

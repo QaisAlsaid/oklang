@@ -7,23 +7,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "ok.h"
+#include "ok/ok.h"
 
 static void repl(ok* p_ok);
 static void run_file(ok* p_ok, const char* p_path);
 static char* read_file(const char* p_path);
 
 int main(int argc, char** argv) {
-  ok ok;
-  ok_init(&ok);
+  ok_specs specs = {0};
+  ok* ok = ok_create(specs);
   if (argc == 1) {
-    repl(&ok);
+    repl(ok);
   } else if (argc == 2) {
-    run_file(&ok, argv[1]);
+    run_file(ok, argv[1]);
   } else {
     fprintf(stderr, "usage: ok [path]");
   }
-  ok_free(&ok);
+  ok_free(ok);
 }
 
 void repl(ok* p_ok) {
@@ -34,8 +34,8 @@ void repl(ok* p_ok) {
       printf("\n");
       break;
     }
-    source source;
-    source.source = FROM_REPL;
+    ok_source source;
+    source.from = OK_FROM_REPL;
     source.code = line;
     source.path = "stdin";
     ok_result result = ok_run(p_ok, source);
@@ -54,8 +54,8 @@ void run_file(ok* p_ok, const char* p_path) {
   if (src == NULL) {
     exit(1);
   }
-  source source;
-  source.source = FROM_REPL;
+  ok_source source;
+  source.from = OK_FROM_FILE;
   source.code = src;
   source.path = p_path;
   ok_result result = ok_run(p_ok, source);

@@ -3,19 +3,25 @@
 // TODO: grow overflow.
 // injected allocation failure (when we implement custom allocators).
 
+#include <ok/ok_specs.h>
 #include <okarray.h>
+#include <okspecs.h>
 
 ARRAY_DECLARE(test_array, uint32_t, uint32_t)
 ARRAY_DEFINE(test_array, uint32_t, uint32_t, UINT32_MAX, ARRAY_DEFAULT_TYPE_DEINIT)
 
 test_array array;
+ok_specs specs = {0};
+allocators alloc = {0};
 
 void setUp() {
-  test_array_init(&array);
+  patch_specs(&specs);
+  alloc = create_allocators(&specs.allocators);
+  test_array_init(&array, &alloc);
 }
 
 void tearDown() {
-  test_array_deinit(&array);
+  test_array_deinit(&array, &alloc);
 }
 
 static void test_init_state() {
@@ -110,14 +116,14 @@ static void test_grow() {
   TEST_ASSERT_TRUE(test_array_grow(&array, new_capacity));
   TEST_ASSERT_EQUAL_UINT32(new_capacity, array.capacity);
 
-  test_array_deinit(&array);
-  test_array_init(&array);
+  test_array_deinit(&array, &alloc);
+  test_array_init(&array, &alloc);
   test_init_state();
 }
 
 static void test_invalid_remove() {
-  test_array_deinit(&array);
-  test_array_init(&array);
+  test_array_deinit(&array, &alloc);
+  test_array_init(&array, &alloc);
   test_init_state();
 
   TEST_ASSERT_FALSE(test_array_remove(&array, 0, 0));
@@ -131,7 +137,7 @@ ARRAY_DEFINE(bytesized, int, uint8_t, UINT8_MAX, ARRAY_DEFAULT_TYPE_DEINIT)
 bytesized bs;
 
 static void test_grow_overflow() {
-  bytesized_init(&bs);
+  bytesized_init(&bs, &alloc);
   for (int i = 0; i < UINT8_MAX; ++i) {
     TEST_ASSERT_TRUE(bytesized_append(&bs, i + 1));
   }
@@ -145,13 +151,13 @@ static void test_grow_overflow() {
   for (int i = 0; i < UINT8_MAX; ++i) {
     TEST_ASSERT_EQUAL_INT(i + 1, bs.data[i]);
   }
-  bytesized_deinit(&bs);
+  bytesized_deinit(&bs, &alloc);
 }
 
 #include <stdlib.h>
 
-void deinit(int** p_int) {
-  free(*p_int);
+void deinit(int** p_int, allocators* alloc) {
+  alloc->release(alloc, *p_int);
   *p_int = NULL;
 }
 
@@ -160,11 +166,11 @@ ARRAY_DEFINE_DEFAULT(needsfree, int*, deinit)
 
 void test_deinit() {
   needsfree arr;
-  needsfree_init(&arr);
+  needsfree_init(&arr, &alloc);
   for (uint32_t i = 0; i < 1000; ++i) {
     TEST_ASSERT_TRUE(needsfree_append(&arr, malloc(sizeof(int))));
   }
-  needsfree_deinit(&arr); // if test fail there will be a leak and asan will trigger.
+  needsfree_deinit(&arr, &alloc); // if test fail there will be a leak and asan will trigger.
 }
 
 int main(void) {

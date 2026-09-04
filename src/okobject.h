@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "okchunk.h"
+#include "okfwd.h"
 #include "okobject_store.h"
 #include "okstring.h"
 #include "okvalue.h"
@@ -21,6 +22,11 @@
 #define VALUE_AS_CLOSURE(value) ((object_closure*)VALUE_AS_OBJECT(value))
 #define VALUE_AS_UPVALUE(value) ((object_upvalue*)VALUE_AS_OBJECT(value))
 
+typedef struct {
+  allocators* alloc;
+  object_store* store;
+} object_specs;
+
 typedef enum {
   OBJ_STRING,
   OBJ_FUNCTION,
@@ -28,13 +34,14 @@ typedef enum {
   OBJ_UPVALUE,
 } object_type;
 
-typedef struct object object;
 struct object {
-  uint32_t info; // 24bit for type, and rest of bits for later usage
+  uint32_t info; // 24bit for type + 1 bit for is marked and rest of bits for later usage
   object* next;
 };
 
 uint32_t object_get_type(object* p_object);
+bool object_is_marked(object* p_object);
+void object_set_marked(object* p_object, bool p_marked);
 
 static inline bool value_is_object_type(value p_value, object_type p_type) {
   return IS_VALUE_OBJECT(p_value) && OBJECT_TYPE(p_value) == p_type;
@@ -45,7 +52,7 @@ typedef struct {
   string string;
 } object_string;
 
-object_string* create_object_string(const string_view p_string, object_store* p_store);
+object_string* create_object_string(const string_view p_string, object_specs* p_specs);
 
 typedef struct {
   object object;
@@ -55,7 +62,7 @@ typedef struct {
   uint32_t upvalues;
 } object_function;
 
-object_function* create_object_function(object_string* p_name, uint8_t p_arity, object_store* p_store);
+object_function* create_object_function(object_string* p_name, uint8_t p_arity, object_specs* p_specs);
 
 typedef struct object_upvalue {
   object object;
@@ -70,7 +77,7 @@ uint32_t object_upvalue_get_location(object_upvalue* p_upvalue);
 bool object_upvalue_is_closed(object_upvalue* p_upvalue);
 value* object_upvalue_get_value(object_upvalue* p_upvalue, value* p_stack);
 
-object_upvalue* create_object_upvalue(uint32_t p_location, object_store* p_store);
+object_upvalue* create_object_upvalue(uint32_t p_location, object_specs* p_specs);
 
 ARRAY_DECLARE_DEFAULT(upvalue_array, object_upvalue*)
 typedef struct {
@@ -79,10 +86,10 @@ typedef struct {
   upvalue_array upvalues;
 } object_closure;
 
-object_closure* create_object_closure(object_function* p_function, object_store* p_store);
+object_closure* create_object_closure(object_function* p_function, object_specs* p_specs);
 
-void object_dispatch_deinit(object* p_object);
-void objects_list_deinit(object* p_head);
+void object_dispatch_deinit(object* p_object, object_specs* p_specs);
+void objects_list_deinit(object* p_head, object_specs* p_specs);
 
 void object_debug_print(object* p_object);
 #endif // OK_OBJECT_H

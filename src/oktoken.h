@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#include "oksource.h"
+#include "ok/ok_source.h"
 
 #define TOKEN_LIST_X(X)                                                                                                \
   X(TOKEN_ERROR, "error")                                                                                              \
@@ -181,7 +181,7 @@ typedef enum {
 typedef struct {
   token_type type;
   const char* start;
-  line_info line_info;
+  ok_line_info line_info;
   uint32_t length;
 } token;
 

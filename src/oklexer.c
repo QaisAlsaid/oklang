@@ -12,7 +12,7 @@ void lexer_init(lexer* p_lexer, const char* p_src) {
   p_lexer->line_info.offset = 1;
 }
 
-void lexer_free(lexer* p_lexer) {
+void lexer_deinit(lexer* p_lexer) {
   p_lexer->start = NULL;
   p_lexer->current = NULL;
   p_lexer->line_info.line = 0;

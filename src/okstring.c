@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "okmm.h"
 #include "okstring.h"
 #include "okutils.h"
 
@@ -20,7 +21,7 @@ static void remove_flag(uint8_t p_flag, uint64_t* p_info) {
 }
 
 #define STRING_FLAG_DYNAMIC 0
-bool string_init(string* p_string, const char* p_chars, uint64_t p_length, bool p_is_dynamic) {
+bool string_init(string* p_string, const char* p_chars, uint64_t p_length, bool p_is_dynamic, allocators* p_alloc) {
   p_string->chars = p_chars;
   if (p_length == STRING_CALCULATE_LENGTH) {
     p_length = strlen(p_chars);
@@ -32,7 +33,7 @@ bool string_init(string* p_string, const char* p_chars, uint64_t p_length, bool 
   }
   p_string->info = p_length & STRING_FLAGS_MASK;
   if (p_is_dynamic) {
-    char* chars = (char*)malloc(p_length + 1);
+    char* chars = (char*)p_alloc->allocate(p_alloc, p_length + 1);
     if (chars == NULL) {
       goto fail;
     }
@@ -48,9 +49,9 @@ fail:
   return false;
 }
 
-void string_deinit(string* p_string) {
+void string_deinit(string* p_string, allocators* p_alloc) {
   if (test_flag(STRING_FLAG_DYNAMIC, p_string->info)) {
-    free((char*)p_string->chars);
+    p_alloc->release(p_alloc, (char*)p_string->chars);
   }
   p_string->chars = NULL;
   p_string->info = 0;
@@ -64,18 +65,24 @@ bool string_is_dynamic(const string* p_string) {
   return test_flag(STRING_FLAG_DYNAMIC, p_string->info);
 }
 
-string create_string(const char* p_chars, uint64_t p_length, bool p_is_dynamic) {
+string create_static_string(const char* p_chars, uint64_t p_length) {
   string str;
-  string_init(&str, p_chars, p_length, p_is_dynamic);
+  string_init(&str, p_chars, p_length, false, NULL);
   return str;
 }
 
-string create_string_from_string_view(const string_view p_string_view) {
-  return create_string(p_string_view.chars, string_view_get_length(&p_string_view), true);
+string create_dynamic_string(const char* p_chars, uint64_t p_length, allocators* p_alloc) {
+  string str;
+  string_init(&str, p_chars, p_length, true, p_alloc);
+  return str;
 }
 
-string create_string_from_cstring_view(cstring_view p_cstring_view) {
-  return create_string(p_cstring_view.chars, cstring_view_get_length(&p_cstring_view), true);
+string create_string_from_string_view(const string_view p_string_view, allocators* p_alloc) {
+  return create_dynamic_string(p_string_view.chars, string_view_get_length(&p_string_view), p_alloc);
+}
+
+string create_string_from_cstring_view(cstring_view p_cstring_view, allocators* p_alloc) {
+  return create_dynamic_string(p_cstring_view.chars, cstring_view_get_length(&p_cstring_view), p_alloc);
 }
 
 #define STRING_VIEW_FLAG_CSTR 1
@@ -191,25 +198,28 @@ cstring_view create_cstring_view_from_string_view(const string_view p_string_vie
   return create_cstring_view(NULL, 0);
 }
 
-void hashed_string_init(hashed_string* p_hashed_string, const string_view p_view, const hash_t p_hash) {
-  p_hashed_string->string = create_string_from_string_view(p_view);
+void hashed_string_init(hashed_string* p_hashed_string,
+                        const string_view p_view,
+                        const hash_t p_hash,
+                        allocators* p_alloc) {
+  p_hashed_string->string = create_string_from_string_view(p_view, p_alloc);
   p_hashed_string->hash = p_hash;
 }
 
-void hashed_string_deinit(hashed_string* p_hashed_string) {
-  string_deinit(&p_hashed_string->string);
+void hashed_string_deinit(hashed_string* p_hashed_string, allocators* p_alloc) {
+  string_deinit(&p_hashed_string->string, p_alloc);
   p_hashed_string->hash = 0;
 }
 
-hashed_string create_hashed_string(const string_view p_view, hash_t p_hash) {
+hashed_string create_hashed_string(const string_view p_view, hash_t p_hash, allocators* p_alloc) {
   hashed_string hs;
-  hashed_string_init(&hs, p_view, p_hash);
+  hashed_string_init(&hs, p_view, p_hash, p_alloc);
   return hs;
 }
 
-hashed_string create_hashed_string_hash(const string_view p_view) {
+hashed_string create_hashed_string_hash(const string_view p_view, allocators* p_alloc) {
   hashed_string hs;
   hash_t hash = default_hash_str(p_view);
-  hashed_string_init(&hs, p_view, hash);
+  hashed_string_init(&hs, p_view, hash, p_alloc);
   return hs;
 }

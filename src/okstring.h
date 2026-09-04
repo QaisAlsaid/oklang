@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "okfwd.h"
+
 #define UINT56_MAX ((UINT64_C(1) << 56) - 1)
 
 // owning string type with length info, always copies, excpet when static string.
@@ -14,11 +16,13 @@ typedef struct {
 
 #define STRING_LENGTH_MAX UINT56_MAX
 #define STRING_CALCULATE_LENGTH (STRING_LENGTH_MAX + 1) // implies null terminated.
-bool string_init(string* p_string, const char* p_chars, uint64_t p_length, bool p_is_dynamic);
-void string_deinit(string* p_string); // mandatory call for deallocation (unless it is a static string).
+bool string_init(string* p_string, const char* p_chars, uint64_t p_length, bool p_is_dynamic, allocators* p_alloc);
+void string_deinit(string* p_string,
+                   allocators* p_alloc); // mandatory call for deallocation (unless it is a static string).
 uint64_t string_get_length(const string* p_string);
 bool string_is_dynamic(const string* p_string);
-string create_string(const char* p_chars, uint64_t p_length, bool p_is_dynamic);
+string create_dynamic_string(const char* p_chars, uint64_t p_length, allocators* p_alloc);
+string create_static_string(const char* p_chars, uint64_t p_length);
 
 typedef struct {
   const char* chars;
@@ -53,10 +57,10 @@ cstring_view create_cstring_view(const char* p_chars, uint64_t p_length);
 string_view create_string_view_from_string(const string p_string);
 cstring_view create_cstring_view_from_string(const string p_string);
 
-string create_string_from_string_view(const string_view p_string_view);
+string create_string_from_string_view(const string_view p_string_view, allocators* p_alloc);
 cstring_view create_cstring_view_from_string_view(const string_view p_string_view);
 
-string create_string_from_cstring_view(cstring_view p_cstring_view);
+string create_string_from_cstring_view(cstring_view p_cstring_view, allocators* p_alloc);
 string_view create_string_view_from_cstring_view(const cstring_view p_cstring_view);
 
 typedef uint64_t hash_t;
@@ -65,9 +69,12 @@ typedef struct {
   hash_t hash;
 } hashed_string;
 
-void hashed_string_init(hashed_string* p_hashed_string, const string_view p_view, const hash_t p_hash);
-void hashed_string_deinit(hashed_string* p_hashed_string);
-hashed_string create_hashed_string(const string_view p_string, const hash_t p_hash);
-hashed_string create_hashed_string_hash(const string_view p_view);
+void hashed_string_init(hashed_string* p_hashed_string,
+                        const string_view p_view,
+                        const hash_t p_hash,
+                        allocators* p_alloc);
+void hashed_string_deinit(hashed_string* p_hashed_string, allocators* p_alloc);
+hashed_string create_hashed_string(const string_view p_string, const hash_t p_hash, allocators* p_alloc);
+hashed_string create_hashed_string_hash(const string_view p_view, allocators* p_alloc);
 
 #endif // OK_STRING_H

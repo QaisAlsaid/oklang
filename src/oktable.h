@@ -35,16 +35,17 @@
   };                                                                                                                   \
                                                                                                                        \
   void name##_entry_init(name##_entry* p_entry, key_type p_key, value_type p_value);                                   \
-  void name##_entry_deinit(name##_entry* p_entry);                                                                     \
+  void name##_entry_deinit(name##_entry* p_entry, allocators* p_alloc);                                                \
                                                                                                                        \
   ARRAY_DECLARE(name##_bucket, name##_entry, bucket_size_type)                                                         \
   ARRAY_DECLARE(name##_buckets, name##_bucket, table_size_type)                                                        \
   struct name {                                                                                                        \
     name##_buckets buckets;                                                                                            \
     table_size_type count;                                                                                             \
+    allocators* alloc;                                                                                                 \
   };                                                                                                                   \
                                                                                                                        \
-  void name##_init(name* p_table);                                                                                     \
+  void name##_init(name* p_table, allocators* p_alloc);                                                                \
   void name##_deinit(name* p_table);                                                                                   \
   bool name##_set(name* p_table, key_type p_key, value_type p_value);                                                  \
   value_type* name##_get(name* p_table, key_type p_key);                                                               \
@@ -74,9 +75,9 @@
     p_entry->value = p_value;                                                                                          \
   }                                                                                                                    \
                                                                                                                        \
-  void name##_entry_deinit(name##_entry* p_entry) {                                                                    \
-    value_deinit(&p_entry->value);                                                                                     \
-    key_deinit(&p_entry->key);                                                                                         \
+  void name##_entry_deinit(name##_entry* p_entry, allocators* p_alloc) {                                               \
+    value_deinit(&p_entry->value, p_alloc);                                                                            \
+    key_deinit(&p_entry->key, p_alloc);                                                                                \
   }                                                                                                                    \
   static name##_entry* name##_bucket_get(name##_bucket* p_bucket, const key_type p_key, bucket_size_type* p_index) {   \
     if (p_bucket->count == 1) {                                                                                        \
@@ -104,16 +105,17 @@
     name##_buckets_free_storage(p_buckets);                                                                            \
   }                                                                                                                    \
                                                                                                                        \
-  void name##_init(name* p_table) {                                                                                    \
-    name##_buckets_init(&p_table->buckets);                                                                            \
+  void name##_init(name* p_table, allocators* p_alloc) {                                                               \
+    name##_buckets_init(&p_table->buckets, p_table->alloc);                                                            \
     p_table->count = 0;                                                                                                \
+    p_table->alloc = p_alloc;                                                                                          \
   }                                                                                                                    \
                                                                                                                        \
   void name##_deinit(name* p_table) {                                                                                  \
     for (table_size_type i = 0; i < p_table->buckets.capacity; ++i) {                                                  \
-      name##_bucket_deinit(&p_table->buckets.data[i]);                                                                 \
+      name##_bucket_deinit(&p_table->buckets.data[i], p_table->alloc);                                                 \
     }                                                                                                                  \
-    name##_buckets_deinit(&p_table->buckets);                                                                          \
+    name##_buckets_deinit(&p_table->buckets, p_table->alloc);                                                          \
   }                                                                                                                    \
                                                                                                                        \
   static table_size_type name##_find_entry(name##_buckets* p_buckets,                                                  \
@@ -129,13 +131,13 @@
                                                                                                                        \
   static bool name##_adjust_to_capacity(name* p_table, table_size_type p_capacity) {                                   \
     name##_buckets buckets;                                                                                            \
-    name##_buckets_init(&buckets);                                                                                     \
+    name##_buckets_init(&buckets, p_table->alloc);                                                                     \
     if (!name##_buckets_grow(&buckets, p_capacity)) {                                                                  \
-      name##_buckets_deinit(&buckets);                                                                                 \
+      name##_buckets_deinit(&buckets, p_table->alloc);                                                                 \
       return false;                                                                                                    \
     }                                                                                                                  \
     for (table_size_type i = 0; i < p_capacity; ++i) {                                                                 \
-      name##_bucket_init(&buckets.data[i]);                                                                            \
+      name##_bucket_init(&buckets.data[i], p_table->alloc);                                                            \
     }                                                                                                                  \
     for (table_size_type i = 0; i < p_table->buckets.capacity; ++i) {                                                  \
       name##_bucket* bucket = &p_table->buckets.data[i];                                                               \
@@ -179,14 +181,14 @@
     const table_size_type index =                                                                                      \
         name##_find_entry(&p_table->buckets, p_table->buckets.capacity, p_key, &entry, &_index);                       \
     if (entry != NULL) {                                                                                               \
-      value_deinit(&entry->value);                                                                                     \
-      key_deinit(&p_key);                                                                                              \
+      value_deinit(&entry->value, p_table->alloc);                                                                     \
+      key_deinit(&p_key, p_table->alloc);                                                                              \
       entry->value = p_value;                                                                                          \
       return true;                                                                                                     \
     }                                                                                                                  \
     name##_bucket* bucket = &p_table->buckets.data[index];                                                             \
     if (bucket->count == 0) {                                                                                          \
-      name##_bucket_init(bucket);                                                                                      \
+      name##_bucket_init(bucket, p_table->alloc);                                                                      \
       p_table->buckets.count++;                                                                                        \
     }                                                                                                                  \
     name##_entry new_entry = {.key = p_key, .value = p_value};                                                         \
@@ -222,7 +224,7 @@
     if (name##_bucket_remove(bucket, index_in_bucket, index_in_bucket)) {                                              \
       p_table->count--;                                                                                                \
       if (bucket->count == 0) {                                                                                        \
-        name##_bucket_deinit(bucket);                                                                                  \
+        name##_bucket_deinit(bucket, p_table->alloc);                                                                  \
         p_table->buckets.count--;                                                                                      \
       }                                                                                                                \
       return true;                                                                                                     \

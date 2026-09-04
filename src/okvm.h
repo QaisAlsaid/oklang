@@ -3,9 +3,8 @@
 
 #include "okarray.h"
 #include "okchunk.h"
-#include "okglobals_store.h"
+#include "okfwd.h"
 #include "okobject.h"
-#include "okobject_store.h"
 
 ARRAY_DECLARE(stack_array, value, uint32_t)
 typedef struct {
@@ -13,10 +12,11 @@ typedef struct {
                 // keep updating and kinda defeats the purpose. points one past the top most element so indexing becomes
                 // like values[top_index - 1] so you get the top most element.
   stack_array array;
+  allocators* alloc;
 } stack;
 
-void stack_init(stack* p_stack);
-bool stack_init_warm(stack* p_stack, uint32_t p_initial_capacity);
+void stack_init(stack* p_stack, allocators* p_alloc);
+bool stack_init_warm(stack* p_stack, uint32_t p_initial_capacity, allocators* p_alloc);
 // keeps allocated memory, only moves the top pointer
 void stack_resize(stack* p_stack, uint32_t p_new_size);
 // resizes the underlying array (fails if new size < top) or reallocation failed
@@ -28,7 +28,7 @@ value stack_top(stack* p_stack, uint32_t p_index);
 value* stack_top_ptr(stack* p_stack, uint32_t p_index);
 void stack_pop(stack* p_stack);
 value stack_popr(stack* p_stack);
-void stack_free(stack* p_stack);
+void stack_deinit(stack* p_stack);
 
 typedef struct {
   object_closure* closure;
@@ -39,14 +39,15 @@ typedef struct {
 
 ARRAY_DECLARE_DEFAULT(call_stack, call_frame)
 
-typedef struct {
+struct vm {
   stack stack;
   call_stack call_stack;
-  source* source;
+  ok_source* source;
   object_store* objects_store;
   globals_store* globals_store;
   object_upvalue* open_upvalues;
-} vm;
+  allocators* alloc;
+};
 
 typedef enum {
   RUNTIME_OK,
@@ -61,15 +62,19 @@ typedef struct {
 void interpret_result_deinit(interpret_result* p_interpret_result);
 
 typedef struct {
-  source* source;
-  object_function* function;
   object_store* objects_store;
   globals_store* globals_store;
+  allocators* alloc;
+} vm_specs;
+
+typedef struct {
+  ok_source* source;
+  object_function* function;
 } interpret_specs;
 
-void vm_init(vm* p_vm);
+void vm_init(vm* p_vm, vm_specs p_specs);
 void vm_deinit(vm* p_vm);
-interpret_result vm_interpret(vm* p_vm, interpret_specs);
+interpret_result vm_interpret(vm* p_vm, interpret_specs p_specs);
 interpret_result vm_run(vm* p_vm);
 
 #endif // OK_VM_H

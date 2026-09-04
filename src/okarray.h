@@ -6,7 +6,7 @@
 
 #include "okmm.h"
 
-#define ARRAY_DEFAULT_TYPE_DEINIT(x)
+#define ARRAY_DEFAULT_TYPE_DEINIT(x, a)
 
 #define ARRAY_DECLARE_DEFAULT(name, type) ARRAY_DECLARE(name, type, uint32_t)
 #define ARRAY_DEFINE_DEFAULT(name, type, deinit_type) ARRAY_DEFINE(name, type, uint32_t, UINT32_MAX, deinit_type)
@@ -17,10 +17,11 @@
     size_type count;                                                                                                   \
     size_type capacity;                                                                                                \
     type* data;                                                                                                        \
+    allocators* alloc;                                                                                                 \
   };                                                                                                                   \
                                                                                                                        \
-  void name##_init(name* p_array);                                                                                     \
-  void name##_deinit(name* p_array);                                                                                   \
+  void name##_init(name* p_array, allocators* p_alloc);                                                                \
+  void name##_deinit(name* p_array, allocators* p_alloc);                                                              \
   void name##_free_storage(name* p_array);                                                                             \
   bool name##_grow(name* p_array, const size_type p_new_capacity);                                                     \
   bool name##_append(name* p_array, type p_element);                                                                   \
@@ -28,24 +29,25 @@
   bool name##_remove(name* p_array, const size_type p_first, const size_type p_last);
 
 #define ARRAY_DEFINE(name, type, size_type, size_type_max, deinit_type)                                                \
-  void name##_init(name* p_array) {                                                                                    \
+  void name##_init(name* p_array, allocators* p_alloc) {                                                               \
     p_array->count = 0;                                                                                                \
     p_array->capacity = 0;                                                                                             \
     p_array->data = NULL;                                                                                              \
+    p_array->alloc = p_alloc;                                                                                          \
   }                                                                                                                    \
                                                                                                                        \
-  void name##_deinit(name* p_array) {                                                                                  \
+  void name##_deinit(name* p_array, allocators* p_alloc) {                                                             \
     for (size_type i = 0; i < p_array->count; ++i) {                                                                   \
-      deinit_type(&p_array->data[i]);                                                                                  \
+      deinit_type(&p_array->data[i], p_array->alloc);                                                                  \
     }                                                                                                                  \
     name##_free_storage(p_array);                                                                                      \
   }                                                                                                                    \
                                                                                                                        \
   void name##_free_storage(name* p_array) {                                                                            \
     if (p_array->data != NULL) {                                                                                       \
-      reallocate(p_array->data, sizeof(type) * p_array->capacity, 0);                                                  \
+      p_array->alloc->reallocate(p_array->alloc, p_array->data, sizeof(type) * p_array->capacity, 0);                  \
     }                                                                                                                  \
-    name##_init(p_array);                                                                                              \
+    name##_init(p_array, p_array->alloc);                                                                              \
   }                                                                                                                    \
                                                                                                                        \
   bool name##_grow(name* p_array, const size_type p_new_capacity) {                                                    \
@@ -55,7 +57,8 @@
       }                                                                                                                \
       return true;                                                                                                     \
     }                                                                                                                  \
-    type* ptr = (type*)reallocate(p_array->data, sizeof(type) * p_array->capacity, sizeof(type) * p_new_capacity);     \
+    type* ptr = (type*)p_array->alloc->reallocate(                                                                     \
+        p_array->alloc, p_array->data, sizeof(type) * p_array->capacity, sizeof(type) * p_new_capacity);               \
     if (ptr == NULL) {                                                                                                 \
       return false;                                                                                                    \
     }                                                                                                                  \
@@ -95,7 +98,7 @@
       return false;                                                                                                    \
     }                                                                                                                  \
     for (size_type i = p_first; i < p_last + 1; ++i) {                                                                 \
-      deinit_type(&p_array->data[i]);                                                                                  \
+      deinit_type(&p_array->data[i], p_array->alloc);                                                                  \
     }                                                                                                                  \
     const size_type rmcount = p_last - p_first + 1;                                                                    \
     const size_type diff = p_array->count - p_last - 1;                                                                \

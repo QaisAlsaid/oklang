@@ -5,14 +5,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "oksource.h"
+#include "ok/ok_source.h"
+#include "okfwd.h"
 #include "okstring.h"
 #include "oktoken.h"
 
 void encode_int(uint8_t* p_bytes, const uint8_t p_bytes_count, const uint64_t p_value);
 uint64_t decode_int(const uint8_t* p_bytes, const uint8_t p_bytes_count);
 
-string asprint(const char* p_fmt, ...);
+string asprint(allocators* p_alloc, const char* p_fmt, ...);
 
 typedef enum {
   REPORT_SEVERITY_WARN,
@@ -28,14 +29,14 @@ typedef enum {
 report_status report_at(bool* p_panic,
                         bool* p_had_error,
                         const bool p_is_eof,
-                        const source* p_source,
+                        const ok_source* p_source,
                         const token* p_token,
                         const report_severity p_severity,
                         const string_view p_message);
 report_status report_at_noted(bool* p_panic,
                               bool* p_had_error,
                               const bool p_is_eof,
-                              const source* p_source,
+                              const ok_source* p_source,
                               const token* p_token,
                               const report_severity p_severity,
                               const string_view p_message,
