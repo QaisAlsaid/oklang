@@ -260,9 +260,9 @@ void ast_identifier_expression_deinit(ast_identifier_expression* p_identifier) {
   ast_expression_deinit(&p_identifier->expression);
 }
 
-string_view ast_identifier_expression_get_value(const ast_identifier_expression* p_identifier) {
+ok_string_view ast_identifier_expression_get_value(const ast_identifier_expression* p_identifier) {
   const ast_node* node = &p_identifier->expression.node;
-  return create_string_view(node->token.start, node->token.length, false);
+  return ok_create_string_view(node->token.start, node->token.length, false);
 }
 
 bool ast_identifier_expression_print(const ast_identifier_expression* p_identifier) {
@@ -347,9 +347,9 @@ void ast_string_expression_deinit(ast_string_expression* p_string) {
   ast_expression_deinit(&p_string->expression);
 }
 
-string_view ast_string_expression_get_value(const ast_string_expression* p_string) {
+ok_string_view ast_string_expression_get_value(const ast_string_expression* p_string) {
   const ast_node* node = &p_string->expression.node;
-  return create_string_view(node->token.start + 1, node->token.length - 2, false);
+  return ok_create_string_view(node->token.start + 1, node->token.length - 2, false);
 }
 
 bool ast_string_expression_print(const ast_string_expression* p_string) {
@@ -570,10 +570,10 @@ static void bindings_list_deinit_element(ast_binding** p_elem, allocators* p_all
 ARRAY_DEFINE_DEFAULT(ast_bindings_list, ast_binding*, bindings_list_deinit_element)
 #undef BINDINGS_LIST_DEINIT
 
-static string ast_bindings_list_asprint(const ast_bindings_list* p_list, const string_view p_delem) {
+static string ast_bindings_list_asprint(const ast_bindings_list* p_list, const ok_string_view p_delem) {
   char* chars = NULL;
   size_t len = 0;
-  uint32_t delemlen = string_view_get_length(&p_delem);
+  uint32_t delemlen = ok_string_view_get_length(&p_delem);
   allocators* alloc = p_list->alloc;
   for (uint32_t i = 0; i < p_list->count; ++i) {
     string res = ast_dispatch_asprint((ast_node*)p_list->data[i]);
@@ -630,7 +630,7 @@ bool ast_function_expression_print(const ast_function_expression* p_function) {
 string ast_function_expression_asprint(const ast_function_expression* p_function) {
   allocators* alloc = p_function->expression.node.alloc;
   string params_str =
-      ast_bindings_list_asprint(&p_function->parameters, create_string_view(", ", STRING_VIEW_CALCULATE_LENGTH, true));
+      ast_bindings_list_asprint(&p_function->parameters, ok_create_string_view(", ", OK_STRING_VIEW_CALCULATE_LENGTH, true));
   string body_str = ast_dispatch_asprint((ast_node*)p_function->body);
   string ret = asprint(p_function->expression.node.alloc, "fu (%s) %s", params_str.chars, body_str.chars);
   string_deinit(&params_str, alloc);
@@ -647,10 +647,10 @@ void expressions_list_deinit_element(ast_expression** p_elem, allocators* p_aloc
 ARRAY_DEFINE_DEFAULT(ast_expressions_list, ast_expression*, expressions_list_deinit_element)
 #undef EXPRESSIONS_LIST_DEINIT
 
-string ast_expressions_list_asprint(const ast_expressions_list* p_list, const string_view p_delem) {
+string ast_expressions_list_asprint(const ast_expressions_list* p_list, const ok_string_view p_delem) {
   char* chars = NULL;
   size_t len = 0;
-  uint32_t delemlen = string_view_get_length(&p_delem);
+  uint32_t delemlen = ok_string_view_get_length(&p_delem);
   allocators* alloc = p_list->alloc;
   for (uint32_t i = 0; i < p_list->count; ++i) {
     string res = ast_dispatch_asprint((ast_node*)p_list->data[i]);
@@ -707,7 +707,7 @@ string ast_call_expression_asprint(const ast_call_expression* p_call) {
   allocators* alloc = p_call->expression.node.alloc;
   string callable_str = ast_dispatch_asprint((ast_node*)p_call->callable);
   string args_str =
-      ast_expressions_list_asprint(&p_call->arguments, create_string_view(", ", STRING_VIEW_CALCULATE_LENGTH, true));
+      ast_expressions_list_asprint(&p_call->arguments, ok_create_string_view(", ", OK_STRING_VIEW_CALCULATE_LENGTH, true));
   string ret = asprint(p_call->expression.node.alloc, "%s(%s)", callable_str.chars, args_str.chars);
   string_deinit(&callable_str, alloc);
   string_deinit(&args_str, alloc);
@@ -1148,7 +1148,7 @@ string ast_function_declaration_asprint(const ast_function_declaration* p_fu) {
   string decl_str = ast_declaration_asprint(&p_fu->declaration);
   string binding_str = ast_binding_asprint(p_fu->binding);
   string params_str =
-      ast_bindings_list_asprint(&p_fu->parameters, create_string_view(", ", STRING_VIEW_CALCULATE_LENGTH, true));
+      ast_bindings_list_asprint(&p_fu->parameters, ok_create_string_view(", ", OK_STRING_VIEW_CALCULATE_LENGTH, true));
   string body_str = ast_dispatch_asprint((ast_node*)p_fu->body);
   string ret = asprint(alloc, "%s fu %s (%s) %s", decl_str.chars, binding_str.chars, params_str.chars, body_str.chars);
   string_deinit(&decl_str, alloc);

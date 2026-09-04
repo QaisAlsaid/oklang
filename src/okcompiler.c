@@ -17,7 +17,7 @@ typedef enum {
 typedef uint8_t variable_declaration_flags_t;
 
 typedef struct {
-  string_view identifier;
+  ok_string_view identifier;
   variable_declaration_flags_t flags;
 } variable_declaration;
 
@@ -67,9 +67,9 @@ ARRAY_DEFINE_DEFAULT(functions, function, function_deinit)
 ARRAY_DEFINE_DEFAULT(uint32_array, uint32_t, ARRAY_DEFAULT_TYPE_DEINIT)
 ARRAY_DEFINE_DEFAULT(loop_stack, loop_context, loop_context_deinit)
 
-static void error_at(compiler* p_compiler, const ast_node* p_node, const string_view p_message);
+static void error_at(compiler* p_compiler, const ast_node* p_node, const ok_string_view p_message);
 static void
-error_at_noted(compiler* p_compiler, const ast_node* p_node, const string_view p_message, const string_view p_note);
+error_at_noted(compiler* p_compiler, const ast_node* p_node, const ok_string_view p_message, const ok_string_view p_note);
 static function* current_function(compiler* p_compiler);
 static scope* current_scope(compiler* p_compiler);
 static chunk* current_chunk(compiler* p_compiler);
@@ -83,7 +83,7 @@ static uint32_t create_constant(compiler* p_compiler, value p_value, ast_node* p
 static void begin_scope(compiler* p_compiler);
 static void end_scope(compiler* p_compiler, ast_node* p_node, bool p_needs_pop);
 static bool
-push_function(compiler* p_compiler, string_view p_name, function_type p_type, uint8_t p_arity, ast_node* p_node);
+push_function(compiler* p_compiler, ok_string_view p_name, function_type p_type, uint8_t p_arity, ast_node* p_node);
 static uint32_t add_local(compiler* p_compiler, const variable_declaration p_declration, ast_node* p_node);
 
 static bool compile_node(compiler* p_compiler, ast_node* p_node);
@@ -118,7 +118,7 @@ static bool compile_null_expression(compiler* p_compiler, ast_null_expression* p
 static bool compile_function_expression(compiler* p_compiler, ast_function_expression* p_fu);
 
 static bool compile_function_impl(compiler* p_compiler,
-                                  string_view p_name,
+                                  ok_string_view p_name,
                                   function_type p_type,
                                   ast_bindings_list p_params,
                                   ast_statement* p_body,
@@ -149,7 +149,7 @@ compile_result compiler_compile(compiler* p_compiler, compile_specs p_specs) {
   p_compiler->source = p_specs.source;
   variable_declaration decl = {.identifier = "", .flags = VARIABLE_DECLRATION_FLAGS_NONE};
   if (!push_function(p_compiler,
-                     create_string_view("<main>", STRING_VIEW_CALCULATE_LENGTH, true),
+                     ok_create_string_view("<main>", OK_STRING_VIEW_CALCULATE_LENGTH, true),
                      FUNCTION_SCRIPT,
                      0,
                      (ast_node*)p_specs.root)) {
@@ -184,14 +184,14 @@ ret: {
 }
 }
 
-void error_at(compiler* p_compiler, const ast_node* p_node, const string_view p_message) {
-  error_at_noted(p_compiler, p_node, p_message, create_string_view(NULL, 0, false));
+void error_at(compiler* p_compiler, const ast_node* p_node, const ok_string_view p_message) {
+  error_at_noted(p_compiler, p_node, p_message, ok_create_string_view(NULL, 0, false));
 }
 
 void error_at_noted(compiler* p_compiler,
                     const ast_node* p_node,
-                    const string_view p_message,
-                    const string_view p_note) {
+                    const ok_string_view p_message,
+                    const ok_string_view p_note) {
   report_at_noted(&p_compiler->panic,
                   &p_compiler->had_error,
                   p_node->node_type == AST_EOF_STATEMENT,
@@ -332,13 +332,13 @@ bool emit_constant(compiler* p_compiler, value p_value, ast_node* p_node) {
       string note = asprint(alloc, "limit is: %d", CONSTANT_MAX);
       error_at_noted(p_compiler,
                      p_node,
-                     create_string_view("too many constants in single function.", STRING_VIEW_CALCULATE_LENGTH, true),
-                     create_string_view_from_string(note));
+                     ok_create_string_view("too many constants in single function.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                     ok_create_string_view_from_string(note));
       string_deinit(&note, alloc);
     } else if (index == CONSTANT_ALLOCATION_FAILED) {
       error_at(p_compiler,
                p_node,
-               create_string_view("failed to allocate memory for constant.", STRING_VIEW_CALCULATE_LENGTH, true));
+               ok_create_string_view("failed to allocate memory for constant.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
     }
   }
   return IS_CONSTANT_VALID(index);
@@ -427,7 +427,7 @@ static bool compile_node(compiler* p_compiler, ast_node* p_node) {
     return compile_eof_statement(p_compiler, (ast_eof_statement*)p_node);
   default: {
     string message = asprint(alloc, "unable to compile node: %d", p_node->node_type);
-    error_at(p_compiler, p_node, create_string_view_from_string(message));
+    error_at(p_compiler, p_node, ok_create_string_view_from_string(message));
     string_deinit(&message, alloc);
     return false;
   }
@@ -454,14 +454,14 @@ static uint32_t add_global(compiler* p_compiler, variable_declaration p_declarat
       error_at(
           p_compiler,
           p_node,
-          create_string_view("failed to allocate memory for global identifier.", STRING_VIEW_CALCULATE_LENGTH, true));
+          ok_create_string_view("failed to allocate memory for global identifier.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
       return index;
     } else if (index == GLOBAL_OVERFLOW) {
       string note = asprint(alloc, "limit is: %u", GLOBAL_MAX);
       error_at_noted(p_compiler,
                      p_node,
-                     create_string_view("too many identifiers.", STRING_VIEW_CALCULATE_LENGTH, true),
-                     create_string_view_from_string(note));
+                     ok_create_string_view("too many identifiers.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                     ok_create_string_view_from_string(note));
       string_deinit(&note, alloc);
     }
   }
@@ -506,7 +506,7 @@ uint32_t add_local(compiler* p_compiler, const variable_declaration p_declration
   if (hs.string.chars == NULL) {
     error_at(p_compiler,
              p_node,
-             create_string_view("failed to allocate memory for hashed string.", STRING_VIEW_CALCULATE_LENGTH, true));
+             ok_create_string_view("failed to allocate memory for hashed string.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
     return LOCAL_ERROR;
   }
   scope* scp = current_scope(p_compiler);
@@ -520,8 +520,8 @@ uint32_t add_local(compiler* p_compiler, const variable_declaration p_declration
       error_at_noted(
           p_compiler,
           p_node,
-          create_string_view("too many local variables in the same scope.", STRING_VIEW_CALCULATE_LENGTH, true),
-          create_string_view_from_string(note));
+          ok_create_string_view("too many local variables in the same scope.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+          ok_create_string_view_from_string(note));
       string_deinit(&note, alloc);
       hashed_string_deinit(&hs, alloc);
       return LOCAL_OVERFLOW;
@@ -534,24 +534,24 @@ uint32_t add_local(compiler* p_compiler, const variable_declaration p_declration
     if (!locals_append(&fun->locals, local)) {
       error_at_noted(p_compiler,
                      p_node,
-                     create_string_view("failed to add local to the locals array.", STRING_VIEW_CALCULATE_LENGTH, true),
-                     create_string_view("you might be out of memory.", STRING_VIEW_CALCULATE_LENGTH, true));
+                     ok_create_string_view("failed to add local to the locals array.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                     ok_create_string_view("you might be out of memory.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
       hashed_string_deinit(&hs, alloc);
       return LOCAL_ERROR;
     }
     if (!uint32_array_append(&current_scope(p_compiler)->locals_array, fun->locals.count - 1)) {
       error_at_noted(p_compiler,
                      p_node,
-                     create_string_view("failed to add local to the locals array.", STRING_VIEW_CALCULATE_LENGTH, true),
-                     create_string_view("you might be out of memory.", STRING_VIEW_CALCULATE_LENGTH, true));
+                     ok_create_string_view("failed to add local to the locals array.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                     ok_create_string_view("you might be out of memory.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
       locals_remove(&fun->locals, fun->locals.count - 1, fun->locals.count - 1);
       return LOCAL_ERROR;
     }
     if (!scope_locals_set(&current_scope(p_compiler)->locals_table, hs, fun->locals.count - 1)) {
       error_at_noted(p_compiler,
                      p_node,
-                     create_string_view("failed to add local to the locals table.", STRING_VIEW_CALCULATE_LENGTH, true),
-                     create_string_view("you might be out of memory.", STRING_VIEW_CALCULATE_LENGTH, true));
+                     ok_create_string_view("failed to add local to the locals table.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                     ok_create_string_view("you might be out of memory.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
       hashed_string_deinit(&hs, alloc);
       locals_remove(&fun->locals, fun->locals.count - 1, fun->locals.count - 1);
       return LOCAL_ERROR;
@@ -560,14 +560,14 @@ uint32_t add_local(compiler* p_compiler, const variable_declaration p_declration
   }
   string name = create_string_from_string_view(p_declration.identifier, alloc);
   string message = asprint(alloc, "redefining local: '%s' in the same scope.", name.chars);
-  error_at(p_compiler, p_node, create_string_view_from_string(message));
+  error_at(p_compiler, p_node, ok_create_string_view_from_string(message));
   string_deinit(&message, alloc);
   string_deinit(&name, alloc);
   hashed_string_deinit(&hs, alloc);
   return REDEFINED_LOCAL;
 }
 
-bool push_function(compiler* p_compiler, string_view p_name, function_type p_type, uint8_t p_arity, ast_node* p_node) {
+bool push_function(compiler* p_compiler, ok_string_view p_name, function_type p_type, uint8_t p_arity, ast_node* p_node) {
   function fun;
   allocators* alloc = p_compiler->alloc;
   object_specs s = {alloc, p_compiler->objects_store};
@@ -613,7 +613,7 @@ static variable_declaration_flags_t variable_declaration_flags_from_modifiers(as
 }
 
 static bool compile_let_declration(compiler* p_compiler, ast_let_declaration* p_let) {
-  string_view name = ast_identifier_expression_get_value((ast_identifier_expression*)p_let->binding->lvalue);
+  ok_string_view name = ast_identifier_expression_get_value((ast_identifier_expression*)p_let->binding->lvalue);
   variable_declaration vardecl = {
       .identifier = name,
       .flags = variable_declaration_flags_from_modifiers(p_let->declaration.modifiers, p_let->binding->modifiers)};
@@ -627,7 +627,7 @@ static bool compile_let_declration(compiler* p_compiler, ast_let_declaration* p_
 }
 
 static bool compile_function_declaration(compiler* p_compiler, ast_function_declaration* p_fu) {
-  string_view name = ast_identifier_expression_get_value((ast_identifier_expression*)p_fu->binding->lvalue);
+  ok_string_view name = ast_identifier_expression_get_value((ast_identifier_expression*)p_fu->binding->lvalue);
   variable_declaration vardecl = {
       .identifier = name,
       .flags = variable_declaration_flags_from_modifiers(p_fu->declaration.modifiers, p_fu->binding->modifiers)};
@@ -647,7 +647,7 @@ static bool compile_expression_statement(compiler* p_compiler, ast_expression_st
   return false;
 }
 
-static uint32_t find_global_index(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
+static uint32_t find_global_index(compiler* p_compiler, const ok_string_view p_identifier, ast_node* p_node) {
   allocators* alloc = p_compiler->alloc;
   uint32_t index = globals_store_get(p_compiler->globals_store, p_identifier);
   if (!IS_GLOBAL_VALID(index)) {
@@ -656,7 +656,7 @@ static uint32_t find_global_index(compiler* p_compiler, const string_view p_iden
     if (index == GLOBAL_NOT_FOUND) { // no other errors emitted from get call, but it's ok.
       string identifier_str = create_string_from_string_view(p_identifier, alloc);
       string message = asprint(alloc, "undefined global: '%s'.", identifier_str.chars);
-      error_at(p_compiler, p_node, create_string_view_from_string(message));
+      error_at(p_compiler, p_node, ok_create_string_view_from_string(message));
       string_deinit(&message, alloc);
       string_deinit(&identifier_str, alloc);
     }
@@ -665,7 +665,7 @@ static uint32_t find_global_index(compiler* p_compiler, const string_view p_iden
 }
 
 // duplicate better than abstract and eat the cost at runtime!
-static uint32_t get_global(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
+static uint32_t get_global(compiler* p_compiler, const ok_string_view p_identifier, ast_node* p_node) {
   const uint32_t index = find_global_index(p_compiler, p_identifier, p_node);
   if (!IS_GLOBAL_VALID(index)) {
     return index;
@@ -682,7 +682,7 @@ static uint32_t get_global(compiler* p_compiler, const string_view p_identifier,
   return index;
 }
 
-static uint32_t set_global(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
+static uint32_t set_global(compiler* p_compiler, const ok_string_view p_identifier, ast_node* p_node) {
   const uint32_t index = find_global_index(p_compiler, p_identifier, p_node);
   if (!IS_GLOBAL_VALID(index)) {
     return index;
@@ -691,7 +691,7 @@ static uint32_t set_global(compiler* p_compiler, const string_view p_identifier,
     error_at(
         p_compiler,
         p_node,
-        create_string_view("attempting to mutate an immutable global variable.", STRING_VIEW_CALCULATE_LENGTH, true));
+        ok_create_string_view("attempting to mutate an immutable global variable.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
   }
   const uint32_t raw = global_get_raw_index(index);
   if (raw > OP_SET_GLOBAL_MAX) {
@@ -705,7 +705,7 @@ static uint32_t set_global(compiler* p_compiler, const string_view p_identifier,
   return index;
 }
 
-static uint32_t get_local(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
+static uint32_t get_local(compiler* p_compiler, const ok_string_view p_identifier, ast_node* p_node) {
   allocators* alloc = p_compiler->alloc;
   hashed_string hs = create_hashed_string_hash(p_identifier, alloc);
   uint32_t* index = resolve_local(p_compiler, &hs, current_function(p_compiler), p_node);
@@ -724,7 +724,7 @@ static uint32_t get_local(compiler* p_compiler, const string_view p_identifier, 
   return *index;
 }
 
-static uint32_t set_local(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
+static uint32_t set_local(compiler* p_compiler, const ok_string_view p_identifier, ast_node* p_node) {
   allocators* alloc = p_compiler->alloc;
   hashed_string hs = create_hashed_string_hash(p_identifier, alloc);
   uint32_t* index = resolve_local(p_compiler, &hs, current_function(p_compiler), p_node);
@@ -737,7 +737,7 @@ static uint32_t set_local(compiler* p_compiler, const string_view p_identifier, 
     error_at(
         p_compiler,
         p_node,
-        create_string_view("attempting to mutate an immutable local variable.", STRING_VIEW_CALCULATE_LENGTH, true));
+        ok_create_string_view("attempting to mutate an immutable local variable.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
     return LOCAL_ILL_MUTATION;
   }
   if (*index > OP_SET_LOCAL_MAX) {
@@ -764,8 +764,8 @@ add_upvalue(compiler* p_compiler, uint32_t p_upvalue, bool p_is_local, function*
     string note = asprint(alloc, "limit is: %d.", OP_XX_UPVALUE_LONG_MAX);
     error_at_noted(p_compiler,
                    p_node,
-                   create_string_view("too many upvalues in a single function.", STRING_VIEW_CALCULATE_LENGTH, true),
-                   create_string_view_from_string(note));
+                   ok_create_string_view("too many upvalues in a single function.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                   ok_create_string_view_from_string(note));
     string_deinit(&note, alloc);
   }
   upvalues_append(&p_function->upvalues, up);
@@ -794,7 +794,7 @@ resolve_upvalue(compiler* p_compiler, hashed_string p_identifier, uint32_t p_fun
   return UINT32_MAX;
 }
 
-static uint32_t get_upvalue(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
+static uint32_t get_upvalue(compiler* p_compiler, const ok_string_view p_identifier, ast_node* p_node) {
   allocators* alloc = p_compiler->alloc;
   hashed_string hs = create_hashed_string_hash(p_identifier, alloc);
   uint32_t up = resolve_upvalue(p_compiler, hs, 0, p_node);
@@ -813,7 +813,7 @@ static uint32_t get_upvalue(compiler* p_compiler, const string_view p_identifier
   return up;
 }
 
-static uint32_t set_upvalue(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
+static uint32_t set_upvalue(compiler* p_compiler, const ok_string_view p_identifier, ast_node* p_node) {
   allocators* alloc = p_compiler->alloc;
   hashed_string hs = create_hashed_string_hash(p_identifier, alloc);
   uint32_t up = resolve_upvalue(p_compiler, hs, 0, p_node);
@@ -832,7 +832,7 @@ static uint32_t set_upvalue(compiler* p_compiler, const string_view p_identifier
   return up;
 }
 
-static bool get_variable(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
+static bool get_variable(compiler* p_compiler, const ok_string_view p_identifier, ast_node* p_node) {
   if (!IS_LOCAL_INDEX_VALID(get_local(p_compiler, p_identifier, p_node))) {
     if (!IS_UPVALUE_INDEX_VALID(get_upvalue(p_compiler, p_identifier, p_node))) {
       return IS_GLOBAL_VALID(get_global(p_compiler, p_identifier, p_node));
@@ -841,7 +841,7 @@ static bool get_variable(compiler* p_compiler, const string_view p_identifier, a
   return true;
 }
 
-static bool set_variable(compiler* p_compiler, const string_view p_identifier, ast_node* p_node) {
+static bool set_variable(compiler* p_compiler, const ok_string_view p_identifier, ast_node* p_node) {
   if (!IS_LOCAL_INDEX_VALID(set_local(p_compiler, p_identifier, p_node))) {
     if (!IS_UPVALUE_INDEX_VALID(set_upvalue(p_compiler, p_identifier, p_node))) {
       return IS_GLOBAL_VALID(set_global(p_compiler, p_identifier, p_node));
@@ -851,7 +851,7 @@ static bool set_variable(compiler* p_compiler, const string_view p_identifier, a
 }
 
 static bool compile_identifier(compiler* p_compiler, ast_identifier_expression* p_identifier) {
-  string_view ident_str = ast_identifier_expression_get_value(p_identifier);
+  ok_string_view ident_str = ast_identifier_expression_get_value(p_identifier);
   return get_variable(p_compiler, ident_str, (ast_node*)p_identifier);
 }
 
@@ -909,8 +909,8 @@ static bool emit_loop(compiler* p_compiler, const uint32_t p_loop_start, ast_nod
     string note = asprint(alloc, "limit is: %d.", OP_LOOP_MAX);
     error_at_noted(p_compiler,
                    p_node,
-                   create_string_view("too many instructions to loop over.", STRING_VIEW_CALCULATE_LENGTH, true),
-                   create_string_view_from_string(note));
+                   ok_create_string_view("too many instructions to loop over.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                   ok_create_string_view_from_string(note));
     string_deinit(&note, alloc);
     return false;
   }
@@ -958,8 +958,8 @@ bool compile_while_statement(compiler* p_compiler, ast_while_statement* p_while)
     if (!loop_stack_append(&fun->loop_stack, ctx)) {
       error_at_noted(p_compiler,
                      (ast_node*)p_while,
-                     create_string_view("failed to push a new loop context.", STRING_VIEW_CALCULATE_LENGTH, true),
-                     create_string_view("you might be out of memory.", STRING_VIEW_CALCULATE_LENGTH, true));
+                     ok_create_string_view("failed to push a new loop context.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                     ok_create_string_view("you might be out of memory.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
       loop_context_deinit(&ctx, alloc);
       return false;
     }
@@ -992,8 +992,8 @@ bool compile_for_statement(compiler* p_compiler, ast_for_statement* p_for) {
     if (!loop_stack_append(&fun->loop_stack, ctx)) {
       error_at_noted(p_compiler,
                      (ast_node*)p_for,
-                     create_string_view("failed to push a new loop context.", STRING_VIEW_CALCULATE_LENGTH, true),
-                     create_string_view("you might be out of memory.", STRING_VIEW_CALCULATE_LENGTH, true));
+                     ok_create_string_view("failed to push a new loop context.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                     ok_create_string_view("you might be out of memory.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
       loop_context_deinit(&ctx, alloc);
       return false;
     }
@@ -1041,7 +1041,7 @@ bool compile_control_flow_statement(compiler* p_compiler, ast_control_flow_state
   if (fun->loop_stack.count == 0) {
     error_at(p_compiler,
              (ast_node*)p_control,
-             create_string_view("illegal control flow outside of loop.", STRING_VIEW_CALCULATE_LENGTH, true));
+             ok_create_string_view("illegal control flow outside of loop.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
     return false;
   }
   bool status = true;
@@ -1081,17 +1081,17 @@ static bool compile_number_expression(compiler* p_compiler, ast_number_expressio
   if (number == AST_NUMBER_EXPRESSION_PARSE_ERROR) {
     error_at(p_compiler,
              (ast_node*)p_number,
-             create_string_view("failed to parse number.", STRING_VIEW_CALCULATE_LENGTH, true));
+             ok_create_string_view("failed to parse number.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
   }
   return emit_constant(p_compiler, NUMBER_AS_VALUE(number), (ast_node*)p_number);
 }
 
 static bool compile_string_expression(compiler* p_compiler, ast_string_expression* p_string) {
-  string_view parsed_str = ast_string_expression_get_value(p_string);
+  ok_string_view parsed_str = ast_string_expression_get_value(p_string);
   if (parsed_str.chars == NULL) {
     error_at(p_compiler,
              (ast_node*)p_string,
-             create_string_view("failed to parse string.", STRING_VIEW_CALCULATE_LENGTH, true));
+             ok_create_string_view("failed to parse string.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
     return false;
   }
   allocators* alloc = p_compiler->alloc;
@@ -1100,7 +1100,7 @@ static bool compile_string_expression(compiler* p_compiler, ast_string_expressio
   if (object_str == NULL) {
     error_at(p_compiler,
              (ast_node*)p_string,
-             create_string_view("failed create string object.", STRING_VIEW_CALCULATE_LENGTH, true));
+             ok_create_string_view("failed create string object.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
     return false;
   }
   gc_guard_up(alloc->gc, OBJECT_AS_VALUE(object_str));
@@ -1165,7 +1165,7 @@ static bool compile_assign_expression(compiler* p_compiler, ast_assign_expressio
   }
   compile_node(p_compiler, (ast_node*)p_assign->right);
   ast_identifier_expression* ident = (ast_identifier_expression*)p_assign->left;
-  string_view name = ast_identifier_expression_get_value(ident);
+  ok_string_view name = ast_identifier_expression_get_value(ident);
   set_variable(p_compiler, name, (ast_node*)ident);
   return true;
 }
@@ -1177,8 +1177,8 @@ compile_expressions_list(compiler* p_compiler, ast_expressions_list* p_list, uin
     string note = asprint(alloc, "limit is: %d.", p_limit);
     error_at_noted(p_compiler,
                    (ast_node*)p_node,
-                   create_string_view("too many arguments.", STRING_VIEW_CALCULATE_LENGTH, true),
-                   create_string_view_from_string(note));
+                   ok_create_string_view("too many arguments.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                   ok_create_string_view_from_string(note));
     string_deinit(&note, alloc);
     return UINT32_MAX;
   }
@@ -1218,7 +1218,7 @@ static bool compile_null_expression(compiler* p_compiler, ast_null_expression* p
 
 bool compile_function_expression(compiler* p_compiler, ast_function_expression* p_fu) {
   return compile_function_impl(p_compiler,
-                               create_string_view("<lambda>", STRING_VIEW_CALCULATE_LENGTH, true),
+                               ok_create_string_view("<lambda>", OK_STRING_VIEW_CALCULATE_LENGTH, true),
                                FUNCTION_FUNCTION,
                                p_fu->parameters,
                                p_fu->body,
@@ -1226,7 +1226,7 @@ bool compile_function_expression(compiler* p_compiler, ast_function_expression* 
 }
 
 static bool compile_function_impl(compiler* p_compiler,
-                                  string_view p_name,
+                                  ok_string_view p_name,
                                   function_type p_type,
                                   ast_bindings_list p_params,
                                   ast_statement* p_body,
@@ -1236,8 +1236,8 @@ static bool compile_function_impl(compiler* p_compiler,
     string note = asprint(alloc, "limit is: %d", UINT8_MAX);
     error_at_noted(p_compiler,
                    p_node,
-                   create_string_view("too many function parameters.", STRING_VIEW_CALCULATE_LENGTH, true),
-                   create_string_view_from_string(note));
+                   ok_create_string_view("too many function parameters.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                   ok_create_string_view_from_string(note));
     string_deinit(&note, alloc);
     return false;
   }
@@ -1257,7 +1257,7 @@ static bool compile_function_impl(compiler* p_compiler,
     } else {
       error_at(p_compiler,
                (ast_node*)binding,
-               create_string_view("failed to bind function parameter.", STRING_VIEW_CALCULATE_LENGTH, true));
+               ok_create_string_view("failed to bind function parameter.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
       break;
     }
   }
@@ -1286,7 +1286,7 @@ static bool compile_function_impl(compiler* p_compiler,
   if (!IS_CONSTANT_VALID(cons)) {
     error_at(p_compiler,
              p_node,
-             create_string_view("failed to create constant for function.", STRING_VIEW_CALCULATE_LENGTH, true));
+             ok_create_string_view("failed to create constant for function.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
     status = false;
   }
   encode_int(bytes, OP_CONSTANT_LONG_OPERANDS_WIDTH, cons);

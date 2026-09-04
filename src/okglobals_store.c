@@ -31,7 +31,7 @@ void globals_store_deinit(globals_store* p_globals) {
   global_values_deinit(&p_globals->global_values, p_globals->alloc);
 }
 
-uint32_t globals_store_add(globals_store* p_store, const string_view p_identifier, bool p_is_mutable) {
+uint32_t globals_store_add(globals_store* p_store, const ok_string_view p_identifier, bool p_is_mutable) {
   allocators* alloc = p_store->alloc;
   hashed_string hs = create_hashed_string_hash(p_identifier, alloc);
   {
@@ -63,7 +63,7 @@ uint32_t globals_store_add(globals_store* p_store, const string_view p_identifie
   return index;
 }
 
-uint32_t globals_store_get(globals_store* p_store, const string_view p_identifier) {
+uint32_t globals_store_get(globals_store* p_store, const ok_string_view p_identifier) {
   allocators* alloc = p_store->alloc;
   hashed_string hs = create_hashed_string_hash(p_identifier, alloc);
   uint32_t* index = globals_table_get(&p_store->table, hs);

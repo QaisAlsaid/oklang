@@ -1,5 +1,4 @@
 #include <stddef.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "okmm.h"
@@ -77,27 +76,27 @@ string create_dynamic_string(const char* p_chars, uint64_t p_length, allocators*
   return str;
 }
 
-string create_string_from_string_view(const string_view p_string_view, allocators* p_alloc) {
-  return create_dynamic_string(p_string_view.chars, string_view_get_length(&p_string_view), p_alloc);
+string create_string_from_string_view(const ok_string_view p_string_view, allocators* p_alloc) {
+  return create_dynamic_string(p_string_view.chars, ok_string_view_get_length(&p_string_view), p_alloc);
 }
 
-string create_string_from_cstring_view(cstring_view p_cstring_view, allocators* p_alloc) {
-  return create_dynamic_string(p_cstring_view.chars, cstring_view_get_length(&p_cstring_view), p_alloc);
+string create_string_from_cstring_view(ok_cstring_view p_cstring_view, allocators* p_alloc) {
+  return create_dynamic_string(p_cstring_view.chars, ok_cstring_view_get_length(&p_cstring_view), p_alloc);
 }
 
-#define STRING_VIEW_FLAG_CSTR 1
+#define OK_STRING_VIEW_FLAG_CSTR 1
 
-bool string_view_init(string_view* p_string_view, const char* p_chars, uint64_t p_length, bool p_is_cstr_view) {
-  if (p_length == STRING_VIEW_CALCULATE_LENGTH &&
-      (!p_is_cstr_view || ((p_length = strlen(p_chars)) > STRING_VIEW_LENGTH_MAX))) {
+bool ok_string_view_init(ok_string_view* p_string_view, const char* p_chars, uint64_t p_length, bool p_is_cstr_view) {
+  if (p_length == OK_STRING_VIEW_CALCULATE_LENGTH &&
+      (!p_is_cstr_view || ((p_length = strlen(p_chars)) > OK_STRING_VIEW_LENGTH_MAX))) {
     goto fail;
-  } else if (p_length > STRING_VIEW_LENGTH_MAX) {
+  } else if (p_length > OK_STRING_VIEW_LENGTH_MAX) {
     goto fail;
   }
   p_string_view->chars = p_chars;
   p_string_view->info = p_length & STRING_FLAGS_MASK;
   if (p_is_cstr_view) {
-    set_flag(STRING_VIEW_FLAG_CSTR, &p_string_view->info);
+    set_flag(OK_STRING_VIEW_FLAG_CSTR, &p_string_view->info);
   }
   return true;
 fail:
@@ -106,40 +105,40 @@ fail:
   return false;
 }
 
-void string_view_deinit(string_view* p_string_view) {
+void ok_string_view_deinit(ok_string_view* p_string_view) {
   p_string_view->chars = NULL;
   p_string_view->info = 0;
 }
 
-uint64_t string_view_get_length(const string_view* p_string_view) {
+uint64_t ok_string_view_get_length(const ok_string_view* p_string_view) {
   return p_string_view->info & STRING_FLAGS_MASK;
 }
 
-bool string_view_is_cstring_view(const string_view* p_string_view) {
-  return test_flag(STRING_VIEW_FLAG_CSTR, p_string_view->info);
+bool ok_string_view_is_cstring_view(const ok_string_view* p_string_view) {
+  return test_flag(OK_STRING_VIEW_FLAG_CSTR, p_string_view->info);
 }
 
-string_view create_string_view(const char* p_chars, uint64_t p_length, bool p_is_cstr_view) {
-  string_view view;
-  string_view_init(&view, p_chars, p_length, p_is_cstr_view);
+ok_string_view ok_create_string_view(const char* p_chars, uint64_t p_length, bool p_is_cstr_view) {
+  ok_string_view view;
+  ok_string_view_init(&view, p_chars, p_length, p_is_cstr_view);
   return view;
 }
 
-string_view create_string_view_from_string(const string p_string) {
-  return create_string_view(p_string.chars, string_get_length(&p_string), true);
+ok_string_view ok_create_string_view_from_string(const string p_string) {
+  return ok_create_string_view(p_string.chars, string_get_length(&p_string), true);
 }
 
-string_view create_string_view_from_cstring_view(const cstring_view p_cstring_view) {
-  return create_string_view(p_cstring_view.chars, cstring_view_get_length(&p_cstring_view), true);
+ok_string_view ok_ok_create_string_view_from_cstring_view(const ok_cstring_view p_cstring_view) {
+  return ok_create_string_view(p_cstring_view.chars, ok_cstring_view_get_length(&p_cstring_view), true);
 }
 
-bool cstring_view_init(cstring_view* p_cstring_view, const char* p_chars, uint64_t p_length) {
-  if (p_length == CSTRING_VIEW_CALCULATE_LENGTH) {
+bool ok_cstring_view_init(ok_cstring_view* p_cstring_view, const char* p_chars, uint64_t p_length) {
+  if (p_length == OK_CSTRING_VIEW_CALCULATE_LENGTH) {
     if ((p_length = strlen(p_chars)) > STRING_LENGTH_MAX) {
       goto fail;
     }
     p_cstring_view->info = p_length & STRING_FLAGS_MASK;
-  } else if (p_length == CSTRING_VIEW_LAZY_CALCULATE_LENGTH) {
+  } else if (p_length == OK_CSTRING_VIEW_LAZY_CALCULATE_LENGTH) {
     p_cstring_view->info = p_length;
   } else if (p_length > STRING_LENGTH_MAX) {
     goto fail;
@@ -154,52 +153,52 @@ fail:
   return false;
 }
 
-void cstring_view_deinit(cstring_view* p_cstring_view) {
+void ok_cstring_view_deinit(ok_cstring_view* p_cstring_view) {
   p_cstring_view->chars = NULL;
   p_cstring_view->info = 0;
 }
 
-uint64_t cstring_view_get_length(const cstring_view* p_cstring_view) {
-  if (p_cstring_view->info == CSTRING_VIEW_LAZY_CALCULATE_LENGTH) {
+uint64_t ok_cstring_view_get_length(const ok_cstring_view* p_cstring_view) {
+  if (p_cstring_view->info == OK_CSTRING_VIEW_LAZY_CALCULATE_LENGTH) {
     const uint64_t len = strlen(p_cstring_view->chars);
     if (len > STRING_LENGTH_MAX) {
-      return CSTRING_VIEW_LENGTH_OVERFLOW;
+      return OK_CSTRING_VIEW_LENGTH_OVERFLOW;
     }
     return len;
   }
   return p_cstring_view->info & STRING_FLAGS_MASK;
 }
 
-uint64_t cstring_view_lazy_length(cstring_view* p_cstring_view) {
-  if (p_cstring_view->info == CSTRING_VIEW_LAZY_CALCULATE_LENGTH) {
+uint64_t ok_cstring_view_lazy_length(ok_cstring_view* p_cstring_view) {
+  if (p_cstring_view->info == OK_CSTRING_VIEW_LAZY_CALCULATE_LENGTH) {
     const uint64_t len = strlen(p_cstring_view->chars);
     if (len > STRING_LENGTH_MAX) {
-      return CSTRING_VIEW_LENGTH_OVERFLOW;
+      return OK_CSTRING_VIEW_LENGTH_OVERFLOW;
     }
     p_cstring_view->info = len & STRING_FLAGS_MASK;
   }
   return p_cstring_view->info;
 }
 
-cstring_view create_cstring_view(const char* p_chars, uint64_t p_length) {
-  cstring_view cview;
-  cstring_view_init(&cview, p_chars, p_length);
+ok_cstring_view ok_create_cstring_view(const char* p_chars, uint64_t p_length) {
+  ok_cstring_view cview;
+  ok_cstring_view_init(&cview, p_chars, p_length);
   return cview;
 }
 
-cstring_view create_cstring_view_from_string(const string p_string) {
-  return create_cstring_view(p_string.chars, string_get_length(&p_string));
+ok_cstring_view ok_create_cstring_view_from_string(const string p_string) {
+  return ok_create_cstring_view(p_string.chars, string_get_length(&p_string));
 }
 
-cstring_view create_cstring_view_from_string_view(const string_view p_string_view) {
-  if (string_view_is_cstring_view(&p_string_view)) {
-    return create_cstring_view(p_string_view.chars, string_view_get_length(&p_string_view));
+ok_cstring_view ok_ok_create_cstring_view_from_string_view(const ok_string_view p_string_view) {
+  if (ok_string_view_is_cstring_view(&p_string_view)) {
+    return ok_create_cstring_view(p_string_view.chars, ok_string_view_get_length(&p_string_view));
   }
-  return create_cstring_view(NULL, 0);
+  return ok_create_cstring_view(NULL, 0);
 }
 
 void hashed_string_init(hashed_string* p_hashed_string,
-                        const string_view p_view,
+                        const ok_string_view p_view,
                         const hash_t p_hash,
                         allocators* p_alloc) {
   p_hashed_string->string = create_string_from_string_view(p_view, p_alloc);
@@ -211,13 +210,13 @@ void hashed_string_deinit(hashed_string* p_hashed_string, allocators* p_alloc) {
   p_hashed_string->hash = 0;
 }
 
-hashed_string create_hashed_string(const string_view p_view, hash_t p_hash, allocators* p_alloc) {
+hashed_string create_hashed_string(const ok_string_view p_view, hash_t p_hash, allocators* p_alloc) {
   hashed_string hs;
   hashed_string_init(&hs, p_view, p_hash, p_alloc);
   return hs;
 }
 
-hashed_string create_hashed_string_hash(const string_view p_view, allocators* p_alloc) {
+hashed_string create_hashed_string_hash(const ok_string_view p_view, allocators* p_alloc) {
   hashed_string hs;
   hash_t hash = default_hash_str(p_view);
   hashed_string_init(&hs, p_view, hash, p_alloc);

@@ -32,24 +32,24 @@ report_status report_at(bool* p_panic,
                         const ok_source* p_source,
                         const token* p_token,
                         const report_severity p_severity,
-                        const string_view p_message);
+                        const ok_string_view p_message);
 report_status report_at_noted(bool* p_panic,
                               bool* p_had_error,
                               const bool p_is_eof,
                               const ok_source* p_source,
                               const token* p_token,
                               const report_severity p_severity,
-                              const string_view p_message,
-                              const string_view p_note);
+                              const ok_string_view p_message,
+                              const ok_string_view p_note);
 
-inline static hash_t fnv1a_hash_str(const string_view p_str, hash_t p_hash) {
-  for (uint64_t i = 0; i < string_view_get_length(&p_str); ++i) {
+inline static hash_t fnv1a_hash_str(const ok_string_view p_str, hash_t p_hash) {
+  for (uint64_t i = 0; i < ok_string_view_get_length(&p_str); ++i) {
     p_hash ^= (uint8_t)p_str.chars[i] * 1099511628211ULL;
   }
   return p_hash;
 }
 
-inline static hash_t default_hash_str(const string_view p_str) {
+inline static hash_t default_hash_str(const ok_string_view p_str) {
   return fnv1a_hash_str(p_str, 14695981039346656037ULL);
 }
 

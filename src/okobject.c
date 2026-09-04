@@ -29,7 +29,7 @@ void object_set_marked(object* p_object, bool p_marked) {
   p_object->info = p_marked ? p_object->info | mask : p_object->info & ~mask;
 }
 
-static void object_string_init(object_string* p_object_string, const string_view p_string, object_specs* p_specs) {
+static void object_string_init(object_string* p_object_string, const ok_string_view p_string, object_specs* p_specs) {
   object_init(&p_object_string->object, OBJ_STRING);
   p_object_string->string = create_string_from_string_view(p_string, p_specs->alloc);
 }
@@ -39,7 +39,7 @@ static void object_string_deinit(object_string* p_object_string, object_specs* p
   object_deinit(&p_object_string->object);
 }
 
-object_string* create_object_string(const string_view p_string, object_specs* p_specs) {
+object_string* create_object_string(const ok_string_view p_string, object_specs* p_specs) {
   object_string* object_str = (object_string*)p_specs->alloc->allocate(p_specs->alloc, sizeof(object_string));
   if (object_str == NULL) {
     return NULL;

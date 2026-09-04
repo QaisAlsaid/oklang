@@ -61,9 +61,9 @@ report_status report_at(bool* p_panic,
                         const ok_source* p_source,
                         const token* p_token,
                         const report_severity p_severity,
-                        const string_view p_message) {
+                        const ok_string_view p_message) {
   return report_at_noted(
-      p_panic, p_had_error, p_is_eof, p_source, p_token, p_severity, p_message, create_string_view(NULL, 0, false));
+      p_panic, p_had_error, p_is_eof, p_source, p_token, p_severity, p_message, ok_create_string_view(NULL, 0, false));
 }
 
 report_status report_at_noted(bool* p_panic,
@@ -72,8 +72,8 @@ report_status report_at_noted(bool* p_panic,
                               const ok_source* p_source,
                               const token* p_token,
                               const report_severity p_severity,
-                              const string_view p_message,
-                              const string_view p_note) {
+                              const ok_string_view p_message,
+                              const ok_string_view p_note) {
   // TODO: custom loggers
   // idk man should we care about printf fail, or at least hide behind macro or not care at all..
   // TODO fix formmating, token has only relevant part to it, while error message require full line info (for proper
@@ -90,7 +90,7 @@ report_status report_at_noted(bool* p_panic,
                          p_token->line_info.line,
                          p_token->line_info.offset,
                          report,
-                         (int)string_view_get_length(&p_message),
+                         (int)ok_string_view_get_length(&p_message),
                          p_message.chars) < 0;
   if (p_is_eof) {
     printf_fail |= fprintf(stderr, "    | ") < 0;
@@ -104,7 +104,7 @@ report_status report_at_noted(bool* p_panic,
     }
   }
   if (p_note.chars != NULL) {
-    printf_fail |= fprintf(stderr, "    | note: %.*s\n", (int)string_view_get_length(&p_note), p_note.chars) < 0;
+    printf_fail |= fprintf(stderr, "    | note: %.*s\n", (int)ok_string_view_get_length(&p_note), p_note.chars) < 0;
   }
   return printf_fail ? REPORT_STATUS_FAILED : REPORT_STATUS_OK;
 }

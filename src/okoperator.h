@@ -83,6 +83,6 @@ typedef enum {
 } operator_type;
 
 operator_type operator_type_from_token_type(const token_type p_token_type);
-string_view operator_type_to_string(const operator_type p_operator_type);
+ok_string_view operator_type_to_string(const operator_type p_operator_type);
 
 #endif // OK_OPERATOR_H

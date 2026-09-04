@@ -36,8 +36,8 @@ struct globals_store {
 
 void globals_store_init(globals_store* p_store, allocators* p_alloc);
 void globals_store_deinit(globals_store* p_store);
-uint32_t globals_store_add(globals_store* p_store, const string_view p_identifier, bool p_is_mutable);
-uint32_t globals_store_get(globals_store* p_store, const string_view p_identifier);
+uint32_t globals_store_add(globals_store* p_store, const ok_string_view p_identifier, bool p_is_mutable);
+uint32_t globals_store_get(globals_store* p_store, const ok_string_view p_identifier);
 
 static inline uint32_t global_get_raw_index(uint32_t p_packed) {
   return p_packed & 0x00ffffff;

@@ -52,7 +52,7 @@ typedef struct {
   string string;
 } object_string;
 
-object_string* create_object_string(const string_view p_string, object_specs* p_specs);
+object_string* create_object_string(const ok_string_view p_string, object_specs* p_specs);
 
 typedef struct {
   object object;

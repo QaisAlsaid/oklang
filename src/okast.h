@@ -172,7 +172,7 @@ typedef struct {
 
 void ast_identifier_expression_init(ast_identifier_expression* p_identifier, const token p_token, ast_specs* p_specs);
 void ast_identifier_expression_deinit(ast_identifier_expression* p_identifier);
-string_view ast_identifier_expression_get_value(const ast_identifier_expression* p_identifier);
+ok_string_view ast_identifier_expression_get_value(const ast_identifier_expression* p_identifier);
 bool ast_identifier_expression_print(const ast_identifier_expression* p_expression);
 string ast_identifier_expression_asprint(const ast_identifier_expression* p_expression);
 
@@ -194,7 +194,7 @@ typedef struct {
 
 void ast_string_expression_init(ast_string_expression* p_string, const token p_token, ast_specs* p_specs);
 void ast_string_expression_deinit(ast_string_expression* p_string);
-string_view ast_string_expression_get_value(const ast_string_expression* p_string);
+ok_string_view ast_string_expression_get_value(const ast_string_expression* p_string);
 bool ast_string_expression_print(const ast_string_expression* p_string);
 string ast_string_expression_asprint(const ast_string_expression* p_string);
 
