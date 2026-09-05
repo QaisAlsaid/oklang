@@ -1,0 +1,29 @@
+glob let multiplier = 2;
+
+fu make() {
+    let mut total = 0;
+
+    return fu(x) {
+        total = total + x;
+
+        if total > 10 ? {
+            return total;
+        }
+
+        return total * multiplier;
+    };
+}
+
+let f = make();
+
+let mut i = 0;
+
+while i < 4? {
+    print(f(i));
+    i = i + 1;
+}
+
+// expect: 0
+// expect: 2
+// expect: 6
+// expect: 12

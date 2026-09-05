@@ -1,0 +1,17 @@
+fu outer() {
+    let x = 44;
+
+    fu middle() {
+        fu inner() {
+            return x;
+        }
+
+        return inner;
+    }
+
+    return middle();
+}
+
+let f = outer();
+
+print(f()); // expect: 44

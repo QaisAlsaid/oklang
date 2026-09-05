@@ -2,7 +2,7 @@ BasedOnStyle: LLVM
 IndentWidth: 2
 UseTab: Never
 
-BreakBeforeBraces: Allman
+BreakBeforeBraces: Attach
 
 AllowShortFunctionsOnASingleLine: false
 AllowShortBlocksOnASingleLine: false
@@ -11,7 +11,7 @@ AllowShortLoopsOnASingleLine: false
 
 PointerAlignment: Left
 
-SpaceBeforeParens: Never
+SpaceBeforeParens: ControlStatements
 
 SpacesInAngles: false
 AlwaysBreakTemplateDeclarations: Yes

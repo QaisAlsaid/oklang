@@ -1,0 +1,1 @@
+if false? print 67; else if false? print "no"; else print "yeh!"; // expect: yeh!

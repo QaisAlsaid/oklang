@@ -1,0 +1,2 @@
+let x = 44;
+x = 67; // expect error: immutable

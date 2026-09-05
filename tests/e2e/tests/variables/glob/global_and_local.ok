@@ -1,0 +1,8 @@
+glob let x = "global";
+
+fu foo() {
+    let x = "local";
+    print(x); // expect: local
+}
+
+foo();

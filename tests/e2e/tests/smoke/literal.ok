@@ -1,0 +1,5 @@
+print(null); // expect: null
+print(true); // expect: true
+print(false); // expect: false
+print(44); // expect: 44
+print("fork"); // expect: fork

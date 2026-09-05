@@ -1,0 +1,7 @@
+let qais = "cool";
+if qais == "cool"? {
+  print "qais is cool!"; // expect: qais is cool!
+} else print "qais is a bum!"; // better be working!
+
+if 22 == 22? print 'yeh'; // expect: yeh
+if 67 < 69? print 'also by age'; // expect: also by age

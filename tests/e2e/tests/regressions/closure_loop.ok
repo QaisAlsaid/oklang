@@ -1,0 +1,19 @@
+fu make_counter() {
+    let mut x = 0;
+
+    return fun() {
+        x = x + 1;
+        return x;
+    };
+}
+
+let counter = make_counter();
+
+let mut i = 0;
+
+while i < 3? {
+    print(counter());
+    i = i + 1;
+}
+
+// expect error

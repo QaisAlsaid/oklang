@@ -1,0 +1,2 @@
+if true? print "opposing"; else print "fork"; // expect: opposing
+if false? print "opposing"; else? print "fork"; // expect: fork

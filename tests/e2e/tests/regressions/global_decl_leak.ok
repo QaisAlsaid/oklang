@@ -1,0 +1,11 @@
+// global declaration shouldn't leak initializer onto stack
+// this was guarded by a bug in OP_SET_GLOBAL and its long version that did stack_popr instead of stack_top, which masked the compiler bug.
+// once that got fixed, turns out the compiler wasn't pushing OP_POP after compiling global decl thus resulting in stack leak. 
+glob let x = "global";
+
+{
+  let x = "local";
+  print(x); // expect: local
+}
+
+print(x); // expect: global

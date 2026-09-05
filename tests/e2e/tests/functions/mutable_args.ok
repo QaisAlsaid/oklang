@@ -1,0 +1,5 @@
+fu fork(mut half) {
+  return half = "life";
+}
+
+print fork("half"); // expect: life

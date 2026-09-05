@@ -1,0 +1,11 @@
+if true ? {
+    if true ? {
+        if true ? {
+            if true ? {
+                if true ? {
+                    print("deep"); // expect: deep
+                }
+            }
+        }
+    }
+}

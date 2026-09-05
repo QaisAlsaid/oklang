@@ -1,0 +1,11 @@
+cmake_minimum_required(VERSION 3.11)
+
+project(oktest-e2e-runner LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
+
+set(OKTEST_E2E_PATH ${CMAKE_CURRENT_SOURCE_DIR})
+file(GLOB_RECURSE OKTEST_E2E_SRC CONFIGURE_DEPENDS ${OKTEST_E2E_PATH}/src/*.cpp)
+
+add_executable(${PROJECT_NAME} ${OKTEST_E2E_SRC})
+target_include_directories(${PROJECT_NAME} PRIVATE ${OKTEST_E2E_PATH}/src/)

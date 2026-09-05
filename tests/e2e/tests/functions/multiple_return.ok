@@ -1,0 +1,6 @@
+fu fork_vs_67() {
+    return 44;
+    return 67;
+}
+
+print(fork_vs_67()); // expect: 44

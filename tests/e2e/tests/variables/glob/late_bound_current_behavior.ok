@@ -1,0 +1,9 @@
+// currently globals are not late bound thus this behavior is expected.
+// later globals will become late bound and this shouldn't error
+fu foo() {
+    print(x); // expect error: undefined
+}
+
+glob let x = 42;
+
+foo();

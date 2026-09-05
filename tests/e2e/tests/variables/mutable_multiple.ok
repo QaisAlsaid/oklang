@@ -1,0 +1,9 @@
+let mut x = 1;
+
+x = x + 1;
+x = x + 1;
+x = x + 1;
+x = x + 1;
+x = x + 1;
+
+print x; // expect: 6

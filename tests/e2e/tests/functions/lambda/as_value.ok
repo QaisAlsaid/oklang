@@ -1,0 +1,7 @@
+fu get() {
+  return 44;
+}
+
+let f = get;
+
+print(f()); // expect: 44

@@ -1,0 +1,6 @@
+let mut i = 0;
+while i < 1? {
+  print i;
+  i = i + 1;
+}
+// expect: 0

@@ -1,0 +1,17 @@
+fu a() {
+    let x = 44;
+
+    fu b() {
+        fu c() {
+            return x;
+        }
+
+        return c;
+    }
+
+    return b();
+}
+
+let f = a();
+
+print(f()); // expect: 44

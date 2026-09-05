@@ -1,0 +1,3 @@
+glob let x = 44;
+
+print(x); // expect: 44

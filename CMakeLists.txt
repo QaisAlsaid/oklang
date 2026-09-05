@@ -1,38 +1,97 @@
-cmake_minimum_required(VERSION 3.11)
-project(ok LANGUAGES CXX)
+cmake_minimum_required(VERSION 3.20)
 
-set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
+project(ok LANGUAGES C)
 
-set(OK_PATH ${CMAKE_CURRENT_SOURCE_DIR})
-file(GLOB_RECURSE OK_SRC CONFIGURE_DEPENDS src/*.cpp)
-file(GLOB_RECURSE OK_HDR CONFIGURE_DEPENDS src/*.hpp)
+set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
 
+option(OK_BUILD_SHARED "Build libok as a shared library" OFF)
+option(OK_BUILD_TESTS "Build tests" OFF)
+option(OK_BUILD_CLI "Build the CLI" ON)
+option(OK_ENABLE_SANITIZERS "Enable ASan" OFF)
+option(OK_PARANOID "Enable additional logging" OFF)
+option(OK_PEDANTIC "Enable additional failure checking" OFF)
+option(OK_AGGRESSIVE_GC "Trigger garbage collection on every allocation" OFF)
 
-add_compile_definitions($<$<CONFIG:Debug>:DEBUG>)
-#add_compile_options(-Wall -Wextra -Wpedantic)
-add_compile_options(-w)
+if(OK_BUILD_SHARED)
+  set(OK_LIBRARY_TYPE SHARED)
+else()
+  set(OK_LIBRARY_TYPE STATIC)
+endif()
 
-include_directories(${OK_PATH}/src ${OK_PATH}/include)
+add_library(ok ${OK_LIBRARY_TYPE})
+if (OK_BUILD_SHARED)
+  target_compile_definitions(ok PUBLIC OK_BUILD_SHARED)
+endif()
+  if (OK_PARANOID)
+    target_compile_definitions(ok PUBLIC OK_PARANOID)
+  endif()
 
-function (add_ok_build target_name build_type) 
-  add_executable(${target_name} ${OK_SRC} ${OK_HDR})
-  target_compile_options(${target_name} PRIVATE 
-        $<$<CONFIG:Debug>:-g>
-        $<$<CONFIG:Release>:-O3>
-    )
-    set_target_properties(${target_name} PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/${build_type}
-    )
+  if (OK_AGGRESSIVE_GC)
+    target_compile_definitions(ok PUBLIC OK_AGGRESSIVE_GC)
+  endif()
 
-    if(build_type STREQUAL "debug")
-        target_compile_definitions(${target_name} PRIVATE PARANOID)
-        #target_compile_options(okc_debug PRIVATE -fsanitize=address -fsanitize=undefined)
-        #target_link_options(okc_debug PRIVATE -fsanitize=address -fsanitize=undefined)
-    elseif(build_type STREQUAL "release")
-        target_compile_definitions(${target_name} PRIVATE IDK)
-    endif()
-endfunction()
+if (OK_PEDANTIC)
+    target_compile_definitions(ok PUBLIC OK_PEDANTIC)
+endif()
 
-add_ok_build(ok_debug debug)
-add_ok_build(ok release)
+target_sources(ok PRIVATE
+  src/ok.c
+  src/okast.c
+  src/okchunk.c
+  src/okcompiler.c
+  src/okdebug.c
+  src/okglobals_store.c
+  src/oklexer.c
+  src/okmm.c
+  src/okobject.c
+  src/okobject_store.c
+  src/okoperator.c
+  src/okparser.c
+  src/oktoken.c
+  src/okutils.c
+  src/okvalue.c
+  src/okvm.c
+  src/okstring.c
+  src/okspecs.c
+  src/okgc.c
+)
+
+target_include_directories(ok 
+  PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+)
+
+target_include_directories(ok PUBLIC 
+  ${PROJECT_SOURCE_DIR}/include
+)
+
+target_compile_options(ok PRIVATE
+  -Wall
+  -Wextra
+  -Wpedantic
+)
+
+add_library(ok_sanitizers INTERFACE)
+
+if (OK_ENABLE_SANITIZERS)
+  target_compile_options(ok_sanitizers INTERFACE
+    -fsanitize=address
+    -fno-omit-frame-pointer
+  )
+
+  target_link_options(ok_sanitizers INTERFACE
+    -fsanitize=address
+  )
+endif()
+
+if (OK_BUILD_CLI)
+  add_subdirectory(cli)
+endif()
+
+if(OK_BUILD_TESTS)
+  add_subdirectory(vendor/unity)
+  enable_testing()
+  add_subdirectory(tests)
+endif()

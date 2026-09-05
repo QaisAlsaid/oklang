@@ -1,0 +1,15 @@
+let mut i = 1;
+
+while i <= 4? {
+    if i == 1 ? print("one");
+    else if i == 2 ? print("two");
+    else if i == 3 ? print("three");
+    else? print("other");
+
+    i = i + 1;
+}
+
+// expect: one
+// expect: two
+// expect: three
+// expect: other

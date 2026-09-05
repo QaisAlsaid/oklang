@@ -1,0 +1,6 @@
+{
+    let a = 50;
+    let b = 17;
+
+    print(a + b); // expect: 67
+}
