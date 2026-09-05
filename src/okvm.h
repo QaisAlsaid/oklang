@@ -50,7 +50,7 @@ struct vm {
   ok* ok;
   string native_error_message;
   bool native_has_error;
-  bool in_native_call;
+  uint32_t native_call_depth;
 };
 
 typedef enum {
@@ -80,8 +80,7 @@ typedef struct {
 void vm_init(vm* p_vm, vm_specs p_specs);
 void vm_deinit(vm* p_vm);
 interpret_result vm_interpret(vm* p_vm, interpret_specs p_specs);
-interpret_result vm_run(vm* p_vm);
-
+interpret_result vm_call(vm* p_vm, value p_callee, uint32_t p_argc);
 bool vm_native_error(vm* p_vm, ok_string_view p_message);
 
 #endif // OK_VM_H

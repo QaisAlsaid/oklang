@@ -65,6 +65,9 @@ uint32_t globals_store_add(globals_store* p_store, const ok_string_view p_identi
   return index;
 }
 
+#include <inttypes.h>
+#include <stdio.h>
+
 uint32_t globals_store_get(globals_store* p_store, const ok_string_view p_identifier) {
   allocators* alloc = p_store->alloc;
   hashed_string hs = create_hashed_string_hash(p_identifier, alloc);

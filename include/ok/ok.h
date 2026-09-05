@@ -46,8 +46,12 @@ bool ok_value_as_bool(ok_value p_value);
 double ok_value_as_number(ok_value p_value);
 ok_cstring_view ok_value_as_string(ok_value p_value);
 
+/* calls */
+bool ok_call(ok* p_ok, ok_value p_callee, uint8_t p_argc, const ok_value* p_argv, ok_value* p_result);
+
 /* globals */
 bool ok_global_define(ok* p_ok, ok_string_view p_name, ok_value p_value, bool p_is_mutable);
+bool ok_global_get(ok* p_ok, ok_string_view p_name, ok_value* p_value);
 
 /* native */
 typedef ok_value (*ok_native_fn)(ok* p_ok, uint8_t p_argc, const ok_value* p_argv);

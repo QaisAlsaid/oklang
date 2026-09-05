@@ -62,14 +62,14 @@ ok_result ok_run(ok* p_ok, ok_source p_source) {
     return OK_PARSE_ERROR;
   }
 
-  gc_pause(&p_ok->gc);
 #if defined(OK_TRACE_AST)
+  gc_pause(&p_ok->gc);
   printf("--- ast ---\n");
   ast_dispatch_print((ast_node*)parse_result.root);
   printf("--- ast ---");
   fflush(stdout);
-#endif // defined(OK_TRACE_AST)
   gc_resume(&p_ok->gc);
+#endif // defined(OK_TRACE_AST)
 
   compile_specs compile_specs;
   compile_specs.root = parse_result.root;
@@ -153,6 +153,22 @@ ok_cstring_view ok_value_as_string(ok_value p_value) {
   return ok_create_cstring_view_from_string(VALUE_AS_STRING(p_value)->string);
 }
 
+bool ok_call(ok* p_ok, ok_value p_callee, uint8_t p_argc, const ok_value* p_argv, ok_value* p_result) {
+  uint32_t stack_top = p_ok->vm.stack.top;
+  stack_push(&p_ok->vm.stack, p_callee);
+  for (uint8_t i = 0; i < p_argc; ++i) {
+    stack_push(&p_ok->vm.stack, p_argv[i]);
+  }
+  interpret_result result = vm_call(&p_ok->vm, p_callee, p_argc);
+  if (result.status != RUNTIME_OK) {
+    stack_resize(&p_ok->vm.stack, stack_top);
+    *p_result = NULL_AS_VALUE();
+    return false;
+  }
+  *p_result = stack_popr(&p_ok->vm.stack);
+  return true;
+}
+
 bool ok_global_define(ok* p_ok, ok_string_view p_name, ok_value p_value, bool p_is_mutable) {
   gc_guard_up(&p_ok->gc, p_value);
   uint32_t packed = globals_store_add(&p_ok->globals_store, p_name, p_is_mutable);
@@ -163,6 +179,16 @@ bool ok_global_define(ok* p_ok, ok_string_view p_name, ok_value p_value, bool p_
   }
   p_ok->globals_store.global_values.data[index] = p_value;
   gc_guard_down(&p_ok->gc);
+  return true;
+}
+
+bool ok_global_get(ok* p_ok, ok_string_view p_name, ok_value* p_value) {
+  uint32_t packed = globals_store_get(&p_ok->globals_store, p_name);
+  if (!IS_GLOBAL_VALID(packed)) {
+    *p_value = NULL_AS_VALUE();
+    return false;
+  }
+  *p_value = p_ok->globals_store.global_values.data[global_get_raw_index(packed)];
   return true;
 }
 

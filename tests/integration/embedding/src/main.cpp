@@ -8,6 +8,8 @@
 static int g_destructor_calls = 0;
 
 static ok_value native_add(ok* p_ok, uint8_t argc, const ok_value* argv) {
+  (void)p_ok;
+
   assert(argc == 2);
   assert(ok_value_is_number(argv[0]));
   assert(ok_value_is_number(argv[1]));
@@ -19,7 +21,10 @@ static ok_value native_add(ok* p_ok, uint8_t argc, const ok_value* argv) {
 }
 
 static ok_value native_echo(ok* p_ok, uint8_t argc, const ok_value* argv) {
+  (void)p_ok;
+
   assert(argc == 1);
+
   return argv[0];
 }
 
@@ -43,6 +48,8 @@ static void native_destructor(void* ptr) {
 }
 
 static ok_value native_get_opaque(ok* p_ok, uint8_t argc, const ok_value* argv) {
+  (void)p_ok;
+
   assert(argc == 1);
   assert(ok_value_is_object(argv[0]));
 
@@ -52,9 +59,7 @@ static ok_value native_get_opaque(ok* p_ok, uint8_t argc, const ok_value* argv) 
   int* value = static_cast<int*>(ptr);
   assert(*value == 44);
 
-  ok_value result = ok_value_number(static_cast<double>(*value));
-
-  return result;
+  return ok_value_number(static_cast<double>(*value));
 }
 
 static void* test_allocate(size_t size) {
@@ -84,6 +89,7 @@ int main() {
   ok_value number_value = ok_value_number(123.5);
 
   assert(ok_value_is_null(null_value));
+
   assert(ok_value_is_bool(true_value));
   assert(ok_value_is_bool(false_value));
   assert(ok_value_as_bool(true_value));
@@ -107,7 +113,6 @@ int main() {
   assert(hello_result.chars != nullptr);
   assert(std::strcmp(hello_result.chars, "hello") == 0);
 
-ok_cstring_view_deinit:
   ok_cstring_view_deinit(&hello_result);
 
   assert(ok_global_define(
@@ -122,6 +127,9 @@ ok_cstring_view_deinit:
   assert(ok_global_define_native_function(
       vm, ok_create_string_view("host_echo", OK_STRING_VIEW_CALCULATE_LENGTH, true), 1, native_echo));
 
+  assert(ok_global_define_native_function(
+      vm, ok_create_string_view("host_fail", OK_STRING_VIEW_CALCULATE_LENGTH, true), 0, native_fail));
+
   int* userdata = new int(44);
 
   ok_value native_value = ok_native_value_new(vm, userdata, native_destructor);
@@ -135,29 +143,134 @@ ok_cstring_view_deinit:
   assert(ok_global_define_native_function(
       vm, ok_create_string_view("host_get_object", OK_STRING_VIEW_CALCULATE_LENGTH, true), 1, native_get_opaque));
 
+  ok_value global_value = ok_value_null();
+
+  assert(ok_global_get(vm, ok_create_string_view("host_number", OK_STRING_VIEW_CALCULATE_LENGTH, true), &global_value));
+
+  assert(ok_value_is_number(global_value));
+  assert(ok_value_as_number(global_value) == 44);
+
+  assert(
+      ok_global_get(vm, ok_create_string_view("host_mutable", OK_STRING_VIEW_CALCULATE_LENGTH, true), &global_value));
+
+  assert(ok_value_is_number(global_value));
+  assert(ok_value_as_number(global_value) == 10);
+
+  assert(!ok_global_get(
+      vm, ok_create_string_view("does_not_exist", OK_STRING_VIEW_CALCULATE_LENGTH, true), &global_value));
+
+  assert(ok_value_is_null(global_value));
+
   const char* code = R"(
+    glob fu multiply(a, b) {
+      return a * b;
+    }
+
     let a = host_add(22, 22);
     if a != 44? print "bad: add";
+
     if host_number != 44? print "bad: number";
+
     host_mutable = 99;
     if host_mutable != 99? print "bad: mutable";
+
     let echoed = host_echo("hello");
     if echoed != "hello"? print "bad: echo";
-    let object_value = host_get_object(host_object);
-    if object_value != 44? print "bad: object";)";
 
-  ok_source source = {.from = OK_FROM_FILE, .code = code, .path = "embed"};
+    let object_value = host_get_object(host_object);
+    if object_value != 44? print "bad: object";
+  )";
+
+  ok_source source = {
+      .from = OK_FROM_FILE,
+      .code = code,
+      .path = "embed",
+  };
 
   ok_result result = ok_run(vm, source);
 
   assert(result == OK);
 
-  assert(ok_global_define_native_function(
-      vm, ok_create_string_view("host_fail", OK_STRING_VIEW_CALCULATE_LENGTH, true), 0, native_fail));
+  ok_value multiply = ok_value_null();
+
+  assert(ok_global_get(vm, ok_create_string_view("multiply", OK_STRING_VIEW_CALCULATE_LENGTH, true), &multiply));
+
+  assert(ok_value_is_object(multiply));
+
+  ok_value multiply_args[] = {
+      ok_value_number(6),
+      ok_value_number(7),
+  };
+
+  ok_value multiply_result = ok_value_null();
+
+  assert(ok_call(vm, multiply, 2, multiply_args, &multiply_result));
+
+  assert(ok_value_is_number(multiply_result));
+  assert(ok_value_as_number(multiply_result) == 42);
+
+  ok_value host_add = ok_value_null();
+
+  assert(ok_global_get(vm, ok_create_string_view("host_add", OK_STRING_VIEW_CALCULATE_LENGTH, true), &host_add));
+
+  ok_value add_args[] = {
+      ok_value_number(22),
+      ok_value_number(22),
+  };
+
+  ok_value add_result = ok_value_null();
+
+  assert(ok_call(vm, host_add, 2, add_args, &add_result));
+
+  assert(ok_value_is_number(add_result));
+  assert(ok_value_as_number(add_result) == 44);
+
+  ok_value bad_args[] = {
+      ok_value_number(1),
+  };
+
+  ok_value bad_result = ok_value_number(123);
+
+  assert(!ok_call(vm, host_add, 1, bad_args, &bad_result));
+  assert(ok_value_is_null(bad_result));
+
+  ok_value host_fail = ok_value_null();
+
+  assert(ok_global_get(vm, ok_create_string_view("host_fail", OK_STRING_VIEW_CALCULATE_LENGTH, true), &host_fail));
+
+  ok_value fail_result = ok_value_number(123);
+
+  assert(!ok_call(vm, host_fail, 0, nullptr, &fail_result));
+  assert(ok_value_is_null(fail_result));
+
+  ok_value echo = ok_value_null();
+
+  assert(ok_global_get(vm, ok_create_string_view("host_echo", OK_STRING_VIEW_CALCULATE_LENGTH, true), &echo));
+
+  ok_value echo_args[] = {
+      ok_value_number(123),
+  };
+
+  ok_value echo_result = ok_value_null();
+
+  assert(ok_call(vm, echo, 1, echo_args, &echo_result));
+
+  assert(ok_value_is_number(echo_result));
+  assert(ok_value_as_number(echo_result) == 123);
 
   const char* error_code = "host_fail();\n";
 
-  ok_source error_source = {.from = OK_FROM_FILE, .code = error_code, .path = "embed"};
+  ok_source error_source = {
+      .from = OK_FROM_FILE,
+      .code = error_code,
+      .path = "embed",
+  };
+
+  ok_value debug_global = ok_value_null();
+
+  assert(ok_global_get(vm, ok_create_string_view("host_add", OK_STRING_VIEW_CALCULATE_LENGTH, true), &debug_global));
+
+  assert(ok_value_is_object(debug_global));
 
   result = ok_run(vm, error_source);
 

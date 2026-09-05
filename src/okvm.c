@@ -28,6 +28,7 @@ static bool call(vm* p_vm, object_closure* p_closure, uint32_t p_argc);
 static bool call_native(vm* p_vm, object_native_function* p_native, uint32_t p_argc);
 static object_upvalue* capture_upvalue(vm* p_vm, uint32_t p_local_index);
 static void close_upvalues(vm* p_vm, uint32_t p_last);
+static interpret_result run_until(vm* p_vm, uint32_t p_call_depth);
 
 void interpret_result_deinit(interpret_result* p_interpret_result) {
 }
@@ -39,7 +40,7 @@ void vm_init(vm* p_vm, vm_specs p_specs) {
   p_vm->source = NULL;
   p_vm->open_upvalues = NULL;
   p_vm->native_has_error = false;
-  p_vm->in_native_call = false;
+  p_vm->native_call_depth = 0;
   p_vm->ok = p_specs.ok;
   string_init(&p_vm->native_error_message, NULL, 0, false, p_vm->alloc);
   stack_init_warm(&p_vm->stack, STACK_SIZE, p_specs.alloc);
@@ -51,7 +52,7 @@ void vm_deinit(vm* p_vm) {
   p_vm->source = NULL;
   p_vm->globals_store = NULL;
   p_vm->objects_store = NULL;
-  p_vm->in_native_call = false;
+  p_vm->native_call_depth = 0;
   p_vm->ok = NULL;
   p_vm->native_has_error = false;
   string_deinit(&p_vm->native_error_message, p_vm->alloc);
@@ -60,7 +61,7 @@ void vm_deinit(vm* p_vm) {
 }
 
 bool vm_native_error(vm* p_vm, ok_string_view p_message) {
-  if (!p_vm->in_native_call) {
+  if (p_vm->native_call_depth == 0) {
     return false;
   }
   p_vm->native_has_error = true;
@@ -85,11 +86,24 @@ interpret_result vm_interpret(vm* p_vm, interpret_specs p_specs) {
     interpret_result result = {.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
     return result;
   }
-  interpret_result interpret_result = vm_run(p_vm);
+  interpret_result interpret_result = run_until(p_vm, 0);
   return interpret_result;
 }
 
-interpret_result vm_run(vm* p_vm) {
+interpret_result vm_call(vm* p_vm, value p_callee, uint32_t p_argc) {
+  uint32_t call_depth = p_vm->call_stack.count;
+  if (!call_value(p_vm, p_callee, p_argc)) {
+    interpret_result result = {.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
+    return result;
+  }
+  if (p_vm->call_stack.count == call_depth) {
+    interpret_result result = {.status = RUNTIME_OK, .top_level_return = stack_top(&p_vm->stack, 0)};
+    return result;
+  }
+  return run_until(p_vm, call_depth);
+}
+
+interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
   call_frame* frame = &p_vm->call_stack.data[p_vm->call_stack.count - 1];
 #define READ_BYTE() (*frame->ip++)
 #define READ_CONSTANT() frame->closure->function->chunk.constants.data[READ_BYTE()]
@@ -130,7 +144,8 @@ interpret_result vm_run(vm* p_vm) {
       close_upvalues(p_vm, frame->slots);
       stack_resize(&p_vm->stack, frame->slots);
       call_stack_remove(&p_vm->call_stack, p_vm->call_stack.count - 1, p_vm->call_stack.count - 1);
-      if (p_vm->call_stack.count == 0) {
+      stack_push(&p_vm->stack, returned);
+      if (p_vm->call_stack.count == p_call_depth) {
 #if defined(OK_TRACE_EXECUTION)
         printf("[ ");
         for (value* slot = p_vm->stack.array.data; slot < p_vm->stack.array.data + p_vm->stack.top; ++slot) {
@@ -145,7 +160,6 @@ interpret_result vm_run(vm* p_vm) {
         result.status = RUNTIME_OK;
         return result;
       }
-      stack_push(&p_vm->stack, returned);
       frame = &p_vm->call_stack.data[p_vm->call_stack.count - 1];
       break;
     }
@@ -287,14 +301,18 @@ interpret_result vm_run(vm* p_vm) {
         frame->ip += UINT24_BYTE_COUNT;
         bool status = true;
         if (is_local) {
-          status = upvalue_array_append(&closure->upvalues, capture_upvalue(p_vm, frame->slots + index));
+          object_upvalue* upvalue = capture_upvalue(p_vm, frame->slots + index);
+          if (upvalue == NULL) {
+            interpret_result result = {
+                .status = RUNTIME_ERROR,
+                .top_level_return = NULL_AS_VALUE(),
+            };
+            return result;
+          }
+
+          status = upvalue_array_append(&closure->upvalues, upvalue);
         } else {
           status = upvalue_array_append(&closure->upvalues, frame->closure->upvalues.data[index]);
-        }
-        if (!status) {
-          runtime_error(p_vm, "out of memory: failed to add upvalue.");
-          interpret_result result = {.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
-          return result;
         }
       }
       break;
@@ -384,33 +402,50 @@ interpret_result vm_run(vm* p_vm) {
 }
 
 void runtime_error(vm* p_vm, const char* p_fmt, ...) {
-  call_frame* frame = &p_vm->call_stack.data[p_vm->call_stack.count - 1];
-  size_t instruction = frame->ip - frame->closure->function->chunk.code.data - 1;
-  ok_line_info_repeated* info = source_info_find(&frame->closure->function->chunk.source_info, instruction);
-  if (info != NULL) {
-    fprintf(stderr, "\n%s:%d:%d ", p_vm->source->path, info->line_info.line, info->line_info.offset);
+  va_list ap;
+
+  if (p_vm->call_stack.count > 0) {
+    call_frame* frame = &p_vm->call_stack.data[p_vm->call_stack.count - 1];
+
+    size_t instruction = frame->ip - frame->closure->function->chunk.code.data - 1;
+
+    ok_line_info_repeated* info = source_info_find(&frame->closure->function->chunk.source_info, instruction);
+
+    if (info != NULL && p_vm->source != NULL) {
+      fprintf(stderr, "\n%s:%d:%d ", p_vm->source->path, info->line_info.line, info->line_info.offset);
+    }
   }
 
-  va_list ap;
   va_start(ap, p_fmt);
   vfprintf(stderr, p_fmt, ap);
   va_end(ap);
-  fputs("\nstack trace (most recent call last):\n", stderr);
-  for (uint32_t i = 0; i < p_vm->call_stack.count; ++i) {
-    call_frame* frame = &p_vm->call_stack.data[i];
-    uint32_t instruction = frame->ip - frame->closure->function->chunk.code.data - 1;
-    ok_line_info_repeated* info = source_info_find(&frame->closure->function->chunk.source_info, instruction);
-    if (info != NULL) {
-      fprintf(stderr,
-              "%s:%d:%d in %s.\n",
-              p_vm->source->path,
-              info->line_info.line,
-              info->line_info.offset,
-              frame->closure->function->name->string.chars);
-    } else {
-      fprintf(stderr, "%s in %s.\n", p_vm->source->path, frame->closure->function->name->string.chars);
+
+  if (p_vm->call_stack.count > 0) {
+    fputs("\nstack trace (most recent call last):\n", stderr);
+
+    for (uint32_t i = 0; i < p_vm->call_stack.count; ++i) {
+      call_frame* frame = &p_vm->call_stack.data[i];
+
+      uint32_t instruction = frame->ip - frame->closure->function->chunk.code.data - 1;
+
+      ok_line_info_repeated* info = source_info_find(&frame->closure->function->chunk.source_info, instruction);
+
+      if (info != NULL && p_vm->source != NULL) {
+        fprintf(stderr,
+                "%s:%d:%d in %s.\n",
+                p_vm->source->path,
+                info->line_info.line,
+                info->line_info.offset,
+                frame->closure->function->name->string.chars);
+      } else {
+        fprintf(stderr,
+                "%s in %s.\n",
+                p_vm->source != NULL ? p_vm->source->path : "<host>",
+                frame->closure->function->name->string.chars);
+      }
     }
   }
+
   stack_resize(&p_vm->stack, 0);
   p_vm->call_stack.count = 0;
 }
@@ -461,11 +496,11 @@ static bool call_native(vm* p_vm, object_native_function* p_native, uint32_t p_a
                   p_argc);
     return false;
   }
-  value argv[p_argc];
+  value argv[UINT8_MAX] = {0};
   memcpy(argv, p_vm->stack.array.data + p_vm->stack.top - p_argc, sizeof(value) * p_argc);
-  p_vm->in_native_call = true;
+  p_vm->native_call_depth++;
   value result = p_native->function(p_vm->ok, p_argc, argv);
-  p_vm->in_native_call = false;
+  p_vm->native_call_depth--;
   const bool res = !p_vm->native_has_error;
   if (!res) {
     runtime_error(p_vm, "%s", p_vm->native_error_message.chars);
