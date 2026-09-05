@@ -15,7 +15,6 @@
 #define GLOBAL_ERROR (GLOBAL_ILL_MUTATION - 1)
 #define IS_GLOBAL_VALID(global) (((global) & 0xf0000000) == 0)
 #define GLOBAL_MAX UINT24_MAX
-#define IS_GLOBAL_INDEX_VALID(global) ((global) < GLOBAL_MAX)
 
 typedef enum {
   GLOBAL_FLAG_MUTABLE = 0,

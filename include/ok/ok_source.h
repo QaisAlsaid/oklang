@@ -3,6 +3,10 @@
 
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif // __cplusplus
+
 typedef enum {
   OK_FROM_FILE,
   OK_FROM_REPL,
@@ -23,5 +27,9 @@ typedef struct {
   ok_line_info line_info;
   uint32_t reps;
 } ok_line_info_repeated;
+
+#ifdef __cplusplus
+}
+#endif // __cplusplus
 
 #endif // OK_SOURCE_H

@@ -47,6 +47,10 @@ struct vm {
   globals_store* globals_store;
   object_upvalue* open_upvalues;
   allocators* alloc;
+  ok* ok;
+  string native_error_message;
+  bool native_has_error;
+  bool in_native_call;
 };
 
 typedef enum {
@@ -65,6 +69,7 @@ typedef struct {
   object_store* objects_store;
   globals_store* globals_store;
   allocators* alloc;
+  ok* ok;
 } vm_specs;
 
 typedef struct {
@@ -76,5 +81,7 @@ void vm_init(vm* p_vm, vm_specs p_specs);
 void vm_deinit(vm* p_vm);
 interpret_result vm_interpret(vm* p_vm, interpret_specs p_specs);
 interpret_result vm_run(vm* p_vm);
+
+bool vm_native_error(vm* p_vm, ok_string_view p_message);
 
 #endif // OK_VM_H

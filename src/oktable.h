@@ -106,9 +106,9 @@
   }                                                                                                                    \
                                                                                                                        \
   void name##_init(name* p_table, allocators* p_alloc) {                                                               \
-    name##_buckets_init(&p_table->buckets, p_table->alloc);                                                            \
-    p_table->count = 0;                                                                                                \
     p_table->alloc = p_alloc;                                                                                          \
+    p_table->count = 0;                                                                                                \
+    name##_buckets_init(&p_table->buckets, p_table->alloc);                                                            \
   }                                                                                                                    \
                                                                                                                        \
   void name##_deinit(name* p_table) {                                                                                  \
@@ -133,7 +133,7 @@
     name##_buckets buckets;                                                                                            \
     name##_buckets_init(&buckets, p_table->alloc);                                                                     \
     if (!name##_buckets_grow(&buckets, p_capacity)) {                                                                  \
-      name##_buckets_deinit(&buckets, p_table->alloc);                                                                 \
+      name##_buckets_free_storage(&buckets);                                                                           \
       return false;                                                                                                    \
     }                                                                                                                  \
     for (table_size_type i = 0; i < p_capacity; ++i) {                                                                 \
@@ -147,9 +147,6 @@
         bucket_size_type _index = 0;                                                                                   \
         const table_size_type bucket_index = name##_find_entry(&buckets, p_capacity, entry->key, &dest, &_index);      \
         name##_bucket* bucket = &buckets.data[bucket_index];                                                           \
-        if (!name##_bucket_grow(bucket, 1)) {                                                                          \
-          goto fail_add;                                                                                               \
-        }                                                                                                              \
         if (bucket->count == 0) {                                                                                      \
           buckets.count++;                                                                                             \
         }                                                                                                              \

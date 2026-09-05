@@ -1,6 +1,8 @@
 #include "okglobals_store.h"
 
-#define ARE_KEYS_EQUAL(lhs, rhs) (strncmp(lhs.string.chars, rhs.string.chars, string_get_length(&lhs.string)) == 0)
+#define ARE_KEYS_EQUAL(lhs, rhs)                                                                                       \
+  (string_get_length(&lhs.string) == string_get_length(&rhs.string) &&                                                 \
+   strncmp(lhs.string.chars, rhs.string.chars, string_get_length(&lhs.string)) == 0)
 #define GET_HASH(key) (key.hash)
 
 // TODO memory arena

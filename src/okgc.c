@@ -13,6 +13,7 @@
 #define OK_LOG_GC
 #endif
 
+#define GC_INITIAL_THRESHOLD (1024 * 1024)
 #define GC_GROWTH_FACTOR 2
 
 ARRAY_DEFINE_DEFAULT(grays, object*, ARRAY_DEFAULT_TYPE_DEINIT)
@@ -47,7 +48,8 @@ bool gc_guard_up(gc* p_gc, value p_value) {
   if (!IS_VALUE_NULL(p_gc->guarded)) {
     return false;
   }
-  return p_gc->guarded = p_value;
+  p_gc->guarded = p_value;
+  return true;
 }
 
 void gc_guard_down(gc* p_gc) {
@@ -79,16 +81,22 @@ static bool trace(gc* p_gc);
 
 bool gc_collect(gc* p_gc, size_t p_predict, size_t p_old) {
   p_gc->allocated_bytes += p_predict - p_old;
+
   if (p_gc->is_paused) {
     return true;
   }
+
+  bool result = true;
+
 #ifdef OK_AGRESSIVE_GC
-  return collect(p_gc);
+  result = collect(p_gc);
 #endif // OK_AGRESSIVE_GC
-  if (p_gc->allocated_bytes + p_predict > p_gc->next) {
-    return collect(p_gc);
+
+  if (p_gc->allocated_bytes > p_gc->next) {
+    result = collect(p_gc);
   }
-  return true;
+
+  return result;
 }
 
 static bool mark_object(gc* p_gc, object* p_object) {
@@ -218,6 +226,9 @@ bool collect(gc* p_gc) {
   res = res && sweep(p_gc);
   p_gc->next = p_gc->allocated_bytes * GC_GROWTH_FACTOR;
 
+  if (p_gc->next < GC_INITIAL_THRESHOLD) {
+    p_gc->next = GC_INITIAL_THRESHOLD;
+  }
 #ifdef OK_LOG_GC
   size_t reclaimed = previous - p_gc->allocated_bytes;
   if (reclaimed > 0) {

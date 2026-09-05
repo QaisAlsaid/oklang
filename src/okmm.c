@@ -4,6 +4,7 @@
 
 #include "ok/ok_specs.h"
 #include "okgc.h"
+#include <stdio.h>
 
 void release_impl(allocators* p_alloc, void* p_ptr) {
   return p_alloc->raw_allocators->release(p_ptr);
@@ -14,7 +15,7 @@ void* reallocate_impl(allocators* p_alloc, void* p_ptr, const size_t p_old_size,
     release_impl(p_alloc, p_ptr);
     return NULL;
   }
-  if (!gc_collect(p_alloc->gc, p_new_size, p_old_size)) {
+  if (p_alloc->gc != NULL && !gc_collect(p_alloc->gc, p_new_size, p_old_size)) {
     return NULL;
   }
   void* alloc = p_alloc->raw_allocators->reallocate(p_ptr, p_new_size);
@@ -22,7 +23,7 @@ void* reallocate_impl(allocators* p_alloc, void* p_ptr, const size_t p_old_size,
 }
 
 void* allocate_impl(allocators* p_alloc, const size_t p_size) {
-  if (!gc_collect(p_alloc->gc, p_size, 0)) {
+  if (p_alloc->gc != NULL && !gc_collect(p_alloc->gc, p_size, 0)) {
     return NULL;
   }
   return p_alloc->raw_allocators->allocate(p_size);

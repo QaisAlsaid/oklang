@@ -150,6 +150,65 @@ object_upvalue* create_object_upvalue(uint32_t p_location, object_specs* p_specs
   return object_up;
 }
 
+void object_native_value_init(object_native_value* p_native_value,
+                              void* p_user_data,
+                              ok_native_destructor p_destructor,
+                              object_specs* p_specs) {
+  object_init(&p_native_value->object, OBJ_NATIVE_VALUE);
+  p_native_value->user_data = p_user_data;
+  p_native_value->destructor = p_destructor;
+}
+
+void object_native_value_deinit(object_native_value* p_native_value, object_specs* p_specs) {
+  if (p_native_value->destructor) {
+    p_native_value->destructor(p_native_value->user_data);
+  }
+  p_native_value->user_data = NULL;
+  object_deinit(&p_native_value->object);
+}
+
+object_native_value*
+create_object_native_value(void* p_user_data, ok_native_destructor p_destructor, object_specs* p_specs) {
+  object_native_value* native_value =
+      (object_native_value*)p_specs->alloc->allocate(p_specs->alloc, sizeof(object_native_value));
+  if (native_value == NULL) {
+    return NULL;
+  }
+  object_native_value_init(native_value, p_user_data, p_destructor, p_specs);
+  object_store_append(p_specs->store, (object*)native_value);
+  return native_value;
+}
+
+void object_native_function_init(object_native_function* p_native_function,
+                                 ok_string_view p_name,
+                                 uint8_t p_arity,
+                                 ok_native_fn p_cb,
+                                 object_specs* p_specs) {
+  object_init(&p_native_function->object, OBJ_NATIVE_FUNCTION);
+  p_native_function->name = create_string_from_string_view(p_name, p_specs->alloc);
+  p_native_function->arity = p_arity;
+  p_native_function->function = p_cb;
+}
+
+void object_native_function_deinit(object_native_function* p_native_function, object_specs* p_specs) {
+  string_deinit(&p_native_function->name, p_specs->alloc);
+  p_native_function->arity = 0;
+  p_native_function->function = NULL;
+  object_deinit(&p_native_function->object);
+}
+
+object_native_function*
+create_object_native_function(ok_string_view p_name, uint8_t p_arity, ok_native_fn p_cb, object_specs* p_specs) {
+  object_native_function* native_function =
+      (object_native_function*)p_specs->alloc->allocate(p_specs->alloc, sizeof(object_native_function));
+  if (native_function == NULL) {
+    return NULL;
+  }
+  object_native_function_init(native_function, p_name, p_arity, p_cb, p_specs);
+  object_store_append(p_specs->store, (object*)native_function);
+  return native_function;
+}
+
 void object_dispatch_deinit(object* p_object, object_specs* p_specs) {
   switch (object_get_type(p_object)) {
   case OBJ_STRING:
@@ -163,6 +222,12 @@ void object_dispatch_deinit(object* p_object, object_specs* p_specs) {
     break;
   case OBJ_UPVALUE:
     object_upvalue_deinit((object_upvalue*)p_object, p_specs);
+    break;
+  case OBJ_NATIVE_VALUE:
+    object_native_value_deinit((object_native_value*)p_object, p_specs);
+    break;
+  case OBJ_NATIVE_FUNCTION:
+    object_native_function_deinit((object_native_function*)p_object, p_specs);
     break;
   }
 }
@@ -197,6 +262,15 @@ void object_debug_print(object* p_object) {
   }
   case OBJ_UPVALUE: {
     printf("<upvalue %p>", p_object);
+    break;
+  }
+  case OBJ_NATIVE_VALUE: {
+    printf("<native value %p>", ((object_native_value*)p_object)->user_data);
+    break;
+  }
+  case OBJ_NATIVE_FUNCTION: {
+    object_native_function* fu = (object_native_function*)p_object;
+    printf("<native function %s %d %p>", fu->name.chars, fu->arity, fu->function);
     break;
   }
   }

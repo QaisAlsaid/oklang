@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "ok/ok.h"
 #include "okchunk.h"
 #include "okfwd.h"
 #include "okobject_store.h"
@@ -16,11 +17,15 @@
 #define IS_VALUE_FUNCTION(value) value_is_object_type(value, OBJ_FUNCTION)
 #define IS_VALUE_CLOSURE(value) value_is_object_type(value, OBJ_CLOSURE)
 #define IS_VALUE_UPVALUE(value) value_is_object_type(value, OBJ_UPVALUE)
+#define IS_VALUE_NATIVE_VALUE(value) value_is_object_type(value, OBJ_NATIVE_VALUE)
+#define IS_VALUE_NATIVE_FUNCTION(value) value_is_object_type(value, OBJ_NATIVE_FUNCTION)
 
 #define VALUE_AS_STRING(value) ((object_string*)VALUE_AS_OBJECT(value))
 #define VALUE_AS_FUNCTION(value) ((object_function*)VALUE_AS_OBJECT(value))
 #define VALUE_AS_CLOSURE(value) ((object_closure*)VALUE_AS_OBJECT(value))
 #define VALUE_AS_UPVALUE(value) ((object_upvalue*)VALUE_AS_OBJECT(value))
+#define VALUE_AS_NATIVE_VALUE(value) ((object_native_type*)VALUE_AS_OBJECT(value))
+#define VALUE_AS_NATIVE_FUNCTION(value) ((object_native_function*)VALUE_AS_OBJECT(value))
 
 typedef struct {
   allocators* alloc;
@@ -32,6 +37,8 @@ typedef enum {
   OBJ_FUNCTION,
   OBJ_CLOSURE,
   OBJ_UPVALUE,
+  OBJ_NATIVE_VALUE,
+  OBJ_NATIVE_FUNCTION,
 } object_type;
 
 struct object {
@@ -87,6 +94,25 @@ typedef struct {
 } object_closure;
 
 object_closure* create_object_closure(object_function* p_function, object_specs* p_specs);
+
+typedef struct {
+  object object;
+  void* user_data;
+  ok_native_destructor destructor;
+} object_native_value;
+
+object_native_value*
+create_object_native_value(void* p_user_data, ok_native_destructor p_destructor, object_specs* p_specs);
+
+typedef struct {
+  object object;
+  string name;
+  uint8_t arity;
+  ok_native_fn function;
+} object_native_function;
+
+object_native_function*
+create_object_native_function(ok_string_view p_name, uint8_t p_arity, ok_native_fn p_cb, object_specs* p_specs);
 
 void object_dispatch_deinit(object* p_object, object_specs* p_specs);
 void objects_list_deinit(object* p_head, object_specs* p_specs);

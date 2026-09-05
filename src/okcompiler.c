@@ -38,7 +38,9 @@ static void local_remove_flag(uint32_t* p_packed, uint8_t p_flag) {
 }
 
 #define LOCAL_FLAGS_MASK 0x00ffffff
-#define ARE_KEYS_EQUAL(lhs, rhs) (strncmp(lhs.string.chars, rhs.string.chars, string_get_length(&lhs.string)) == 0)
+#define ARE_KEYS_EQUAL(lhs, rhs)                                                                                       \
+  (string_get_length(&lhs.string) == string_get_length(&rhs.string) &&                                                 \
+   strncmp(lhs.string.chars, rhs.string.chars, string_get_length(&lhs.string)) == 0)
 #define GET_HASH(key) (key.hash)
 
 TABLE_DEFINE_DEFAULT(scope_locals,
@@ -68,8 +70,10 @@ ARRAY_DEFINE_DEFAULT(uint32_array, uint32_t, ARRAY_DEFAULT_TYPE_DEINIT)
 ARRAY_DEFINE_DEFAULT(loop_stack, loop_context, loop_context_deinit)
 
 static void error_at(compiler* p_compiler, const ast_node* p_node, const ok_string_view p_message);
-static void
-error_at_noted(compiler* p_compiler, const ast_node* p_node, const ok_string_view p_message, const ok_string_view p_note);
+static void error_at_noted(compiler* p_compiler,
+                           const ast_node* p_node,
+                           const ok_string_view p_message,
+                           const ok_string_view p_note);
 static function* current_function(compiler* p_compiler);
 static scope* current_scope(compiler* p_compiler);
 static chunk* current_chunk(compiler* p_compiler);
@@ -330,10 +334,11 @@ bool emit_constant(compiler* p_compiler, value p_value, ast_node* p_node) {
   if (!IS_CONSTANT_VALID(index)) {
     if (index == CONSTANT_OVERFLOW) {
       string note = asprint(alloc, "limit is: %d", CONSTANT_MAX);
-      error_at_noted(p_compiler,
-                     p_node,
-                     ok_create_string_view("too many constants in single function.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-                     ok_create_string_view_from_string(note));
+      error_at_noted(
+          p_compiler,
+          p_node,
+          ok_create_string_view("too many constants in single function.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+          ok_create_string_view_from_string(note));
       string_deinit(&note, alloc);
     } else if (index == CONSTANT_ALLOCATION_FAILED) {
       error_at(p_compiler,
@@ -451,10 +456,10 @@ static uint32_t add_global(compiler* p_compiler, variable_declaration p_declarat
                                      (p_declaration.flags & VARIABLE_DECLARATION_FLAGS_MUTABLE) != 0);
   if (!IS_GLOBAL_VALID(index)) {
     if (index == GLOBAL_ALLOCATION_FAILED) {
-      error_at(
-          p_compiler,
-          p_node,
-          ok_create_string_view("failed to allocate memory for global identifier.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      error_at(p_compiler,
+               p_node,
+               ok_create_string_view(
+                   "failed to allocate memory for global identifier.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
       return index;
     } else if (index == GLOBAL_OVERFLOW) {
       string note = asprint(alloc, "limit is: %u", GLOBAL_MAX);
@@ -468,17 +473,19 @@ static uint32_t add_global(compiler* p_compiler, variable_declaration p_declarat
   return global_get_raw_index(index);
 }
 
-static bool define_global(compiler* p_compiler,
-                          const uint32_t p_global,
-                          const variable_declaration_flags p_flags,
-                          ast_node* p_node) {
+static bool
+define_global(compiler* p_compiler, uint32_t p_global, const variable_declaration_flags p_flags, ast_node* p_node) {
+  p_global = global_get_raw_index(
+      p_global); // it won't matter currently, but if global changed how it stores flags this could cause problems!
   if (p_global < OP_SET_GLOBAL_MAX + 1) {
     emit_2bytes(p_compiler, OP_SET_GLOBAL, p_global, p_node);
+    emit_byte(p_compiler, OP_POP, p_node);
   } else if (p_global < OP_SET_GLOBAL_LONG_MAX + 1) {
     emit_byte(p_compiler, OP_SET_GLOBAL_LONG, p_node);
     byte bytes[UINT24_BYTE_COUNT];
     encode_int(bytes, UINT24_BYTE_COUNT, p_global);
     emit_bytes(p_compiler, bytes, UINT24_BYTE_COUNT, p_node);
+    emit_byte(p_compiler, OP_POP, p_node);
   } else {
     return false;
   }
@@ -504,9 +511,10 @@ uint32_t add_local(compiler* p_compiler, const variable_declaration p_declration
   allocators* alloc = p_compiler->alloc;
   hashed_string hs = create_hashed_string_hash(p_declration.identifier, alloc);
   if (hs.string.chars == NULL) {
-    error_at(p_compiler,
-             p_node,
-             ok_create_string_view("failed to allocate memory for hashed string.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    error_at(
+        p_compiler,
+        p_node,
+        ok_create_string_view("failed to allocate memory for hashed string.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
     return LOCAL_ERROR;
   }
   scope* scp = current_scope(p_compiler);
@@ -532,26 +540,29 @@ uint32_t add_local(compiler* p_compiler, const variable_declaration p_declration
       local_set_flag(&local.info, LOCAL_FLAG_MUTABLE);
     }
     if (!locals_append(&fun->locals, local)) {
-      error_at_noted(p_compiler,
-                     p_node,
-                     ok_create_string_view("failed to add local to the locals array.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-                     ok_create_string_view("you might be out of memory.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      error_at_noted(
+          p_compiler,
+          p_node,
+          ok_create_string_view("failed to add local to the locals array.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+          ok_create_string_view("you might be out of memory.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
       hashed_string_deinit(&hs, alloc);
       return LOCAL_ERROR;
     }
     if (!uint32_array_append(&current_scope(p_compiler)->locals_array, fun->locals.count - 1)) {
-      error_at_noted(p_compiler,
-                     p_node,
-                     ok_create_string_view("failed to add local to the locals array.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-                     ok_create_string_view("you might be out of memory.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      error_at_noted(
+          p_compiler,
+          p_node,
+          ok_create_string_view("failed to add local to the locals array.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+          ok_create_string_view("you might be out of memory.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
       locals_remove(&fun->locals, fun->locals.count - 1, fun->locals.count - 1);
       return LOCAL_ERROR;
     }
     if (!scope_locals_set(&current_scope(p_compiler)->locals_table, hs, fun->locals.count - 1)) {
-      error_at_noted(p_compiler,
-                     p_node,
-                     ok_create_string_view("failed to add local to the locals table.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-                     ok_create_string_view("you might be out of memory.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      error_at_noted(
+          p_compiler,
+          p_node,
+          ok_create_string_view("failed to add local to the locals table.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+          ok_create_string_view("you might be out of memory.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
       hashed_string_deinit(&hs, alloc);
       locals_remove(&fun->locals, fun->locals.count - 1, fun->locals.count - 1);
       return LOCAL_ERROR;
@@ -567,7 +578,8 @@ uint32_t add_local(compiler* p_compiler, const variable_declaration p_declration
   return REDEFINED_LOCAL;
 }
 
-bool push_function(compiler* p_compiler, ok_string_view p_name, function_type p_type, uint8_t p_arity, ast_node* p_node) {
+bool push_function(
+    compiler* p_compiler, ok_string_view p_name, function_type p_type, uint8_t p_arity, ast_node* p_node) {
   function fun;
   allocators* alloc = p_compiler->alloc;
   object_specs s = {alloc, p_compiler->objects_store};
@@ -688,10 +700,10 @@ static uint32_t set_global(compiler* p_compiler, const ok_string_view p_identifi
     return index;
   }
   if (!global_test_flag(index, GLOBAL_FLAG_MUTABLE)) {
-    error_at(
-        p_compiler,
-        p_node,
-        ok_create_string_view("attempting to mutate an immutable global variable.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    error_at(p_compiler,
+             p_node,
+             ok_create_string_view(
+                 "attempting to mutate an immutable global variable.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
   }
   const uint32_t raw = global_get_raw_index(index);
   if (raw > OP_SET_GLOBAL_MAX) {
@@ -734,10 +746,10 @@ static uint32_t set_local(compiler* p_compiler, const ok_string_view p_identifie
   }
   local local = current_function(p_compiler)->locals.data[*index];
   if (!local_test_flag(local.info, LOCAL_FLAG_MUTABLE)) {
-    error_at(
-        p_compiler,
-        p_node,
-        ok_create_string_view("attempting to mutate an immutable local variable.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    error_at(p_compiler,
+             p_node,
+             ok_create_string_view(
+                 "attempting to mutate an immutable local variable.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
     return LOCAL_ILL_MUTATION;
   }
   if (*index > OP_SET_LOCAL_MAX) {
@@ -762,10 +774,11 @@ add_upvalue(compiler* p_compiler, uint32_t p_upvalue, bool p_is_local, function*
   }
   if (p_function->upvalues.count >= OP_XX_UPVALUE_LONG_MAX) {
     string note = asprint(alloc, "limit is: %d.", OP_XX_UPVALUE_LONG_MAX);
-    error_at_noted(p_compiler,
-                   p_node,
-                   ok_create_string_view("too many upvalues in a single function.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-                   ok_create_string_view_from_string(note));
+    error_at_noted(
+        p_compiler,
+        p_node,
+        ok_create_string_view("too many upvalues in a single function.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+        ok_create_string_view_from_string(note));
     string_deinit(&note, alloc);
   }
   upvalues_append(&p_function->upvalues, up);

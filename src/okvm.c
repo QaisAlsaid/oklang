@@ -25,6 +25,7 @@ static value* read_local(vm* p_vm, call_frame* p_frame);
 static value* read_local_long(vm* p_vm, call_frame* p_frame);
 static bool call_value(vm* p_vm, value p_callee, uint32_t p_argc);
 static bool call(vm* p_vm, object_closure* p_closure, uint32_t p_argc);
+static bool call_native(vm* p_vm, object_native_function* p_native, uint32_t p_argc);
 static object_upvalue* capture_upvalue(vm* p_vm, uint32_t p_local_index);
 static void close_upvalues(vm* p_vm, uint32_t p_last);
 
@@ -37,6 +38,10 @@ void vm_init(vm* p_vm, vm_specs p_specs) {
   p_vm->globals_store = p_specs.globals_store;
   p_vm->source = NULL;
   p_vm->open_upvalues = NULL;
+  p_vm->native_has_error = false;
+  p_vm->in_native_call = false;
+  p_vm->ok = p_specs.ok;
+  string_init(&p_vm->native_error_message, NULL, 0, false, p_vm->alloc);
   stack_init_warm(&p_vm->stack, STACK_SIZE, p_specs.alloc);
   call_stack_init(&p_vm->call_stack, p_specs.alloc);
 }
@@ -46,8 +51,21 @@ void vm_deinit(vm* p_vm) {
   p_vm->source = NULL;
   p_vm->globals_store = NULL;
   p_vm->objects_store = NULL;
+  p_vm->in_native_call = false;
+  p_vm->ok = NULL;
+  p_vm->native_has_error = false;
+  string_deinit(&p_vm->native_error_message, p_vm->alloc);
   call_stack_deinit(&p_vm->call_stack, p_vm->alloc);
   stack_deinit(&p_vm->stack);
+}
+
+bool vm_native_error(vm* p_vm, ok_string_view p_message) {
+  if (!p_vm->in_native_call) {
+    return false;
+  }
+  p_vm->native_has_error = true;
+  p_vm->native_error_message = create_string_from_string_view(p_message, p_vm->alloc);
+  return true;
 }
 
 interpret_result vm_interpret(vm* p_vm, interpret_specs p_specs) {
@@ -63,7 +81,10 @@ interpret_result vm_interpret(vm* p_vm, interpret_specs p_specs) {
     return res;
   }
   *stack_top_ptr(&p_vm->stack, 0) = OBJECT_AS_VALUE(closure);
-  call_value(p_vm, stack_top(&p_vm->stack, 0), 0);
+  if (!call_value(p_vm, stack_top(&p_vm->stack, 0), 0)) {
+    interpret_result result = {.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
+    return result;
+  }
   interpret_result interpret_result = vm_run(p_vm);
   return interpret_result;
 }
@@ -180,12 +201,12 @@ interpret_result vm_run(vm* p_vm) {
     }
     case OP_SET_GLOBAL: {
       byte index = READ_BYTE();
-      p_vm->globals_store->global_values.data[index] = stack_popr(&p_vm->stack);
+      p_vm->globals_store->global_values.data[index] = stack_top(&p_vm->stack, 0);
       break;
     }
     case OP_SET_GLOBAL_LONG: {
       uint32_t index = decode_int(frame->ip, OP_SET_GLOBAL_LONG_OPERANDS_WIDTH);
-      p_vm->globals_store->global_values.data[index] = stack_popr(&p_vm->stack);
+      p_vm->globals_store->global_values.data[index] = stack_top(&p_vm->stack, 0);
       frame->ip += OP_SET_GLOBAL_LONG_OPERANDS_WIDTH;
       break;
     }
@@ -369,6 +390,7 @@ void runtime_error(vm* p_vm, const char* p_fmt, ...) {
   if (info != NULL) {
     fprintf(stderr, "\n%s:%d:%d ", p_vm->source->path, info->line_info.line, info->line_info.offset);
   }
+
   va_list ap;
   va_start(ap, p_fmt);
   vfprintf(stderr, p_fmt, ap);
@@ -377,12 +399,17 @@ void runtime_error(vm* p_vm, const char* p_fmt, ...) {
   for (uint32_t i = 0; i < p_vm->call_stack.count; ++i) {
     call_frame* frame = &p_vm->call_stack.data[i];
     uint32_t instruction = frame->ip - frame->closure->function->chunk.code.data - 1;
-    fprintf(stderr,
-            "%s:%d:%d in %s\n",
-            p_vm->source->path,
-            info->line_info.line,
-            info->line_info.offset,
-            frame->closure->function->name->string.chars);
+    ok_line_info_repeated* info = source_info_find(&frame->closure->function->chunk.source_info, instruction);
+    if (info != NULL) {
+      fprintf(stderr,
+              "%s:%d:%d in %s.\n",
+              p_vm->source->path,
+              info->line_info.line,
+              info->line_info.offset,
+              frame->closure->function->name->string.chars);
+    } else {
+      fprintf(stderr, "%s in %s.\n", p_vm->source->path, frame->closure->function->name->string.chars);
+    }
   }
   stack_resize(&p_vm->stack, 0);
   p_vm->call_stack.count = 0;
@@ -404,6 +431,8 @@ bool call_value(vm* p_vm, value p_callee, uint32_t p_argc) {
     switch (object_get_type(obj)) {
     case OBJ_CLOSURE:
       return call(p_vm, VALUE_AS_CLOSURE(p_callee), p_argc);
+    case OBJ_NATIVE_FUNCTION:
+      return call_native(p_vm, VALUE_AS_NATIVE_FUNCTION(p_callee), p_argc);
     default:;
     }
   }
@@ -413,7 +442,7 @@ bool call_value(vm* p_vm, value p_callee, uint32_t p_argc) {
 
 bool call(vm* p_vm, object_closure* p_closure, uint32_t p_argc) {
   if (p_argc != p_closure->function->arity) {
-    runtime_error(p_vm, "invalid call: expected %d arguments, got: %d", p_closure->function->arity, p_argc);
+    runtime_error(p_vm, "invalid call: expected %d arguments, got: %d.", p_closure->function->arity, p_argc);
     return false;
   }
   call_frame frame;
@@ -422,6 +451,35 @@ bool call(vm* p_vm, object_closure* p_closure, uint32_t p_argc) {
   frame.slots = p_vm->stack.top - p_argc - 1;
   frame.top = frame.slots;
   return call_stack_append(&p_vm->call_stack, frame);
+}
+
+static bool call_native(vm* p_vm, object_native_function* p_native, uint32_t p_argc) {
+  if (p_argc != p_native->arity) {
+    runtime_error(p_vm,
+                  "invalid call: expected %d arguments, got: %d.\nnote: when calling a native function.",
+                  p_native->arity,
+                  p_argc);
+    return false;
+  }
+  value argv[p_argc];
+  memcpy(argv, p_vm->stack.array.data + p_vm->stack.top - p_argc, sizeof(value) * p_argc);
+  p_vm->in_native_call = true;
+  value result = p_native->function(p_vm->ok, p_argc, argv);
+  p_vm->in_native_call = false;
+  const bool res = !p_vm->native_has_error;
+  if (!res) {
+    runtime_error(p_vm, "%s", p_vm->native_error_message.chars);
+    p_vm->native_has_error = false;
+    string_deinit(&p_vm->native_error_message, p_vm->alloc);
+    return false;
+  }
+  gc_guard_up(p_vm->alloc->gc, result);
+  p_vm->native_has_error = false;
+  string_deinit(&p_vm->native_error_message, p_vm->alloc);
+  stack_resize(&p_vm->stack, p_vm->stack.top - p_argc - 1);
+  stack_push(&p_vm->stack, result);
+  gc_guard_down(p_vm->alloc->gc);
+  return res;
 }
 
 object_upvalue* capture_upvalue(vm* p_vm, uint32_t p_local_index) {
@@ -436,6 +494,10 @@ object_upvalue* capture_upvalue(vm* p_vm, uint32_t p_local_index) {
   }
   object_specs s = {p_vm->alloc, p_vm->objects_store};
   object_upvalue* captured = create_object_upvalue(p_local_index, &s);
+  if (captured == NULL) {
+    runtime_error(p_vm, "out of memory: failed to allocate memory for upvalue.");
+    return NULL;
+  }
   captured->next = upvalue;
   if (prev == NULL) {
     p_vm->open_upvalues = captured;

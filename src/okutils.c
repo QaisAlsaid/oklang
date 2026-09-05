@@ -98,10 +98,12 @@ report_status report_at_noted(bool* p_panic,
   } else {
     printf_fail |= fprintf(stderr, "    | ") < 0;
     printf_fail |= fprintf(stderr, "%.*s\n", p_token->length, p_token->start) < 0;
+#if 0
     if (p_token->type != TOKEN_ERROR) {
       printf_fail |= fprintf(stderr, "    | ") < 0;
       printf_fail |= fprintf(stderr, "%*c\n", p_token->line_info.offset - 1, '^') < 0;
     }
+#endif
   }
   if (p_note.chars != NULL) {
     printf_fail |= fprintf(stderr, "    | note: %.*s\n", (int)ok_string_view_get_length(&p_note), p_note.chars) < 0;

@@ -24,7 +24,7 @@ allocators alloc = {0};
 
 void setUp() {
   patch_specs(&specs);
-  alloc = create_allocators(&specs.allocators);
+  alloc = create_raw_allocators_wrapper(&specs.allocators);
   test_table_init(&table, &alloc);
 }
 
