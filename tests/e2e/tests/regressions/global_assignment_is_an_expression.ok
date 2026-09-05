@@ -1,0 +1,9 @@
+// see: global_decl_leak.ok
+
+glob let mut x = 0;
+let a = 44;
+
+x = 67;
+
+print(a); // expect: 44
+print(x); // expect: 67

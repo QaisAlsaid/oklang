@@ -1,0 +1,7 @@
+glob fu add(a, b) {
+  return a + b;
+}
+
+let result = add(20, 22);
+
+print result; // expect: 42

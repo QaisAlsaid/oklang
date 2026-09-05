@@ -1,0 +1,6 @@
+glob let mut x = 0;
+
+let a = (x = 69);
+
+print(a); // expect: 69
+print(x); // expect: 69
