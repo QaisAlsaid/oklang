@@ -17,3 +17,7 @@ target_include_directories(ok_cli
 set_target_properties(ok_cli PROPERTIES
   OUTPUT_NAME ok
 )
+
+set_target_properties(ok_cli PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+)

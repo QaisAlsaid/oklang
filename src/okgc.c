@@ -88,9 +88,9 @@ bool gc_collect(gc* p_gc, size_t p_predict, size_t p_old) {
 
   bool result = true;
 
-#ifdef OK_AGRESSIVE_GC
+#ifdef OK_AGGRESSIVE_GC
   result = collect(p_gc);
-#endif // OK_AGRESSIVE_GC
+#endif // OK_AGGRESSIVE_GC
 
   if (p_gc->allocated_bytes > p_gc->next) {
     result = collect(p_gc);
