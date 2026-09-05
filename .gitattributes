@@ -1,3 +1,2 @@
-*.ok linguist-language=JavaScript
-*.OK linguist-language=JavaScript
-*.okay linguist-language=JavaScript
+*.ok linguist-language=JavaScript linguist-detectable=false
+*.OK linguist-language=JavaScript linguist-detectable=false
