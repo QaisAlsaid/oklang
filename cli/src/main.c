@@ -87,7 +87,7 @@ char* read_file(const char* p_path) {
     fprintf(stderr, "can't read file: \"%s\".\n", p_path);
     exit(74);
   }
-  buff[bytes_read] = '\n';
+  buff[bytes_read] = '\0';
   fclose(file);
   return buff;
 }
