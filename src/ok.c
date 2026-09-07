@@ -53,8 +53,9 @@ ok* ok_create(ok_specs p_specs) {
 }
 
 ok_result ok_run(ok* p_ok, ok_source p_source) {
+  p_ok->source = p_source;
   parser parser;
-  parser_specs specs = {.alloc = &p_ok->alloc, .source = &p_source};
+  parser_specs specs = {.alloc = &p_ok->alloc, .source = &p_ok->source};
   parser_init(&parser, specs);
   parse_result parse_result = parser_parse(&parser);
   if (parse_result.status != PARSE_OK) {
@@ -73,7 +74,7 @@ ok_result ok_run(ok* p_ok, ok_source p_source) {
 
   compile_specs compile_specs;
   compile_specs.root = parse_result.root;
-  compile_specs.source = &p_source;
+  compile_specs.source = &p_ok->source;
   compile_result compile_result = compiler_compile(&p_ok->compiler, compile_specs);
   parse_result_deinit(&parse_result);
   if (compile_result.status != COMPILE_OK) {
@@ -81,7 +82,7 @@ ok_result ok_run(ok* p_ok, ok_source p_source) {
   }
   interpret_specs interpret_specs;
   interpret_specs.function = compile_result.function;
-  interpret_specs.source = &p_source;
+  interpret_specs.source = &p_ok->source;
   interpret_result interpret_result = vm_interpret(&p_ok->vm, interpret_specs);
   if (interpret_result.status != RUNTIME_OK) {
     interpret_result_deinit(&interpret_result);
