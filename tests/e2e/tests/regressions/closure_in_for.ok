@@ -1,0 +1,18 @@
+fu take(p_fu) {
+  p_fu();
+}
+
+fu close(p_delta) {
+  for let mut i = 0; i < 5; i = i + 1? {
+    take(fu() {
+      print i;
+    });
+  }
+}
+
+close(0);
+// expect: 0
+// expect: 1
+// expect: 2
+// expect: 3
+// expect: 4

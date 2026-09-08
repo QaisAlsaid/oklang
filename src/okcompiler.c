@@ -504,8 +504,8 @@ resolve_local(compiler* p_compiler, hashed_string* p_identifier, function* p_fun
   while (index == NULL && depth != 0) {
     index = scope_locals_get(&p_function->scopes.data[--depth].locals_table, *p_identifier);
     // TODO: report that we skipped if we couldn't resolve other local with same name.
-    if (index != NULL &&
-        local_test_flag(*index, LOCAL_FLAG_UNINITIALIZED)) { // let x; { let x = x; /* skip the inner */ }
+    if (index != NULL && local_test_flag(p_function->locals.data[*index].info,
+                                         LOCAL_FLAG_UNINITIALIZED)) { // let x; { let x = x; /* skip the inner */ }
       index = NULL;
     }
   }
@@ -800,10 +800,11 @@ resolve_upvalue(compiler* p_compiler, hashed_string p_identifier, uint32_t p_fun
 
   function* current = &p_compiler->functions.data[functions - p_function_index - 1];
   function* up = &p_compiler->functions.data[functions - p_function_index - 2];
-  uint32_t* local = resolve_local(p_compiler, &p_identifier, up, p_node);
-  if (local != NULL) {
-    local_set_flag(local, LOCAL_FLAG_CAPTURED);
-    return add_upvalue(p_compiler, *local, true, current, p_node);
+  uint32_t* local_index = resolve_local(p_compiler, &p_identifier, up, p_node);
+  if (local_index != NULL) {
+    local* local = &up->locals.data[*local_index];
+    local_set_flag(&local->info, LOCAL_FLAG_CAPTURED);
+    return add_upvalue(p_compiler, *local_index, true, current, p_node);
   }
   uint32_t upvalue = resolve_upvalue(p_compiler, p_identifier, p_function_index + 1, p_node);
   if (upvalue != UINT32_MAX) {
@@ -1035,6 +1036,7 @@ bool compile_for_statement(compiler* p_compiler, ast_for_statement* p_for) {
     CTX.continue_forward = true;
   }
   status &= compile_node(p_compiler, (ast_node*)p_for->body);
+
   CTX.continue_target = loop_start;
   if (p_for->update != NULL) {
     CTX.continue_target = chunk->code.count;
@@ -1262,7 +1264,11 @@ static bool compile_function_impl(compiler* p_compiler,
   bool status = push_function(p_compiler, p_name, p_type, p_params.count, p_node);
   begin_scope(p_compiler);
   variable_declaration decl = {.identifier = p_name, .flags = DECLARATION_NONE};
-  status &= IS_LOCAL_INDEX_VALID(add_local(p_compiler, decl, p_node));
+  uint32_t function_name = add_local(p_compiler, decl, p_node);
+  status &= IS_LOCAL_INDEX_VALID(function_name);
+  if (status) {
+    status &= define_variable(p_compiler, decl, function_name, p_node);
+  }
   for (uint32_t i = 0; i < p_params.count; ++i) {
     ast_binding* binding = p_params.data[i];
     variable_declaration decl = {
