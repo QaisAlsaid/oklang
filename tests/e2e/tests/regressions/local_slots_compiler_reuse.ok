@@ -1,0 +1,55 @@
+fu test(s) {
+  let side = s;
+
+  if side == 1? {
+    let y = 10;
+    let x = 20;
+    print y;
+    print x;
+    return;
+  }
+
+  if side == 2? {
+    let y = 30;
+    let x = 40;
+    print y;
+    print x;
+    return;
+  }
+
+  if side == 3? {
+    let y = 50;
+    let x = 60;
+    print y;
+    print x;
+    return;
+  }
+
+  if side == 4? {
+    let y = 70;
+    let x = 80;
+    print y;
+    print x;
+    return;
+  }
+  let x = 90;
+  let y = 100;
+  print x;
+  print y;
+}
+
+test(1);
+// expect: 10
+// expect: 20
+test(2);
+// expect: 30
+// expect: 40
+test(3);
+// expect: 50
+// expect: 60
+test(4);
+// expect: 70
+// expect: 80
+test(0);
+// expect: 90
+// expect: 100

@@ -1,0 +1,18 @@
+fu make(side) {
+  if side == 1? {
+    let x = 10;
+    return fu() { return x; };
+  }
+
+  if side == 2? {
+    let x = 20;
+    return fu() { return x; };
+  }
+
+  let x = 30;
+  return fu() { return x; };
+}
+
+print make(1)(); // expect: 10
+print make(2)(); // expect: 20
+print make(3)(); // expect: 30

@@ -247,15 +247,20 @@ void begin_scope(compiler* p_compiler) {
 void end_scope(compiler* p_compiler, ast_node* p_node, bool p_needs_pop) {
   function* fun = current_function(p_compiler);
   scope* scp = &fun->scopes.data[fun->scopes.count - 1];
+
   for (uint32_t i = 0; i < scp->locals_array.count; ++i) {
-    if (local_test_flag(fun->locals.data[scp->locals_array.data[i]].info, LOCAL_FLAG_CAPTURED)) {
+    uint32_t local_index = scp->locals_array.data[i];
+
+    if (local_test_flag(fun->locals.data[local_index].info, LOCAL_FLAG_CAPTURED)) {
       emit_byte(p_compiler, OP_CLOSE_UPVALUE, p_node);
     } else if (p_needs_pop) {
       emit_byte(p_compiler, OP_POP, p_node);
     }
   }
 
-  scopes_remove(&fun->scopes, fun->scopes.count - 1, fun->scopes.count - 1); // TODO: pop
+  locals_remove(&fun->locals, fun->locals.count - scp->locals_array.count, fun->locals.count - 1);
+
+  scopes_remove(&fun->scopes, fun->scopes.count - 1, fun->scopes.count - 1);
 }
 
 void scope_init(scope* p_scope, allocators* p_alloc) {
