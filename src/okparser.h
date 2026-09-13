@@ -27,7 +27,7 @@ typedef enum {
   PREC_PREFIX,
   PREC_POSTFIX,
   PREC_CALL,
-  PREC_MEMBER,
+  PREC_ACCESS,
   PREC_SUBSCRIPT,
 } precedence;
 

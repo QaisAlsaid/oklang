@@ -129,6 +129,10 @@ The main CMake options are:
 * `OK_PEDANTIC` — enable additional failure checking.
 * `OK_AGGRESSIVE_GC` — trigger garbage collection on every allocation.
 
+## Editor support
+
+See: [tree-sitter-oklang](https://codeberg.org/qais/tree-sitter-oklang)
+
 ## License
 
 [MIT License](LICENSE)
