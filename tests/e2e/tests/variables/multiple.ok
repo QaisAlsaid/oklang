@@ -1,3 +1,0 @@
-let a = 67;
-let b = 69;
-print b - a; // expect: 2

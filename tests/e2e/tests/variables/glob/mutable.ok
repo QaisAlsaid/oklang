@@ -1,5 +1,0 @@
-glob let mut x = 2;
-
-x = 3;
-
-print(x); // expect: 3

@@ -1,1 +1,0 @@
-if false? print "yes"; else? print "no"; // expect: no

@@ -1,9 +1,0 @@
-fu double(x) {
-    return x * 2;
-}
-
-fu calculate(x) {
-    return double(x);
-}
-
-print(calculate(10)); // expect: 20

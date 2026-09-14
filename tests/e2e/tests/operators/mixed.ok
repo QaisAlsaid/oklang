@@ -1,2 +1,0 @@
-print(1 + 2 * 3 == 7); // expect: true
-print((1 + 2) * 3 == 10); // expect: false

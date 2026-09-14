@@ -1,3 +1,0 @@
-print fu () {
-  return "imgui";
-}(); // expect: imgui

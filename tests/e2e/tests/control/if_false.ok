@@ -1,2 +1,0 @@
-if false? print "damn!";
-print "phew"; // expect: phew

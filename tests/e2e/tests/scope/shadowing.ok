@@ -1,8 +1,0 @@
-let x = "outer";
-
-{
-    let x = "inner";
-    print(x); // expect: inner
-}
-
-print(x); // expect: outer

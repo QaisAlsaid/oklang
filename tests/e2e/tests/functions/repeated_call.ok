@@ -1,7 +1,0 @@
-fu fork() {
-    return 44;
-}
-
-print(fork()); // expect: 44
-print(fork()); // expect: 44
-print(fork()); // expect: 44

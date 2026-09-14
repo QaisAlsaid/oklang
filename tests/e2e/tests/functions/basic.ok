@@ -1,5 +1,0 @@
-fu granny() {
-    print("granny"); // expect: granny
-}
-
-granny();

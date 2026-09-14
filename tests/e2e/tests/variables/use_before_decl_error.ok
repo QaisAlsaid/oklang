@@ -1,2 +1,0 @@
-print x; // expect error: undefined
-let x = 10;

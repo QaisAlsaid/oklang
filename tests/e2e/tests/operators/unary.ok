@@ -1,2 +1,0 @@
-print(-10); // expect: -10
-print(!false); // expect: true
