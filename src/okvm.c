@@ -19,18 +19,39 @@
 #define STACK_SIZE 256
 
 static void runtime_error(vm* p_vm, const char* p_fmt, ...);
-static bool is_falsy(value p_value);
-static bool values_equal(value p_lhs, value p_rhs);
-static value* read_local(vm* p_vm, call_frame* p_frame);
-static value* read_local_long(vm* p_vm, call_frame* p_frame);
-static bool call_value(vm* p_vm, value p_callee, uint32_t p_argc);
-static bool call(vm* p_vm, object_closure* p_closure, uint32_t p_argc);
-static bool call_native(vm* p_vm, object_native_function* p_native, uint32_t p_argc);
-static object_upvalue* capture_upvalue(vm* p_vm, uint32_t p_local_index);
-static void close_upvalues(vm* p_vm, uint32_t p_last);
+static bool call_value(vm* p_vm,
+                       execution_state* p_exe,
+                       register_file* p_reg,
+                       uint32_t p_base,
+                       uint16_t p_callee,
+                       uint16_t p_argc,
+                       uint32_t p_retc);
+static object_upvalue* capture_upvalue(vm* p_vm, execution_state* p_exe, uint32_t p_register);
+static void close_upvalues(execution_state* p_exe, uint32_t p_uptill);
 static interpret_result run_until(vm* p_vm, uint32_t p_call_depth);
-
+static interpret_result create_closure(
+    vm* p_vm, execution_state* p_exe, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, uint16_t p_src);
 void interpret_result_deinit(interpret_result* p_interpret_result) {
+}
+
+// the flag must stay visible to enclosing call_native frames while a native
+// is still unwinding (native_call_depth > 0). only the outermost C entry
+// point (depth == 0) consumes it so a subsequent ok_call starts clean.
+static inline void vm_consume_pending_error(execution_state* p_exe) {
+  if (p_exe->native_call_depth == 0) {
+    p_exe->error_pending = false;
+  }
+}
+
+// a runtime error fired somewhere under the current C entry point. callers
+// that resume interpretation after the error point (call_native returning to
+// an OP_CALL handler) must check this and fail instead: runtime_error already
+// reset the call stack + watermark, and continuing would run bytecode against
+// a wild frame pointer.
+static interpret_result vm_error(execution_state* p_exe) {
+  vm_consume_pending_error(p_exe);
+  interpret_result result = {.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
+  return result;
 }
 
 void vm_init(vm* p_vm, vm_specs p_specs) {
@@ -38,88 +59,791 @@ void vm_init(vm* p_vm, vm_specs p_specs) {
   p_vm->objects_store = p_specs.objects_store;
   p_vm->globals_store = p_specs.globals_store;
   p_vm->source = NULL;
-  p_vm->open_upvalues = NULL;
-  p_vm->native_has_error = false;
-  p_vm->native_call_depth = 0;
   p_vm->ok = p_specs.ok;
-  string_init(&p_vm->native_error_message, NULL, 0, false, p_vm->alloc);
-  stack_init_warm(&p_vm->stack, STACK_SIZE, p_specs.alloc);
-  call_stack_init(&p_vm->call_stack, p_specs.alloc);
+  // TODO: temp
+  p_vm->current_execution_state = p_vm->alloc->allocate(p_vm->alloc, sizeof(execution_state));
+  p_vm->current_execution_state->open_upvalues = NULL;
+  p_vm->current_execution_state->native_has_error = false;
+  p_vm->current_execution_state->error_pending = false;
+  p_vm->current_execution_state->native_call_depth = 0;
+  string_init(&p_vm->current_execution_state->native_error_message, NULL, 0, false, p_vm->alloc);
+  register_file_init_warm(&p_vm->current_execution_state->registers, STACK_SIZE, p_specs.alloc);
+  call_stack_init(&p_vm->current_execution_state->call_stack, p_specs.alloc);
 }
 
 void vm_deinit(vm* p_vm) {
-  p_vm->open_upvalues = NULL;
   p_vm->source = NULL;
   p_vm->globals_store = NULL;
   p_vm->objects_store = NULL;
-  p_vm->native_call_depth = 0;
   p_vm->ok = NULL;
-  p_vm->native_has_error = false;
-  string_deinit(&p_vm->native_error_message, p_vm->alloc);
-  call_stack_deinit(&p_vm->call_stack, p_vm->alloc);
-  stack_deinit(&p_vm->stack);
+  // TODO: temp
+  call_stack_deinit(&p_vm->current_execution_state->call_stack, p_vm->alloc);
+  register_file_deinit(&p_vm->current_execution_state->registers);
+  p_vm->current_execution_state->open_upvalues = NULL;
+  p_vm->current_execution_state->native_call_depth = 0;
+  p_vm->current_execution_state->native_has_error = false;
+  p_vm->current_execution_state->error_pending = false;
+  string_deinit(&p_vm->current_execution_state->native_error_message, p_vm->alloc);
+  p_vm->alloc->release(p_vm->alloc, p_vm->current_execution_state);
 }
 
 bool vm_native_error(vm* p_vm, ok_string_view p_message) {
-  if (p_vm->native_call_depth == 0) {
+  execution_state* exe = p_vm->current_execution_state;
+  if (exe->native_call_depth == 0) {
     return false;
   }
-  p_vm->native_has_error = true;
-  p_vm->native_error_message = create_string_from_string_view(p_message, p_vm->alloc);
+  exe->native_has_error = true;
+  exe->native_error_message = create_string_from_string_view(p_message, p_vm->alloc);
   return true;
 }
 
 interpret_result vm_interpret(vm* p_vm, interpret_specs p_specs) {
-  p_vm->source = p_specs.source; // having it this way means only one source per vm. but it's ok will fix soon.
+  execution_state* exe = p_vm->current_execution_state;
+  register_file* reg = &exe->registers;
+  p_vm->source = p_specs.source; // TODO: having it this way means only one source per vm. but it's ok will fix soon.
   value vfn = OBJECT_AS_VALUE(p_specs.function);
-  gc_guard_up(p_vm->alloc->gc, vfn);
-  stack_push(&p_vm->stack, vfn);
-  gc_guard_down(p_vm->alloc->gc);
+  gc_guard_up(p_vm->alloc->gc, vfn); // TODO array based gc guard
+  // reg->array.data[exe->registers.top] = vfn;
   object_specs s = {p_vm->alloc, p_vm->objects_store};
   object_closure* closure = create_object_closure(p_specs.function, &s);
   if (closure == NULL) {
-    interpret_result res = {.status = RUNTIME_ERROR, NULL_AS_VALUE()};
+    interpret_result res = {.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
     return res;
   }
-  *stack_top_ptr(&p_vm->stack, 0) = OBJECT_AS_VALUE(closure);
-  if (!call_value(p_vm, stack_top(&p_vm->stack, 0), 0)) {
-    interpret_result result = {.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
-    return result;
+  reg->array.data[reg->top] = OBJECT_AS_VALUE(closure); // call register
+
+  // mark_vm roots registers in [0, top): the slot we just wrote is at top, so
+  // until call() raises top to frame_top the closure would be unrooted and any
+  // allocation inside call() (e.g. register file growth) could sweep it.
+  reg->top += 1;
+  gc_guard_down(p_vm->alloc->gc);
+  if (!call_value(p_vm, p_vm->current_execution_state, reg, 0, 0, 0, 0)) {
+    return vm_error(p_vm->current_execution_state);
   }
   interpret_result interpret_result = run_until(p_vm, 0);
+  if (interpret_result.status != RUNTIME_OK) {
+    vm_consume_pending_error(p_vm->current_execution_state);
+  }
   return interpret_result;
 }
 
 interpret_result vm_call(vm* p_vm, value p_callee, uint32_t p_argc) {
-  uint32_t call_depth = p_vm->call_stack.count;
-  if (!call_value(p_vm, p_callee, p_argc)) {
-    interpret_result result = {.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
+  execution_state* exe = p_vm->current_execution_state;
+  register_file* reg = &exe->registers;
+  const uint32_t call_depth = exe->call_stack.count;
+  const uint32_t base = reg->top - p_argc - 1;
+
+  // p_callee is already at an index relative p_base (compare OP_CALL: frame base +
+  // register index). passing base here double based the callee slot: with a
+  // non-empty call stack (i.e. a native calling back into the vm) (e.g. dorg3's
+  // array_foreach -> ok_call(closure) mid-frame) while base > 0 and call_value read
+  // data[base + base], which is a garbage register, instead of the closure staged at
+  // data[base]. every tested ok_call until now ran from C on an empty call stack
+  // (base == 0), where 0 + 0 was accidentally correct. a regression test was written for this very case.
+  if (!call_value(p_vm, exe, reg, base, 0, p_argc, 1)) {
+    return vm_error(exe);
+  }
+  if (exe->call_stack.count == call_depth) {
+    interpret_result result = {.status = RUNTIME_OK,
+                               .top_level_return = reg->array.data[base]}; // TODO multiple returns
     return result;
   }
-  if (p_vm->call_stack.count == call_depth) {
-    interpret_result result = {.status = RUNTIME_OK, .top_level_return = stack_top(&p_vm->stack, 0)};
-    return result;
+  interpret_result result = run_until(p_vm, call_depth);
+  if (result.status != RUNTIME_OK) {
+    // only the outermost C entry point may consume a pending error: inner
+    // ok_calls (from inside a native) must leave it visible so the enclosing
+    // call_native can fail the OP_CALL instead of resuming on an erroneous reset state.
+    vm_consume_pending_error(exe);
   }
-  return run_until(p_vm, call_depth);
+  return result;
+}
+
+static inline bool is_falsy(value p_value) {
+  return (IS_VALUE_STRICTLY_BOOL(p_value) && !VALUE_AS_BOOL(p_value)) || IS_VALUE_STRICTLY_NULL(p_value);
+}
+
+// p_is_constant selects between constant pool (k[index]) and frame register (r[index])
+static inline value resolve_operand(call_frame* p_frame, register_file* p_reg, uint16_t p_index, bool p_is_constant) {
+  if (p_is_constant) {
+    return p_frame->closure->function->chunk.constants.data[p_index];
+  }
+  return p_reg->array.data[p_frame->registers_base + p_index];
+}
+
+static interpret_result perform_not(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_on) {
+  const uint32_t base = p_frame->registers_base;
+  value on = p_on;
+  if (IS_VALUE_NUMBER(on)) {
+    goto invalid;
+  }
+  if (IS_VALUE_BOOL(on)) {
+    on = BOOL_AS_VALUE(!VALUE_AS_BOOL(on));
+  } else if (IS_VALUE_OBJECT(on)) {
+    goto invalid;
+    // TODO
+  } else {
+  invalid: {
+    runtime_error(p_vm, "invalid operand for unary '!'.");
+    interpret_result res;
+    res.status = RUNTIME_ERROR;
+    res.top_level_return = NULL_AS_VALUE();
+    return res;
+  }
+  }
+  p_reg->array.data[base + p_dest] = on;
+  interpret_result res;
+  res.status = RUNTIME_OK;
+  return res;
+}
+
+static interpret_result
+perform_negate(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_on) {
+  const uint32_t base = p_frame->registers_base;
+  value on = p_on;
+  if (IS_VALUE_NUMBER(on)) {
+    on ^= SIGN_BIT; // ultra fast
+  } else if (IS_VALUE_INT(on)) {
+    on = INT_AS_VALUE(-VALUE_AS_INT(on));
+  } else if (IS_VALUE_OBJECT(on)) {
+    goto invalid;
+    // TODO
+  } else {
+  invalid: {
+    runtime_error(p_vm, "invalid operand for unary '-'.");
+    interpret_result res;
+    res.status = RUNTIME_ERROR;
+    res.top_level_return = NULL_AS_VALUE();
+    return res;
+  }
+  }
+  p_reg->array.data[base + p_dest] = on;
+  interpret_result res;
+  res.status = RUNTIME_OK;
+  return res;
+}
+
+static interpret_result
+perform_add(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
+  const uint32_t base = p_frame->registers_base;
+  value lhs = p_lhs;
+  value rhs = p_rhs;
+  if (IS_VALUE_NUMBER(lhs)) {
+    if (IS_VALUE_NUMBER(rhs)) {
+      lhs = NUMBER_AS_VALUE(VALUE_AS_NUMBER(lhs) + VALUE_AS_NUMBER(rhs));
+    } else if (IS_VALUE_INT(rhs)) {
+      lhs = NUMBER_AS_VALUE(VALUE_AS_NUMBER(lhs) + VALUE_AS_INT(rhs));
+    } else if (IS_VALUE_OBJECT(rhs)) {
+      goto invalid;
+      // TODO
+      // not sure if we should allow this for objects or they have to be strictly lhs.
+      // TBD after we add classes.
+    } else {
+      goto invalid;
+    }
+  } else if (IS_VALUE_INT(lhs)) {
+    if (IS_VALUE_INT(rhs)) {
+      lhs = INT_AS_VALUE(VALUE_AS_INT(lhs) + VALUE_AS_INT(rhs));
+    } else if (IS_VALUE_NUMBER(rhs)) {
+      lhs = NUMBER_AS_VALUE(VALUE_AS_INT(lhs) + VALUE_AS_NUMBER(rhs));
+    } else if (IS_VALUE_OBJECT(rhs)) {
+      goto invalid;
+      // TODO
+      // not sure if we should allow this for objects or they have to be strictly lhs.
+      // TBD after we add classes.
+    } else {
+      goto invalid;
+    }
+  } else if (IS_VALUE_OBJECT(lhs)) {
+    goto invalid;
+    // TODO
+  } else {
+  invalid: {
+    runtime_error(p_vm, "invalid operands for binary '+'.");
+    interpret_result res;
+    res.status = RUNTIME_ERROR;
+    res.top_level_return = NULL_AS_VALUE();
+    return res;
+  }
+  }
+  p_reg->array.data[base + p_dest] = lhs;
+  interpret_result res;
+  res.status = RUNTIME_OK;
+  return res;
+}
+
+static interpret_result
+perform_subtract(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
+  const uint32_t base = p_frame->registers_base;
+  value lhs = p_lhs;
+  value rhs = p_rhs;
+  if (IS_VALUE_NUMBER(lhs)) {
+    if (IS_VALUE_NUMBER(rhs)) {
+      lhs = NUMBER_AS_VALUE(VALUE_AS_NUMBER(lhs) - VALUE_AS_NUMBER(rhs));
+    } else if (IS_VALUE_INT(rhs)) {
+      lhs = NUMBER_AS_VALUE(VALUE_AS_NUMBER(lhs) - VALUE_AS_INT(rhs));
+    } else if (IS_VALUE_OBJECT(rhs)) {
+      goto invalid;
+      // TODO
+      // not sure if we should allow this for objects or they have to be strictly lhs.
+      // TBD after we add classes.
+    } else {
+      goto invalid;
+    }
+  } else if (IS_VALUE_INT(lhs)) {
+    if (IS_VALUE_INT(rhs)) {
+      lhs = INT_AS_VALUE(VALUE_AS_INT(lhs) - VALUE_AS_INT(rhs));
+    } else if (IS_VALUE_NUMBER(rhs)) {
+      lhs = NUMBER_AS_VALUE(VALUE_AS_INT(lhs) - VALUE_AS_NUMBER(rhs));
+    } else if (IS_VALUE_OBJECT(rhs)) {
+      goto invalid;
+      // TODO
+      // not sure if we should allow this for objects or they have to be strictly lhs.
+      // TBD after we add classes.
+    } else {
+      goto invalid;
+    }
+  } else if (IS_VALUE_OBJECT(lhs)) {
+    goto invalid;
+    // TODO
+  } else {
+  invalid: {
+    runtime_error(p_vm, "invalid operands for binary '-'.");
+    interpret_result res;
+    res.status = RUNTIME_ERROR;
+    res.top_level_return = NULL_AS_VALUE();
+    return res;
+  }
+  }
+  p_reg->array.data[base + p_dest] = lhs;
+  interpret_result res;
+  res.status = RUNTIME_OK;
+  return res;
+}
+
+static interpret_result
+perform_multiply(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
+  const uint32_t base = p_frame->registers_base;
+  value lhs = p_lhs;
+  value rhs = p_rhs;
+  if (IS_VALUE_NUMBER(lhs)) {
+    if (IS_VALUE_NUMBER(rhs)) {
+      lhs = NUMBER_AS_VALUE(VALUE_AS_NUMBER(lhs) * VALUE_AS_NUMBER(rhs));
+    } else if (IS_VALUE_INT(rhs)) {
+      lhs = NUMBER_AS_VALUE(VALUE_AS_NUMBER(lhs) * VALUE_AS_INT(rhs));
+    } else if (IS_VALUE_OBJECT(rhs)) {
+      goto invalid;
+      // TODO
+      // not sure if we should allow this for objects or they have to be strictly lhs.
+      // TBD after we add classes.
+    } else {
+      goto invalid;
+    }
+  } else if (IS_VALUE_INT(lhs)) {
+    if (IS_VALUE_INT(rhs)) {
+      lhs = INT_AS_VALUE(VALUE_AS_INT(lhs) * VALUE_AS_INT(rhs));
+    } else if (IS_VALUE_NUMBER(rhs)) {
+      lhs = NUMBER_AS_VALUE(VALUE_AS_INT(lhs) * VALUE_AS_NUMBER(rhs));
+    } else if (IS_VALUE_OBJECT(rhs)) {
+      goto invalid;
+      // TODO
+      // not sure if we should allow this for objects or they have to be strictly lhs.
+      // TBD after we add classes.
+    } else {
+      goto invalid;
+    }
+  } else if (IS_VALUE_OBJECT(lhs)) {
+    goto invalid;
+    // TODO
+  } else {
+  invalid: {
+    runtime_error(p_vm, "invalid operands for binary '*'.");
+    interpret_result res;
+    res.status = RUNTIME_ERROR;
+    res.top_level_return = NULL_AS_VALUE();
+    return res;
+  }
+  }
+  p_reg->array.data[base + p_dest] = lhs;
+  interpret_result res;
+  res.status = RUNTIME_OK;
+  return res;
+}
+
+static interpret_result
+perform_divide(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
+  const uint32_t base = p_frame->registers_base;
+  value lhs = p_lhs;
+  value rhs = p_rhs;
+  if (IS_VALUE_NUMBER(lhs)) {
+    if (IS_VALUE_NUMBER(rhs)) {
+      if (VALUE_AS_NUMBER(rhs) == 0.0f) {
+        goto division_by_zero;
+      }
+      lhs = NUMBER_AS_VALUE(VALUE_AS_NUMBER(lhs) / VALUE_AS_NUMBER(rhs));
+    } else if (IS_VALUE_INT(rhs)) {
+      if (VALUE_AS_INT(rhs) == 0) {
+        goto division_by_zero;
+      }
+      lhs = NUMBER_AS_VALUE(VALUE_AS_NUMBER(lhs) / VALUE_AS_INT(rhs));
+    } else if (IS_VALUE_OBJECT(rhs)) {
+      goto invalid;
+      // TODO
+      // not sure if we should allow this for objects or they have to be strictly lhs.
+      // TBD after we add classes.
+    } else {
+      goto invalid;
+    }
+  } else if (IS_VALUE_INT(lhs)) {
+    if (IS_VALUE_INT(rhs)) {
+      if (VALUE_AS_INT(rhs) == 0) {
+        goto division_by_zero;
+      }
+      lhs = INT_AS_VALUE(VALUE_AS_INT(lhs) / VALUE_AS_INT(rhs));
+    } else if (IS_VALUE_NUMBER(rhs)) {
+      if (VALUE_AS_NUMBER(rhs) == 0.0f) {
+        goto division_by_zero;
+      }
+      lhs = NUMBER_AS_VALUE(VALUE_AS_INT(lhs) / VALUE_AS_NUMBER(rhs));
+    } else if (IS_VALUE_OBJECT(rhs)) {
+      goto invalid;
+      // TODO
+      // not sure if we should allow this for objects or they have to be strictly lhs.
+      // TBD after we add classes.
+    } else {
+      goto invalid;
+    }
+  } else if (IS_VALUE_OBJECT(lhs)) {
+    // TODO
+  } else {
+  invalid: {
+    runtime_error(p_vm, "invalid operands for binary '/'.");
+    interpret_result res;
+    res.status = RUNTIME_ERROR;
+    res.top_level_return = NULL_AS_VALUE();
+    return res;
+  }
+  }
+  {
+    p_reg->array.data[base + p_dest] = lhs;
+    interpret_result res;
+    res.status = RUNTIME_OK;
+    return res;
+  }
+division_by_zero: {
+  runtime_error(p_vm, "division by zero.");
+  interpret_result res;
+  res.status = RUNTIME_ERROR;
+  res.top_level_return = NULL_AS_VALUE();
+  return res;
+}
+}
+
+static interpret_result
+perform_equal(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
+  const uint32_t base = p_frame->registers_base;
+  value lhs = p_lhs;
+  value rhs = p_rhs;
+  if (IS_VALUE_NUMBER(lhs)) {
+    if (IS_VALUE_NUMBER(rhs)) {
+      lhs = BOOL_AS_VALUE(VALUE_AS_NUMBER(lhs) == VALUE_AS_NUMBER(rhs));
+    } else if (IS_VALUE_INT(rhs)) {
+      lhs = BOOL_AS_VALUE(VALUE_AS_NUMBER(lhs) == VALUE_AS_INT(rhs));
+    } else if (IS_VALUE_OBJECT(rhs)) {
+      // TODO
+      // not sure if we should allow this for objects or they have to be strictly lhs.
+      // TBD after we add classes.
+    } else {
+      goto invalid;
+    }
+  } else if (IS_VALUE_INT(lhs)) {
+    if (IS_VALUE_INT(rhs)) {
+      lhs = BOOL_AS_VALUE(VALUE_AS_INT(lhs) == VALUE_AS_INT(rhs));
+    } else if (IS_VALUE_NUMBER(rhs)) {
+      lhs = BOOL_AS_VALUE(VALUE_AS_INT(lhs) == VALUE_AS_NUMBER(rhs));
+    } else if (IS_VALUE_OBJECT(rhs)) {
+      // TODO
+      // not sure if we should allow this for objects or they have to be strictly lhs.
+      // TBD after we add classes.
+    } else {
+      goto invalid;
+    }
+  } else if (IS_VALUE_OBJECT(lhs)) {
+    if (IS_VALUE_STRING(lhs) && IS_VALUE_STRING(rhs)) {
+      lhs = BOOL_AS_VALUE(strncmp(VALUE_AS_STRING(p_lhs)->string.chars,
+                                  VALUE_AS_STRING(p_rhs)->string.chars,
+                                  string_get_length(&VALUE_AS_STRING(p_lhs)->string)) == 0);
+    } else {
+      goto invalid;
+      // TODO others
+    }
+  } else {
+  invalid:
+    // mixed type equality intentionally falls back to a raw identity check
+    // (null/bool vs anything): turning this into a type error is a semantic
+    // decision deferred to when we design the error model.
+    lhs = BOOL_AS_VALUE(lhs == rhs);
+  }
+  {
+    p_reg->array.data[base + p_dest] = lhs;
+    interpret_result res;
+    res.status = RUNTIME_OK;
+    return res;
+  }
+}
+
+static interpret_result
+perform_not_equal(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
+  const uint32_t base = p_frame->registers_base;
+  value lhs = p_lhs;
+  value rhs = p_rhs;
+  if (IS_VALUE_NUMBER(lhs)) {
+    if (IS_VALUE_NUMBER(rhs)) {
+      lhs = BOOL_AS_VALUE(VALUE_AS_NUMBER(lhs) != VALUE_AS_NUMBER(rhs));
+    } else if (IS_VALUE_INT(rhs)) {
+      lhs = BOOL_AS_VALUE(VALUE_AS_NUMBER(lhs) != VALUE_AS_INT(rhs));
+    } else if (IS_VALUE_OBJECT(rhs)) {
+      // TODO
+      // not sure if we should allow this for objects or they have to be strictly lhs.
+      // TBD after we add classes.
+    } else {
+      goto invalid;
+    }
+  } else if (IS_VALUE_INT(lhs)) {
+    if (IS_VALUE_INT(rhs)) {
+      lhs = BOOL_AS_VALUE(VALUE_AS_INT(lhs) != VALUE_AS_INT(rhs));
+    } else if (IS_VALUE_NUMBER(rhs)) {
+      lhs = BOOL_AS_VALUE(VALUE_AS_INT(lhs) != VALUE_AS_NUMBER(rhs));
+    } else if (IS_VALUE_OBJECT(rhs)) {
+      // TODO
+      // not sure if we should allow this for objects or they have to be strictly lhs.
+      // TBD after we add classes.
+    } else {
+      goto invalid;
+    }
+  } else if (IS_VALUE_OBJECT(lhs)) {
+    if (IS_VALUE_STRING(lhs) && IS_VALUE_STRING(rhs)) {
+      lhs = BOOL_AS_VALUE(!(strncmp(VALUE_AS_STRING(p_lhs)->string.chars,
+                                    VALUE_AS_STRING(p_rhs)->string.chars,
+                                    string_get_length(&VALUE_AS_STRING(p_lhs)->string)) == 0));
+    } else {
+      goto invalid;
+      // TODO others
+    }
+  } else {
+  invalid:
+    // mixed type equality intentionally falls back to a raw identity check
+    // (null/bool vs anything): turning this into a type error is a semantic
+    // decision deferred to when we design the error model.
+    lhs = BOOL_AS_VALUE(lhs != rhs);
+  }
+  {
+    p_reg->array.data[base + p_dest] = lhs;
+    interpret_result res;
+    res.status = RUNTIME_OK;
+    return res;
+  }
+}
+
+static interpret_result
+perform_greater(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
+  const uint32_t base = p_frame->registers_base;
+  value lhs = p_lhs;
+  value rhs = p_rhs;
+  if (IS_VALUE_NUMBER(lhs)) {
+    if (IS_VALUE_NUMBER(rhs)) {
+      lhs = BOOL_AS_VALUE(VALUE_AS_NUMBER(lhs) > VALUE_AS_NUMBER(rhs));
+    } else if (IS_VALUE_INT(rhs)) {
+      lhs = BOOL_AS_VALUE(VALUE_AS_NUMBER(lhs) > VALUE_AS_INT(rhs));
+    } else if (IS_VALUE_OBJECT(rhs)) {
+      // TODO
+      // not sure if we should allow this for objects or they have to be strictly lhs.
+      // TBD after we add classes.
+    } else {
+      goto invalid;
+    }
+  } else if (IS_VALUE_INT(lhs)) {
+    if (IS_VALUE_INT(rhs)) {
+      lhs = BOOL_AS_VALUE(VALUE_AS_INT(lhs) > VALUE_AS_INT(rhs));
+    } else if (IS_VALUE_NUMBER(rhs)) {
+      lhs = BOOL_AS_VALUE(VALUE_AS_INT(lhs) > VALUE_AS_NUMBER(rhs));
+    } else if (IS_VALUE_OBJECT(rhs)) {
+      // TODO
+      // not sure if we should allow this for objects or they have to be strictly lhs.
+      // TBD after we add classes.
+    } else {
+      goto invalid;
+    }
+  } else if (IS_VALUE_OBJECT(lhs)) {
+    if (IS_VALUE_STRING(lhs) && IS_VALUE_STRING(rhs)) {
+      lhs = BOOL_AS_VALUE(strncmp(VALUE_AS_STRING(p_lhs)->string.chars,
+                                  VALUE_AS_STRING(p_rhs)->string.chars,
+                                  string_get_length(&VALUE_AS_STRING(p_lhs)->string)) > 0);
+    } else {
+      goto invalid;
+      // TODO others
+    }
+  } else {
+  invalid: {
+    runtime_error(p_vm, "invalid operands for binary '>'.");
+    interpret_result res;
+    res.status = RUNTIME_ERROR;
+    res.top_level_return = NULL_AS_VALUE();
+    return res;
+  }
+  }
+  {
+    p_reg->array.data[base + p_dest] = lhs;
+    interpret_result res;
+    res.status = RUNTIME_OK;
+    return res;
+  }
+}
+
+static interpret_result
+perform_less(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
+  const uint32_t base = p_frame->registers_base;
+  value lhs = p_lhs;
+  value rhs = p_rhs;
+  if (IS_VALUE_NUMBER(lhs)) {
+    if (IS_VALUE_NUMBER(rhs)) {
+      lhs = BOOL_AS_VALUE(VALUE_AS_NUMBER(lhs) < VALUE_AS_NUMBER(rhs));
+    } else if (IS_VALUE_INT(rhs)) {
+      lhs = BOOL_AS_VALUE(VALUE_AS_NUMBER(lhs) < VALUE_AS_INT(rhs));
+    } else if (IS_VALUE_OBJECT(rhs)) {
+      // TODO
+      // not sure if we should allow this for objects or they have to be strictly lhs.
+      // TBD after we add classes.
+    } else {
+      goto invalid;
+    }
+  } else if (IS_VALUE_INT(lhs)) {
+    if (IS_VALUE_INT(rhs)) {
+      lhs = BOOL_AS_VALUE(VALUE_AS_INT(lhs) < VALUE_AS_INT(rhs));
+    } else if (IS_VALUE_NUMBER(rhs)) {
+      lhs = BOOL_AS_VALUE(VALUE_AS_INT(lhs) < VALUE_AS_NUMBER(rhs));
+    } else if (IS_VALUE_OBJECT(rhs)) {
+      // TODO
+      // not sure if we should allow this for objects or they have to be strictly lhs.
+      // TBD after we add classes.
+    } else {
+      goto invalid;
+    }
+  } else if (IS_VALUE_OBJECT(lhs)) {
+    if (IS_VALUE_STRING(lhs) && IS_VALUE_STRING(rhs)) {
+      lhs = BOOL_AS_VALUE(strncmp(VALUE_AS_STRING(p_lhs)->string.chars,
+                                  VALUE_AS_STRING(p_rhs)->string.chars,
+                                  string_get_length(&VALUE_AS_STRING(p_lhs)->string)) < 0);
+    } else {
+      goto invalid;
+      // TODO others
+    }
+  } else {
+  invalid: {
+    runtime_error(p_vm, "invalid operands for binary '<'.");
+    interpret_result res;
+    res.status = RUNTIME_ERROR;
+    res.top_level_return = NULL_AS_VALUE();
+    return res;
+  }
+  }
+  {
+    p_reg->array.data[base + p_dest] = lhs;
+    interpret_result res;
+    res.status = RUNTIME_OK;
+    return res;
+  }
+}
+
+static interpret_result
+perform_greater_equal(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
+  const uint32_t base = p_frame->registers_base;
+  value lhs = p_lhs;
+  value rhs = p_rhs;
+  if (IS_VALUE_NUMBER(lhs)) {
+    if (IS_VALUE_NUMBER(rhs)) {
+      lhs = BOOL_AS_VALUE(VALUE_AS_NUMBER(lhs) >= VALUE_AS_NUMBER(rhs));
+    } else if (IS_VALUE_INT(rhs)) {
+      lhs = BOOL_AS_VALUE(VALUE_AS_NUMBER(lhs) >= VALUE_AS_INT(rhs));
+    } else if (IS_VALUE_OBJECT(rhs)) {
+      // TODO
+      // not sure if we should allow this for objects or they have to be strictly lhs.
+      // TBD after we add classes.
+    } else {
+      goto invalid;
+    }
+  } else if (IS_VALUE_INT(lhs)) {
+    if (IS_VALUE_INT(rhs)) {
+      lhs = BOOL_AS_VALUE(VALUE_AS_INT(lhs) >= VALUE_AS_INT(rhs));
+    } else if (IS_VALUE_NUMBER(rhs)) {
+      lhs = BOOL_AS_VALUE(VALUE_AS_INT(lhs) >= VALUE_AS_NUMBER(rhs));
+    } else if (IS_VALUE_OBJECT(rhs)) {
+      // TODO
+      // not sure if we should allow this for objects or they have to be strictly lhs.
+      // TBD after we add classes.
+    } else {
+      goto invalid;
+    }
+  } else if (IS_VALUE_OBJECT(lhs)) {
+    if (IS_VALUE_STRING(lhs) && IS_VALUE_STRING(rhs)) {
+      lhs = BOOL_AS_VALUE(strncmp(VALUE_AS_STRING(p_lhs)->string.chars,
+                                  VALUE_AS_STRING(p_rhs)->string.chars,
+                                  string_get_length(&VALUE_AS_STRING(p_lhs)->string)) >= 0);
+    } else {
+      goto invalid;
+      // TODO others
+    }
+  } else {
+  invalid: {
+    runtime_error(p_vm, "invalid operands for binary '>='.");
+    interpret_result res;
+    res.status = RUNTIME_ERROR;
+    res.top_level_return = NULL_AS_VALUE();
+    return res;
+  }
+  }
+  {
+    p_reg->array.data[base + p_dest] = lhs;
+    interpret_result res;
+    res.status = RUNTIME_OK;
+    return res;
+  }
+}
+
+static interpret_result
+perform_less_equal(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
+  const uint32_t base = p_frame->registers_base;
+  value lhs = p_lhs;
+  value rhs = p_rhs;
+  if (IS_VALUE_NUMBER(lhs)) {
+    if (IS_VALUE_NUMBER(rhs)) {
+      lhs = BOOL_AS_VALUE(VALUE_AS_NUMBER(lhs) <= VALUE_AS_NUMBER(rhs));
+    } else if (IS_VALUE_INT(rhs)) {
+      lhs = BOOL_AS_VALUE(VALUE_AS_NUMBER(lhs) <= VALUE_AS_INT(rhs));
+    } else if (IS_VALUE_OBJECT(rhs)) {
+      // TODO
+      // not sure if we should allow this for objects or they have to be strictly lhs.
+      // TBD after we add classes.
+    } else {
+      goto invalid;
+    }
+  } else if (IS_VALUE_INT(lhs)) {
+    if (IS_VALUE_INT(rhs)) {
+      lhs = BOOL_AS_VALUE(VALUE_AS_INT(lhs) <= VALUE_AS_INT(rhs));
+    } else if (IS_VALUE_NUMBER(rhs)) {
+      lhs = BOOL_AS_VALUE(VALUE_AS_INT(lhs) <= VALUE_AS_NUMBER(rhs));
+    } else if (IS_VALUE_OBJECT(rhs)) {
+      // TODO
+      // not sure if we should allow this for objects or they have to be strictly lhs.
+      // TBD after we add classes.
+    } else {
+      goto invalid;
+    }
+  } else if (IS_VALUE_OBJECT(lhs)) {
+    if (IS_VALUE_STRING(lhs) && IS_VALUE_STRING(rhs)) {
+      lhs = BOOL_AS_VALUE(strncmp(VALUE_AS_STRING(p_lhs)->string.chars,
+                                  VALUE_AS_STRING(p_rhs)->string.chars,
+                                  string_get_length(&VALUE_AS_STRING(p_lhs)->string)) <= 0);
+    } else {
+      goto invalid;
+      // TODO others
+    }
+  } else {
+  invalid: {
+    runtime_error(p_vm, "invalid operands for binary '<='.");
+    interpret_result res;
+    res.status = RUNTIME_ERROR;
+    res.top_level_return = NULL_AS_VALUE();
+    return res;
+  }
+  }
+  {
+    p_reg->array.data[base + p_dest] = lhs;
+    interpret_result res;
+    res.status = RUNTIME_OK;
+    return res;
+  }
+}
+
+static inline void cleanup_frame(execution_state* p_exe, register_file* p_registers, call_frame* p_frame) {
+  close_upvalues(p_exe, p_frame->registers_base);
+  call_stack_remove(&p_exe->call_stack, p_exe->call_stack.count - 1, p_exe->call_stack.count - 1);
+  // the register watermark must go back to the calller's frame top, never to the
+  // callee's base slot: mark_vm roots registers in [0, top) and the caller's
+  // locals/temps above the call window are still live. collapsing to the base
+  // slot unroots them and the next collection sweeps live closures,
+  // with no caller left (top level popped, or ok_call from C) nothing in the
+  // file is live: so we fold to 0 so the next ok_call can stage from the bottom.
+  if (p_exe->call_stack.count > 0) {
+    call_frame* caller = &p_exe->call_stack.data[p_exe->call_stack.count - 1];
+    p_registers->top = caller->registers_base + caller->closure->function->registers;
+  } else {
+    p_registers->top = 0;
+  }
+}
+
+static inline uint16_t
+return_n_from_frame(register_file* p_registers, call_frame* p_frame, uint16_t p_base, uint32_t p_count) {
+  const uint32_t base = p_frame->registers_base + p_base;
+  if (p_count == RETURN_COUNT_DYNAMIC) {
+    p_count = p_registers->top - base;
+  }
+  uint16_t i = 0;
+  uint32_t count = p_count;
+
+  if (p_frame->return_count != RETURN_COUNT_DYNAMIC && count > p_frame->return_count) {
+    count = p_frame->return_count;
+  }
+  for (; i < count; ++i) {
+    p_registers->array.data[p_frame->return_base + i] = p_registers->array.data[base + i];
+  }
+  return i;
+}
+
+static inline uint16_t
+return_1_from_frame(execution_state* p_exe, register_file* p_registers, call_frame* p_frame, uint16_t p_base) {
+  const uint32_t base = p_frame->registers_base + p_base;
+  if (p_frame->return_count < 1) {
+    cleanup_frame(p_exe, p_registers, p_frame);
+    return 0;
+  }
+  p_registers->array.data[p_frame->return_base] = p_registers->array.data[base];
+  cleanup_frame(p_exe, p_registers, p_frame);
+  return 1;
+}
+
+static uint16_t
+return_from_frame(execution_state* p_exe, register_file* p_registers, call_frame* p_frame, uint16_t p_a, uint16_t p_b) {
+  const uint32_t count = p_b == 0 ? RETURN_COUNT_DYNAMIC : p_b;
+  const uint16_t result = return_n_from_frame(p_registers, p_frame, p_a, count);
+  cleanup_frame(p_exe, p_registers, p_frame);
+  return result;
+}
+
+static inline interpret_result top_level_return(register_file* p_registers, call_frame* p_frame, uint16_t p_returned) {
+#if defined(OK_TRACE_EXECUTION)
+  printf("[ ");
+  for (value* reg = p_registers->array.data; reg < p_registers->array.data + p_registers->top; ++reg) {
+    printf("[");
+    value_debug_print(*reg);
+    printf("]");
+  }
+  printf("]\n");
+#endif // defined(OK_TRACE_EXECUTION)
+  interpret_result result;
+  // compiler doesn't allow more than 1 return from top level
+  result.top_level_return = p_returned > 0 ? p_registers->array.data[p_frame->return_base] : NULL_AS_VALUE();
+  result.status = RUNTIME_OK;
+  return result;
 }
 
 interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
-  call_frame* frame = &p_vm->call_stack.data[p_vm->call_stack.count - 1];
-#define READ_BYTE() (*frame->ip++)
-#define READ_CONSTANT() frame->closure->function->chunk.constants.data[READ_BYTE()]
-#define BIN_OP(VALUE, op)                                                                                              \
-  do {                                                                                                                 \
-    if (!IS_VALUE_NUMBER(stack_top(&p_vm->stack, 0)) || !IS_VALUE_NUMBER(stack_top(&p_vm->stack, 1))) {                \
-      runtime_error(p_vm, "'%s' operands must be numbers.", #op);                                                      \
-      interpret_result result;                                                                                         \
-      result.top_level_return = NULL_AS_VALUE();                                                                       \
-      result.status = RUNTIME_ERROR;                                                                                   \
-      return result;                                                                                                   \
-    }                                                                                                                  \
-    double rhs = VALUE_AS_NUMBER(stack_popr(&p_vm->stack));                                                            \
-    double lhs = VALUE_AS_NUMBER(stack_popr(&p_vm->stack));                                                            \
-    stack_push(&p_vm->stack, VALUE(lhs op rhs));                                                                       \
-  } while (0);
+  execution_state* exe = p_vm->current_execution_state;
+  call_frame* frame = &exe->call_stack.data[exe->call_stack.count - 1];
+  register_file* reg = &exe->registers;
+#define REG_AT(n) exe->registers.array.data[frame->registers_base + n]
+  register word* ip = frame->ip;
+#define READ_WORD() (*ip++)
+#define JOIN_WORD(instruction) (((word2)READ_WORD() << 32u) | (word2)(instruction))
 
   for (;;) {
 #if defined(OK_TRACE_EXECUTION)
@@ -128,269 +852,598 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
     disassembler_init(&disassembler, specs);
 
     printf("[ ");
-    for (value* slot = p_vm->stack.array.data; slot < p_vm->stack.array.data + p_vm->stack.top; ++slot) {
+    for (value* r = exe->registers.array.data; r < exe->registers.array.data + exe->registers.top; ++r) {
       printf("[");
-      value_debug_print(*slot);
+      value_debug_print(*r);
       printf("]");
     }
-    printf(" ]\n");
-    debug_disassemble_instruction(&disassembler, (uint32_t)(frame->ip - frame->closure->function->chunk.code.data));
+    printf("]\n");
+    debug_disassemble_instruction(&disassembler, (uint32_t)(ip - frame->closure->function->chunk.code.data));
 #endif // defined(OK_TRACE_EXECUTION)
 
-    byte instruction = READ_BYTE();
-    switch (instruction) {
-    case OP_RETURN: {
-      value returned = stack_popr(&p_vm->stack);
-      close_upvalues(p_vm, frame->slots);
-      stack_resize(&p_vm->stack, frame->slots);
-      call_stack_remove(&p_vm->call_stack, p_vm->call_stack.count - 1, p_vm->call_stack.count - 1);
-      stack_push(&p_vm->stack, returned);
-      if (p_vm->call_stack.count == p_call_depth) {
-#if defined(OK_TRACE_EXECUTION)
-        printf("[ ");
-        for (value* slot = p_vm->stack.array.data; slot < p_vm->stack.array.data + p_vm->stack.top; ++slot) {
-          printf("[ ");
-          value_debug_print(*slot);
-          printf(" ]");
-        }
-        printf(" ]\n");
-#endif // defined(OK_TRACE_EXECUTION)
-        interpret_result result;
-        result.top_level_return = returned;
-        result.status = RUNTIME_OK;
-        return result;
-      }
-      frame = &p_vm->call_stack.data[p_vm->call_stack.count - 1];
+    word instruction = READ_WORD();
+    switch (op_of(instruction)) {
+    case OP_NOP: {
       break;
     }
-    case OP_CONSTANT: {
-      value constant = READ_CONSTANT();
-      stack_push(&p_vm->stack, constant);
+    case OP_MOVE: {
+      const uint16_t ap = aprime_of(instruction);
+      const uint16_t bp = bprime_of(instruction);
+      REG_AT(ap) = REG_AT(bp);
       break;
     }
-    case OP_CONSTANT_LONG: {
-      value constant =
-          frame->closure->function->chunk.constants.data[decode_int(frame->ip, OP_CONSTANT_LONG_OPERANDS_WIDTH)];
-      frame->ip += OP_CONSTANT_LONG_OPERANDS_WIDTH;
-      stack_push(&p_vm->stack, constant);
+    case OP_MOVE_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      REG_AT(A) = REG_AT(B);
       break;
     }
-    case OP_POP: {
-      stack_pop(&p_vm->stack);
+    case OP_LOAD_CONSTANT: {
+      const uint16_t ap = aprime_of(instruction);
+      const uint16_t bp = bprime_of(instruction);
+      REG_AT(ap) = frame->closure->function->chunk.constants.data[bp];
+      break;
+    }
+    case OP_LOAD_CONSTANT_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      REG_AT(A) = frame->closure->function->chunk.constants.data[B];
       break;
     }
     case OP_JUMP: {
-      const uint32_t jmp = decode_int(frame->ip, OP_JUMP_OPERANDS_WIDTH);
-      frame->ip += jmp;
-      break;
-    }
-    case OP_TRUTHY_JUMP: {
-      const uint32_t jmp = decode_int(frame->ip, OP_TRUTHY_JUMP_OPERANDS_WIDTH);
-      const bool truthy = !is_falsy(stack_top(&p_vm->stack, 0));
-      frame->ip += truthy * jmp + (!truthy * OP_TRUTHY_JUMP_OPERANDS_WIDTH);
-      break;
-    }
-    case OP_FALSY_JUMP: {
-      const uint32_t jmp = decode_int(frame->ip, OP_FALSY_JUMP_OPERANDS_WIDTH);
-      const bool falsy = is_falsy(stack_top(&p_vm->stack, 0));
-      frame->ip += falsy * jmp + (!falsy * OP_TRUTHY_JUMP_OPERANDS_WIDTH);
+      ip += Alarge_of(instruction);
       break;
     }
     case OP_LOOP: {
-      const uint32_t loop = decode_int(frame->ip, OP_LOOP_OPERANDS_WIDTH);
-      frame->ip -= loop;
+      ip -= Alarge_of(instruction);
       break;
     }
-    case OP_NULL: {
-      stack_push(&p_vm->stack, NULL_AS_VALUE());
+    case OP_JUMP_IF: {
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const bool p = p_of(words);
+      const bool jump = p ^ is_falsy(REG_AT(B));
+      ip += jump * A;
       break;
     }
-    case OP_FALSE: {
-      stack_push(&p_vm->stack, BOOL_AS_VALUE(false));
-      break;
-    }
-    case OP_TRUE: {
-      stack_push(&p_vm->stack, BOOL_AS_VALUE(true));
-      break;
-    }
-    case OP_SET_GLOBAL: {
-      byte index = READ_BYTE();
-      p_vm->globals_store->global_values.data[index] = stack_top(&p_vm->stack, 0);
-      break;
-    }
-    case OP_SET_GLOBAL_LONG: {
-      uint32_t index = decode_int(frame->ip, OP_SET_GLOBAL_LONG_OPERANDS_WIDTH);
-      p_vm->globals_store->global_values.data[index] = stack_top(&p_vm->stack, 0);
-      frame->ip += OP_SET_GLOBAL_LONG_OPERANDS_WIDTH;
-      break;
-    }
-    case OP_GET_GLOBAL: {
-      byte index = READ_BYTE();
-      stack_push(&p_vm->stack, p_vm->globals_store->global_values.data[index]);
-      break;
-    }
-    case OP_GET_GLOBAL_LONG: {
-      uint32_t index = decode_int(frame->ip, OP_GET_GLOBAL_LONG_OPERANDS_WIDTH);
-      frame->ip += OP_GET_GLOBAL_LONG_OPERANDS_WIDTH;
-      stack_push(&p_vm->stack, p_vm->globals_store->global_values.data[index]);
-      break;
-    }
-    case OP_GET_LOCAL: {
-      stack_push(&p_vm->stack, *read_local(p_vm, frame));
-      break;
-    }
-    case OP_GET_LOCAL_LONG: {
-      stack_push(&p_vm->stack, *read_local_long(p_vm, frame));
-      break;
-    }
-    case OP_SET_LOCAL: {
-      *read_local(p_vm, frame) = stack_top(&p_vm->stack, 0);
-      break;
-    }
-    case OP_SET_LOCAL_LONG: {
-      *read_local_long(p_vm, frame) = stack_top(&p_vm->stack, 0);
-      break;
-    }
-    case OP_GET_UPVALUE: {
-      uint32_t index = READ_BYTE();
-      stack_push(&p_vm->stack, *object_upvalue_get_value(frame->closure->upvalues.data[index], p_vm->stack.array.data));
-      break;
-    }
-    case OP_GET_UPVALUE_LONG: {
-      uint32_t index = decode_int(frame->ip, OP_GET_UPVALUE_LONG_OPERANDS_WIDTH);
-      frame->ip += OP_GET_UPVALUE_LONG_OPERANDS_WIDTH;
-      stack_push(&p_vm->stack, *object_upvalue_get_value(frame->closure->upvalues.data[index], p_vm->stack.array.data));
-
-      break;
-    }
-    case OP_SET_UPVALUE: {
-      uint32_t index = READ_BYTE();
-      *object_upvalue_get_value(frame->closure->upvalues.data[index], p_vm->stack.array.data) =
-          stack_top(&p_vm->stack, 0);
-      break;
-    }
-    case OP_SET_UPVALUE_LONG: {
-      uint32_t index = decode_int(frame->ip, OP_GET_UPVALUE_LONG_OPERANDS_WIDTH);
-      frame->ip += OP_GET_UPVALUE_LONG_OPERANDS_WIDTH;
-      *object_upvalue_get_value(frame->closure->upvalues.data[index], p_vm->stack.array.data) =
-          stack_top(&p_vm->stack, 0);
-      break;
-    }
-    case OP_CLOSE_UPVALUE: {
-      close_upvalues(p_vm, p_vm->stack.top - 1);
-      stack_pop(&p_vm->stack);
-      break;
-    }
-    case OP_CLOSURE: {
-      object_function* function = VALUE_AS_FUNCTION(
-          frame->closure->function->chunk.constants.data[decode_int(frame->ip, OP_CONSTANT_LONG_OPERANDS_WIDTH)]);
-      frame->ip += 3;
-      object_specs s = {p_vm->alloc, p_vm->objects_store};
-      object_closure* closure = create_object_closure(function, &s);
-      if (closure == NULL) {
-        runtime_error(p_vm, "out of memory: failed to allocate closure object.");
-        interpret_result result = {.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
-        return result;
+    case OP_JUMP_IF_SET: {
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      const bool p = p_of(words);
+      const bool jump = p ^ is_falsy(REG_AT(B));
+      if (jump) {
+        ip += A;
+        REG_AT(C) = REG_AT(B);
       }
-      gc_guard_up(p_vm->alloc->gc, OBJECT_AS_VALUE(closure));
-      stack_push(&p_vm->stack, OBJECT_AS_VALUE(closure));
-      gc_guard_down(p_vm->alloc->gc);
-      for (uint32_t i = 0; i < closure->function->upvalues; ++i) {
-        bool is_local = (bool)READ_BYTE();
-        uint32_t index = decode_int(frame->ip, UINT24_BYTE_COUNT);
-        frame->ip += UINT24_BYTE_COUNT;
-        bool status = true;
-        if (is_local) {
-          object_upvalue* upvalue = capture_upvalue(p_vm, frame->slots + index);
-          if (upvalue == NULL) {
-            interpret_result result = {
-                .status = RUNTIME_ERROR,
-                .top_level_return = NULL_AS_VALUE(),
-            };
-            return result;
-          }
-
-          status = upvalue_array_append(&closure->upvalues, upvalue);
-        } else {
-          status = upvalue_array_append(&closure->upvalues, frame->closure->upvalues.data[index]);
-        }
+      break;
+    }
+    case OP_LOAD_NULL: {
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      // B is a count, it is not an exclusive end index: the chunk contract is
+      // "r[A] ... r[A + B - 1] = null" (okchunk.h) and the compiler emits
+      // (dest, requested_count). the loop used to be `i < B`, which matched
+      // the contract only when A == 0: any null materialized into a register
+      // other than r[0] wrote nothing and left stale bits in place.
+      // a regression test was written for this very case.
+      for (uint32_t i = A; i < (uint32_t)A + (uint32_t)B; ++i) {
+        REG_AT(i) = NULL_AS_VALUE();
       }
+#ifdef OK_TRACE_GLOBALS
+      fprintf(stderr,
+              "[tg] NULL r[%u..r[%u) in %s\n",
+              A,
+              (uint32_t)A + B,
+              frame->closure->function->name ? frame->closure->function->name->string.chars : "?");
+#endif
+      break;
+    }
+    case OP_LOAD_FALSE: {
+      const uint16_t A = Alarge_of(instruction);
+      REG_AT(A) = BOOL_AS_VALUE(false);
+      break;
+    }
+    case OP_LOAD_TRUE: {
+      const uint16_t A = Alarge_of(instruction);
+      REG_AT(A) = BOOL_AS_VALUE(true);
+      break;
+    }
+    case OP_LOAD_GLOBAL: {
+      const uint16_t ap = aprime_of(instruction);
+      const uint16_t bp = bprime_of(instruction);
+      REG_AT(ap) = p_vm->globals_store->global_values.data[bp];
+#ifdef OK_TRACE_GLOBALS
+      fprintf(stderr, "[tg] L  g[%u] -> r[%u]  bits=0x%016llx\n", bp, ap, (unsigned long long)REG_AT(ap));
+#endif
+      break;
+    }
+    case OP_LOAD_GLOBAL_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      REG_AT(A) = p_vm->globals_store->global_values.data[B];
+#ifdef OK_TRACE_GLOBALS
+      fprintf(stderr, "[tg] L  g[%u] -> r[%u] (long)  bits=0x%016llx\n", B, A, (unsigned long long)REG_AT(A));
+#endif
+      break;
+    }
+    case OP_STORE_GLOBAL: {
+      const bool p = p_of(instruction);
+      const uint16_t ap = aprime_of(instruction);
+      const uint16_t bp = bprime_of(instruction);
+      p_vm->globals_store->global_values.data[ap] = resolve_operand(frame, reg, bp, p);
+#ifdef OK_TRACE_GLOBALS
+      fprintf(stderr,
+              "[tg] S  g[%u] <- %s[%u]  bits=0x%016llx\n",
+              ap,
+              p ? "k" : "r",
+              bp,
+              (unsigned long long)p_vm->globals_store->global_values.data[ap]);
+#endif
+      break;
+    }
+    case OP_STORE_GLOBAL_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool p = p_of(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      p_vm->globals_store->global_values.data[A] = resolve_operand(frame, reg, B, p);
+#ifdef OK_TRACE_GLOBALS
+      fprintf(stderr,
+              "[tg] S  g[%u] <- %s[%u] (long)  bits=0x%016llx\n",
+              A,
+              p ? "k" : "r",
+              B,
+              (unsigned long long)p_vm->globals_store->global_values.data[A]);
+#endif
+      break;
+    }
+    case OP_LOAD_UPVALUE: {
+      uint16_t ap = aprime_of(instruction);
+      uint16_t bp = bprime_of(instruction);
+      REG_AT(ap) = *object_upvalue_get_value(
+          frame->closure->upvalues.data[bp],
+          reg->array.data); // upvalue locations are absolute in the register file, they are not frame relative
+      break;
+    }
+    case OP_LOAD_UPVALUE_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      REG_AT(A) = *object_upvalue_get_value(
+          frame->closure->upvalues.data[B],
+          reg->array.data); // upvalue locations are absolute in the register file, they are not frame relative
+      break;
+    }
+    case OP_STORE_UPVALUE: {
+      const bool p = p_of(instruction);
+      const uint16_t ap = aprime_of(instruction);
+      const uint16_t bp = bprime_of(instruction);
+      *object_upvalue_get_value(frame->closure->upvalues.data[ap], reg->array.data) =
+          resolve_operand(frame, reg, bp, p);
+      break;
+    }
+    case OP_STORE_UPVALUE_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool p = p_of(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      *object_upvalue_get_value(frame->closure->upvalues.data[A], reg->array.data) = resolve_operand(frame, reg, B, p);
+      break;
+    }
+    case OP_CLOSE_UPVALUES: {
+      const uint16_t A = Alarge_of(instruction);
+      close_upvalues(exe, frame->registers_base + A);
       break;
     }
     case OP_CALL: {
-      const uint8_t argc = READ_BYTE();
-      if (!call_value(p_vm, stack_top(&p_vm->stack, argc), argc)) {
+      const bool p = p_of(instruction);
+      const uint8_t a = a_of(instruction);
+      const uint8_t b = b_of(instruction);
+      const uint8_t c = c_of(instruction);
+      frame->ip = ip;
+      if (!call_value(p_vm,
+                      exe,
+                      reg,
+                      frame->registers_base,
+                      a,
+                      p ? reg->top - (frame->registers_base + a + 1) : b,
+                      c == 0 ? RETURN_COUNT_DYNAMIC : c - 1)) {
         interpret_result result;
         result.status = RUNTIME_ERROR;
         result.top_level_return = NULL_AS_VALUE();
         return result;
       }
-      frame = &p_vm->call_stack.data[p_vm->call_stack.count - 1];
+      // not sure if exe is gonna be modified here or not (resume??) but we set it anyways
+      exe = p_vm->current_execution_state;
+      reg = &exe->registers;
+      frame = &exe->call_stack.data[exe->call_stack.count - 1];
+      ip = frame->ip;
+      break;
+    }
+    case OP_CALL_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool p = p_of(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      frame->ip = ip;
+      if (!call_value(p_vm,
+                      exe,
+                      reg,
+                      frame->registers_base,
+                      A,
+                      p ? reg->top - (frame->registers_base + A + 1) : B,
+                      C == 0 ? RETURN_COUNT_DYNAMIC : C - 1)) {
+        interpret_result result;
+        result.status = RUNTIME_ERROR;
+        result.top_level_return = NULL_AS_VALUE();
+        return result;
+      }
+      // not sure if exe is gonna be modified here or not (resume??) but we set it anyways
+      exe = p_vm->current_execution_state;
+      reg = &exe->registers;
+      frame = &exe->call_stack.data[exe->call_stack.count - 1];
+      ip = frame->ip;
+      break;
+    }
+    case OP_RETURN: {
+      const uint16_t ap = aprime_of(instruction);
+      const uint16_t bp = bprime_of(instruction);
+      const uint16_t returned = return_from_frame(exe, reg, frame, ap, bp);
+      if (exe->call_stack.count == p_call_depth) {
+        return top_level_return(reg, frame, returned);
+      }
+      frame = &exe->call_stack.data[exe->call_stack.count - 1];
+      ip = frame->ip;
+      break;
+    }
+    case OP_RETURN_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t returned = return_from_frame(exe, reg, frame, A, B);
+      if (exe->call_stack.count == p_call_depth) {
+        return top_level_return(reg, frame, returned);
+      }
+      frame = &exe->call_stack.data[exe->call_stack.count - 1];
+      ip = frame->ip;
+      break;
+    }
+    case OP_RETURN_1: {
+      const bool p = p_of(instruction);
+      const uint16_t A = Alarge_of(instruction);
+      if (p) {
+        REG_AT(A) = NULL_AS_VALUE(); // implicit return: value is null
+      }
+      const uint16_t returned = return_1_from_frame(exe, reg, frame, A);
+      if (exe->call_stack.count == p_call_depth) {
+        return top_level_return(reg, frame, returned);
+      }
+      frame = &exe->call_stack.data[exe->call_stack.count - 1];
+      ip = frame->ip;
+      break;
+    }
+    case OP_CLOSURE: {
+      const uint16_t ap = aprime_of(instruction);
+      const uint16_t bp = bprime_of(instruction);
+      interpret_result result = create_closure(p_vm, exe, reg, frame, ap, bp);
+      if (result.status != RUNTIME_OK) {
+        return result;
+      }
+      break;
+    }
+    case OP_CLOSURE_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      interpret_result result = create_closure(p_vm, exe, reg, frame, A, B);
+      if (result.status != RUNTIME_OK) {
+        return result;
+      }
       break;
     }
     case OP_NOT: {
-      value* top = stack_top_ptr(&p_vm->stack, 0);
-      *top = BOOL_AS_VALUE(is_falsy(*top));
+      const bool p = p_of(instruction);
+      const uint16_t ap = aprime_of(instruction);
+      const uint16_t bp = bprime_of(instruction);
+      interpret_result res = perform_not(p_vm, reg, frame, ap, resolve_operand(frame, reg, bp, p));
+      if (res.status != RUNTIME_OK) {
+        return res;
+      }
+      break;
+    }
+    case OP_NOT_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool p = p_of(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      interpret_result res = perform_not(p_vm, reg, frame, A, resolve_operand(frame, reg, B, p));
+      if (res.status != RUNTIME_OK) {
+        return res;
+      }
       break;
     }
     case OP_NEGATE: {
-      value* top = stack_top_ptr(&p_vm->stack, 0);
-      if (!IS_VALUE_NUMBER(*top)) {
-        interpret_result result;
-        runtime_error(p_vm, "negate operand must be a number.");
-        result.status = RUNTIME_ERROR;
-        result.top_level_return = NULL_AS_VALUE();
-        return result;
+      const bool p = p_of(instruction);
+      const uint16_t ap = aprime_of(instruction);
+      const uint16_t bp = bprime_of(instruction);
+      interpret_result res = perform_negate(p_vm, reg, frame, ap, resolve_operand(frame, reg, bp, p));
+      if (res.status != RUNTIME_OK) {
+        return res;
       }
-      *top = NUMBER_AS_VALUE(-VALUE_AS_NUMBER(*top));
+      break;
+    }
+    case OP_NEGATE_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool p = p_of(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      interpret_result res = perform_negate(p_vm, reg, frame, A, resolve_operand(frame, reg, B, p));
+      if (res.status != RUNTIME_OK) {
+        return res;
+      }
       break;
     }
     case OP_ADD: {
-      BIN_OP(NUMBER_AS_VALUE, +);
+      const bool p = p_of(instruction);
+      const uint8_t a = a_of(instruction);
+      const uint8_t b = b_of(instruction);
+      const uint8_t c = c_of(instruction);
+      interpret_result res = perform_add(p_vm, reg, frame, a, REG_AT(b), resolve_operand(frame, reg, c, p));
+      if (res.status != RUNTIME_OK) {
+        return res;
+      }
+      break;
+    }
+    case OP_ADD_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool p = p_of(instruction);
+      const bool q = Q_of(words);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      interpret_result res =
+          perform_add(p_vm, reg, frame, A, resolve_operand(frame, reg, B, q), resolve_operand(frame, reg, C, p));
+      if (res.status != RUNTIME_OK) {
+        return res;
+      }
       break;
     }
     case OP_SUBTRACT: {
-      BIN_OP(NUMBER_AS_VALUE, -);
+      const bool p = p_of(instruction);
+      const uint8_t a = a_of(instruction);
+      const uint8_t b = b_of(instruction);
+      const uint8_t c = c_of(instruction);
+      interpret_result res = perform_subtract(p_vm, reg, frame, a, REG_AT(b), resolve_operand(frame, reg, c, p));
+      if (res.status != RUNTIME_OK) {
+        return res;
+      }
+      break;
+    }
+    case OP_SUBTRACT_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool p = p_of(instruction);
+      const bool q = Q_of(words);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      interpret_result res =
+          perform_subtract(p_vm, reg, frame, A, resolve_operand(frame, reg, B, q), resolve_operand(frame, reg, C, p));
+      if (res.status != RUNTIME_OK) {
+        return res;
+      }
       break;
     }
     case OP_MULTIPLY: {
-      BIN_OP(NUMBER_AS_VALUE, *);
+      const bool p = p_of(instruction);
+      const uint8_t a = a_of(instruction);
+      const uint8_t b = b_of(instruction);
+      const uint8_t c = c_of(instruction);
+      interpret_result res = perform_multiply(p_vm, reg, frame, a, REG_AT(b), resolve_operand(frame, reg, c, p));
+      if (res.status != RUNTIME_OK) {
+        return res;
+      }
+      break;
+    }
+    case OP_MULTIPLY_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool p = p_of(instruction);
+      const bool q = Q_of(words);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      interpret_result res =
+          perform_multiply(p_vm, reg, frame, A, resolve_operand(frame, reg, B, q), resolve_operand(frame, reg, C, p));
+      if (res.status != RUNTIME_OK) {
+        return res;
+      }
       break;
     }
     case OP_DIVIDE: {
-      BIN_OP(NUMBER_AS_VALUE, /);
+      const bool p = p_of(instruction);
+      const uint8_t a = a_of(instruction);
+      const uint8_t b = b_of(instruction);
+      const uint8_t c = c_of(instruction);
+      interpret_result res = perform_divide(p_vm, reg, frame, a, REG_AT(b), resolve_operand(frame, reg, c, p));
+      if (res.status != RUNTIME_OK) {
+        return res;
+      }
       break;
     }
-    case OP_EQUAL: {
-      value rhs = stack_popr(&p_vm->stack);
-      value* lhs = stack_top_ptr(&p_vm->stack, 0);
-      *lhs = BOOL_AS_VALUE(values_equal(*lhs, rhs));
+    case OP_DIVIDE_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool p = p_of(instruction);
+      const bool q = Q_of(words);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      interpret_result res =
+          perform_divide(p_vm, reg, frame, A, resolve_operand(frame, reg, B, q), resolve_operand(frame, reg, C, p));
+      if (res.status != RUNTIME_OK) {
+        return res;
+      }
+      break;
+    }
+    case OP_EQUALS: {
+      const bool p = p_of(instruction);
+      const uint8_t a = a_of(instruction);
+      const uint8_t b = b_of(instruction);
+      const uint8_t c = c_of(instruction);
+      interpret_result res = perform_equal(p_vm, reg, frame, a, REG_AT(b), resolve_operand(frame, reg, c, p));
+      if (res.status != RUNTIME_OK) {
+        return res;
+      }
+      break;
+    }
+    case OP_EQUALS_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool p = p_of(instruction);
+      const bool q = Q_of(words);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      interpret_result res =
+          perform_equal(p_vm, reg, frame, A, resolve_operand(frame, reg, B, q), resolve_operand(frame, reg, C, p));
+      if (res.status != RUNTIME_OK) {
+        return res;
+      }
       break;
     }
     case OP_NOT_EQUAL: {
-      value rhs = stack_popr(&p_vm->stack);
-      value* lhs = stack_top_ptr(&p_vm->stack, 0);
-      *lhs = BOOL_AS_VALUE(!values_equal(*lhs, rhs));
+      const bool p = p_of(instruction);
+      const uint8_t a = a_of(instruction);
+      const uint8_t b = b_of(instruction);
+      const uint8_t c = c_of(instruction);
+      interpret_result res = perform_not_equal(p_vm, reg, frame, a, REG_AT(b), resolve_operand(frame, reg, c, p));
+      if (res.status != RUNTIME_OK) {
+        return res;
+      }
       break;
     }
-    case OP_LESS: {
-      BIN_OP(BOOL_AS_VALUE, <)
+    case OP_NOT_EQUAL_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool p = p_of(instruction);
+      const bool q = Q_of(words);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      interpret_result res =
+          perform_not_equal(p_vm, reg, frame, A, resolve_operand(frame, reg, B, q), resolve_operand(frame, reg, C, p));
+      if (res.status != RUNTIME_OK) {
+        return res;
+      }
       break;
     }
     case OP_GREATER: {
-      BIN_OP(BOOL_AS_VALUE, >)
+      const bool p = p_of(instruction);
+      const uint8_t a = a_of(instruction);
+      const uint8_t b = b_of(instruction);
+      const uint8_t c = c_of(instruction);
+      interpret_result res = perform_greater(p_vm, reg, frame, a, REG_AT(b), resolve_operand(frame, reg, c, p));
+      if (res.status != RUNTIME_OK) {
+        return res;
+      }
       break;
     }
-    case OP_LESS_EQUAL: {
-      BIN_OP(BOOL_AS_VALUE, <=)
+    case OP_GREATER_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool p = p_of(instruction);
+      const bool q = Q_of(words);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      interpret_result res =
+          perform_greater(p_vm, reg, frame, A, resolve_operand(frame, reg, B, q), resolve_operand(frame, reg, C, p));
+      if (res.status != RUNTIME_OK) {
+        return res;
+      }
+      break;
+    }
+    case OP_LESS: {
+      const bool p = p_of(instruction);
+      const uint8_t a = a_of(instruction);
+      const uint8_t b = b_of(instruction);
+      const uint8_t c = c_of(instruction);
+      interpret_result res = perform_less(p_vm, reg, frame, a, REG_AT(b), resolve_operand(frame, reg, c, p));
+      if (res.status != RUNTIME_OK) {
+        return res;
+      }
+      break;
+    }
+    case OP_LESS_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool p = p_of(instruction);
+      const bool q = Q_of(words);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      interpret_result res =
+          perform_less(p_vm, reg, frame, A, resolve_operand(frame, reg, B, q), resolve_operand(frame, reg, C, p));
+      if (res.status != RUNTIME_OK) {
+        return res;
+      }
       break;
     }
     case OP_GREATER_EQUAL: {
-      BIN_OP(BOOL_AS_VALUE, >=)
+      const bool p = p_of(instruction);
+      const uint8_t a = a_of(instruction);
+      const uint8_t b = b_of(instruction);
+      const uint8_t c = c_of(instruction);
+      interpret_result res = perform_greater_equal(p_vm, reg, frame, a, REG_AT(b), resolve_operand(frame, reg, c, p));
+      if (res.status != RUNTIME_OK) {
+        return res;
+      }
+      break;
+    }
+    case OP_GREATER_EQUAL_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool p = p_of(instruction);
+      const bool q = Q_of(words);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      interpret_result res = perform_greater_equal(
+          p_vm, reg, frame, A, resolve_operand(frame, reg, B, q), resolve_operand(frame, reg, C, p));
+      if (res.status != RUNTIME_OK) {
+        return res;
+      }
+      break;
+    }
+    case OP_LESS_EQUAL: {
+      const bool p = p_of(instruction);
+      const uint8_t a = a_of(instruction);
+      const uint8_t b = b_of(instruction);
+      const uint8_t c = c_of(instruction);
+      interpret_result res = perform_less_equal(p_vm, reg, frame, a, REG_AT(b), resolve_operand(frame, reg, c, p));
+      if (res.status != RUNTIME_OK) {
+        return res;
+      }
+      break;
+    }
+    case OP_LESS_EQUAL_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool p = p_of(instruction);
+      const bool q = Q_of(words);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      interpret_result res =
+          perform_less_equal(p_vm, reg, frame, A, resolve_operand(frame, reg, B, q), resolve_operand(frame, reg, C, p));
+      if (res.status != RUNTIME_OK) {
+        return res;
+      }
       break;
     }
     case OP_PRINT: {
-      value_debug_print(stack_popr(&p_vm->stack));
+      const bool p = p_of(instruction);
+      value_debug_print(resolve_operand(frame, reg, Alarge_of(instruction), p));
       puts("");
       break;
     }
@@ -402,14 +1455,15 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
 }
 
 void runtime_error(vm* p_vm, const char* p_fmt, ...) {
+  execution_state* exe = p_vm->current_execution_state;
   va_list ap;
 
-  if (p_vm->call_stack.count > 0) {
-    call_frame* frame = &p_vm->call_stack.data[p_vm->call_stack.count - 1];
+  if (exe->call_stack.count > 0) {
+    call_frame* frame = &exe->call_stack.data[exe->call_stack.count - 1];
 
     size_t instruction = frame->ip - frame->closure->function->chunk.code.data - 1;
 
-    ok_line_info_repeated* info = source_info_find(&frame->closure->function->chunk.source_info, instruction);
+    ok_line_info_repeated* info = chunk_find_line_info(&frame->closure->function->chunk, instruction);
 
     if (info != NULL && p_vm->source != NULL) {
       fprintf(stderr, "\n%s:%d:%d ", p_vm->source->path, info->line_info.line, info->line_info.offset);
@@ -419,16 +1473,20 @@ void runtime_error(vm* p_vm, const char* p_fmt, ...) {
   va_start(ap, p_fmt);
   vfprintf(stderr, p_fmt, ap);
   va_end(ap);
+  // the message must always be newline terminated: with an empty call stack
+  // (ok_call from C) no stack trace follows and the next terminal line would
+  // glue onto the error. %
+  fputc('\n', stderr);
 
-  if (p_vm->call_stack.count > 0) {
-    fputs("\nstack trace (most recent call last):\n", stderr);
+  if (exe->call_stack.count > 0) {
+    fputs("stack trace (most recent call last):\n", stderr);
 
-    for (uint32_t i = 0; i < p_vm->call_stack.count; ++i) {
-      call_frame* frame = &p_vm->call_stack.data[i];
+    for (uint32_t i = 0; i < exe->call_stack.count; ++i) {
+      call_frame* frame = &exe->call_stack.data[i];
 
       uint32_t instruction = frame->ip - frame->closure->function->chunk.code.data - 1;
 
-      ok_line_info_repeated* info = source_info_find(&frame->closure->function->chunk.source_info, instruction);
+      ok_line_info_repeated* info = chunk_find_line_info(&frame->closure->function->chunk, instruction);
 
       if (info != NULL && p_vm->source != NULL) {
         fprintf(stderr,
@@ -446,193 +1504,270 @@ void runtime_error(vm* p_vm, const char* p_fmt, ...) {
     }
   }
 
-  stack_resize(&p_vm->stack, 0);
-  p_vm->call_stack.count = 0;
+  exe->registers.top = 0;
+  exe->call_stack.count = 0;
+  // mark the error as pending: interpretation must not resume after this
+  // point without propagating the failure (call_native checks this when a
+  // native returns. vm_call/vm_interpret consume it at the outermost C boundary).
+  exe->error_pending = true;
 }
 
-value* read_local(vm* p_vm, call_frame* p_frame) {
-  return &p_vm->stack.array.data[p_frame->slots + *p_frame->ip++];
-}
-
-value* read_local_long(vm* p_vm, call_frame* p_frame) {
-  value* ret = &p_vm->stack.array.data[p_frame->slots + decode_int(p_frame->ip, OP_XX_LOCAL_LONG_OPERANDS_WIDTH)];
-  p_frame->ip += OP_XX_LOCAL_LONG_OPERANDS_WIDTH;
-  return ret;
-}
-
-bool call_value(vm* p_vm, value p_callee, uint32_t p_argc) {
-  if (IS_VALUE_OBJECT(p_callee)) {
-    object* obj = VALUE_AS_OBJECT(p_callee);
-    switch (object_get_type(obj)) {
-    case OBJ_CLOSURE:
-      return call(p_vm, VALUE_AS_CLOSURE(p_callee), p_argc);
-    case OBJ_NATIVE_FUNCTION:
-      return call_native(p_vm, VALUE_AS_NATIVE_FUNCTION(p_callee), p_argc);
-    default:;
-    }
-  }
-  runtime_error(p_vm, "invalid call: value is not callable.");
-  return false;
-}
-
-bool call(vm* p_vm, object_closure* p_closure, uint32_t p_argc) {
+static inline bool call(vm* p_vm,
+                        execution_state* p_exe,
+                        register_file* p_reg,
+                        object_closure* p_closure,
+                        uint32_t p_callee,
+                        uint16_t p_argc,
+                        uint32_t p_retc) {
   if (p_argc != p_closure->function->arity) {
-    runtime_error(p_vm, "invalid call: expected %d arguments, got: %d.", p_closure->function->arity, p_argc);
+    runtime_error(p_vm,
+                  "invalid call to '%s': expected %d arguments, got: %d.",
+                  p_closure->function->name->string.chars,
+                  p_closure->function->arity,
+                  p_argc);
     return false;
   }
+  const uint32_t frame_top = p_callee + p_closure->function->registers;
+  if (frame_top > p_reg->array.capacity) {
+    // grow with headroom so we do not realloc on every nested call
+    const uint32_t target = frame_top + (frame_top >> 1u);
+    const uint32_t new_capacity = target > UINT16_MAX + 1u ? UINT16_MAX + 1u : target;
+    // the register file is written directly (data[i] = ...), never appended to,
+    // so array.count stays 0 and is not the initialized watermark. everything in
+    // [0, capacity) is: either nulled by register_file_init_warm or by a previous
+    // grow. null-filling from 0 here would wipe the caller's live registers.
+    const uint32_t initialized_uptill = p_reg->array.capacity;
+    if (!register_array_grow(&p_reg->array, new_capacity)) {
+      runtime_error(p_vm, "out of memory: failed to grow register file.");
+      return false;
+    }
+    // fresh registers must read as null: realloc'd memory is garbage
+    for (uint32_t i = initialized_uptill; i < new_capacity; ++i) {
+      p_reg->array.data[i] = NULL_AS_VALUE();
+    }
+  }
+  // the callee's window past the staged args is not written by the call: those
+  // slots keep bits from earlier frames that used the same region. mark_vm
+  // roots [0, top) and top just rose to frame_top, so a collection before the
+  // callee assigns its locals would walk those stale pointers as objects.
+  // use after free when the object was already swept (aggressive GC / ASan;
+  // plain builds read the allocator's free list memory and corrupt the mark).
+  // null everything the callee has not received yet so [0, top) only ever
+  // holds live values or explicitly tagged nulls.
+  {
+    uint32_t first_unwritten = p_callee + p_argc + 1;
+    if (first_unwritten > frame_top) {
+      first_unwritten = frame_top;
+    }
+    for (uint32_t i = first_unwritten; i < frame_top; ++i) {
+      p_reg->array.data[i] = NULL_AS_VALUE();
+    }
+  }
+  p_reg->top = frame_top;
   call_frame frame;
   frame.closure = p_closure;
   frame.ip = p_closure->function->chunk.code.data;
-  frame.slots = p_vm->stack.top - p_argc - 1;
-  frame.top = frame.slots;
-  return call_stack_append(&p_vm->call_stack, frame);
+  frame.registers_base = p_callee;
+  frame.return_base = p_callee;
+  frame.return_count = p_retc;
+  return call_stack_append(&p_exe->call_stack, frame);
 }
 
-static bool call_native(vm* p_vm, object_native_function* p_native, uint32_t p_argc) {
+static inline bool call_native(vm* p_vm,
+                               execution_state* p_exe,
+                               register_file* p_reg,
+                               object_native_function* p_native,
+                               uint32_t p_callee,
+                               uint16_t p_argc,
+                               uint32_t p_retc) {
   if (p_argc != p_native->arity) {
     runtime_error(p_vm,
-                  "invalid call: expected %d arguments, got: %d.\nnote: when calling a native function.",
+                  "invalid call to native '%s': expected %d arguments, got: %d.",
+                  p_native->name.chars,
                   p_native->arity,
                   p_argc);
     return false;
   }
-  value argv[UINT8_MAX] = {0};
-  memcpy(argv, p_vm->stack.array.data + p_vm->stack.top - p_argc, sizeof(value) * p_argc);
-  p_vm->native_call_depth++;
-  value result = p_native->function(p_vm->ok, p_argc, argv);
-  p_vm->native_call_depth--;
-  const bool res = !p_vm->native_has_error;
-  if (!res) {
-    runtime_error(p_vm, "%s", p_vm->native_error_message.chars);
-    p_vm->native_has_error = false;
-    string_deinit(&p_vm->native_error_message, p_vm->alloc);
+  p_exe->native_call_depth++;
+  // the native receives a pointer into the register file. if it calls back
+  // into the vm and the callee's frame needs more registers than the current capacity, call() grows the
+  // file with realloc and that pointer would dangle for the rest of the
+  // native's execution. thus the native side iteration 2+ would read freed memory
+  // when refetching its argument. thus we stage a copy instead.
+  value args_stash[UINT8_MAX];
+  if (p_argc > 0) {
+    memcpy(args_stash, p_reg->array.data + p_callee + 1, p_argc * sizeof(value));
+  }
+  // TODO: allow multiple
+  value result = p_native->function(p_vm->ok, p_argc, args_stash);
+  p_exe->native_call_depth--;
+  if (p_exe->native_has_error) {
+    runtime_error(p_vm, "%s", p_exe->native_error_message.chars);
+    p_exe->native_has_error = false;
+    string_deinit(&p_exe->native_error_message, p_vm->alloc);
+    return false;
+  }
+  if (p_exe->error_pending) {
+    // a runtime error fired inside the native (e.g. its ok_call on a script
+    // closure failed). runtime_error already reset the state and printed the
+    // report. returning true here would make the OP_CALL handler reload
+    // frame from an empty call stack (data[count - 1] with count == 0) and segfault.
+    // so we fail the call so the error propagates up to the C entry point instead.
     return false;
   }
   gc_guard_up(p_vm->alloc->gc, result);
-  p_vm->native_has_error = false;
-  string_deinit(&p_vm->native_error_message, p_vm->alloc);
-  stack_resize(&p_vm->stack, p_vm->stack.top - p_argc - 1);
-  stack_push(&p_vm->stack, result);
+  p_exe->native_has_error = false;
+  string_deinit(&p_exe->native_error_message, p_vm->alloc);
+  // natives do not push a call frame: when invoked via ok_call the call stack is
+  // empty (data[count - 1] would be a wild pointer), and when invoked from
+  // bytecode the caller frame's return_base is not where this call's result
+  // belongs. per OP_CALL semantics (r[a]... = r[a](r[a+1]...)) the result goes
+  // to the call window start, which is the callee slot.
+  register_file* reg = &p_exe->registers;
+  // restore the caller's watermark, same contract as cleanup_frame: mark_vm
+  // roots [0, top) and leaving top at the callee slot would unroot every
+  // register above the call window for the rest of the caller's execution.
+  // when there is no bytecode caller (ok_call from C on an empty stack) keep
+  // the old behavior: top = window base, so the result slot doubles as the
+  // staging point for the next ok_call.
+  if (p_exe->call_stack.count > 0) {
+    call_frame* caller = &p_exe->call_stack.data[p_exe->call_stack.count - 1];
+    reg->top = caller->registers_base + caller->closure->function->registers;
+  } else {
+    reg->top = p_callee;
+  }
+  reg->array.data[p_callee] = result;
   gc_guard_down(p_vm->alloc->gc);
-  return res;
+  return true;
 }
 
-object_upvalue* capture_upvalue(vm* p_vm, uint32_t p_local_index) {
+static bool call_value(vm* p_vm,
+                       execution_state* p_exe,
+                       register_file* p_reg,
+                       uint32_t p_base,
+                       uint16_t p_callee,
+                       uint16_t p_argc,
+                       uint32_t p_retc) {
+  value callee = p_reg->array.data[p_base + p_callee];
+  if (!IS_VALUE_STRICTLY_OBJECT(callee)) {
+    goto invalid_call;
+  }
+  {
+    object* obj = VALUE_AS_OBJECT(callee);
+    switch (object_get_type(obj)) {
+    case OBJ_CLOSURE:
+      return call(p_vm, p_exe, p_reg, (object_closure*)obj, p_base + p_callee, p_argc, p_retc);
+    case OBJ_NATIVE_FUNCTION:
+      return call_native(p_vm, p_exe, p_reg, (object_native_function*)obj, p_base + p_callee, p_argc, p_retc);
+    default:;
+    }
+  }
+invalid_call:
+  runtime_error(p_vm, "invalid call: value is not callable");
+  return false;
+}
+
+static interpret_result create_closure(
+    vm* p_vm, execution_state* p_exe, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, uint16_t p_src) {
+  object_function* function = VALUE_AS_FUNCTION(p_frame->closure->function->chunk.constants.data[p_src]);
+  object_specs s = {p_vm->alloc, p_vm->objects_store};
+  object_closure* closure = create_object_closure(function, &s);
+  if (closure == NULL) {
+    runtime_error(p_vm, "out of memory: failed to allocate closure object.");
+    interpret_result result = {.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
+    return result;
+  }
+  p_reg->array.data[p_frame->registers_base + p_dest] = OBJECT_AS_VALUE(closure);
+  if (function->upvalues.count > 0 && !upvalue_array_grow(&closure->upvalues, function->upvalues.count)) {
+    runtime_error(p_vm, "out of memory: failed to allocate closure upvalues.");
+    interpret_result result = {.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
+    return result;
+  }
+  for (uint32_t i = 0; i < function->upvalues.count; ++i) {
+    const upvalue_descriptor desc = function->upvalues.data[i];
+    bool status = true;
+    if (desc.is_local) {
+      object_upvalue* upvalue =
+          capture_upvalue(p_vm, p_vm->current_execution_state, p_frame->registers_base + desc.index);
+      if (upvalue == NULL) {
+        interpret_result result = {
+            .status = RUNTIME_ERROR,
+            .top_level_return = NULL_AS_VALUE(),
+        };
+        return result;
+      }
+      status = upvalue_array_append(&closure->upvalues, upvalue);
+    } else {
+      status = upvalue_array_append(&closure->upvalues, p_frame->closure->upvalues.data[desc.index]);
+    }
+    if (!status) {
+      runtime_error(p_vm, "out of memory: failed to allocate closure upvalue.");
+      interpret_result result = {.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
+      return result;
+    }
+  }
+  interpret_result good;
+  good.status = RUNTIME_OK;
+  return good;
+}
+static object_upvalue* capture_upvalue(vm* p_vm, execution_state* p_exe, uint32_t p_register) {
   object_upvalue* prev = NULL;
-  object_upvalue* upvalue = p_vm->open_upvalues;
-  while (upvalue != NULL && object_upvalue_get_location(upvalue) > p_local_index) {
+  object_upvalue* upvalue = p_exe->open_upvalues;
+  while (upvalue != NULL && object_upvalue_get_location(upvalue) > p_register) {
     prev = upvalue;
     upvalue = upvalue->next;
   }
-  if (upvalue != NULL && object_upvalue_get_location(upvalue) == p_local_index) {
+  if (upvalue != NULL && object_upvalue_get_location(upvalue) == p_register) {
     return upvalue;
   }
   object_specs s = {p_vm->alloc, p_vm->objects_store};
-  object_upvalue* captured = create_object_upvalue(p_local_index, &s);
+  object_upvalue* captured = create_object_upvalue(p_register, &s);
   if (captured == NULL) {
     runtime_error(p_vm, "out of memory: failed to allocate memory for upvalue.");
     return NULL;
   }
   captured->next = upvalue;
   if (prev == NULL) {
-    p_vm->open_upvalues = captured;
+    p_exe->open_upvalues = captured;
   } else {
     prev->next = captured;
   }
   return captured;
 }
 
-static void close_upvalues(vm* p_vm, uint32_t p_last) {
-  while (p_vm->open_upvalues != NULL && object_upvalue_get_location(p_vm->open_upvalues) >= p_last) {
-    object_upvalue* upvalue = p_vm->open_upvalues;
-    upvalue->closed = p_vm->stack.array.data[object_upvalue_get_location(upvalue)];
+static void close_upvalues(execution_state* p_exe, uint32_t p_uptill) {
+  while (p_exe->open_upvalues != NULL && object_upvalue_get_location(p_exe->open_upvalues) >= p_uptill) {
+    object_upvalue* upvalue = p_exe->open_upvalues;
+    upvalue->closed = p_exe->registers.array.data[object_upvalue_get_location(upvalue)];
     object_upvalue_set_closed(upvalue);
-    p_vm->open_upvalues = upvalue->next;
+    p_exe->open_upvalues = upvalue->next;
   }
 }
 
-bool is_falsy(value p_value) {
-  return (IS_VALUE_BOOL(p_value) && !VALUE_AS_BOOL(p_value)) || IS_VALUE_NULL(p_value);
-}
-
-bool values_equal(value p_lhs, value p_rhs) {
-  if (IS_VALUE_NUMBER(p_lhs) && IS_VALUE_NUMBER(p_rhs))
-    return VALUE_AS_NUMBER(p_lhs) == VALUE_AS_NUMBER(p_rhs);
-  else if (IS_VALUE_STRING(p_lhs) && IS_VALUE_STRING(p_rhs)) {
-    return strncmp(VALUE_AS_STRING(p_lhs)->string.chars,
-                   VALUE_AS_STRING(p_rhs)->string.chars,
-                   string_get_length(&VALUE_AS_STRING(p_lhs)->string)) == 0;
-  }
-  return p_lhs == p_rhs;
-}
-
-ARRAY_DEFINE_DEFAULT(stack_array, value, ARRAY_DEFAULT_TYPE_DEINIT)
+ARRAY_DEFINE_DEFAULT(register_array, value, ARRAY_DEFAULT_TYPE_DEINIT)
 ARRAY_DEFINE_DEFAULT(call_stack, call_frame, ARRAY_DEFAULT_TYPE_DEINIT);
 
-void stack_init(stack* p_stack, allocators* p_alloc) {
-  stack_array_init(&p_stack->array, p_alloc);
-  p_stack->top = 0;
-  p_stack->alloc = p_alloc;
+void register_file_init(register_file* p_registers, allocators* p_alloc) {
+  p_registers->top = 0;
+  register_array_init(&p_registers->array, p_alloc);
 }
 
-bool stack_init_warm(stack* p_stack, uint32_t p_initial_capacity, allocators* p_alloc) {
-  stack_init(p_stack, p_alloc);
+bool register_file_init_warm(register_file* p_registers, uint32_t p_initial_capacity, allocators* p_alloc) {
+  register_file_init(p_registers, p_alloc);
   if (p_initial_capacity > 0) { // so we dont trigger free in the reallocate function.
-    return stack_array_grow(&p_stack->array, p_initial_capacity);
+    if (!register_array_grow(&p_registers->array, p_initial_capacity)) {
+      return false;
+    }
+    // registers must read as null, realloc'd memory is garbage
+    for (uint32_t i = 0; i < p_initial_capacity; ++i) {
+      p_registers->array.data[i] = NULL_AS_VALUE();
+    }
   }
   return false;
 }
 
-void stack_resize(stack* p_stack, uint32_t p_new_size) {
-  p_stack->top = p_new_size;
-}
-
-bool stack_shrink(stack* p_stack, uint32_t p_new_size) {
-  return stack_array_grow(&p_stack->array, p_new_size);
-}
-
-bool stack_sshrink(stack* p_stack, uint32_t p_new_size) {
-  if (p_stack->top > p_new_size) {
-    return false;
-  }
-  return stack_shrink(p_stack, p_new_size);
-}
-
-void stack_push(stack* p_stack, value p_value) {
-  if (p_stack->top == p_stack->array.count) {
-    stack_array_append(&p_stack->array, p_value);
-    p_stack->top++;
-  } else {
-    p_stack->array.data[p_stack->top] = p_value;
-    p_stack->top++;
-  }
-}
-
-value stack_top(stack* p_stack, uint32_t p_index) {
-  if (p_index >= p_stack->array.count) {
-    return NULL_AS_VALUE();
-  }
-  return p_stack->array.data[p_stack->top - 1 - p_index];
-}
-
-value* stack_top_ptr(stack* p_stack, uint32_t p_index) {
-  return &p_stack->array.data[p_stack->top - 1 - p_index];
-}
-
-void stack_pop(stack* p_stack) {
-  if (p_stack->top != 0) {
-    p_stack->top--;
-  }
-}
-
-value stack_popr(stack* p_stack) {
-  if (p_stack->top != 0) {
-    return p_stack->array.data[--p_stack->top];
-  }
-  return NULL_AS_VALUE();
-}
-
-void stack_deinit(stack* p_stack) {
-  stack_array_deinit(&p_stack->array, p_stack->alloc);
-  stack_init(p_stack, p_stack->alloc);
+void register_file_deinit(register_file* p_registers) {
+  allocators* alloc = p_registers->array.alloc;
+  register_array_deinit(&p_registers->array, alloc);
+  register_file_init(p_registers, alloc);
 }

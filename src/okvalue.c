@@ -6,7 +6,7 @@
 
 void value_debug_print(value p_value) {
   if (IS_VALUE_NUMBER(p_value)) {
-    printf("%f", VALUE_AS_NUMBER(p_value));
+    printf("%g", VALUE_AS_NUMBER(p_value));
   } else if (IS_VALUE_BOOL(p_value)) {
     printf("%s", VALUE_AS_BOOL(p_value) ? "true" : "false");
   } else if (IS_VALUE_OBJECT(p_value)) {

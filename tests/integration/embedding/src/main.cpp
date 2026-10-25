@@ -37,6 +37,31 @@ static ok_value native_fail(ok* p_ok, uint8_t argc, const ok_value* argv) {
   return ok_value_null();
 }
 
+// regression (2026-10-25, dorg3 "invalid call: value is not callable" + SIGSEGV):
+// a native that calls back into the vm while the script's call stack is live.
+// prefix this crashed two ways: vm_call double-based the callee slot (read
+// data[base + base] instead of data[base] -> "value is not callable" whenever
+// ok_call ran with top > 0), and when the inner call errored, call_native
+// returned success and the interpreter resumed on a cleared call stack
+// (frame reload from data[count - 1] with count == 0 -> segfault right after
+// the error report).
+static ok_value native_apply(ok* p_ok, uint8_t argc, const ok_value* argv) {
+  assert(argc == 2);
+  assert(ok_value_is_object(argv[0]));
+  assert(ok_value_is_number(argv[1]));
+
+  ok_value arg = argv[1];
+  ok_value result = ok_value_null();
+
+  if (!ok_call(p_ok, argv[0], 1, &arg, &result)) {
+    // inner runtime error: propagate by returning. the vm's error_pending
+    // flag makes call_native fail the OP_CALL so the error reaches the host.
+    return ok_value_null();
+  }
+
+  return result;
+}
+
 static void native_destructor(void* ptr) {
   assert(ptr != nullptr);
 
@@ -130,6 +155,9 @@ int main() {
   assert(ok_global_define_native_function(
       vm, ok_create_string_view("host_fail", OK_STRING_VIEW_CALCULATE_LENGTH, true), 0, native_fail));
 
+  assert(ok_global_define_native_function(
+      vm, ok_create_string_view("host_apply", OK_STRING_VIEW_CALCULATE_LENGTH, true), 2, native_apply));
+
   int* userdata = new int(44);
 
   ok_value native_value = ok_native_value_new(vm, userdata, native_destructor);
@@ -179,6 +207,15 @@ int main() {
 
     let object_value = host_get_object(host_object);
     if object_value != 44? print "bad: object";
+
+    // native -> vm callback while main's frame is on the call stack (the
+    // array_foreach pattern from dorg3). exercises ok_call with top > 0.
+    glob fu double_it(x) {
+      return x * 2;
+    }
+
+    let applied = host_apply(double_it, 21);
+    if applied != 42? print "bad: apply";
   )";
 
   ok_source source = {
@@ -275,6 +312,43 @@ int main() {
   result = ok_run(vm, error_source);
 
   assert(result == OK_RUNTIME_ERROR);
+
+  // error propagation THROUGH a native callback: the closure errors inside
+  // the native's ok_call; call_native must fail the OP_CALL (not resume on a
+  // cleared call stack) so ok_run reports OK_RUNTIME_ERROR instead of dying.
+  const char* callback_error_code = R"(
+    glob fu boom(x) {
+      return x + "not a number";
+    }
+
+    host_apply(boom, 1);
+  )";
+
+  ok_source callback_error_source = {
+      .from = OK_FROM_FILE,
+      .code = callback_error_code,
+      .path = "embed",
+  };
+
+  result = ok_run(vm, callback_error_source);
+
+  assert(result == OK_RUNTIME_ERROR);
+
+  // and the VM must still be usable afterwards for a clean C-side call:
+  assert(ok_global_get(vm, ok_create_string_view("host_add", OK_STRING_VIEW_CALCULATE_LENGTH, true), &debug_global));
+
+  assert(ok_value_is_object(debug_global));
+
+  ok_value recover_args[] = {
+      ok_value_number(1),
+      ok_value_number(2),
+  };
+
+  ok_value recover_result = ok_value_null();
+
+  assert(ok_call(vm, debug_global, 2, recover_args, &recover_result));
+
+  assert(ok_value_as_number(recover_result) == 3);
 
   ok_free(vm);
 

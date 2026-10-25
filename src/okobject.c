@@ -51,24 +51,25 @@ object_string* create_object_string(const ok_string_view p_string, object_specs*
 
 static void object_function_init(object_function* p_object_function,
                                  object_string* p_name,
-                                 uint8_t p_arity,
+                                 uint16_t p_arity,
                                  object_specs* p_specs) {
   object_init(&p_object_function->object, OBJ_FUNCTION);
   p_object_function->name = p_name;
   p_object_function->arity = p_arity;
-  p_object_function->upvalues = 0;
+  p_object_function->registers = 0; // compiler sets this when the function is complete
+  upvalue_descriptor_array_init(&p_object_function->upvalues, p_specs->alloc);
   chunk_init(&p_object_function->chunk, p_specs->alloc);
 }
 
 static void object_function_deinit(object_function* p_object_function, object_specs* p_specs) {
   chunk_deinit(&p_object_function->chunk);
-  p_object_function->upvalues = 0;
+  upvalue_descriptor_array_deinit(&p_object_function->upvalues, p_specs->alloc);
   p_object_function->arity = 0;
   p_object_function->name = NULL;
   object_deinit(&p_object_function->object);
 }
 
-object_function* create_object_function(object_string* p_name, uint8_t p_arity, object_specs* p_specs) {
+object_function* create_object_function(object_string* p_name, uint16_t p_arity, object_specs* p_specs) {
   object_function* object_fu = (object_function*)p_specs->alloc->allocate(p_specs->alloc, sizeof(object_function));
   if (object_fu == NULL) {
     return NULL;
@@ -79,12 +80,13 @@ object_function* create_object_function(object_string* p_name, uint8_t p_arity, 
 }
 
 ARRAY_DEFINE_DEFAULT(upvalue_array, object_upvalue*, ARRAY_DEFAULT_TYPE_DEINIT)
+ARRAY_DEFINE(upvalue_descriptor_array, upvalue_descriptor, uint16_t, UINT16_MAX, ARRAY_DEFAULT_TYPE_DEINIT)
 
 static void object_closure_init(object_closure* p_closure, object_function* p_function, object_specs* p_specs) {
   object_init(&p_closure->object, OBJ_CLOSURE);
   p_closure->function = p_function;
   upvalue_array_init(&p_closure->upvalues, p_specs->alloc);
-  upvalue_array_grow(&p_closure->upvalues, p_function->upvalues);
+  upvalue_array_grow(&p_closure->upvalues, p_function->upvalues.count);
 }
 
 static void object_closure_deinit(object_closure* p_closure, object_specs* p_specs) {
@@ -133,11 +135,11 @@ bool object_upvalue_is_closed(object_upvalue* p_upvalue) {
   return (p_upvalue->info & (UINT32_C(1) << 24)) != 0;
 }
 
-value* object_upvalue_get_value(object_upvalue* p_upvalue, value* p_stack) {
+value* object_upvalue_get_value(object_upvalue* p_upvalue, value* p_frame_window) {
   if (object_upvalue_is_closed(p_upvalue)) {
     return &p_upvalue->closed;
   }
-  return &p_stack[object_upvalue_get_location(p_upvalue)];
+  return &p_frame_window[object_upvalue_get_location(p_upvalue)];
 }
 
 object_upvalue* create_object_upvalue(uint32_t p_location, object_specs* p_specs) {
@@ -181,7 +183,7 @@ create_object_native_value(void* p_user_data, ok_native_destructor p_destructor,
 
 void object_native_function_init(object_native_function* p_native_function,
                                  ok_string_view p_name,
-                                 uint8_t p_arity,
+                                 uint16_t p_arity,
                                  ok_native_fn p_cb,
                                  object_specs* p_specs) {
   object_init(&p_native_function->object, OBJ_NATIVE_FUNCTION);
@@ -198,7 +200,7 @@ void object_native_function_deinit(object_native_function* p_native_function, ob
 }
 
 object_native_function*
-create_object_native_function(ok_string_view p_name, uint8_t p_arity, ok_native_fn p_cb, object_specs* p_specs) {
+create_object_native_function(ok_string_view p_name, uint16_t p_arity, ok_native_fn p_cb, object_specs* p_specs) {
   object_native_function* native_function =
       (object_native_function*)p_specs->alloc->allocate(p_specs->alloc, sizeof(object_native_function));
   if (native_function == NULL) {
@@ -249,15 +251,15 @@ void object_debug_print(object* p_object) {
   }
   case OBJ_FUNCTION: {
     object_function* fu = (object_function*)p_object;
-    printf("<fu %s %d>", fu->name->string.chars, fu->arity);
+    printf("<fu %s a: %d>", fu->name->string.chars, fu->arity);
     break;
   }
   case OBJ_CLOSURE: {
     object_closure* closure = (object_closure*)p_object;
-    printf("<closure %s %d %d>",
+    printf("<closure %s a: %d u: %d>",
            closure->function->name->string.chars,
            closure->function->arity,
-           closure->function->upvalues);
+           closure->function->upvalues.count);
     break;
   }
   case OBJ_UPVALUE: {
@@ -270,7 +272,7 @@ void object_debug_print(object* p_object) {
   }
   case OBJ_NATIVE_FUNCTION: {
     object_native_function* fu = (object_native_function*)p_object;
-    printf("<native function %s %d %p>", fu->name.chars, fu->arity, fu->function);
+    printf("<native function %s a: %d %p>", fu->name.chars, fu->arity, fu->function);
     break;
   }
   }

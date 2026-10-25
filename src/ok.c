@@ -123,11 +123,12 @@ ok_value ok_value_string(ok* p_ok, ok_string_view p_string) {
 }
 
 bool ok_value_is_null(ok_value p_value) {
-  return IS_VALUE_NULL(p_value);
+  // strict checks: raw doubles alias the non-strict tag bits (see okvalue.h)
+  return IS_VALUE_STRICTLY_NULL(p_value);
 }
 
 bool ok_value_is_bool(ok_value p_value) {
-  return IS_VALUE_BOOL(p_value);
+  return IS_VALUE_STRICTLY_BOOL(p_value);
 }
 
 bool ok_value_is_number(ok_value p_value) {
@@ -135,7 +136,7 @@ bool ok_value_is_number(ok_value p_value) {
 }
 
 bool ok_value_is_object(ok_value p_value) {
-  return IS_VALUE_OBJECT(p_value);
+  return IS_VALUE_STRICTLY_OBJECT(p_value);
 }
 
 bool ok_value_is_string(ok_value p_value) {
@@ -155,41 +156,51 @@ ok_cstring_view ok_value_as_string(ok_value p_value) {
 }
 
 bool ok_call(ok* p_ok, ok_value p_callee, uint8_t p_argc, const ok_value* p_argv, ok_value* p_result) {
-  uint32_t stack_top = p_ok->vm.stack.top;
-  stack_push(&p_ok->vm.stack, p_callee);
-  for (uint8_t i = 0; i < p_argc; ++i) {
-    stack_push(&p_ok->vm.stack, p_argv[i]);
+  execution_state* exe = p_ok->vm.current_execution_state;
+  register_file* reg = &exe->registers;
+  const uint32_t base = reg->top;
+
+  // stage the call window at the top of the register file: [base] = callee, [base+1..] = args.
+  // the vm can grow the file later when the callee frame needs more registers.
+  if ((uint32_t)(base + p_argc + 1) > reg->array.capacity) {
+    if (!register_array_grow(&reg->array, base + p_argc + 1)) {
+      *p_result = NULL_AS_VALUE();
+      return false;
+    }
   }
+  reg->array.data[base] = p_callee;
+  memcpy(&reg->array.data[base + 1], p_argv, p_argc * sizeof(*p_argv));
+  reg->top = base + p_argc + 1;
+
   interpret_result result = vm_call(&p_ok->vm, p_callee, p_argc);
   if (result.status != RUNTIME_OK) {
-    stack_resize(&p_ok->vm.stack, stack_top);
+    // runtime_error already reset the execution state.
     *p_result = NULL_AS_VALUE();
     return false;
   }
-  *p_result = stack_popr(&p_ok->vm.stack);
+  *p_result = reg->array.data[base];
   return true;
 }
 
 bool ok_global_define(ok* p_ok, ok_string_view p_name, ok_value p_value, bool p_is_mutable) {
   gc_guard_up(&p_ok->gc, p_value);
-  uint32_t packed = globals_store_add(&p_ok->globals_store, p_name, p_is_mutable);
-  uint32_t index = global_get_raw_index(packed);
-  if (!IS_GLOBAL_VALID(packed)) {
+  global_id id = globals_store_add(&p_ok->globals_store, p_name, p_is_mutable ? GLOBAL_FLAG_MUTABLE : GLOBAL_FLAG_NONE);
+  if (!IS_GLOBAL_VALID(id)) {
     gc_guard_down(&p_ok->gc);
     return false;
   }
-  p_ok->globals_store.global_values.data[index] = p_value;
+  p_ok->globals_store.global_values.data[id.index] = p_value;
   gc_guard_down(&p_ok->gc);
   return true;
 }
 
 bool ok_global_get(ok* p_ok, ok_string_view p_name, ok_value* p_value) {
-  uint32_t packed = globals_store_get(&p_ok->globals_store, p_name);
-  if (!IS_GLOBAL_VALID(packed)) {
+  global_id id = globals_store_get(&p_ok->globals_store, p_name);
+  if (!IS_GLOBAL_VALID(id)) {
     *p_value = NULL_AS_VALUE();
     return false;
   }
-  *p_value = p_ok->globals_store.global_values.data[global_get_raw_index(packed)];
+  *p_value = p_ok->globals_store.global_values.data[id.index];
   return true;
 }
 

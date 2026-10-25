@@ -6,51 +6,49 @@
 #include "okfwd.h"
 #include "okobject.h"
 
-ARRAY_DECLARE(stack_array, value, uint32_t)
+ARRAY_DECLARE_DEFAULT(register_array, value)
+
 typedef struct {
-  uint32_t top; // for keeping track of the top since we are using dynamic array, thus a pointer will be annoying to
-                // keep updating and kinda defeats the purpose. points one past the top most element so indexing becomes
-                // like values[top_index - 1] so you get the top most element.
-  stack_array array;
-  allocators* alloc;
-} stack;
+  uint32_t top;
+  register_array array;
+} register_file;
 
-void stack_init(stack* p_stack, allocators* p_alloc);
-bool stack_init_warm(stack* p_stack, uint32_t p_initial_capacity, allocators* p_alloc);
-// keeps allocated memory, only moves the top pointer
-void stack_resize(stack* p_stack, uint32_t p_new_size);
-// resizes the underlying array (fails if new size < top) or reallocation failed
-bool stack_sshrink(stack* p_stack, uint32_t p_new_size);
-// fails only when reallocation failed doesn't respect top pointer
-bool stack_shrink(stack* p_stack, uint32_t p_new_size);
-void stack_push(stack* p_stack, value p_value);
-value stack_top(stack* p_stack, uint32_t p_index);
-value* stack_top_ptr(stack* p_stack, uint32_t p_index);
-void stack_pop(stack* p_stack);
-value stack_popr(stack* p_stack);
-void stack_deinit(stack* p_stack);
+void register_file_init(register_file* p_registers, allocators* p_alloc);
+bool register_file_init_warm(register_file* p_registers, uint32_t p_initial_capacity, allocators* p_alloc);
+void register_file_deinit(register_file* p_registers);
 
+enum { RETURN_COUNT_DYNAMIC = UINT32_MAX };
 typedef struct {
   object_closure* closure;
-  byte* ip;
-  uint32_t slots;
-  uint32_t top;
+  uint32_t* ip;
+  uint32_t registers_base;
+  uint32_t return_base;
+  uint32_t return_count;
 } call_frame;
 
 ARRAY_DECLARE_DEFAULT(call_stack, call_frame)
 
-struct vm {
-  stack stack;
+typedef struct {
   call_stack call_stack;
+  register_file registers;
+  object_upvalue* open_upvalues;
+  string native_error_message;
+  bool native_has_error;
+
+  // set by runtime_error, and checked by call_native (a native returning after an
+  // inner error must fail its OP_CALL) and consumed at the outermost C entry
+  // point (vm_call/vm_interpret with native_call_depth == 0).
+  bool error_pending;
+  uint32_t native_call_depth;
+} execution_state;
+
+struct vm {
+  execution_state* current_execution_state;
   ok_source* source;
   object_store* objects_store;
   globals_store* globals_store;
-  object_upvalue* open_upvalues;
   allocators* alloc;
   ok* ok;
-  string native_error_message;
-  bool native_has_error;
-  uint32_t native_call_depth;
 };
 
 typedef enum {
@@ -60,7 +58,7 @@ typedef enum {
 
 typedef struct {
   runtime_status status;
-  value top_level_return; // TODO when gc, instead of returning raw value return a gc guarded proxy.
+  value top_level_return;
 } interpret_result;
 
 void interpret_result_deinit(interpret_result* p_interpret_result);

@@ -1,47 +1,47 @@
 #include "okoperator.h"
 
-operator_type operator_type_from_token_type(const token_type p_token_type) {
+operator_type operator_type_from_token_type(const token_type p_token_type, bool p_is_prefix) {
   switch (p_token_type) {
   case TOKEN_PLUS:
-    return OPERATOR_PLUS;
+    return p_is_prefix ? OPERATOR_PRE_PLUS : OPERATOR_BIN_PLUS;
   case TOKEN_MINUS:
-    return OPERATOR_MINUS;
+    return p_is_prefix ? OPERATOR_PRE_MINUS : OPERATOR_BIN_MINUS;
   case TOKEN_ASTERISK:
-    return OPERATOR_ASTERISK;
+    return OPERATOR_BIN_ASTERISK;
   case TOKEN_SLASH:
-    return OPERATOR_SLASH;
+    return OPERATOR_BIN_SLASH;
   case TOKEN_MODULO:
-    return OPERATOR_MODULO;
+    return OPERATOR_BIN_MODULO;
   case TOKEN_CARET:
-    return OPERATOR_CARET;
+    return OPERATOR_BIN_CARET;
   case TOKEN_BANG:
-    return OPERATOR_BANG;
+    return OPERATOR_PRE_BANG;
   case TOKEN_EQUAL:
-    return OPERATOR_EQUAL;
+    return OPERATOR_BIN_EQUALS;
   case TOKEN_BANG_EQUAL:
-    return OPERATOR_BANG_EQUAL;
+    return OPERATOR_BIN_BANG_EQUAL;
   case TOKEN_GREATER:
-    return OPERATOR_GREATER;
+    return OPERATOR_BIN_GREATER;
   case TOKEN_GREATER_EQUAL:
-    return OPERATOR_GREATER_EQUAL;
+    return OPERATOR_BIN_GREATER_EQUAL;
   case TOKEN_LESS:
-    return OPERATOR_LESS;
+    return OPERATOR_BIN_LESS;
   case TOKEN_LESS_EQUAL:
-    return OPERATOR_LESS_EQUAL;
+    return OPERATOR_BIN_LESS_EQUAL;
   case TOKEN_LEFT_PAREN:
-    return OPERATOR_CALL;
+    return OPERATOR_POS_CALL;
   case TOKEN_LEFT_BRACKET:
-    return OPERATOR_SUBSCRIPT;
+    return OPERATOR_POS_SUBSCRIPT;
   case TOKEN_AMPERSAND:
-    return OPERATOR_AMPERSAND;
+    return OPERATOR_BIN_AMPERSAND;
   case TOKEN_BAR:
-    return OPERATOR_BAR;
+    return OPERATOR_BIN_BAR;
   case TOKEN_TILED:
-    return OPERATOR_TILED;
+    return OPERATOR_BIN_TILED;
   case TOKEN_PLUS_PLUS:
-    return OPERATOR_PLUS_PLUS;
+    return p_is_prefix ? OPERATOR_PRE_PLUS_PLUS : OPERATOR_POS_PLUS_PLUS;
   case TOKEN_MINUS_MINUS:
-    return OPERATOR_MINUS_MINUS;
+    return p_is_prefix ? OPERATOR_PRE_MINUS_MINUS : OPERATOR_POS_MINUS_MINUS;
   case TOKEN_PLUS_EQUAL:
     return OPERATOR_PLUS_EQUAL;
   case TOKEN_MINUS_EQUAL:
@@ -69,11 +69,11 @@ operator_type operator_type_from_token_type(const token_type p_token_type) {
   case TOKEN_SHIFT_RIGHT_EQUAL:
     return OPERATOR_SHIFT_RIGHT_EQUAL;
   case TOKEN_NOT:
-    return OPERATOR_NOT;
+    return OPERATOR_PRE_NOT;
   case TOKEN_AND:
-    return OPERATOR_AND;
+    return OPERATOR_LOG_AND;
   case TOKEN_OR:
-    return OPERATOR_OR;
+    return OPERATOR_LOG_OR;
   default:
     return OPERATOR_UNKNOWN;
   }

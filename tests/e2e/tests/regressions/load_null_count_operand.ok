@@ -1,0 +1,46 @@
+// regression: OP_LOAD_NULL treated operand B as an exclusive end index
+// instead of a count, so a null materialized into any register other than
+// r[0] was never written and the destination kept stale bits.
+
+glob let mut g0 = null;
+glob let mut g1 = null;
+let a = 1;
+let b = 2;
+let c = 3;
+glob let mut g2 = null;
+let l0 = null;
+let d = 4;
+let l1 = null;
+
+print g0 == null; // expect: true
+print g1 == null; // expect: true
+print g2 == null; // expect: true
+print l0 == null; // expect: true
+print l1 == null; // expect: true
+
+print g0 != null; // expect: false
+print g1 != null; // expect: false
+
+fu probe(p_v) {
+  return p_v == null;
+}
+
+print probe(g1); // expect: true
+print probe(null); // expect: true
+print probe(5); // expect: false
+
+fu local_null() {
+  let x = 10;
+  let y = null;
+  let z = 30;
+  return y == null;
+}
+
+print local_null(); // expect: true
+
+glob let mut current = null;
+if current != null? {
+  print "bad: guard passed";
+} else {
+  print "guard ok"; // expect: guard ok
+}

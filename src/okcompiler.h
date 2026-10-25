@@ -6,6 +6,7 @@
 #include "okchunk.h"
 #include "okfwd.h"
 #include "okglobals_store.h"
+#include "okindex.h"
 #include "okobject.h"
 #include "okobject_store.h"
 
@@ -13,46 +14,99 @@
 #define OK_DEBUG_DUMP_CODE
 #endif // defined(OK_PARANOID)
 
-#define UNDEFINED_LOCAL UINT32_MAX
-#define REDEFINED_LOCAL (UNDEFINED_LOCAL - 1)
-#define LOCAL_OVERFLOW (REDEFINED_LOCAL - 1)
-#define LOCAL_ILL_MUTATION (LOCAL_OVERFLOW - 1)
-#define LOCAL_ERROR (LOCAL_ILL_MUTATION - 1)
-#define IS_LOCAL_INDEX_VALID(index) (((index) & 0xf0000000) == 0)
+#define IS_REGISTER_VALID(r) ((r.errors) == REGISTER_OK)
+#define REGISTERS_MAX INDEX_MAX
 
-#define UNDEFINED_UPVALUE UINT32_MAX
-#define UPVALUE_OVERFLOW (UNDEFINED_UPVALUE - 1)
-#define UPVALUE_ERROR (UPVALUE_OVERFLOW - 1)
-#define IS_UPVALUE_INDEX_VALID(index) (((index) & 0xf0000000) == 0)
-
-#define LOCALS_MAX UINT24_MAX
-
-#define VARIABLES_MAX UINT24_MAX
-#define IS_VARIABLE_DECLARATION_VALID(decl) (decl <= VARIABLES_MAX)
+typedef index_wrapper _register;
+typedef enum {
+  REGISTER_OK = 0,
+  REGISTER_OVERFLOW,
+  REGISTER_ILL_MUTATION,
+  REGISTER_ALLOCATION_FAILED,
+  REGISTER_UNDEFINED_LOCAL,
+  REGISTER_REDEFINED_LOCAL,
+} register_error;
 
 typedef enum {
-  LOCAL_FLAG_UNINITIALIZED = 0,
-  LOCAL_FLAG_MUTABLE = 1,
-  LOCAL_FLAG_CAPTURED = 2,
-} local_flags;
+  REGISTER_FLAG_NONE = 0,               // this register has a temp
+  REGISTER_FLAG_LOCAL = 1 << 0,         // this register has a local
+  REGISTER_FLAG_UNINITIALIZED = 1 << 1, // this register has an uninitialized *thing*
+  REGISTER_FLAG_MUTABLE = 1 << 2,       // this register has a mutable *thing*
+  REGISTER_FLAG_CAPTURED = 1 << 3,      // this register has captured *thing*
+  REGISTER_FLAG_DEVNULL = 1 << 4,       // this register is discarded
+} register_flags;
+
+#define IS_UPVALUE_VALID(u) ((u.errors) == UPVALUE_OK)
+#define UPVALUES_MAX INDEX_MAX
+
+typedef index_wrapper upvalue;
+
+typedef enum {
+  UPVALUE_FLAG_UP = 0,
+  UPVALUE_FLAG_LOCAL = 1 << 0,
+  UPVALUE_FLAG_MUTABLE = 1 << 1,
+} upvalue_flags;
+
+typedef enum {
+  UPVALUE_OK = 0,
+  UPVALUE_UNDEFINED,
+  UPVALUE_OVERFLOW,
+  UPVALUE_ALLOCATION_FAILED,
+} upvalue_error;
+
+typedef enum {
+  EXPRESSION_VALUE = 0,
+  EXPRESSION_LVALUE = 1 << 0,
+  EXPRESSION_ACCESS = 1 << 1,
+  EXPRESSION_SUBSCRIPT = 1 << 2,
+} expression_type;
+
+typedef index_wrapper location;
+
+typedef enum {
+  LOCATION_OK = 0,
+  LOCATION_INVALID,
+} location_error;
+
+typedef enum {
+  LOCATION_KIND_INVALID = 0,
+  LOCATION_KIND_REGISTER,
+  LOCATION_KIND_CONSTANT,
+  LOCATION_KIND_GLOBAL,
+  LOCATION_KIND_UPVALUE,
+} location_kind;
+
+typedef enum {
+  LVALUE_INVALID = 0,
+  LVALUE_VARIABLE,
+  LVALUE_SUBSCRIPT,
+  LVALUE_FIELD,
+} lvalue_kind;
 
 typedef struct {
-  uint32_t
-      info; // 24 bit depth, 1 bits for variable declaration flags, 1 bit for
-            // uninitialized 1 bit for captured + 4 higher bits for error propagation (errors discard the lower bits).
-} local;
+  lvalue_kind kind;
+  union {
+    location variable;
+  };
+} lvalue;
 
 typedef struct {
-  uint32_t info;
-} upvalue;
+  expression_type type;
+  location value;
+  lvalue lvalue;
+  uint32_t count;
+} expression_result;
 
-ARRAY_DECLARE_DEFAULT(uint32_array, uint32_t)
-TABLE_DECLARE_DEFAULT(scope_locals, hashed_string, uint32_t /* index to the locals array */, hash_t)
-ARRAY_DECLARE_DEFAULT(locals, local)
+ARRAY_DECLARE_DEFAULT(uint16_array, uint16_t)
+TABLE_DECLARE_DEFAULT(scope_registers, hashed_string, uint16_t /* index to the scope's registers array */, hash_t)
+ARRAY_DECLARE_DEFAULT(registers, _register)
 ARRAY_DECLARE_DEFAULT(upvalues, upvalue)
+
 typedef struct {
-  scope_locals locals_table;
-  uint32_array locals_array;
+  scope_registers registers_table; // indices into the scope's registers
+  uint16_array registers;          // indices into the function's registers
+  uint32_t registers_checkpoint;
+  bool captures_any;
 } scope;
 
 ARRAY_DECLARE_DEFAULT(scopes, scope)
@@ -61,8 +115,8 @@ typedef struct {
   uint32_t scope_depth;
   uint32_t continue_target;
   uint32_t break_target;
-  uint32_array continues;
-  uint32_array breaks;
+  uint16_array continues;
+  uint16_array breaks;
   bool continue_forward;
 } loop_context;
 
@@ -80,21 +134,28 @@ typedef struct {
 } compile_function;
 
 typedef struct {
+  registers registers;
+  allocators* alloc;
+  uint32_t local_top;
+  uint32_t temp_top;
+  uint32_t registers_count;
+} register_allocator;
+
+typedef struct {
   scopes scopes;
-  locals locals;
   upvalues upvalues;
   loop_stack loop_stack;
   compile_function function;
-} function;
+  register_allocator register_allocator;
+} compile_context;
 
-ARRAY_DECLARE_DEFAULT(functions, function)
-
+ARRAY_DECLARE_DEFAULT(compile_contexts, compile_context)
 struct compiler {
   ok_source* source;
   allocators* alloc;
   object_store* objects_store;
   globals_store* globals_store;
-  functions functions;
+  compile_contexts contexts;
   bool had_error;
   bool panic;
 };

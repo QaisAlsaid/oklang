@@ -45,7 +45,8 @@ void gc_deinit(gc* p_gc) {
 }
 
 bool gc_guard_up(gc* p_gc, value p_value) {
-  if (!IS_VALUE_NULL(p_gc->guarded)) {
+  // strict check: raw doubles can alias the non strict null tag bits
+  if (!IS_VALUE_STRICTLY_NULL(p_gc->guarded)) {
     return false;
   }
   p_gc->guarded = p_value;
@@ -113,7 +114,11 @@ static bool mark_object(gc* p_gc, object* p_object) {
 }
 
 static bool mark_value(gc* p_gc, value p_value) {
-  if (IS_VALUE_OBJECT(p_value) && !mark_object(p_gc, VALUE_AS_OBJECT(p_value))) {
+  // strict check is required here: marked values come from registers, constants,
+  // globals, closed upvalues. and raw doubles whose payload bits alias the
+  // tag space (e.g. 19.0, 23.0, 27.0...) would otherwise be treated as object
+  // pointers and crash the marker (found via OK_AGGRESSIVE_GC on *_long tests).
+  if (IS_VALUE_STRICTLY_OBJECT(p_value) && !mark_object(p_gc, VALUE_AS_OBJECT(p_value))) {
     return false;
   }
   return true;
@@ -121,17 +126,18 @@ static bool mark_value(gc* p_gc, value p_value) {
 
 static bool mark_vm(gc* p_gc) {
   vm* vm = p_gc->vm;
-  for (uint32_t i = 0; i < vm->stack.top; ++i) {
-    if (!mark_value(p_gc, vm->stack.array.data[i])) {
+  execution_state* exe = vm->current_execution_state;
+  for (uint32_t i = 0; i < exe->registers.top; ++i) {
+    if (!mark_value(p_gc, exe->registers.array.data[i])) {
       return false;
     }
   }
-  for (uint32_t i = 0; i < vm->call_stack.count; ++i) {
-    if (!mark_object(p_gc, (object*)vm->call_stack.data[i].closure)) {
+  for (uint32_t i = 0; i < exe->call_stack.count; ++i) {
+    if (!mark_object(p_gc, (object*)exe->call_stack.data[i].closure)) {
       return false;
     }
   }
-  for (object_upvalue* up = vm->open_upvalues; up != NULL; up = up->next) {
+  for (object_upvalue* up = exe->open_upvalues; up != NULL; up = up->next) {
     if (!mark_object(p_gc, (object*)up)) {
       return false;
     }
@@ -141,8 +147,8 @@ static bool mark_vm(gc* p_gc) {
 
 static bool mark_compiler(gc* p_gc) {
   compiler* compiler = p_gc->compiler;
-  for (uint32_t i = 0; i < compiler->functions.count; i++) {
-    if (!mark_object(p_gc, (object*)compiler->functions.data[i].function.function)) {
+  for (uint32_t i = 0; i < compiler->contexts.count; i++) {
+    if (!mark_object(p_gc, (object*)compiler->contexts.data[i].function.function)) {
       return false;
     }
   }
@@ -215,7 +221,7 @@ static bool sweep(gc* p_gc) {
   return true;
 }
 
-bool collect(gc* p_gc) {
+static bool collect(gc* p_gc) {
 #ifdef OK_LOG_GC
   size_t previous = p_gc->allocated_bytes;
   printf("--- gc ---\n");

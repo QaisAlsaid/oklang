@@ -1,0 +1,214 @@
+#include <unity.h>
+
+#include <float.h>
+#include <okobject.h>
+#include <okvalue.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
+
+void setUp() {
+}
+
+void tearDown() {
+}
+
+void test_tag_logical_vs_physical() {
+  TEST_ASSERT_EQUAL(TAG_X_MASK(TAG_NULL), TAG_NULL_MASK);
+  TEST_ASSERT_EQUAL(TAG_X_MASK(TAG_FALSE), TAG_FALSE_MASK);
+  TEST_ASSERT_EQUAL(TAG_X_MASK(TAG_TRUE), TAG_TRUE_MASK);
+  TEST_ASSERT_EQUAL(TAG_X_MASK(TAG_OBJECT), TAG_OBJECT_MASK);
+  TEST_ASSERT_EQUAL(TAG_X_MASK(TAG_INT), TAG_INT_MASK);
+  TEST_ASSERT_EQUAL(TAG_X_MASK(TAG_USER), TAG_USER_MASK);
+  TEST_ASSERT_EQUAL(TAG_X_MASK(TAG_RESERVED_1), TAG_RESERVED_1_MASK);
+  TEST_ASSERT_EQUAL(TAG_X_MASK(TAG_RESERVED_2), TAG_RESERVED_2_MASK);
+}
+
+static void boxed_number() {
+  {
+    value v = NUMBER_AS_VALUE(6.7);
+    TEST_ASSERT_TRUE(IS_VALUE_NUMBER(v));
+    TEST_ASSERT_FALSE(IS_VALUE_NULL(v));
+    TEST_ASSERT_FALSE(IS_VALUE_BOOL(v));
+    TEST_ASSERT_FALSE(IS_VALUE_OBJECT(v));
+    TEST_ASSERT_FALSE(IS_VALUE_INT(v));
+    TEST_ASSERT_FALSE(IS_VALUE_USER(v));
+    TEST_ASSERT_EQUAL_DOUBLE(6.7, VALUE_AS_NUMBER(v));
+  }
+  {
+    value v = NUMBER_AS_VALUE(-6.7);
+    TEST_ASSERT_TRUE(IS_VALUE_NUMBER(v));
+    TEST_ASSERT_FALSE(IS_VALUE_NULL(v));
+    TEST_ASSERT_FALSE(IS_VALUE_BOOL(v));
+    TEST_ASSERT_FALSE(IS_VALUE_OBJECT(v));
+    TEST_ASSERT_FALSE(IS_VALUE_INT(v));
+    TEST_ASSERT_FALSE(IS_VALUE_USER(v));
+    TEST_ASSERT_EQUAL_DOUBLE(-6.7, VALUE_AS_NUMBER(v));
+  }
+  {
+    value v = NUMBER_AS_VALUE(DBL_MAX);
+    TEST_ASSERT_TRUE(IS_VALUE_NUMBER(v));
+    TEST_ASSERT_FALSE(IS_VALUE_NULL(v));
+    TEST_ASSERT_FALSE(IS_VALUE_BOOL(v));
+    TEST_ASSERT_FALSE(IS_VALUE_OBJECT(v));
+    TEST_ASSERT_FALSE(IS_VALUE_INT(v));
+    TEST_ASSERT_FALSE(IS_VALUE_USER(v));
+    TEST_ASSERT_EQUAL_DOUBLE(DBL_MAX, VALUE_AS_NUMBER(v));
+  }
+  {
+    value v = NUMBER_AS_VALUE(DBL_MIN);
+    TEST_ASSERT_TRUE(IS_VALUE_NUMBER(v));
+    TEST_ASSERT_FALSE(IS_VALUE_NULL(v));
+    TEST_ASSERT_FALSE(IS_VALUE_BOOL(v));
+    TEST_ASSERT_FALSE(IS_VALUE_OBJECT(v));
+    TEST_ASSERT_FALSE(IS_VALUE_INT(v));
+    TEST_ASSERT_FALSE(IS_VALUE_USER(v));
+    TEST_ASSERT_EQUAL_DOUBLE(DBL_MIN, VALUE_AS_NUMBER(v));
+  }
+}
+
+static void boxed_null() {
+  value v = NULL_AS_VALUE();
+  TEST_ASSERT_TRUE(IS_VALUE_NULL(v));
+  TEST_ASSERT_FALSE(IS_VALUE_NUMBER(v));
+  TEST_ASSERT_FALSE(IS_VALUE_BOOL(v));
+  TEST_ASSERT_FALSE(IS_VALUE_OBJECT(v));
+  TEST_ASSERT_FALSE(IS_VALUE_INT(v));
+  TEST_ASSERT_FALSE(IS_VALUE_USER(v));
+}
+
+static void boxed_bool() {
+  {
+    value v = BOOL_AS_VALUE(false);
+    TEST_ASSERT_TRUE(IS_VALUE_BOOL(v));
+    TEST_ASSERT_FALSE(IS_VALUE_NUMBER(v));
+    TEST_ASSERT_FALSE(IS_VALUE_NULL(v));
+    TEST_ASSERT_FALSE(IS_VALUE_OBJECT(v));
+    TEST_ASSERT_FALSE(IS_VALUE_INT(v));
+    TEST_ASSERT_FALSE(IS_VALUE_USER(v));
+    TEST_ASSERT_FALSE(VALUE_AS_BOOL(v));
+  }
+
+  {
+    value v = BOOL_AS_VALUE(true);
+    TEST_ASSERT_TRUE(IS_VALUE_BOOL(v));
+    TEST_ASSERT_FALSE(IS_VALUE_NUMBER(v));
+    TEST_ASSERT_FALSE(IS_VALUE_NULL(v));
+    TEST_ASSERT_FALSE(IS_VALUE_OBJECT(v));
+    TEST_ASSERT_FALSE(IS_VALUE_INT(v));
+    TEST_ASSERT_FALSE(IS_VALUE_USER(v));
+    TEST_ASSERT_TRUE(VALUE_AS_BOOL(v));
+  }
+}
+
+static void boxed_object() {
+  value v;
+  {
+    object* obj = malloc(sizeof(object));
+    TEST_ASSERT_NOT_NULL(obj); // allocation failed
+    obj->info = 44;
+    obj->next = NULL;
+    v = OBJECT_AS_VALUE(obj);
+  }
+
+  TEST_ASSERT_TRUE(IS_VALUE_OBJECT(v));
+  TEST_ASSERT_FALSE(IS_VALUE_NULL(v));
+  TEST_ASSERT_FALSE(IS_VALUE_NUMBER(v));
+  TEST_ASSERT_FALSE(IS_VALUE_BOOL(v));
+  TEST_ASSERT_FALSE(IS_VALUE_INT(v));
+  TEST_ASSERT_FALSE(IS_VALUE_USER(v));
+
+  object* obj = VALUE_AS_OBJECT(v);
+  TEST_ASSERT_NOT_NULL(obj);
+  TEST_ASSERT_NULL(obj->next);
+  TEST_ASSERT_EQUAL_UINT32(44, obj->info);
+  free(obj); // if failed or asan signaled memory leak we know the pointers aren't valid to interact with libc
+}
+
+static void boxed_int(void) {
+  const int64_t values[] = {
+      0,
+      1,
+      -1,
+      44,
+      -44,
+      INT64_C(0x7fffffffffff),
+      -INT64_C(0x800000000000),
+  };
+
+  for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
+    value v = INT_AS_VALUE(values[i]);
+
+    TEST_ASSERT_TRUE(IS_VALUE_INT(v));
+    TEST_ASSERT_FALSE(IS_VALUE_NUMBER(v));
+    TEST_ASSERT_FALSE(IS_VALUE_NULL(v));
+    TEST_ASSERT_FALSE(IS_VALUE_BOOL(v));
+    TEST_ASSERT_FALSE(IS_VALUE_OBJECT(v));
+    TEST_ASSERT_FALSE(IS_VALUE_USER(v));
+    TEST_ASSERT_EQUAL_INT64(values[i], VALUE_AS_INT(v));
+  }
+}
+
+static void boxed_user() {
+  {
+    value v = USER_AS_VALUE(67); // uint48 max
+    TEST_ASSERT_TRUE(IS_VALUE_USER(v));
+    TEST_ASSERT_FALSE(IS_VALUE_NUMBER(v));
+    TEST_ASSERT_FALSE(IS_VALUE_NULL(v));
+    TEST_ASSERT_FALSE(IS_VALUE_BOOL(v));
+    TEST_ASSERT_FALSE(IS_VALUE_OBJECT(v));
+    TEST_ASSERT_FALSE(IS_VALUE_INT(v));
+    TEST_ASSERT_EQUAL_INT64(67, VALUE_AS_USER(v));
+  }
+  {
+    value v = USER_AS_VALUE(0xffffffffffff); // uint48 max
+    TEST_ASSERT_TRUE(IS_VALUE_USER(v));
+    TEST_ASSERT_FALSE(IS_VALUE_NUMBER(v));
+    TEST_ASSERT_FALSE(IS_VALUE_NULL(v));
+    TEST_ASSERT_FALSE(IS_VALUE_BOOL(v));
+    TEST_ASSERT_FALSE(IS_VALUE_OBJECT(v));
+    TEST_ASSERT_FALSE(IS_VALUE_INT(v));
+    TEST_ASSERT_EQUAL_INT64(0xffffffffffff, VALUE_AS_USER(v));
+  }
+  value v = USER_AS_VALUE(0); // uint48 min
+  TEST_ASSERT_TRUE(IS_VALUE_USER(v));
+  TEST_ASSERT_FALSE(IS_VALUE_NUMBER(v));
+  TEST_ASSERT_FALSE(IS_VALUE_NULL(v));
+  TEST_ASSERT_FALSE(IS_VALUE_BOOL(v));
+  TEST_ASSERT_FALSE(IS_VALUE_OBJECT(v));
+  TEST_ASSERT_FALSE(IS_VALUE_INT(v));
+  TEST_ASSERT_EQUAL_INT64(0, VALUE_AS_USER(v));
+}
+
+static void boxed_user_ptr() {
+  int i = 0;
+  value v = USER_PTR_AS_VALUE(&i); // uint48 max
+  TEST_ASSERT_TRUE(IS_VALUE_USER(v));
+  TEST_ASSERT_FALSE(IS_VALUE_NUMBER(v));
+  TEST_ASSERT_FALSE(IS_VALUE_NULL(v));
+  TEST_ASSERT_FALSE(IS_VALUE_BOOL(v));
+  TEST_ASSERT_FALSE(IS_VALUE_OBJECT(v));
+  TEST_ASSERT_FALSE(IS_VALUE_INT(v));
+  TEST_ASSERT_EQUAL_PTR(&i, VALUE_AS_USER_PTR(v));
+}
+
+void test_boxed_values() {
+  boxed_number();
+  boxed_null();
+  boxed_bool();
+  boxed_object();
+  boxed_int();
+  boxed_user();
+  boxed_user_ptr();
+
+  bool v = BOOL_AS_VALUE(true);
+  TEST_ASSERT_TRUE(IS_VALUE_BOOL(v));
+  TEST_ASSERT_TRUE(VALUE_AS_BOOL(v));
+}
+
+int main(void) {
+  UNITY_BEGIN();
+  RUN_TEST(test_tag_logical_vs_physical);
+  RUN_TEST(test_boxed_values);
+  UNITY_END();
+}

@@ -7,6 +7,7 @@
 #include "ok/ok.h"
 #include "okchunk.h"
 #include "okfwd.h"
+#include "okindex.h"
 #include "okobject_store.h"
 #include "okstring.h"
 #include "okvalue.h"
@@ -51,7 +52,8 @@ bool object_is_marked(object* p_object);
 void object_set_marked(object* p_object, bool p_marked);
 
 static inline bool value_is_object_type(value p_value, object_type p_type) {
-  return IS_VALUE_OBJECT(p_value) && OBJECT_TYPE(p_value) == p_type;
+  // strict check: raw doubles alias the non strict tag bits
+  return IS_VALUE_STRICTLY_OBJECT(p_value) && OBJECT_TYPE(p_value) == p_type;
 }
 
 typedef struct {
@@ -62,14 +64,22 @@ typedef struct {
 object_string* create_object_string(const ok_string_view p_string, object_specs* p_specs);
 
 typedef struct {
+  ok_index index;
+  bool is_local;
+} upvalue_descriptor;
+
+ARRAY_DECLARE(upvalue_descriptor_array, upvalue_descriptor, uint16_t)
+
+typedef struct {
   object object;
   object_string* name;
   chunk chunk;
-  uint8_t arity;
-  uint32_t upvalues;
+  uint16_t arity;
+  uint16_t registers;
+  upvalue_descriptor_array upvalues;
 } object_function;
 
-object_function* create_object_function(object_string* p_name, uint8_t p_arity, object_specs* p_specs);
+object_function* create_object_function(object_string* p_name, uint16_t p_arity, object_specs* p_specs);
 
 typedef struct object_upvalue {
   object object;
@@ -82,7 +92,7 @@ void object_upvalue_set_location(object_upvalue* p_upvalue, uint32_t p_location)
 void object_upvalue_set_closed(object_upvalue* p_upvalue);
 uint32_t object_upvalue_get_location(object_upvalue* p_upvalue);
 bool object_upvalue_is_closed(object_upvalue* p_upvalue);
-value* object_upvalue_get_value(object_upvalue* p_upvalue, value* p_stack);
+value* object_upvalue_get_value(object_upvalue* p_upvalue, value* p_frame_window);
 
 object_upvalue* create_object_upvalue(uint32_t p_location, object_specs* p_specs);
 
@@ -107,12 +117,12 @@ create_object_native_value(void* p_user_data, ok_native_destructor p_destructor,
 typedef struct {
   object object;
   string name;
-  uint8_t arity;
+  uint16_t arity;
   ok_native_fn function;
 } object_native_function;
 
 object_native_function*
-create_object_native_function(ok_string_view p_name, uint8_t p_arity, ok_native_fn p_cb, object_specs* p_specs);
+create_object_native_function(ok_string_view p_name, uint16_t p_arity, ok_native_fn p_cb, object_specs* p_specs);
 
 void object_dispatch_deinit(object* p_object, object_specs* p_specs);
 void objects_list_deinit(object* p_head, object_specs* p_specs);

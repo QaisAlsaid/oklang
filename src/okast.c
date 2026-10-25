@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <errno.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -294,7 +295,7 @@ void ast_number_expression_init(ast_number_expression* p_number, token p_token, 
 void ast_number_expression_deinit(ast_number_expression* p_number) {
   ast_expression_deinit(&p_number->expression);
 }
-#include <errno.h>
+
 double ast_number_expression_get_value(const ast_number_expression* p_number) {
   const ast_node* node = &p_number->expression.node;
   char buff[64];
@@ -629,8 +630,8 @@ bool ast_function_expression_print(const ast_function_expression* p_function) {
 
 string ast_function_expression_asprint(const ast_function_expression* p_function) {
   allocators* alloc = p_function->expression.node.alloc;
-  string params_str =
-      ast_bindings_list_asprint(&p_function->parameters, ok_create_string_view(", ", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+  string params_str = ast_bindings_list_asprint(&p_function->parameters,
+                                                ok_create_string_view(", ", OK_STRING_VIEW_CALCULATE_LENGTH, true));
   string body_str = ast_dispatch_asprint((ast_node*)p_function->body);
   string ret = asprint(p_function->expression.node.alloc, "fu (%s) %s", params_str.chars, body_str.chars);
   string_deinit(&params_str, alloc);
@@ -706,8 +707,8 @@ bool ast_call_expression_print(const ast_call_expression* p_call) {
 string ast_call_expression_asprint(const ast_call_expression* p_call) {
   allocators* alloc = p_call->expression.node.alloc;
   string callable_str = ast_dispatch_asprint((ast_node*)p_call->callable);
-  string args_str =
-      ast_expressions_list_asprint(&p_call->arguments, ok_create_string_view(", ", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+  string args_str = ast_expressions_list_asprint(&p_call->arguments,
+                                                 ok_create_string_view(", ", OK_STRING_VIEW_CALCULATE_LENGTH, true));
   string ret = asprint(p_call->expression.node.alloc, "%s(%s)", callable_str.chars, args_str.chars);
   string_deinit(&callable_str, alloc);
   string_deinit(&args_str, alloc);

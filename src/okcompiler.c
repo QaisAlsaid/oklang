@@ -4,6 +4,7 @@
 
 #include "okcompiler.h"
 #include "okdebug.h"
+#include "okdef.h"
 #include "okgc.h"
 #include "okobject.h"
 #include "okutils.h"
@@ -21,78 +22,352 @@ typedef struct {
   variable_declaration_flags_t flags;
 } variable_declaration;
 
-static inline uint32_t local_get_raw_index(uint32_t p_packed) {
-  return p_packed & 0x00ffffff;
-}
-
-static bool local_test_flag(uint32_t p_packed, uint8_t p_flag) {
-  return (p_packed & (UINT32_C(1) << (24 + p_flag))) != 0;
-}
-
-static void local_set_flag(uint32_t* p_packed, uint8_t p_flag) {
-  *p_packed |= UINT32_C(1) << (24 + p_flag);
-}
-
-static void local_remove_flag(uint32_t* p_packed, uint8_t p_flag) {
-  *p_packed &= ~(UINT32_C(1) << (24 + p_flag));
-}
-
-#define LOCAL_FLAGS_MASK 0x00ffffff
 #define ARE_KEYS_EQUAL(lhs, rhs)                                                                                       \
   (string_get_length(&lhs.string) == string_get_length(&rhs.string) &&                                                 \
    strncmp(lhs.string.chars, rhs.string.chars, string_get_length(&lhs.string)) == 0)
 #define GET_HASH(key) (key.hash)
 
-TABLE_DEFINE_DEFAULT(scope_locals,
+TABLE_DEFINE_DEFAULT(scope_registers,
                      hashed_string,
-                     uint32_t,
+                     uint16_t,
                      hash_t,
                      ARE_KEYS_EQUAL,
                      hashed_string_deinit,
                      ARRAY_DEFAULT_TYPE_DEINIT,
                      GET_HASH)
 
-static void scope_init(scope* p_scope, allocators* p_alloc);
-static void scope_deinit(scope* p_scope, allocators* p_alloc);
-static void
-function_init(function* p_function, object_function* p_obj_function, function_type p_type, allocators* p_alloc);
-static void function_deinit(function* p_function, allocators* p_alloc);
-static void loop_context_init(loop_context* p_context, allocators* p_alloc);
-static void loop_context_deinit(loop_context* p_context, allocators* p_alloc);
-static upvalue create_upvalue(uint32_t p_index, bool p_is_local);
-static uint32_t upvalue_get_index(upvalue* p_upvalue);
-static bool upvalue_is_local(upvalue* p_upvalue);
-ARRAY_DEFINE_DEFAULT(locals, local, ARRAY_DEFAULT_TYPE_DEINIT)
+static void register_allocator_init(register_allocator* p_regalloc, allocators* p_alloc) {
+  p_regalloc->registers_count = 0;
+  p_regalloc->local_top = 0;
+  p_regalloc->temp_top = 0;
+  p_regalloc->alloc = p_alloc;
+  registers_init(&p_regalloc->registers, p_alloc);
+}
+
+static void register_allocator_deinit(register_allocator* p_regalloc) {
+  registers_deinit(&p_regalloc->registers, p_regalloc->alloc);
+  register_allocator_init(p_regalloc, p_regalloc->alloc);
+}
+
+static bool register_allocator_allocate_local(register_allocator* p_regalloc, _register* p_out) {
+  if (p_regalloc->local_top >= REGISTERS_MAX) {
+    p_out->errors = REGISTER_OVERFLOW;
+    return false;
+  }
+  p_regalloc->registers.count = p_regalloc->local_top;
+  p_out->index = p_regalloc->local_top;
+  p_out->flags |= REGISTER_FLAG_LOCAL; // preserve incoming flags (mutability)
+  p_out->errors = REGISTER_OK;
+
+  if (!registers_append(&p_regalloc->registers, *p_out)) {
+    p_out->errors = REGISTER_ALLOCATION_FAILED;
+    return false;
+  }
+  p_regalloc->temp_top = ++p_regalloc->local_top;
+  p_regalloc->registers_count++;
+  return true;
+}
+
+static bool register_allocator_allocate_temp(register_allocator* p_regalloc, _register* p_out) {
+  if (p_regalloc->registers_count >= REGISTERS_MAX) {
+    p_out->errors = REGISTER_OVERFLOW;
+    return false;
+  }
+  p_out->index = p_regalloc->temp_top;
+  p_out->flags = REGISTER_FLAG_NONE;
+  p_out->errors = REGISTER_OK;
+  if (!registers_append(&p_regalloc->registers, *p_out)) {
+    p_out->errors = REGISTER_ALLOCATION_FAILED;
+    return false;
+  }
+  if (++p_regalloc->temp_top > p_regalloc->registers_count) {
+    p_regalloc->registers_count = p_regalloc->temp_top;
+  }
+  return true;
+}
+
+static void register_allocator_rollback_local(register_allocator* p_regalloc) {
+  p_regalloc->registers.count = p_regalloc->temp_top = --p_regalloc->local_top;
+}
+
+static void register_allocator_rollback_temp(register_allocator* p_regalloc) {
+  // keep metadata array in sync with the register index, otherwise
+  // the next temp append would write metadata at the wrong slot (index drift).
+  p_regalloc->registers.count = --p_regalloc->temp_top;
+}
+
+static void register_allocator_reset_temps(register_allocator* p_regalloc, uint32_t p_checkpoint) {
+  p_regalloc->temp_top = p_checkpoint;
+  p_regalloc->registers.count = p_checkpoint;
+}
+
+static void register_allocator_reset_locals(register_allocator* p_regalloc, uint32_t p_checkpoint) {
+  p_regalloc->local_top = p_checkpoint;
+  p_regalloc->temp_top = p_checkpoint;
+  p_regalloc->registers.count = p_checkpoint;
+}
+
+static void scope_init(scope* p_scope, uint32_t p_checkpoint, allocators* p_alloc) {
+  scope_registers_init(&p_scope->registers_table, p_alloc);
+  uint16_array_init(&p_scope->registers, p_alloc);
+  p_scope->registers_checkpoint = p_checkpoint;
+  p_scope->captures_any = false;
+}
+
+static void scope_deinit(scope* p_scope, allocators* p_alloc) {
+  scope_registers_deinit(&p_scope->registers_table);
+  uint16_array_deinit(&p_scope->registers, p_alloc);
+  p_scope->registers_checkpoint = 0;
+}
+
+static void loop_context_init(loop_context* p_context, allocators* p_alloc) {
+  p_context->break_target = 0;
+  p_context->continue_target = 0;
+  p_context->continue_forward = false;
+  uint16_array_init(&p_context->continues, p_alloc);
+  uint16_array_init(&p_context->breaks, p_alloc);
+}
+
+static void loop_context_deinit(loop_context* p_context, allocators* p_alloc) {
+  uint16_array_deinit(&p_context->continues, p_alloc);
+  uint16_array_deinit(&p_context->breaks, p_alloc);
+  loop_context_init(p_context, p_alloc);
+}
+
+static inline void pop_loop_context(compile_context* p_ctx, allocators* p_alloc) {
+  // loop_stack_pop only decrements count. the popped loop_context owns the
+  // continues/breaks arrays and must deinit it or they leak.
+  loop_context_deinit(&p_ctx->loop_stack.data[p_ctx->loop_stack.count - 1], p_alloc);
+  ASSERT(loop_stack_pop(&p_ctx->loop_stack));
+}
+
+static void compile_context_init(compile_context* p_context,
+                                 object_function* p_obj_function,
+                                 function_type p_type,
+                                 allocators* p_alloc) {
+  register_allocator_init(&p_context->register_allocator, p_alloc);
+  upvalues_init(&p_context->upvalues, p_alloc);
+  scopes_init(&p_context->scopes, p_alloc);
+  loop_stack_init(&p_context->loop_stack, p_alloc);
+  p_context->function.function = p_obj_function;
+  p_context->function.type = p_type;
+}
+
+static void compile_context_deinit(compile_context* p_context, allocators* p_alloc) {
+  loop_stack_deinit(&p_context->loop_stack, p_alloc);
+  scopes_deinit(&p_context->scopes, p_alloc);
+  upvalues_deinit(&p_context->upvalues, p_alloc);
+  register_allocator_deinit(&p_context->register_allocator);
+  p_context->function.function = NULL;
+  p_context->function.type = FUNCTION_NONE;
+}
+
+ARRAY_DEFINE_DEFAULT(registers, _register, ARRAY_DEFAULT_TYPE_DEINIT)
 ARRAY_DEFINE_DEFAULT(upvalues, upvalue, ARRAY_DEFAULT_TYPE_DEINIT)
 ARRAY_DEFINE_DEFAULT(scopes, scope, scope_deinit)
-ARRAY_DEFINE_DEFAULT(functions, function, function_deinit)
-ARRAY_DEFINE_DEFAULT(uint32_array, uint32_t, ARRAY_DEFAULT_TYPE_DEINIT)
+ARRAY_DEFINE_DEFAULT(compile_contexts, compile_context, compile_context_deinit)
+ARRAY_DEFINE_DEFAULT(uint16_array, uint16_t, ARRAY_DEFAULT_TYPE_DEINIT)
 ARRAY_DEFINE_DEFAULT(loop_stack, loop_context, loop_context_deinit)
 
-static void error_at(compiler* p_compiler, const ast_node* p_node, const ok_string_view p_message);
 static void error_at_noted(compiler* p_compiler,
-                           const ast_node* p_node,
+                           const ast_node* p_author,
                            const ok_string_view p_message,
-                           const ok_string_view p_note);
-static function* current_function(compiler* p_compiler);
-static scope* current_scope(compiler* p_compiler);
-static chunk* current_chunk(compiler* p_compiler);
-static bool emit_byte(compiler* p_compiler, byte p_byte, ast_node* p_node);
-static bool emit_2bytes(compiler* p_compiler, byte p_1st_byte, byte p_2nd_byte, ast_node* p_node);
-static bool emit_bytes(compiler* p_compiler, byte* p_bytes, size_t p_bytes_count, ast_node* p_node);
-static bool emit_constant(compiler* p_compiler, value p_value, ast_node* p_node);
-static bool emit_default_return(compiler* p_compiler, ast_node* p_node);
+                           const ok_string_view p_note) {
+  report_at_noted(&p_compiler->panic,
+                  &p_compiler->had_error,
+                  p_author->node_type == AST_EOF_STATEMENT,
+                  p_compiler->source,
+                  &p_author->token,
+                  REPORT_SEVERITY_ERROR,
+                  p_message,
+                  p_note);
+}
 
-static uint32_t create_constant(compiler* p_compiler, value p_value, ast_node* p_node);
-static void begin_scope(compiler* p_compiler);
-static void end_scope(compiler* p_compiler, ast_node* p_node, bool p_needs_pop);
+static void error_at(compiler* p_compiler, const ast_node* p_author, const ok_string_view p_message) {
+  error_at_noted(p_compiler, p_author, p_message, ok_create_string_view(NULL, 0, false));
+}
+
+static void report_oom(compiler* p_compiler, const ast_node* p_author) {
+  error_at(p_compiler, p_author, ok_create_string_view("out of memory.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+}
+
+static inline compile_context* current_context(compiler* p_compiler) {
+  ASSERT(p_compiler->contexts.count > 0);
+  return &p_compiler->contexts.data[p_compiler->contexts.count - 1];
+}
+
+static inline scope* current_scope(compiler* p_compiler) {
+  compile_context* ctx = current_context(p_compiler);
+  ASSERT(ctx != NULL);
+  ASSERT(ctx->scopes.count > 0);
+  return &ctx->scopes.data[ctx->scopes.count - 1];
+}
+
+static inline chunk* current_chunk(compiler* p_compiler) {
+  compile_context* ctx = current_context(p_compiler);
+  ASSERT(ctx != NULL);
+  ASSERT(ctx->function.function != NULL);
+  return &ctx->function.function->chunk;
+}
+
+static inline bool emit_word(compiler* p_compiler, word p_word, ast_node* p_author) {
+  chunk* ck = current_chunk(p_compiler);
+  return chunk_write_word(ck, p_word, p_author->token.line_info);
+}
+
+static inline bool emit_word2(compiler* p_compiler, word2 p_words, ast_node* p_author) {
+  chunk* ck = current_chunk(p_compiler);
+  return chunk_write_word2(ck, p_words, p_author->token.line_info);
+}
+
+static bool emit_default_return(compiler* p_compiler, ast_node* p_author) {
+  return emit_word(p_compiler, encode_oppA(OP_RETURN_1, true, 0), p_author);
+}
+
+static bool begin_scope(compiler* p_compiler, ast_node* p_author) {
+  scope scp;
+  scope_init(&scp, current_context(p_compiler)->register_allocator.local_top, p_compiler->alloc);
+  if (!scopes_append(&current_context(p_compiler)->scopes, scp)) {
+    report_oom(p_compiler, p_author);
+    scope_deinit(&scp, p_compiler->alloc);
+    return false;
+  }
+  return true;
+}
+
+static bool cleanup_scope(compiler* p_compiler, scope* p_scope, ast_node* p_author) {
+  if (p_scope->captures_any) {
+    if (!emit_word(p_compiler, encode_oppA(OP_CLOSE_UPVALUES, false, p_scope->registers_checkpoint), p_author)) {
+      report_oom(p_compiler, p_author);
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool end_scope(compiler* p_compiler, ast_node* p_author) {
+  compile_context* ctx = current_context(p_compiler);
+  scope* scp = current_scope(p_compiler);
+  bool status = true;
+  if (!cleanup_scope(p_compiler, scp, p_author)) {
+    status = false;
+  }
+  register_allocator_reset_locals(&ctx->register_allocator, scp->registers_checkpoint);
+  // scopes_pop only decrements count. the popped scope owns its registers_table
+  // (with hashed_string keys) and registers array and must deinit it or they leak.
+  scope_deinit(scp, p_compiler->alloc);
+  ASSERT(scopes_pop(&ctx->scopes));
+  return status;
+}
+
 static bool
-push_function(compiler* p_compiler, ok_string_view p_name, function_type p_type, uint8_t p_arity, ast_node* p_node);
-static uint32_t add_local(compiler* p_compiler, const variable_declaration p_declration, ast_node* p_node);
+begin_context(compiler* p_compiler, ok_string_view p_name, function_type p_type, uint8_t p_arity, ast_node* p_author) {
+  compile_context ctx;
+  allocators* alloc = p_compiler->alloc;
+  object_specs s = {alloc, p_compiler->objects_store};
+  object_string* obj_str = create_object_string(p_name, &s);
+  if (obj_str == NULL) {
+    report_oom(p_compiler, p_author);
+    return false;
+  }
+  gc_guard_up(alloc->gc, OBJECT_AS_VALUE(obj_str));
+  object_function* obj_fu = create_object_function(obj_str, p_arity, &s);
+  gc_guard_down(alloc->gc);
+  if (obj_fu == NULL) {
+    report_oom(p_compiler, p_author);
+    return false;
+  }
+  gc_guard_up(alloc->gc, OBJECT_AS_VALUE(obj_fu));
+  compile_context_init(&ctx, obj_fu, p_type, alloc);
+  const bool res = compile_contexts_append(&p_compiler->contexts, ctx);
+  gc_guard_down(alloc->gc);
+  if (!res) {
+    compile_context_deinit(&ctx, alloc);
+    report_oom(p_compiler, p_author);
+  }
+  return res;
+}
 
-static bool compile_node(compiler* p_compiler, ast_node* p_node);
+static inline void end_context(compiler* p_compiler) {
+  // compile_contexts_pop only decrements count. the popped context owns its
+  // scopes/loop_stack/upvalues/register metadata and must deinit it or they leak.
+  compile_context_deinit(&p_compiler->contexts.data[p_compiler->contexts.count - 1], p_compiler->alloc);
+  ASSERT(compile_contexts_pop(&p_compiler->contexts));
+}
+
+static _register add_local(compiler* p_compiler, const variable_declaration p_declration, ast_node* p_author) {
+  // full flag set must be computed before any allocation: the metadata array copies the
+  // register at append time inside allocate_local, later changes to the local copy will drift.
+  register_flags flags =
+      REGISTER_FLAG_LOCAL | REGISTER_FLAG_UNINITIALIZED |
+      ((p_declration.flags & VARIABLE_DECLARATION_FLAGS_MUTABLE) != 0 ? REGISTER_FLAG_MUTABLE : REGISTER_FLAG_NONE);
+  _register reg = {0, flags, REGISTER_OK};
+  allocators* alloc = p_compiler->alloc;
+  hashed_string hs = create_hashed_string_hash(p_declration.identifier, alloc);
+  if (hs.string.chars == NULL) {
+    report_oom(p_compiler, p_author);
+    reg.errors = REGISTER_ALLOCATION_FAILED;
+    return reg;
+  }
+  compile_context* ctx = current_context(p_compiler);
+  scope* scp = current_scope(p_compiler);
+  uint16_t* resolved = scope_registers_get(&scp->registers_table, hs);
+  if (resolved == NULL) {
+    register_allocator_allocate_local(&ctx->register_allocator, &reg);
+    if (reg.errors != REGISTER_OK) {
+      if (reg.errors == REGISTER_OVERFLOW) {
+        string note = asprint(alloc, "limit is: %d.", REGISTERS_MAX);
+        error_at_noted(
+            p_compiler,
+            p_author,
+            ok_create_string_view("too many local variables in function.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+            ok_create_string_view_from_string(note));
+        string_deinit(&note, alloc);
+        hashed_string_deinit(&hs, alloc);
+        reg.errors = REGISTER_OVERFLOW;
+        return reg;
+      } else if (reg.errors == REGISTER_ALLOCATION_FAILED) {
+        report_oom(p_compiler, p_author);
+        hashed_string_deinit(&hs, alloc);
+        return reg;
+      }
+    }
+    reg.flags |=
+        REGISTER_FLAG_UNINITIALIZED |
+        ((p_declration.flags & VARIABLE_DECLARATION_FLAGS_MUTABLE) != 0 ? REGISTER_FLAG_MUTABLE : REGISTER_FLAG_NONE);
+
+    if (!uint16_array_append(&scp->registers, reg.index)) {
+      report_oom(p_compiler, p_author);
+      hashed_string_deinit(&hs, alloc);
+      register_allocator_rollback_local(&ctx->register_allocator);
+      return reg;
+    }
+    if (!scope_registers_set(&scp->registers_table, hs, reg.index)) {
+      report_oom(p_compiler, p_author);
+      hashed_string_deinit(&hs, alloc);
+      uint16_array_remove(&scp->registers, scp->registers.count - 1, scp->registers.count - 1);
+      register_allocator_rollback_local(&ctx->register_allocator);
+      return reg;
+    }
+    return reg;
+  }
+  string name = create_string_from_string_view(p_declration.identifier, alloc);
+  string message = asprint(alloc, "redefining local: '%s' in the same scope.", name.chars);
+  error_at(p_compiler, p_author, ok_create_string_view_from_string(message));
+  string_deinit(&message, alloc);
+  string_deinit(&name, alloc);
+  hashed_string_deinit(&hs, alloc);
+  reg.errors = REGISTER_REDEFINED_LOCAL;
+  return reg;
+}
 
 static bool compile_root(compiler* p_compiler, ast_root* p_root);
+static bool compile_statement(compiler* p_compiler, ast_statement* p_statement);
+static bool compile_expression(compiler* p_compiler,
+                               ast_expression* p_expression,
+                               _register p_dest,
+                               uint32_t p_requested_count,
+                               expression_result* p_out);
 
 static bool compile_let_declration(compiler* p_compiler, ast_let_declaration* p_let);
 static bool compile_function_declaration(compiler* p_compiler, ast_function_declaration* p_fu);
@@ -107,26 +382,70 @@ static bool compile_for_statement(compiler* p_compiler, ast_for_statement* p_for
 static bool compile_control_flow_statement(compiler* p_compiler, ast_control_flow_statement* p_control);
 static bool compile_return_statement(compiler* p_compiler, ast_return_statement* p_return);
 
-static bool compile_expression(compiler* p_compiler, ast_expression* p_expression);
-static bool compile_identifier(compiler* p_compiler, ast_identifier_expression* p_identifier);
-static bool compile_number_expression(compiler* p_compiler, ast_number_expression* p_number);
-static bool compile_string_expression(compiler* p_compiler, ast_string_expression* p_string);
-static bool compile_prefix_unary_expression(compiler* p_compiler, ast_prefix_unary_expression* p_expression);
-static bool compile_infix_binary_expression(compiler* p_compiler, ast_infix_binary_expression* p_expression);
-static bool compile_assign_expression(compiler* p_compiler, ast_assign_expression* p_assign);
-static bool compile_call_expression(compiler* p_compiler, ast_call_expression* p_call);
-static bool compile_logical_operator(compiler* p_compiler, ast_infix_binary_expression* p_logical);
-static bool compile_postfix_unary_expression(compiler* p_compiler, ast_postfix_unary_expression* p_expression);
-static bool compile_boolean_expression(compiler* p_compiler, ast_boolean_expression* p_boolean);
-static bool compile_null_expression(compiler* p_compiler, ast_null_expression* p_null);
-static bool compile_function_expression(compiler* p_compiler, ast_function_expression* p_fu);
+static bool compile_identifier(compiler* p_compiler,
+                               ast_identifier_expression* p_identifier,
+                               _register p_dest,
+                               uint32_t p_requested_count,
+                               expression_result* p_out);
+static bool compile_number_expression(compiler* p_compiler,
+                                      ast_number_expression* p_number,
+                                      _register p_dest,
+                                      uint32_t p_requested_count,
+                                      expression_result* p_out);
+static bool compile_string_expression(compiler* p_compiler,
+                                      ast_string_expression* p_string,
+                                      _register p_dest,
+                                      uint32_t p_requested_count,
+                                      expression_result* p_out);
+static bool compile_prefix_unary_expression(compiler* p_compiler,
+                                            ast_prefix_unary_expression* p_prefix,
+                                            _register p_dest,
+                                            uint32_t p_requested_count,
+                                            expression_result* p_out);
+static bool compile_infix_binary_expression(compiler* p_compiler,
+                                            ast_infix_binary_expression* p_infix,
+                                            _register p_dest,
+                                            uint32_t p_requested_count,
+                                            expression_result* p_out);
+static bool compile_assign_expression(compiler* p_compiler,
+                                      ast_assign_expression* p_assign,
+                                      _register p_dest,
+                                      uint32_t p_requested_count,
+                                      expression_result* p_out);
+static bool compile_call_expression(compiler* p_compiler,
+                                    ast_call_expression* p_call,
+                                    _register p_dest,
+                                    uint32_t p_requested_count,
+                                    expression_result* p_out);
+static bool compile_postfix_unary_expression(compiler* p_compiler,
+                                             ast_postfix_unary_expression* p_postfix,
+                                             _register p_dest,
+                                             uint32_t p_requested_count,
+                                             expression_result* p_out);
+static bool compile_boolean_expression(compiler* p_compiler,
+                                       ast_boolean_expression* p_boolean,
+                                       _register p_dest,
+                                       uint32_t p_requested_count,
+                                       expression_result* p_out);
+static bool compile_null_expression(compiler* p_compiler,
+                                    ast_null_expression* p_null,
+                                    _register p_dest,
+                                    uint32_t p_requested_count,
+                                    expression_result* p_out);
+static bool compile_function_expression(compiler* p_compiler,
+                                        ast_function_expression* p_fu,
+                                        _register p_dest,
+                                        uint32_t p_requested_count,
+                                        expression_result* p_out);
 
 static bool compile_function_impl(compiler* p_compiler,
                                   ok_string_view p_name,
                                   function_type p_type,
                                   ast_bindings_list p_params,
                                   ast_statement* p_body,
-                                  ast_node* p_node);
+                                  _register p_dest,
+                                  expression_result* p_out,
+                                  ast_node* p_author);
 
 void compiler_init(compiler* p_compiler, compiler_specs p_specs) {
   p_compiler->objects_store = p_specs.objects_store;
@@ -134,7 +453,7 @@ void compiler_init(compiler* p_compiler, compiler_specs p_specs) {
   p_compiler->panic = false;
   p_compiler->alloc = p_specs.alloc;
   p_compiler->globals_store = p_specs.globals_store;
-  functions_init(&p_compiler->functions, p_compiler->alloc);
+  compile_contexts_init(&p_compiler->contexts, p_compiler->alloc);
 }
 
 void compiler_deinit(compiler* p_compiler) {
@@ -143,7 +462,7 @@ void compiler_deinit(compiler* p_compiler) {
   p_compiler->globals_store = NULL;
   p_compiler->had_error = false;
   p_compiler->panic = false;
-  functions_deinit(&p_compiler->functions, p_compiler->alloc);
+  compile_contexts_deinit(&p_compiler->contexts, p_compiler->alloc);
 }
 
 compile_result compiler_compile(compiler* p_compiler, compile_specs p_specs) {
@@ -152,22 +471,25 @@ compile_result compiler_compile(compiler* p_compiler, compile_specs p_specs) {
   result.status = COMPILE_ERROR;
   p_compiler->source = p_specs.source;
   variable_declaration decl = {.identifier = "", .flags = VARIABLE_DECLRATION_FLAGS_NONE};
-  if (!push_function(p_compiler,
+  if (!begin_context(p_compiler,
                      ok_create_string_view("<main>", OK_STRING_VIEW_CALCULATE_LENGTH, true),
                      FUNCTION_SCRIPT,
                      0,
                      (ast_node*)p_specs.root)) {
     goto ret;
   }
-  begin_scope(p_compiler);
-  if (!IS_LOCAL_INDEX_VALID(add_local(p_compiler, decl, (ast_node*)p_specs.root))) {
+  if (!begin_scope(p_compiler, (ast_node*)p_specs.root)) {
     goto ret;
   }
-  bool res = compile_node(p_compiler, (ast_node*)p_specs.root);
-  result.function = current_function(p_compiler)->function.function;
-  emit_default_return(p_compiler, (ast_node*)p_specs.root);
-  end_scope(p_compiler, (ast_node*)p_specs.root, false);
-  functions_remove(&p_compiler->functions, p_compiler->functions.count - 1, p_compiler->functions.count - 1);
+  if (!IS_REGISTER_VALID(add_local(p_compiler, decl, (ast_node*)p_specs.root))) {
+    goto ret;
+  }
+  bool res = compile_root(p_compiler, p_specs.root);
+  result.function = current_context(p_compiler)->function.function;
+  result.function->registers = current_context(p_compiler)->register_allocator.registers_count;
+  res &= emit_default_return(p_compiler, (ast_node*)p_specs.root);
+  res &= end_scope(p_compiler, (ast_node*)p_specs.root);
+  end_context(p_compiler);
   if (p_compiler->had_error == false && res != false) {
     result.status = COMPILE_OK;
 #if defined(OK_DEBUG_DUMP_CODE)
@@ -181,446 +503,425 @@ compile_result compiler_compile(compiler* p_compiler, compile_specs p_specs) {
 ret: {
   compiler_specs specs = {.alloc = p_compiler->alloc,
                           .objects_store = p_compiler->objects_store,
-                          .globals_store = p_compiler->globals_store}; // i hate this but it's workable.
+                          .globals_store = p_compiler->globals_store};
   compiler_deinit(p_compiler);
   compiler_init(p_compiler, specs);
   return result;
 }
 }
 
-void error_at(compiler* p_compiler, const ast_node* p_node, const ok_string_view p_message) {
-  error_at_noted(p_compiler, p_node, p_message, ok_create_string_view(NULL, 0, false));
-}
-
-void error_at_noted(compiler* p_compiler,
-                    const ast_node* p_node,
-                    const ok_string_view p_message,
-                    const ok_string_view p_note) {
-  report_at_noted(&p_compiler->panic,
-                  &p_compiler->had_error,
-                  p_node->node_type == AST_EOF_STATEMENT,
-                  p_compiler->source,
-                  &p_node->token,
-                  REPORT_SEVERITY_ERROR,
-                  p_message,
-                  p_note);
-}
-
-function* current_function(compiler* p_compiler) {
-  return &p_compiler->functions.data[p_compiler->functions.count - 1];
-}
-
-chunk* current_chunk(compiler* p_compiler) {
-  return &current_function(p_compiler)->function.function->chunk;
-}
-
-scope* current_scope(compiler* p_compiler) {
-  function* fun = current_function(p_compiler);
-  return &fun->scopes.data[fun->scopes.count - 1];
-}
-
-bool emit_byte(compiler* p_compiler, byte p_byte, ast_node* p_node) {
+constant add_constant(compiler* p_compiler, value p_value, ast_node* p_author) {
   chunk* chunk = current_chunk(p_compiler);
-  chunk_write_1byte_code_with_line_info(chunk, p_byte, p_node->token.line_info);
-  return true;
-}
-
-bool emit_2bytes(compiler* p_compiler, byte p_1st_byte, byte p_2nd_byte, ast_node* p_node) {
-  chunk* chunk = current_chunk(p_compiler);
-  chunk_write_2bytes_code_with_line_info(chunk, p_1st_byte, p_2nd_byte, p_node->token.line_info);
-  return true;
-}
-
-bool emit_bytes(compiler* p_compiler, byte* p_bytes, size_t p_bytes_count, ast_node* p_node) {
-  chunk* chunk = current_chunk(p_compiler);
-  chunk_write_code_with_line_info(chunk, p_bytes, p_bytes_count, p_node->token.line_info);
-  return true;
-}
-
-void begin_scope(compiler* p_compiler) {
-  scope scp;
-  scope_init(&scp, p_compiler->alloc);
-  function* fun = current_function(p_compiler);
-  scopes_append(&fun->scopes, scp);
-}
-
-void end_scope(compiler* p_compiler, ast_node* p_node, bool p_needs_pop) {
-  function* fun = current_function(p_compiler);
-  scope* scp = &fun->scopes.data[fun->scopes.count - 1];
-
-  for (uint32_t i = 0; i < scp->locals_array.count; ++i) {
-    uint32_t local_index = scp->locals_array.data[i];
-
-    if (local_test_flag(fun->locals.data[local_index].info, LOCAL_FLAG_CAPTURED)) {
-      emit_byte(p_compiler, OP_CLOSE_UPVALUE, p_node);
-    } else if (p_needs_pop) {
-      emit_byte(p_compiler, OP_POP, p_node);
-    }
-  }
-
-  locals_remove(&fun->locals, fun->locals.count - scp->locals_array.count, fun->locals.count - 1);
-
-  scopes_remove(&fun->scopes, fun->scopes.count - 1, fun->scopes.count - 1);
-}
-
-void scope_init(scope* p_scope, allocators* p_alloc) {
-  scope_locals_init(&p_scope->locals_table, p_alloc);
-  uint32_array_init(&p_scope->locals_array, p_alloc);
-}
-
-void scope_deinit(scope* p_scope, allocators* p_alloc) {
-  scope_locals_deinit(&p_scope->locals_table);
-  uint32_array_deinit(&p_scope->locals_array, p_alloc);
-}
-
-void function_init(function* p_function, object_function* p_obj_function, function_type p_type, allocators* p_alloc) {
-  locals_init(&p_function->locals, p_alloc);
-  upvalues_init(&p_function->upvalues, p_alloc);
-  scopes_init(&p_function->scopes, p_alloc);
-  loop_stack_init(&p_function->loop_stack, p_alloc);
-  p_function->function.function = p_obj_function;
-  p_function->function.type = p_type;
-}
-
-void function_deinit(function* p_function, allocators* p_alloc) {
-  loop_stack_deinit(&p_function->loop_stack, p_alloc);
-  scopes_deinit(&p_function->scopes, p_alloc);
-  upvalues_deinit(&p_function->upvalues, p_alloc);
-  locals_deinit(&p_function->locals, p_alloc);
-  p_function->function.function = NULL;
-  p_function->function.type = FUNCTION_NONE;
-}
-
-void loop_context_init(loop_context* p_context, allocators* p_alloc) {
-  p_context->break_target = 0;
-  p_context->continue_target = 0;
-  p_context->continue_forward = false;
-  uint32_array_init(&p_context->continues, p_alloc);
-  uint32_array_init(&p_context->breaks, p_alloc);
-}
-
-void loop_context_deinit(loop_context* p_context, allocators* p_alloc) {
-  uint32_array_deinit(&p_context->continues, p_alloc);
-  uint32_array_deinit(&p_context->breaks, p_alloc);
-}
-
-upvalue create_upvalue(uint32_t p_index, bool p_is_local) {
-  upvalue up;
-  up.info = p_index & 0x00ffffff;
-  if (p_is_local) {
-    up.info |= UINT32_C(1) << 24;
-  }
-  return up;
-}
-
-uint32_t upvalue_get_index(upvalue* p_upvalue) {
-  return p_upvalue->info & 0x00ffffff;
-}
-
-bool upvalue_is_local(upvalue* p_upvalue) {
-  return (p_upvalue->info & (UINT32_C(1) << 24)) != 0;
-}
-
-uint32_t create_constant(compiler* p_compiler, value p_value, ast_node* p_node) {
-  value_array* constants = &current_function(p_compiler)->function.function->chunk.constants;
-  if (constants->count >= CONSTANT_MAX) {
-    return CONSTANT_OVERFLOW;
-  }
-  if (!value_array_append(constants, p_value)) {
-    return CONSTANT_OVERFLOW;
-  }
-  return constants->count - 1;
-}
-
-bool emit_constant(compiler* p_compiler, value p_value, ast_node* p_node) {
-  chunk* chunk = current_chunk(p_compiler);
-  const uint32_t index = chunk_write_constant_with_line_info(chunk, p_value, p_node->token.line_info);
+  constant index = chunk_add_constant(chunk, p_value, p_author->token.line_info);
   allocators* alloc = p_compiler->alloc;
   if (!IS_CONSTANT_VALID(index)) {
-    if (index == CONSTANT_OVERFLOW) {
-      string note = asprint(alloc, "limit is: %d", CONSTANT_MAX);
+    if (index.errors == CONSTANT_OVERFLOW) {
+      string note = asprint(alloc, "limit is: %d", CONSTANTS_MAX);
       error_at_noted(
           p_compiler,
-          p_node,
+          p_author,
           ok_create_string_view("too many constants in single function.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
           ok_create_string_view_from_string(note));
       string_deinit(&note, alloc);
-    } else if (index == CONSTANT_ALLOCATION_FAILED) {
-      error_at(p_compiler,
-               p_node,
-               ok_create_string_view("failed to allocate memory for constant.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
-    }
-  }
-  return IS_CONSTANT_VALID(index);
-}
-
-bool emit_default_return(compiler* p_compiler, ast_node* p_node) {
-  return emit_2bytes(p_compiler, OP_NULL, OP_RETURN, p_node);
-}
-
-static bool compile_node(compiler* p_compiler, ast_node* p_node) {
-  allocators* alloc = p_compiler->alloc;
-  if (p_node == NULL) {
-    return false;
-  }
-  switch (p_node->node_type) {
-  case AST_ROOT:
-    return compile_root(p_compiler, (ast_root*)p_node);
-  case AST_BINDING:
-    assert(false);
-  case AST_IDENTIFIER_EXPRESSION:
-    return compile_identifier(p_compiler, (ast_identifier_expression*)p_node);
-  case AST_NUMBER_EXPRESSION:
-    return compile_number_expression(p_compiler, (ast_number_expression*)p_node);
-  case AST_STRING_EXPRESSION:
-    return compile_string_expression(p_compiler, (ast_string_expression*)p_node);
-  case AST_PREFIX_UNARY_EXPRESSION:
-    return compile_prefix_unary_expression(p_compiler, (ast_prefix_unary_expression*)p_node);
-  case AST_INFIX_BINARY_EXPRESSION:
-    return compile_infix_binary_expression(p_compiler, (ast_infix_binary_expression*)p_node);
-  case AST_POSTFIX_UNARY_EXPRESSION:
-    return compile_postfix_unary_expression(p_compiler, (ast_postfix_unary_expression*)p_node);
-  case AST_CALL_EXPRESSION:
-    return compile_call_expression(p_compiler, (ast_call_expression*)p_node);
-  case AST_ASSIGN_EXPRESSION:
-    return compile_assign_expression(p_compiler, (ast_assign_expression*)p_node);
-  case AST_COMPOUND_ASSIGN_EXPRESSION:
-  case AST_OPERATOR_EXPRESSION:
-  case AST_CONDITIONAL_EXPRESSION:
-    assert(0);
-  case AST_BOOLEAN_EXPRESSION:
-    return compile_boolean_expression(p_compiler, (ast_boolean_expression*)p_node);
-  case AST_NULL_EXPRESSION:
-    return compile_null_expression(p_compiler, (ast_null_expression*)p_node);
-  case AST_FUNCTION_EXPRESSION:
-    return compile_function_expression(p_compiler, (ast_function_expression*)p_node);
-  case AST_ACCESS_EXPRESSION:
-  case AST_THIS_EXPRESSION:
-  case AST_SUPER_EXPRESSION:
-  case AST_ARRAY_EXPRESSION:
-  case AST_MAP_EXPRESSION:
-  case AST_SUBSCRIPT_EXPRESSION:
-    assert(0);
-  case AST_EMPTY_STATEMENT:
-    // return true;
-    assert(0); // parser bug
-  case AST_EXPRESSION_STATEMENT:
-    return compile_expression_statement(p_compiler, (ast_expression_statement*)p_node);
-  case AST_PRINT_STATEMENT:
-    return compile_print_statement(p_compiler, (ast_print_statement*)p_node);
-  case AST_COMPOUND_STATEMENT:
-    return compile_compound_statement(p_compiler, (ast_compound_statement*)p_node);
-  case AST_IF_STATEMENT:
-    return compile_if_statement(p_compiler, (ast_if_statement*)p_node);
-  case AST_WHILE_STATEMENT:
-    return compile_while_statement(p_compiler, (ast_while_statement*)p_node);
-  case AST_FOR_STATEMENT:
-    return compile_for_statement(p_compiler, (ast_for_statement*)p_node);
-  case AST_CONTROL_FLOW_STATEMENT:
-    return compile_control_flow_statement(p_compiler, (ast_control_flow_statement*)p_node);
-  case AST_RETURN_STATEMENT:
-    return compile_return_statement(p_compiler, (ast_return_statement*)p_node);
-  case AST_THROW_STATEMENT:
-  case AST_TRY_STATEMENT:
-  case AST_CATCH_STATEMENT:
-  case AST_FINALIZE_STATEMENT:
-  case AST_TRY_CATCH_STATEMENT:
-    assert(0);
-
-  case AST_LET_DECLARATION:
-    return compile_let_declration(p_compiler, (ast_let_declaration*)p_node);
-  case AST_FUNCTION_DECLARATION:
-    return compile_function_declaration(p_compiler, (ast_function_declaration*)p_node);
-  case AST_CLASS_DECLARATION:
-    assert(0);
-  case AST_EOF_STATEMENT:
-    return compile_eof_statement(p_compiler, (ast_eof_statement*)p_node);
-  default: {
-    string message = asprint(alloc, "unable to compile node: %d", p_node->node_type);
-    error_at(p_compiler, p_node, ok_create_string_view_from_string(message));
-    string_deinit(&message, alloc);
-    return false;
-  }
-  }
-}
-
-static bool compile_root(compiler* p_compiler, ast_root* p_root) {
-  bool res = true;
-  for (uint32_t i = 0; i < p_root->statements.count; ++i) {
-    res &= compile_node(p_compiler, (ast_node*)p_root->statements.data[i]);
-    p_compiler->panic = false;
-  }
-  return res;
-}
-
-static uint32_t add_global(compiler* p_compiler, variable_declaration p_declaration, ast_node* p_node) {
-  allocators* alloc = p_compiler->alloc;
-  chunk* chunk = current_chunk(p_compiler);
-  uint32_t index = globals_store_add(p_compiler->globals_store,
-                                     p_declaration.identifier,
-                                     (p_declaration.flags & VARIABLE_DECLARATION_FLAGS_MUTABLE) != 0);
-  if (!IS_GLOBAL_VALID(index)) {
-    if (index == GLOBAL_ALLOCATION_FAILED) {
-      error_at(p_compiler,
-               p_node,
-               ok_create_string_view(
-                   "failed to allocate memory for global identifier.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
-      return index;
-    } else if (index == GLOBAL_OVERFLOW) {
-      string note = asprint(alloc, "limit is: %u", GLOBAL_MAX);
-      error_at_noted(p_compiler,
-                     p_node,
-                     ok_create_string_view("too many identifiers.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-                     ok_create_string_view_from_string(note));
-      string_deinit(&note, alloc);
-    }
-  }
-  return global_get_raw_index(index);
-}
-
-static bool
-define_global(compiler* p_compiler, uint32_t p_global, const variable_declaration_flags p_flags, ast_node* p_node) {
-  p_global = global_get_raw_index(
-      p_global); // it won't matter currently, but if global changed how it stores flags this could cause problems!
-  if (p_global < OP_SET_GLOBAL_MAX + 1) {
-    emit_2bytes(p_compiler, OP_SET_GLOBAL, p_global, p_node);
-    emit_byte(p_compiler, OP_POP, p_node);
-  } else if (p_global < OP_SET_GLOBAL_LONG_MAX + 1) {
-    emit_byte(p_compiler, OP_SET_GLOBAL_LONG, p_node);
-    byte bytes[UINT24_BYTE_COUNT];
-    encode_int(bytes, UINT24_BYTE_COUNT, p_global);
-    emit_bytes(p_compiler, bytes, UINT24_BYTE_COUNT, p_node);
-    emit_byte(p_compiler, OP_POP, p_node);
-  } else {
-    return false;
-  }
-  return true;
-}
-
-static uint32_t*
-resolve_local(compiler* p_compiler, hashed_string* p_identifier, function* p_function, ast_node* p_node) {
-  uint32_t* index = NULL;
-  uint32_t depth = p_function->scopes.count;
-  while (index == NULL && depth != 0) {
-    index = scope_locals_get(&p_function->scopes.data[--depth].locals_table, *p_identifier);
-    // TODO: report that we skipped if we couldn't resolve other local with same name.
-    if (index != NULL && local_test_flag(p_function->locals.data[*index].info,
-                                         LOCAL_FLAG_UNINITIALIZED)) { // let x; { let x = x; /* skip the inner */ }
-      index = NULL;
+    } else if (index.errors == CONSTANT_ALLOCATION_FAILED) {
+      report_oom(p_compiler, p_author);
     }
   }
   return index;
 }
 
-uint32_t add_local(compiler* p_compiler, const variable_declaration p_declration, ast_node* p_node) {
-  allocators* alloc = p_compiler->alloc;
-  hashed_string hs = create_hashed_string_hash(p_declration.identifier, alloc);
-  if (hs.string.chars == NULL) {
-    error_at(
-        p_compiler,
-        p_node,
-        ok_create_string_view("failed to allocate memory for hashed string.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
-    return LOCAL_ERROR;
+static bool compile_root(compiler* p_compiler, ast_root* p_root) {
+  bool res = true;
+  for (uint32_t i = 0; i < p_root->statements.count; ++i) {
+    res &= compile_statement(p_compiler, (ast_statement*)p_root->statements.data[i]);
+    p_compiler->panic = false;
   }
-  scope* scp = current_scope(p_compiler);
-  uint32_t* resolved = scope_locals_get(&scp->locals_table, hs);
-  if (resolved == NULL) {
-    function* fun = current_function(p_compiler);
-    local local;
-    uint32_t index = fun->locals.count;
-    if (index > LOCALS_MAX) {
-      string note = asprint(alloc, "limit is: %d.", LOCALS_MAX);
-      error_at_noted(
-          p_compiler,
-          p_node,
-          ok_create_string_view("too many local variables in the same scope.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-          ok_create_string_view_from_string(note));
-      string_deinit(&note, alloc);
-      hashed_string_deinit(&hs, alloc);
-      return LOCAL_OVERFLOW;
-    }
-    local.info = index & LOCAL_FLAGS_MASK;
-    local_set_flag(&local.info, LOCAL_FLAG_UNINITIALIZED);
-    if ((p_declration.flags & VARIABLE_DECLARATION_FLAGS_MUTABLE) != 0) {
-      local_set_flag(&local.info, LOCAL_FLAG_MUTABLE);
-    }
-    if (!locals_append(&fun->locals, local)) {
-      error_at_noted(
-          p_compiler,
-          p_node,
-          ok_create_string_view("failed to add local to the locals array.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-          ok_create_string_view("you might be out of memory.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
-      hashed_string_deinit(&hs, alloc);
-      return LOCAL_ERROR;
-    }
-    if (!uint32_array_append(&current_scope(p_compiler)->locals_array, fun->locals.count - 1)) {
-      error_at_noted(
-          p_compiler,
-          p_node,
-          ok_create_string_view("failed to add local to the locals array.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-          ok_create_string_view("you might be out of memory.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
-      locals_remove(&fun->locals, fun->locals.count - 1, fun->locals.count - 1);
-      return LOCAL_ERROR;
-    }
-    if (!scope_locals_set(&current_scope(p_compiler)->locals_table, hs, fun->locals.count - 1)) {
-      error_at_noted(
-          p_compiler,
-          p_node,
-          ok_create_string_view("failed to add local to the locals table.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-          ok_create_string_view("you might be out of memory.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
-      hashed_string_deinit(&hs, alloc);
-      locals_remove(&fun->locals, fun->locals.count - 1, fun->locals.count - 1);
-      return LOCAL_ERROR;
-    }
-    return index;
-  }
-  string name = create_string_from_string_view(p_declration.identifier, alloc);
-  string message = asprint(alloc, "redefining local: '%s' in the same scope.", name.chars);
-  error_at(p_compiler, p_node, ok_create_string_view_from_string(message));
-  string_deinit(&message, alloc);
-  string_deinit(&name, alloc);
-  hashed_string_deinit(&hs, alloc);
-  return REDEFINED_LOCAL;
-}
-
-bool push_function(
-    compiler* p_compiler, ok_string_view p_name, function_type p_type, uint8_t p_arity, ast_node* p_node) {
-  function fun;
-  allocators* alloc = p_compiler->alloc;
-  object_specs s = {alloc, p_compiler->objects_store};
-  object_string* obj_str = create_object_string(p_name, &s);
-  if (obj_str == NULL) {
-    return false;
-  }
-  gc_guard_up(alloc->gc, OBJECT_AS_VALUE(obj_str));
-  object_function* obj_fu = create_object_function(obj_str, p_arity, &s);
-  gc_guard_down(alloc->gc);
-  if (obj_fu == NULL) {
-    return false;
-  }
-  gc_guard_up(alloc->gc, OBJECT_AS_VALUE(obj_fu));
-  function_init(&fun, obj_fu, p_type, alloc);
-  const bool res = functions_append(&p_compiler->functions, fun);
-  gc_guard_down(alloc->gc);
   return res;
 }
 
-static uint32_t declare_variable(compiler* p_compiler, const variable_declaration p_declration, ast_node* p_node) {
-  if ((p_declration.flags & VARIABLE_DECLARATION_FLAGS_GLOBAL) == 0) {
-    return add_local(p_compiler, p_declration, p_node);
+static bool compile_statement(compiler* p_compiler, ast_statement* p_statement) {
+  ASSERT_MSG(p_statement->node.node_type >= AST_RANGE_STATEMENT_BEGIN &&
+                 p_statement->node.node_type <= AST_RANGE_STATEMENT_END,
+             "invalid statement.");
+  // statements own the temps they allocate: reset the temps after each one.
+  // reset to local_top: the statement may have added locals,
+  // and a stale checkpoint would truncate metadata below the locals.
+  register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
+  bool result;
+  switch (p_statement->node.node_type) {
+  case AST_EMPTY_STATEMENT:
+    ASSERT_MSG(false, "empty statement leaked to compiler.");
+    result = false;
+    break;
+  case AST_EXPRESSION_STATEMENT:
+    result = compile_expression_statement(p_compiler, (ast_expression_statement*)p_statement);
+    break;
+  case AST_PRINT_STATEMENT:
+    result = compile_print_statement(p_compiler, (ast_print_statement*)p_statement);
+    break;
+  case AST_COMPOUND_STATEMENT:
+    result = compile_compound_statement(p_compiler, (ast_compound_statement*)p_statement);
+    break;
+  case AST_IF_STATEMENT:
+    result = compile_if_statement(p_compiler, (ast_if_statement*)p_statement);
+    break;
+  case AST_WHILE_STATEMENT:
+    result = compile_while_statement(p_compiler, (ast_while_statement*)p_statement);
+    break;
+  case AST_FOR_STATEMENT:
+    result = compile_for_statement(p_compiler, (ast_for_statement*)p_statement);
+    break;
+  case AST_CONTROL_FLOW_STATEMENT:
+    result = compile_control_flow_statement(p_compiler, (ast_control_flow_statement*)p_statement);
+    break;
+  case AST_RETURN_STATEMENT:
+    result = compile_return_statement(p_compiler, (ast_return_statement*)p_statement);
+    break;
+  case AST_LET_DECLARATION:
+    result = compile_let_declration(p_compiler, (ast_let_declaration*)p_statement);
+    break;
+  case AST_FUNCTION_DECLARATION:
+    result = compile_function_declaration(p_compiler, (ast_function_declaration*)p_statement);
+    break;
+  case AST_EOF_STATEMENT:
+    result = compile_eof_statement(p_compiler, (ast_eof_statement*)p_statement);
+    break;
+  default:
+    CRASH_MSG(false, "unimplemented statement.");
+    result = false;
   }
-  return add_global(p_compiler, p_declration, p_node);
+  register_allocator_reset_temps(regalloc, regalloc->local_top);
+  return result;
+}
+
+static bool compile_expression(compiler* p_compiler,
+                               ast_expression* p_expression,
+                               _register p_dest,
+                               uint32_t p_requested_count,
+                               expression_result* p_out) {
+  ASSERT_MSG(p_expression->node.node_type >= AST_RANGE_EXPRESSION_BEGIN &&
+                 p_expression->node.node_type <= AST_RANGE_EXPRESSION_END,
+             "invalid expression.");
+  register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
+  const uint32_t checkpoint = regalloc->temp_top;
+  bool result = false;
+  switch (p_expression->node.node_type) {
+  case AST_IDENTIFIER_EXPRESSION:
+    result = compile_identifier(p_compiler, (ast_identifier_expression*)p_expression, p_dest, p_requested_count, p_out);
+    break;
+  case AST_NUMBER_EXPRESSION:
+    result =
+        compile_number_expression(p_compiler, (ast_number_expression*)p_expression, p_dest, p_requested_count, p_out);
+    break;
+  case AST_STRING_EXPRESSION:
+    result =
+        compile_string_expression(p_compiler, (ast_string_expression*)p_expression, p_dest, p_requested_count, p_out);
+    break;
+  case AST_PREFIX_UNARY_EXPRESSION:
+    result = compile_prefix_unary_expression(
+        p_compiler, (ast_prefix_unary_expression*)p_expression, p_dest, p_requested_count, p_out);
+    break;
+  case AST_INFIX_BINARY_EXPRESSION:
+    result = compile_infix_binary_expression(
+        p_compiler, (ast_infix_binary_expression*)p_expression, p_dest, p_requested_count, p_out);
+    break;
+  case AST_POSTFIX_UNARY_EXPRESSION:
+    result = compile_postfix_unary_expression(
+        p_compiler, (ast_postfix_unary_expression*)p_expression, p_dest, p_requested_count, p_out);
+    break;
+  case AST_CALL_EXPRESSION:
+    result = compile_call_expression(p_compiler, (ast_call_expression*)p_expression, p_dest, p_requested_count, p_out);
+    break;
+  case AST_ASSIGN_EXPRESSION:
+    result =
+        compile_assign_expression(p_compiler, (ast_assign_expression*)p_expression, p_dest, p_requested_count, p_out);
+    break;
+  case AST_BOOLEAN_EXPRESSION:
+    result =
+        compile_boolean_expression(p_compiler, (ast_boolean_expression*)p_expression, p_dest, p_requested_count, p_out);
+    break;
+  case AST_NULL_EXPRESSION:
+    result = compile_null_expression(p_compiler, (ast_null_expression*)p_expression, p_dest, p_requested_count, p_out);
+    break;
+  case AST_FUNCTION_EXPRESSION:
+    result = compile_function_expression(
+        p_compiler, (ast_function_expression*)p_expression, p_dest, p_requested_count, p_out);
+    break;
+  default: {
+    CRASH_MSG(false, "unimplemented expression.");
+  }
+  }
+  register_allocator_reset_temps(regalloc, checkpoint);
+  return result;
+}
+
+static bool materialize_value(compiler* p_compiler, _register p_dest, location p_value, ast_node* p_author) {
+  opcode op;
+  opcode op_long;
+  switch (p_value.kind) {
+  case LOCATION_KIND_REGISTER:
+    op = OP_MOVE;
+    op_long = OP_MOVE_LONG;
+    break;
+  case LOCATION_KIND_CONSTANT:
+    op = OP_LOAD_CONSTANT;
+    op_long = OP_LOAD_CONSTANT_LONG;
+    break;
+  case LOCATION_KIND_GLOBAL:
+    op = OP_LOAD_GLOBAL;
+    op_long = OP_LOAD_GLOBAL_LONG;
+    break;
+  case LOCATION_KIND_UPVALUE:
+    op = OP_LOAD_UPVALUE;
+    op_long = OP_LOAD_UPVALUE_LONG;
+    break;
+  default:
+    CRASH_MSG(false, "unimplemented rhs location.");
+    break;
+  }
+  if (p_dest.index > aprime_MAX || p_value.index > bprime_MAX) {
+    if (!emit_word2(p_compiler, encode_OPPABCQ(op_long, false, p_dest.index, p_value.index, 0, 0), p_author)) {
+      report_oom(p_compiler, p_author);
+      return false;
+    }
+  } else {
+    if (!emit_word(p_compiler, encode_oppabprime(op, false, p_dest.index, p_value.index), p_author)) {
+      report_oom(p_compiler, p_author);
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool write_local(compiler* p_compiler, _register p_local, expression_result p_value, ast_node* p_author) {
+  ASSERT_MSG(p_value.count == 1, "write local only accepts one value.");
+  return materialize_value(p_compiler, p_local, p_value.value, p_author);
+}
+
+// guarantee the value lives in p_dest (move between registers, load constants/globals/upvalues)
+static bool materialize_into(compiler* p_compiler, location* p_location, _register p_dest, ast_node* p_author) {
+  if (p_location->kind == LOCATION_KIND_REGISTER && p_location->index == p_dest.index) {
+    return true;
+  }
+  if (!materialize_value(p_compiler, p_dest, *p_location, p_author)) {
+    return false;
+  }
+  p_location->index = p_dest.index;
+  p_location->kind = LOCATION_KIND_REGISTER;
+  p_location->error = LOCATION_OK;
+  return true;
 }
 
 static bool
-define_variable(compiler* p_compiler, const variable_declaration p_declration, uint32_t p_index, ast_node* p_node) {
-  if ((p_declration.flags & VARIABLE_DECLARATION_FLAGS_GLOBAL) == 0) {
-    function* fun = current_function(p_compiler);
-    local* local = &fun->locals.data[p_index];
-    local_remove_flag(&local->info, LOCAL_FLAG_UNINITIALIZED);
+materialize_into_if_not_register(compiler* p_compiler, location* p_location, _register p_dest, ast_node* p_author) {
+  if (p_location->kind == LOCATION_KIND_REGISTER) {
     return true;
   }
-  return define_global(p_compiler, p_index, p_declration.flags, p_node);
+  if (!materialize_value(p_compiler, p_dest, *p_location, p_author)) {
+    return false;
+  }
+  p_location->index = p_dest.index;
+  p_location->kind = LOCATION_KIND_REGISTER;
+  p_location->error = LOCATION_OK;
+  return true;
+}
+
+static bool materialize_if_not_register(compiler* p_compiler, location* p_location, ast_node* p_author) {
+  if (p_location->kind == LOCATION_KIND_REGISTER) {
+    return true;
+  }
+  _register temp;
+  if (!register_allocator_allocate_temp(&current_context(p_compiler)->register_allocator, &temp)) {
+    report_oom(p_compiler, p_author);
+    return false;
+  }
+  if (!materialize_value(p_compiler, temp, *p_location, p_author)) {
+    return false;
+  }
+  p_location->index = temp.index;
+  p_location->kind = LOCATION_KIND_REGISTER;
+  p_location->error = LOCATION_OK;
+  return true;
+}
+
+static bool materialize_into_if_not_common(
+    compiler* p_compiler, bool* p_is_constant, location* p_location, _register p_dest, ast_node* p_author) {
+  *p_is_constant = false;
+  switch (p_location->kind) {
+  case LOCATION_KIND_CONSTANT:
+    *p_is_constant = true;
+    break;
+  case LOCATION_KIND_REGISTER:
+    break;
+  default: {
+    if (!materialize_value(p_compiler, p_dest, *p_location, p_author)) {
+      return false;
+    }
+    p_location->index = p_dest.index;
+    p_location->kind = LOCATION_KIND_REGISTER;
+    p_location->error = LOCATION_OK;
+    break;
+  }
+  }
+  return true;
+}
+
+static bool
+materialize_if_not_common(compiler* p_compiler, bool* p_is_constant, location* p_location, ast_node* p_author) {
+  *p_is_constant = false;
+  switch (p_location->kind) {
+  case LOCATION_KIND_CONSTANT:
+    *p_is_constant = true;
+    break;
+  case LOCATION_KIND_REGISTER:
+    break;
+  default: {
+    _register temp;
+    if (!register_allocator_allocate_temp(&current_context(p_compiler)->register_allocator, &temp)) {
+      report_oom(p_compiler, p_author);
+      return false;
+    }
+    if (!materialize_value(p_compiler, temp, *p_location, p_author)) {
+      return false;
+    }
+    p_location->index = temp.index;
+    p_location->kind = LOCATION_KIND_REGISTER;
+    p_location->error = LOCATION_OK;
+    break;
+  }
+  }
+  return true;
+}
+
+static bool write_global(compiler* p_compiler, global_id p_global, expression_result p_value, ast_node* p_author) {
+  ASSERT_MSG(p_value.count == 1, "write global only accepts one value.");
+  bool is_constant = false;
+  global glob = p_compiler->globals_store->global_descriptors.data[p_global.index];
+  if (!materialize_if_not_common(p_compiler, &is_constant, &p_value.value, p_author)) {
+    return false;
+  }
+  if (p_global.index > aprime_MAX || p_value.value.index > bprime_MAX) {
+    if (!emit_word2(p_compiler,
+                    encode_OPPABCQ(OP_STORE_GLOBAL_LONG, is_constant, glob.index, p_value.value.index, 0, 0),
+                    p_author)) {
+      report_oom(p_compiler, p_author);
+      return false;
+    }
+  } else {
+    if (!emit_word(
+            p_compiler, encode_oppabprime(OP_STORE_GLOBAL, is_constant, glob.index, p_value.value.index), p_author)) {
+      report_oom(p_compiler, p_author);
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool write_upvalue(compiler* p_compiler, upvalue p_upvalue, expression_result p_value, ast_node* p_author) {
+  ASSERT_MSG(p_value.count == 1, "write upvalue only accepts one value.");
+  bool is_constant = false;
+  if (!materialize_if_not_common(p_compiler, &is_constant, &p_value.value, p_author)) {
+    return false;
+  }
+  if (p_upvalue.index > aprime_MAX || p_value.value.index > bprime_MAX) {
+    if (!emit_word2(p_compiler,
+                    encode_OPPABCQ(OP_STORE_UPVALUE_LONG, is_constant, p_upvalue.index, p_value.value.index, 0, 0),
+                    p_author)) {
+      report_oom(p_compiler, p_author);
+      return false;
+    }
+  } else {
+    if (!emit_word(p_compiler,
+                   encode_oppabprime(OP_STORE_UPVALUE, is_constant, p_upvalue.index, p_value.value.index),
+                   p_author)) {
+      report_oom(p_compiler, p_author);
+      return false;
+    }
+  }
+  return true;
+}
+
+static global add_global(compiler* p_compiler, variable_declaration p_declaration, ast_node* p_author) {
+  allocators* alloc = p_compiler->alloc;
+  chunk* chunk = current_chunk(p_compiler);
+  global index = globals_store_add(p_compiler->globals_store,
+                                   p_declaration.identifier,
+                                   (p_declaration.flags & VARIABLE_DECLARATION_FLAGS_MUTABLE) != 0);
+  if (!IS_GLOBAL_VALID(index)) {
+    if (index.errors == GLOBAL_ALLOCATION_FAILED) {
+      report_oom(p_compiler, p_author);
+      return index;
+    } else if (index.errors == GLOBAL_OVERFLOW) {
+      string note = asprint(alloc, "limit is: %u", GLOBAL_MAX);
+      error_at_noted(p_compiler,
+                     p_author,
+                     ok_create_string_view("too many identifiers.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                     ok_create_string_view_from_string(note));
+      string_deinit(&note, alloc);
+    }
+  }
+  return index;
+}
+
+static bool define_local(compiler* p_compiler, location p_local, expression_result p_value, ast_node* p_author) {
+  compile_context* ctx = current_context(p_compiler);
+  _register* local = &ctx->register_allocator.registers.data[p_local.index];
+  local->flags &= ~REGISTER_FLAG_UNINITIALIZED;
+  if (p_value.value.kind == LOCATION_KIND_REGISTER && p_value.value.index == local->index) {
+    return true;
+  }
+  return write_local(p_compiler, *local, p_value, p_author);
+}
+
+static bool define_global(compiler* p_compiler, location p_global, expression_result p_value, ast_node* p_author) {
+  return write_global(p_compiler, (global){p_global.index, GLOBAL_FLAG_NONE, GLOBAL_OK}, p_value, p_author);
+}
+
+static _register* resolve_local(compile_context* p_context, hashed_string* p_identifier, scope** p_owning) {
+  uint16_t* sindex = NULL;
+  uint32_t depth = p_context->scopes.count;
+  while (sindex == NULL && depth != 0) {
+    scope* scp = &p_context->scopes.data[--depth];
+
+    // the table value IS the register slot (scope_registers_set stores reg.index directly),
+    sindex = scope_registers_get(&scp->registers_table, *p_identifier);
+    // TODO: report that we skipped if we couldn't resolve other local with same name.
+    if (sindex != NULL &&
+        (p_context->register_allocator.registers.data[*sindex].flags & REGISTER_FLAG_UNINITIALIZED) != 0) {
+      // let x; { let x = x; /* skip the inner */ }
+      sindex = NULL;
+    }
+  }
+  if (sindex == NULL) {
+    return NULL;
+  }
+  *p_owning = &p_context->scopes.data[depth];
+  return &p_context->register_allocator.registers.data[*sindex];
+}
+
+static location declare_variable(compiler* p_compiler, const variable_declaration p_declration, ast_node* p_node) {
+  if ((p_declration.flags & VARIABLE_DECLARATION_FLAGS_GLOBAL) == 0) {
+    _register local = add_local(p_compiler, p_declration, p_node);
+    return (location){local.index, LOCATION_KIND_REGISTER, IS_REGISTER_VALID(local) ? LOCATION_OK : LOCATION_INVALID};
+  }
+  global glob = add_global(p_compiler, p_declration, p_node);
+  return (location){glob.index, LOCATION_KIND_GLOBAL, IS_GLOBAL_VALID(glob) ? LOCATION_OK : LOCATION_INVALID};
+}
+
+static bool define_variable(compiler* p_compiler, location p_variable, expression_result p_value, ast_node* p_author) {
+  if (p_variable.kind == LOCATION_KIND_REGISTER) {
+    return define_local(p_compiler, p_variable, p_value, p_author);
+  }
+  ASSERT(p_variable.kind == LOCATION_KIND_GLOBAL);
+  return define_global(p_compiler, p_variable, p_value, p_author);
+}
+
+static bool register_for_location(compiler* p_compiler, location p_location, _register* p_dest) {
+  if (p_location.kind == LOCATION_KIND_REGISTER) {
+    *p_dest = (_register){p_location.index, REGISTER_FLAG_NONE, REGISTER_OK};
+    return true;
+  }
+  return register_allocator_allocate_temp(&current_context(p_compiler)->register_allocator, p_dest);
 }
 
 static variable_declaration_flags_t variable_declaration_flags_from_modifiers(ast_declaration_modifiers_t p_declmods,
@@ -634,13 +935,20 @@ static bool compile_let_declration(compiler* p_compiler, ast_let_declaration* p_
   variable_declaration vardecl = {
       .identifier = name,
       .flags = variable_declaration_flags_from_modifiers(p_let->declaration.modifiers, p_let->binding->modifiers)};
-  compile_node(p_compiler, (ast_node*)p_let->value);
-  uint32_t variable = declare_variable(p_compiler, vardecl, (ast_node*)p_let);
-  if (!IS_VARIABLE_DECLARATION_VALID(variable)) {
+  location variable = declare_variable(p_compiler, vardecl, (ast_node*)p_let);
+  if (variable.error != LOCATION_OK) {
     return false;
   }
-  bool result = define_variable(p_compiler, vardecl, variable, (ast_node*)p_let);
-  return result;
+  expression_result value;
+  _register dest;
+  if (!register_for_location(p_compiler, variable, &dest)) {
+    report_oom(p_compiler, (ast_node*)p_let);
+    return false;
+  }
+  if (!compile_expression(p_compiler, p_let->value, dest, 1, &value)) {
+    return false;
+  }
+  return define_variable(p_compiler, variable, value, (ast_node*)p_let);
 }
 
 static bool compile_function_declaration(compiler* p_compiler, ast_function_declaration* p_fu) {
@@ -648,230 +956,257 @@ static bool compile_function_declaration(compiler* p_compiler, ast_function_decl
   variable_declaration vardecl = {
       .identifier = name,
       .flags = variable_declaration_flags_from_modifiers(p_fu->declaration.modifiers, p_fu->binding->modifiers)};
-  uint32_t index = declare_variable(p_compiler, vardecl, (ast_node*)p_fu);
-  if (IS_VARIABLE_DECLARATION_VALID(index)) {
-    bool status =
-        compile_function_impl(p_compiler, name, FUNCTION_FUNCTION, p_fu->parameters, p_fu->body, (ast_node*)p_fu);
-    return status & define_variable(p_compiler, vardecl, index, (ast_node*)p_fu);
+  location variable = declare_variable(p_compiler, vardecl, (ast_node*)p_fu);
+  if (variable.error != LOCATION_OK) {
+    return false;
   }
-  return false;
+  expression_result value;
+  _register dest;
+  if (!register_for_location(p_compiler, variable, &dest)) {
+    report_oom(p_compiler, (ast_node*)p_fu);
+    return false;
+  }
+  if (!compile_function_impl(
+          p_compiler, name, FUNCTION_FUNCTION, p_fu->parameters, p_fu->body, dest, &value, (ast_node*)p_fu)) {
+    return false;
+  }
+  return define_variable(p_compiler, variable, value, (ast_node*)p_fu);
 }
 
 static bool compile_expression_statement(compiler* p_compiler, ast_expression_statement* p_expression_statement) {
-  if (compile_node(p_compiler, (ast_node*)p_expression_statement->expression)) {
-    return emit_byte(p_compiler, OP_POP, (ast_node*)p_expression_statement);
+  expression_result value;
+  _register devnull;
+  register_allocator_allocate_temp(&current_context(p_compiler)->register_allocator, &devnull);
+  devnull.flags |= REGISTER_FLAG_DEVNULL;
+  return compile_expression(p_compiler, p_expression_statement->expression, devnull, 0, &value);
+}
+
+static bool
+store_global(compiler* p_compiler, location p_global_location, expression_result p_value, ast_node* p_author) {
+  const global_id glob = p_compiler->globals_store->global_descriptors.data[p_global_location.index];
+  if ((glob.flags & GLOBAL_FLAG_MUTABLE) == 0) {
+    // TODO abstract
+    error_at_noted(p_compiler,
+                   p_author,
+                   ok_create_string_view(
+                       "attempting to mutate an immutable global variable.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                   ok_create_string_view("did you forget to declare it 'mut'?", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return false;
+  }
+  return write_global(p_compiler, glob, p_value, p_author);
+}
+
+static bool
+store_local(compiler* p_compiler, location p_local_location, expression_result p_value, ast_node* p_author) {
+  allocators* alloc = p_compiler->alloc;
+  _register local = current_context(p_compiler)->register_allocator.registers.data[p_local_location.index];
+  if ((local.flags & REGISTER_FLAG_MUTABLE) == 0) {
+    error_at_noted(p_compiler,
+                   p_author,
+                   ok_create_string_view(
+                       "attempting to mutate an immutable local variable.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                   ok_create_string_view("did you forget to declare it 'mut'?", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return false;
+  }
+  return write_local(p_compiler, local, p_value, p_author);
+}
+
+static upvalue add_upvalue(compiler* p_compiler, compile_context* p_ctx, upvalue p_upvalue, ast_node* p_author) {
+  allocators* alloc = p_compiler->alloc;
+  // the array stores semantic indices (captured local's slot, or parent's upvalue position),
+  // but the returned index must be the position in this context's upvalues array, because
+  // callers use it to index the array (store_upvalue / load paths).
+  for (uint32_t i = 0; i < p_ctx->upvalues.count; ++i) {
+    upvalue up = p_ctx->upvalues.data[i];
+    if (up.index == p_upvalue.index && up.flags == p_upvalue.flags) {
+      p_upvalue.index = (ok_index)i;
+      p_upvalue.errors = UPVALUE_OK;
+      return p_upvalue;
+    }
+  }
+  if (p_ctx->upvalues.count >= UPVALUES_MAX) {
+    p_upvalue.error = UPVALUE_OVERFLOW;
+    string note = asprint(alloc, "limit is: %d.", UPVALUES_MAX);
+    error_at_noted(
+        p_compiler,
+        p_author,
+        ok_create_string_view("too many upvalues in a single function.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+        ok_create_string_view_from_string(note));
+    string_deinit(&note, alloc);
+    return p_upvalue;
+  }
+  if (!upvalues_append(&p_ctx->upvalues, p_upvalue)) {
+    p_upvalue.errors = UPVALUE_ALLOCATION_FAILED;
+    report_oom(p_compiler, p_author);
+    return p_upvalue;
+  }
+  p_upvalue.index = (ok_index)(p_ctx->upvalues.count - 1);
+  p_upvalue.errors = UPVALUE_OK;
+  return p_upvalue;
+}
+
+static upvalue
+resolve_upvalue(compiler* p_compiler, uint32_t p_context_index, hashed_string p_identifier, ast_node* p_author) {
+  const uint32_t contexts = p_compiler->contexts.count;
+  upvalue u = {0, UPVALUE_FLAG_LOCAL, UPVALUE_OK};
+  if (contexts < p_context_index + 2) {
+    u.error = UPVALUE_UNDEFINED;
+    return u;
+  }
+
+  compile_context* current = &p_compiler->contexts.data[contexts - p_context_index - 1];
+  compile_context* up = &p_compiler->contexts.data[contexts - p_context_index - 2];
+  scope* scp;
+  _register* local_reg = resolve_local(up, &p_identifier, &scp);
+  if (local_reg != NULL) {
+    local_reg->flags |= REGISTER_FLAG_CAPTURED;
+    u.index = local_reg->index;
+    u.flags = UPVALUE_FLAG_LOCAL;
+    scp->captures_any = true;
+
+    if ((local_reg->flags & REGISTER_FLAG_MUTABLE) != 0) {
+      u.flags |= UPVALUE_FLAG_MUTABLE;
+    }
+    return add_upvalue(p_compiler, current, u, p_author);
+  }
+  u = resolve_upvalue(p_compiler, p_context_index + 1, p_identifier, p_author);
+  if (u.error != UPVALUE_UNDEFINED) {
+    u.flags = (u.flags & UPVALUE_FLAG_MUTABLE) != 0 ? UPVALUE_FLAG_MUTABLE | UPVALUE_FLAG_UP : UPVALUE_FLAG_UP;
+    return add_upvalue(p_compiler, current, u, p_author);
+  }
+  return u;
+}
+
+static bool store_upvalue(compiler* p_compiler, location p_upvalue, expression_result p_value, ast_node* p_author) {
+  upvalue up = current_context(p_compiler)->upvalues.data[p_upvalue.index];
+  if ((up.flags & UPVALUE_FLAG_MUTABLE) == 0) {
+    error_at_noted(p_compiler,
+                   p_author,
+                   ok_create_string_view(
+                       "attempting to mutate an immutable upvalue variable.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                   ok_create_string_view("did you forget to declare it 'mut'?", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return false;
+  }
+  // the operand must be the position in this function's upvalue array (the location index),
+  // it should not be the stored entry's semantic index (the captured local's slot),
+  // thus we construct and upvalue.
+  return write_upvalue(
+      p_compiler, (upvalue){.index = p_upvalue.index, .flags = up.flags, .errors = UPVALUE_OK}, p_value, p_author);
+}
+
+static location resolve_variable(compiler* p_compiler, const ok_string_view p_identifier, ast_node* p_author) {
+  allocators* alloc = p_compiler->alloc;
+  location invalid = {0, LOCATION_KIND_INVALID, LOCATION_INVALID};
+  hashed_string hs = create_hashed_string_hash(p_identifier, alloc);
+
+  if (hs.string.chars == NULL) {
+    report_oom(p_compiler, p_author);
+    return invalid;
+  }
+
+  {
+    scope* scp;
+    _register* local = resolve_local(current_context(p_compiler), &hs, &scp);
+
+    if (local != NULL) {
+      hashed_string_deinit(&hs, alloc);
+      return (location){local->index, LOCATION_KIND_REGISTER, LOCATION_OK};
+    }
+  }
+
+  {
+    upvalue up = resolve_upvalue(p_compiler, 0, hs, p_author);
+    if (up.error == UPVALUE_OK) {
+      hashed_string_deinit(&hs, alloc);
+      return (location){up.index, LOCATION_KIND_UPVALUE, LOCATION_OK};
+    }
+    if (up.error != UPVALUE_UNDEFINED) {
+      hashed_string_deinit(&hs, alloc);
+      return invalid;
+    }
+  }
+
+  {
+    // TODO make globals store accept direct hs
+    const global glob = globals_store_get(p_compiler->globals_store, p_identifier);
+    if (IS_GLOBAL_VALID(glob)) {
+      hashed_string_deinit(&hs, alloc);
+      return (location){glob.index, LOCATION_KIND_GLOBAL, LOCATION_OK};
+    }
+  }
+  string message =
+      asprint(alloc, "undefined variable: %.*s", ok_string_view_get_length(&p_identifier), p_identifier.chars);
+  error_at(p_compiler, p_author, ok_create_string_view_from_string(message));
+  string_deinit(&message, alloc);
+  hashed_string_deinit(&hs, alloc);
+  return invalid;
+}
+
+static lvalue resolve_lvalue(compiler* p_compiler, ast_expression* p_lvalue_expr) {
+  switch (p_lvalue_expr->node.node_type) {
+  case AST_IDENTIFIER_EXPRESSION: {
+    ast_identifier_expression* ident = (ast_identifier_expression*)p_lvalue_expr;
+    location var = resolve_variable(p_compiler, ast_identifier_expression_get_value(ident), (ast_node*)p_lvalue_expr);
+    if (var.error != LOCATION_OK) {
+      return (lvalue){LVALUE_INVALID};
+    }
+    return (lvalue){LVALUE_VARIABLE, var};
+  }
+  default:
+    error_at(p_compiler,
+             (ast_node*)p_lvalue_expr,
+             ok_create_string_view("invalid lvalue.", OK_CSTRING_VIEW_CALCULATE_LENGTH, true));
+  }
+  return (lvalue){LVALUE_INVALID};
+}
+
+static bool store_variable(compiler* p_compiler, location p_variable, expression_result p_value, ast_node* p_author) {
+  switch (p_variable.kind) {
+  case LOCATION_KIND_REGISTER:
+    return store_local(p_compiler, p_variable, p_value, p_author);
+  case LOCATION_KIND_UPVALUE:
+    return store_upvalue(p_compiler, p_variable, p_value, p_author);
+  case LOCATION_KIND_GLOBAL:
+    return store_global(p_compiler, p_variable, p_value, p_author);
+  default:
+    CRASH_MSG(false, "invalid variable location.");
   }
   return false;
 }
 
-static uint32_t find_global_index(compiler* p_compiler, const ok_string_view p_identifier, ast_node* p_node) {
-  allocators* alloc = p_compiler->alloc;
-  uint32_t index = globals_store_get(p_compiler->globals_store, p_identifier);
-  if (!IS_GLOBAL_VALID(index)) {
-    // TODO: add a small pass for global resoloutin so we preserve the late bound semantics, while keeping it compile
-    // time checked. (currentlly globals are not late bound).
-    if (index == GLOBAL_NOT_FOUND) { // no other errors emitted from get call, but it's ok.
-      string identifier_str = create_string_from_string_view(p_identifier, alloc);
-      string message = asprint(alloc, "undefined global: '%s'.", identifier_str.chars);
-      error_at(p_compiler, p_node, ok_create_string_view_from_string(message));
-      string_deinit(&message, alloc);
-      string_deinit(&identifier_str, alloc);
-    }
+static bool store_lvalue(compiler* p_compiler, lvalue p_lvalue, expression_result p_value, ast_node* p_author) {
+  switch (p_lvalue.kind) {
+  case LVALUE_VARIABLE:
+    return store_variable(p_compiler, p_lvalue.variable, p_value, p_author);
+  case LVALUE_INVALID:
+    ASSERT_MSG(false, "invalid lvalue.");
+    return false;
+  default:
+    CRASH_MSG(false, "unimplemented lvalue.");
   }
-  return index;
+  return false;
 }
 
-// duplicate better than abstract and eat the cost at runtime!
-static uint32_t get_global(compiler* p_compiler, const ok_string_view p_identifier, ast_node* p_node) {
-  const uint32_t index = find_global_index(p_compiler, p_identifier, p_node);
-  if (!IS_GLOBAL_VALID(index)) {
-    return index;
-  }
-  const uint32_t raw = global_get_raw_index(index);
-  if (raw > OP_GET_GLOBAL_MAX) {
-    emit_byte(p_compiler, OP_GET_GLOBAL_LONG, p_node);
-    byte bytes[UINT24_BYTE_COUNT];
-    encode_int(bytes, UINT24_BYTE_COUNT, raw);
-    emit_bytes(p_compiler, bytes, UINT24_BYTE_COUNT, p_node);
-  } else {
-    emit_2bytes(p_compiler, OP_GET_GLOBAL, (byte)raw, p_node);
-  }
-  return index;
-}
-
-static uint32_t set_global(compiler* p_compiler, const ok_string_view p_identifier, ast_node* p_node) {
-  const uint32_t index = find_global_index(p_compiler, p_identifier, p_node);
-  if (!IS_GLOBAL_VALID(index)) {
-    return index;
-  }
-  if (!global_test_flag(index, GLOBAL_FLAG_MUTABLE)) {
-    error_at(p_compiler,
-             p_node,
-             ok_create_string_view(
-                 "attempting to mutate an immutable global variable.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
-  }
-  const uint32_t raw = global_get_raw_index(index);
-  if (raw > OP_SET_GLOBAL_MAX) {
-    emit_byte(p_compiler, OP_SET_GLOBAL_LONG, p_node);
-    byte bytes[UINT24_BYTE_COUNT] = {0};
-    encode_int(bytes, UINT24_BYTE_COUNT, raw);
-    emit_bytes(p_compiler, bytes, UINT24_BYTE_COUNT, p_node);
-  } else {
-    emit_2bytes(p_compiler, OP_SET_GLOBAL, (byte)raw, p_node);
-  }
-  return index;
-}
-
-static uint32_t get_local(compiler* p_compiler, const ok_string_view p_identifier, ast_node* p_node) {
-  allocators* alloc = p_compiler->alloc;
-  hashed_string hs = create_hashed_string_hash(p_identifier, alloc);
-  uint32_t* index = resolve_local(p_compiler, &hs, current_function(p_compiler), p_node);
-  hashed_string_deinit(&hs, alloc);
-  if (index == NULL) {
-    return UNDEFINED_LOCAL;
-  }
-  if (*index > OP_GET_LOCAL_MAX) {
-    emit_byte(p_compiler, OP_GET_LOCAL_LONG, p_node);
-    byte bytes[UINT24_BYTE_COUNT] = {0};
-    encode_int(bytes, UINT24_BYTE_COUNT, *index);
-    emit_bytes(p_compiler, bytes, UINT24_BYTE_COUNT, p_node);
-  } else {
-    emit_2bytes(p_compiler, OP_GET_LOCAL, (byte)*index, p_node);
-  }
-  return *index;
-}
-
-static uint32_t set_local(compiler* p_compiler, const ok_string_view p_identifier, ast_node* p_node) {
-  allocators* alloc = p_compiler->alloc;
-  hashed_string hs = create_hashed_string_hash(p_identifier, alloc);
-  uint32_t* index = resolve_local(p_compiler, &hs, current_function(p_compiler), p_node);
-  hashed_string_deinit(&hs, alloc);
-  if (index == NULL) {
-    return UNDEFINED_LOCAL;
-  }
-  local local = current_function(p_compiler)->locals.data[*index];
-  if (!local_test_flag(local.info, LOCAL_FLAG_MUTABLE)) {
-    error_at(p_compiler,
-             p_node,
-             ok_create_string_view(
-                 "attempting to mutate an immutable local variable.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
-    return LOCAL_ILL_MUTATION;
-  }
-  if (*index > OP_SET_LOCAL_MAX) {
-    emit_byte(p_compiler, OP_SET_LOCAL_LONG, p_node);
-    byte bytes[UINT24_BYTE_COUNT] = {0};
-    encode_int(bytes, UINT24_BYTE_COUNT, *index);
-    emit_bytes(p_compiler, bytes, UINT24_BYTE_COUNT, p_node);
-  } else {
-    emit_2bytes(p_compiler, OP_SET_LOCAL, (byte)*index, p_node);
-  }
-  return *index;
-}
-
-static uint32_t
-add_upvalue(compiler* p_compiler, uint32_t p_upvalue, bool p_is_local, function* p_function, ast_node* p_node) {
-  allocators* alloc = p_compiler->alloc;
-  upvalue up = create_upvalue(p_upvalue, p_is_local);
-  for (uint32_t i = 0; i < p_function->upvalues.count; ++i) {
-    if (p_function->upvalues.data[i].info == up.info) {
-      return i;
-    }
-  }
-  if (p_function->upvalues.count >= OP_XX_UPVALUE_LONG_MAX) {
-    string note = asprint(alloc, "limit is: %d.", OP_XX_UPVALUE_LONG_MAX);
-    error_at_noted(
-        p_compiler,
-        p_node,
-        ok_create_string_view("too many upvalues in a single function.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-        ok_create_string_view_from_string(note));
-    string_deinit(&note, alloc);
-  }
-  upvalues_append(&p_function->upvalues, up);
-  p_function->function.function->upvalues = p_function->upvalues.count;
-  return p_function->upvalues.count - 1;
-}
-
-static uint32_t
-resolve_upvalue(compiler* p_compiler, hashed_string p_identifier, uint32_t p_function_index, ast_node* p_node) {
-  const uint32_t functions = p_compiler->functions.count;
-  if (functions < p_function_index + 2) {
-    return UINT32_MAX;
+static bool compile_identifier(compiler* p_compiler,
+                               ast_identifier_expression* p_identifier,
+                               _register p_dest,
+                               uint32_t p_requested_count,
+                               expression_result* p_out) {
+  ASSERT_MSG(p_requested_count <= 1, "invalid requested count to compile_identifier.");
+  if (p_requested_count == 0) {
+    return true;
   }
 
-  function* current = &p_compiler->functions.data[functions - p_function_index - 1];
-  function* up = &p_compiler->functions.data[functions - p_function_index - 2];
-  uint32_t* local_index = resolve_local(p_compiler, &p_identifier, up, p_node);
-  if (local_index != NULL) {
-    local* local = &up->locals.data[*local_index];
-    local_set_flag(&local->info, LOCAL_FLAG_CAPTURED);
-    return add_upvalue(p_compiler, *local_index, true, current, p_node);
-  }
-  uint32_t upvalue = resolve_upvalue(p_compiler, p_identifier, p_function_index + 1, p_node);
-  if (upvalue != UINT32_MAX) {
-    return add_upvalue(p_compiler, upvalue, false, current, p_node);
-  }
-  return UINT32_MAX;
-}
-
-static uint32_t get_upvalue(compiler* p_compiler, const ok_string_view p_identifier, ast_node* p_node) {
-  allocators* alloc = p_compiler->alloc;
-  hashed_string hs = create_hashed_string_hash(p_identifier, alloc);
-  uint32_t up = resolve_upvalue(p_compiler, hs, 0, p_node);
-  hashed_string_deinit(&hs, alloc);
-  if (!IS_UPVALUE_INDEX_VALID(up)) {
-    return up;
-  }
-  if (up > OP_GET_UPVALUE_MAX) {
-    emit_byte(p_compiler, OP_GET_UPVALUE_LONG, p_node);
-    byte bytes[UINT24_BYTE_COUNT] = {0};
-    encode_int(bytes, UINT24_BYTE_COUNT, up);
-    emit_bytes(p_compiler, bytes, UINT24_BYTE_COUNT, p_node);
-  } else {
-    emit_2bytes(p_compiler, OP_GET_UPVALUE, (byte)up, p_node);
-  }
-  return up;
-}
-
-static uint32_t set_upvalue(compiler* p_compiler, const ok_string_view p_identifier, ast_node* p_node) {
-  allocators* alloc = p_compiler->alloc;
-  hashed_string hs = create_hashed_string_hash(p_identifier, alloc);
-  uint32_t up = resolve_upvalue(p_compiler, hs, 0, p_node);
-  hashed_string_deinit(&hs, alloc);
-  if (!IS_UPVALUE_INDEX_VALID(up)) {
-    return up;
-  }
-  if (up > OP_SET_UPVALUE_MAX) {
-    emit_byte(p_compiler, OP_SET_UPVALUE_LONG, p_node);
-    byte bytes[UINT24_BYTE_COUNT] = {0};
-    encode_int(bytes, UINT24_BYTE_COUNT, up);
-    emit_bytes(p_compiler, bytes, UINT24_BYTE_COUNT, p_node);
-  } else {
-    emit_2bytes(p_compiler, OP_SET_UPVALUE, (byte)up, p_node);
-  }
-  return up;
-}
-
-static bool get_variable(compiler* p_compiler, const ok_string_view p_identifier, ast_node* p_node) {
-  if (!IS_LOCAL_INDEX_VALID(get_local(p_compiler, p_identifier, p_node))) {
-    if (!IS_UPVALUE_INDEX_VALID(get_upvalue(p_compiler, p_identifier, p_node))) {
-      return IS_GLOBAL_VALID(get_global(p_compiler, p_identifier, p_node));
-    }
-  }
-  return true;
-}
-
-static bool set_variable(compiler* p_compiler, const ok_string_view p_identifier, ast_node* p_node) {
-  if (!IS_LOCAL_INDEX_VALID(set_local(p_compiler, p_identifier, p_node))) {
-    if (!IS_UPVALUE_INDEX_VALID(set_upvalue(p_compiler, p_identifier, p_node))) {
-      return IS_GLOBAL_VALID(set_global(p_compiler, p_identifier, p_node));
-    }
-  }
-  return true;
-}
-
-static bool compile_identifier(compiler* p_compiler, ast_identifier_expression* p_identifier) {
   ok_string_view ident_str = ast_identifier_expression_get_value(p_identifier);
-  return get_variable(p_compiler, ident_str, (ast_node*)p_identifier);
+  location loc = resolve_variable(p_compiler, ident_str, (ast_node*)p_identifier);
+  if (loc.error != LOCATION_OK) {
+    return false;
+  }
+  p_out->type = EXPRESSION_VALUE | EXPRESSION_LVALUE;
+  p_out->lvalue = (lvalue){LVALUE_VARIABLE, loc};
+  p_out->value = loc;
+  p_out->count = 1;
+  return true;
 }
 
 bool compile_eof_statement(compiler* p_compiler, ast_eof_statement* p_eof) {
@@ -879,234 +1214,475 @@ bool compile_eof_statement(compiler* p_compiler, ast_eof_statement* p_eof) {
 }
 
 bool compile_print_statement(compiler* p_compiler, ast_print_statement* p_print) {
-  if (compile_node(p_compiler, (ast_node*)p_print->expression)) {
-    return emit_byte(p_compiler, OP_PRINT, (ast_node*)p_print);
+  expression_result result;
+  _register dest;
+  if (!register_allocator_allocate_temp(&current_context(p_compiler)->register_allocator, &dest)) {
+    report_oom(p_compiler, (ast_node*)p_print);
+    return false;
+  }
+
+  if (compile_expression(p_compiler, p_print->expression, dest, 1, &result)) {
+    bool is_constant = false;
+    if (!materialize_if_not_common(p_compiler, &is_constant, &result.value, (ast_node*)p_print)) {
+      return false;
+    }
+    if (!emit_word(p_compiler, encode_oppA(OP_PRINT, is_constant, result.value.index), (ast_node*)p_print)) {
+      return false;
+    }
+    return true;
   }
   return false;
 }
 
 bool compile_compound_statement(compiler* p_compiler, ast_compound_statement* p_compound) {
-  bool status = true;
-  begin_scope(p_compiler);
-  for (uint32_t i = 0; i < p_compound->statements.count; ++i) {
-    status &= compile_node(p_compiler, (ast_node*)p_compound->statements.data[i]);
+  if (!begin_scope(p_compiler, (ast_node*)p_compound)) {
+    return false;
   }
-  end_scope(p_compiler, (ast_node*)p_compound, true);
-  return status;
-}
-
-static uint32_t emit_jump(compiler* p_compiler, op_code p_instruction, ast_node* p_node) {
-  byte bytes[OP_CODE_WIDTH + OP_XX_JUMP_OPERANDS_WIDTH] = {p_instruction, 0x00, 0x00, 0x00};
-  const uint32_t size = OP_CODE_WIDTH + OP_XX_JUMP_OPERANDS_WIDTH;
-  emit_bytes(p_compiler, bytes, size, p_node);
-  return current_chunk(p_compiler)->code.count - OP_XX_JUMP_OPERANDS_WIDTH;
-}
-
-static bool patch_jump(compiler* p_compiler, uint32_t p_operands_start, uint32_t p_jump_end, ast_node* p_node) {
-  const uint32_t jmp = p_jump_end - p_operands_start;
-  byte* code = current_chunk(p_compiler)->code.data;
-  encode_int(code + p_operands_start, UINT24_BYTE_COUNT, jmp);
-  return true;
-}
-
-static bool patch_loop(compiler* p_compiler, uint32_t p_operands_start, uint32_t p_jump_end, ast_node* p_node) {
-  const uint32_t jmp = p_operands_start - p_jump_end;
-  byte* code = current_chunk(p_compiler)->code.data;
-  encode_int(code + p_operands_start, UINT24_BYTE_COUNT, jmp);
-  return true;
-}
-
-static bool emit_loop(compiler* p_compiler, const uint32_t p_loop_start, ast_node* p_node) {
-  allocators* alloc = p_compiler->alloc;
-  bool status = emit_byte(p_compiler, OP_LOOP, p_node);
-  byte bytes[OP_LOOP_OPERANDS_WIDTH] = {0x00, 0x00, 0x00};
-  chunk* chunk = current_chunk(p_compiler);
-  const uint32_t loop_length = chunk->code.count - p_loop_start;
-  encode_int(bytes, OP_LOOP_OPERANDS_WIDTH, loop_length);
-  status &= emit_bytes(p_compiler, bytes, OP_LOOP_OPERANDS_WIDTH, p_node);
-  if (loop_length > OP_LOOP_MAX) {
-    string note = asprint(alloc, "limit is: %d.", OP_LOOP_MAX);
-    error_at_noted(p_compiler,
-                   p_node,
-                   ok_create_string_view("too many instructions to loop over.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-                   ok_create_string_view_from_string(note));
-    string_deinit(&note, alloc);
+  bool status = true;
+  for (uint32_t i = 0; i < p_compound->statements.count; ++i) {
+    if (!compile_statement(p_compiler, p_compound->statements.data[i])) {
+      status = false;
+      break;
+    }
+  }
+  if (!end_scope(p_compiler, (ast_node*)p_compound)) {
     return false;
   }
   return status;
 }
 
-bool compile_if_statement(compiler* p_compiler, ast_if_statement* p_if) {
-  bool status = compile_node(p_compiler, (ast_node*)p_if->condition);
-  uint32_t cons_jmp = emit_jump(p_compiler, OP_FALSY_JUMP, (ast_node*)p_if);
-  status &= emit_byte(p_compiler, OP_POP, (ast_node*)p_if);
-  status &= compile_node(p_compiler, (ast_node*)p_if->consequence);
-  chunk* chunk = current_chunk(p_compiler);
-  uint32_t alt_jump = emit_jump(p_compiler, OP_JUMP, (ast_node*)p_if);
-  status &= patch_jump(p_compiler, cons_jmp, chunk->code.count, (ast_node*)p_if);
-  emit_byte(p_compiler, OP_POP, (ast_node*)p_if);
-  if (p_if->alternative != NULL) {
-    status &= compile_node(p_compiler, (ast_node*)p_if->alternative);
-  }
-  status &= patch_jump(p_compiler, alt_jump, chunk->code.count, (ast_node*)p_if);
-  return status;
-}
+#define JUMP_MAX UINT16_MAX
 
-static bool patch_loop_context(compiler* p_compiler, loop_context* p_ctx, ast_node* p_node) {
-  chunk* chunk = current_chunk(p_compiler);
-  for (uint32_t i = 0; i < p_ctx->breaks.count; ++i) {
-    patch_jump(p_compiler, p_ctx->breaks.data[i], p_ctx->break_target, p_node);
-  }
-  for (uint32_t i = 0; i < p_ctx->continues.count; ++i) {
-    uint32_t cont = p_ctx->continues.data[i];
-    if (p_ctx->continue_forward) {
-      patch_jump(p_compiler, cont, p_ctx->continue_target, p_node);
-    } else {
-      patch_loop(p_compiler, cont, p_ctx->continue_target, p_node);
-    }
+static bool emit_incomplete_jump(compiler* p_compiler, opcode p_op, uint32_t* p_out, ast_node* p_author) {
+  *p_out = current_chunk(p_compiler)->code.count;
+  if (!emit_word(p_compiler, encode_oppA(p_op, false, 0), p_author)) {
+    report_oom(p_compiler, p_author);
+    return false;
   }
   return true;
 }
 
-bool compile_while_statement(compiler* p_compiler, ast_while_statement* p_while) {
+static bool emit_loop(compiler* p_compiler, const uint32_t p_loop_start, ast_node* p_author) {
   allocators* alloc = p_compiler->alloc;
-  function* fun = current_function(p_compiler);
-  {
-    loop_context ctx;
-    loop_context_init(&ctx, alloc);
-    if (!loop_stack_append(&fun->loop_stack, ctx)) {
-      error_at_noted(p_compiler,
-                     (ast_node*)p_while,
-                     ok_create_string_view("failed to push a new loop context.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-                     ok_create_string_view("you might be out of memory.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
-      loop_context_deinit(&ctx, alloc);
+  chunk* chunk = current_chunk(p_compiler);
+  // OP_LOOP reads its offset from the ip after instruction, which is (this word index + 1)
+  const uint32_t loop_length = (chunk->code.count + 1) - p_loop_start;
+  if (loop_length > JUMP_MAX) {
+    string note = asprint(p_compiler->alloc, "limit is: %d words.", JUMP_MAX);
+    error_at_noted(p_compiler,
+                   p_author,
+                   ok_create_string_view("loop too wide.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                   ok_create_string_view_from_string(note));
+    string_deinit(&note, p_compiler->alloc);
+    return false;
+  }
+  return emit_word(p_compiler, encode_oppA(OP_LOOP, false, loop_length), p_author);
+}
+
+static bool emit_incomplete_jump_if(
+    compiler* p_compiler, bool p_truthy, _register p_condition, uint32_t* p_out, ast_node* p_author) {
+  *p_out = current_chunk(p_compiler)->code.count;
+  if (!emit_word2(p_compiler, encode_OPPABCQ(OP_JUMP_IF, p_truthy, 0, p_condition.index, 0, 0), p_author)) {
+    report_oom(p_compiler, p_author);
+    return false;
+  }
+  return true;
+}
+
+static bool emit_incomplete_jump_if_set(
+    compiler* p_compiler, bool p_truthy, _register p_condition, uint32_t* p_out, ast_node* p_author) {
+  *p_out = current_chunk(p_compiler)->code.count;
+  if (!emit_word2(p_compiler, encode_OPPABCQ(OP_JUMP_IF_SET, p_truthy, 0, p_condition.index, 0, 0), p_author)) {
+    report_oom(p_compiler, p_author);
+    return false;
+  }
+  return true;
+}
+
+static bool
+patch_jump(compiler* p_compiler, bool p_is_loop, uint32_t p_jump_instruction, uint32_t p_jump_end, ast_node* p_author) {
+  // offsets are relative to the word after the 1 word jump instruction
+  const uint32_t jmp = p_is_loop ? (p_jump_instruction + 1) - p_jump_end : p_jump_end - (p_jump_instruction + 1);
+  if (jmp > JUMP_MAX) {
+    string note = asprint(p_compiler->alloc, "limit is: %d words.", JUMP_MAX);
+    error_at_noted(p_compiler,
+                   p_author,
+                   ok_create_string_view("jump too wide.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                   ok_create_string_view_from_string(note));
+    string_deinit(&note, p_compiler->alloc);
+    return false;
+  }
+  word* jump = current_chunk(p_compiler)->code.data + p_jump_instruction;
+  opcode op = op_of(*jump);
+  bool p = p_of(*jump);
+  *jump = encode_oppA(op, p, jmp);
+  return true;
+}
+
+static bool patch_jump_if(
+    compiler* p_compiler, bool p_is_loop, uint32_t p_jump_instruction, uint32_t p_jump_end, ast_node* p_author) {
+  // offsets are relative to the word after the 2 word jump instruction
+  const uint32_t jmp = p_is_loop ? (p_jump_instruction + 2) - p_jump_end : p_jump_end - (p_jump_instruction + 2);
+  if (jmp > JUMP_MAX) {
+    string note = asprint(p_compiler->alloc, "limit is: %d words.", JUMP_MAX);
+    error_at_noted(p_compiler,
+                   p_author,
+                   ok_create_string_view("jump too wide.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                   ok_create_string_view_from_string(note));
+    string_deinit(&note, p_compiler->alloc);
+    return false;
+  }
+  // portable rejoin of the two words (endian/alignment safe)
+  word* words = current_chunk(p_compiler)->code.data + p_jump_instruction;
+  word2 joined = ((word2)words[0]) | ((word2)words[1] << 32u);
+  const opcode op = op_of(words[0]);
+  const bool p = p_of(words[0]);
+  const uint16_t B = B_of(joined);
+  const uint16_t C = C_of(joined);
+  const bool Q = Q_of(joined);
+  word2 patched = encode_OPPABCQ(op, p, jmp, B, C, Q);
+  words[0] = (word)(patched & UINT64_C(0xffffffff));
+  words[1] = (word)(patched >> 32u);
+  return true;
+}
+
+static bool patch_jump_if_set(compiler* p_compiler,
+                              bool p_is_loop,
+                              uint32_t p_jump_instruction,
+                              uint32_t p_jump_end,
+                              _register p_target,
+                              ast_node* p_author) {
+  // offsets are relative to the word after the 2 word jump instruction
+  const uint32_t jmp = p_is_loop ? (p_jump_instruction + 2) - p_jump_end : p_jump_end - (p_jump_instruction + 2);
+  if (jmp > JUMP_MAX) {
+    string note = asprint(p_compiler->alloc, "limit is: %d words.", JUMP_MAX);
+    error_at_noted(p_compiler,
+                   p_author,
+                   ok_create_string_view("jump too wide.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                   ok_create_string_view_from_string(note));
+    string_deinit(&note, p_compiler->alloc);
+    return false;
+  }
+  // portable rejoin of the two words (endian/alignment safe)
+  word* words = current_chunk(p_compiler)->code.data + p_jump_instruction;
+  word2 joined = ((word2)words[0]) | ((word2)words[1] << 32u);
+  const opcode op = op_of(words[0]);
+  const bool p = p_of(words[0]);
+  const uint16_t B = B_of(joined);
+  const uint16_t C = C_of(joined);
+  const bool Q = Q_of(joined);
+  word2 patched = encode_OPPABCQ(op, p, jmp, B, p_target.index, Q);
+  words[0] = (word)(patched & UINT64_C(0xffffffff));
+  words[1] = (word)(patched >> 32u);
+  return true;
+}
+
+bool compile_if_statement(compiler* p_compiler, ast_if_statement* p_if) {
+  expression_result condition;
+  _register condition_register;
+  if (!register_allocator_allocate_temp(&current_context(p_compiler)->register_allocator, &condition_register)) {
+    report_oom(p_compiler, (ast_node*)p_if);
+    return false;
+  }
+  if (!compile_expression(p_compiler, p_if->condition, condition_register, 1, &condition)) {
+    return false;
+  }
+  if (!materialize_into_if_not_register(p_compiler, &condition.value, condition_register, (ast_node*)p_if)) {
+    return false;
+  }
+  condition_register.error = REGISTER_OK;
+  condition_register.index = condition.value.index;
+  condition_register.flags = REGISTER_FLAG_NONE; // for all that it matters this is a temp
+
+  uint32_t cons_jump;
+  if (!emit_incomplete_jump_if(p_compiler, false, condition_register, &cons_jump, (ast_node*)p_if)) {
+    return false;
+  }
+
+  if (!compile_statement(p_compiler, p_if->consequence)) {
+    return false;
+  }
+
+  chunk* chunk = current_chunk(p_compiler);
+  uint32_t alt_jump;
+  if (!emit_incomplete_jump(p_compiler, OP_JUMP, &alt_jump, (ast_node*)p_if)) {
+    return false;
+  }
+
+  if (!patch_jump_if(p_compiler, false, cons_jump, chunk->code.count, (ast_node*)p_if)) {
+    return false;
+  }
+
+  if (p_if->alternative != NULL) {
+    if (!compile_statement(p_compiler, p_if->alternative)) {
       return false;
     }
   }
-#define CTX fun->loop_stack.data[fun->loop_stack.count - 1]
-  CTX.scope_depth = fun->scopes.count - 1;
+  return patch_jump(p_compiler, false, alt_jump, chunk->code.count, (ast_node*)p_if);
+}
+
+static bool patch_loop_context(compiler* p_compiler, loop_context* p_ctx, ast_node* p_author) {
+  for (uint32_t i = 0; i < p_ctx->breaks.count; ++i) {
+    if (!patch_jump(p_compiler, false, p_ctx->breaks.data[i], p_ctx->break_target, p_author)) {
+      return false;
+    }
+  }
+  for (uint32_t i = 0; i < p_ctx->continues.count; ++i) {
+    uint32_t cont = p_ctx->continues.data[i];
+    if (!patch_jump(p_compiler, !p_ctx->continue_forward, cont, p_ctx->continue_target, p_author)) {
+      return false;
+    }
+  }
+  scope* scp = &current_context(p_compiler)->scopes.data[p_ctx->scope_depth];
+  return cleanup_scope(p_compiler, scp, p_author);
+}
+
+// TODO: fix cleanup path in both for/while
+bool compile_while_statement(compiler* p_compiler, ast_while_statement* p_while) {
+  allocators* alloc = p_compiler->alloc;
+  compile_context* ctx = current_context(p_compiler);
+  {
+    loop_context lctx;
+    loop_context_init(&lctx, alloc);
+    if (!loop_stack_append(&ctx->loop_stack, lctx)) {
+      report_oom(p_compiler, (ast_node*)p_while);
+      loop_context_deinit(&lctx, alloc);
+      return false;
+    }
+  }
+
+#define CTX ctx->loop_stack.data[ctx->loop_stack.count - 1]
+  CTX.scope_depth = ctx->scopes.count - 1;
   chunk* chunk = current_chunk(p_compiler);
   const uint32_t loop_start = chunk->code.count;
-  bool status = compile_node(p_compiler, (ast_node*)p_while->condition);
-  const uint32_t exit_jmp = emit_jump(p_compiler, OP_FALSY_JUMP, (ast_node*)p_while);
-  emit_byte(p_compiler, OP_POP, (ast_node*)p_while);
-  status &= compile_node(p_compiler, (ast_node*)p_while->body);
-  status &= emit_loop(p_compiler, loop_start, (ast_node*)p_while);
-  status &= patch_jump(p_compiler, exit_jmp, current_chunk(p_compiler)->code.count, (ast_node*)p_while);
+  expression_result condition;
+  _register condition_reg;
+  if (!register_allocator_allocate_temp(&current_context(p_compiler)->register_allocator, &condition_reg)) {
+    report_oom(p_compiler, (ast_node*)p_while);
+    return false;
+  }
+  if (!compile_expression(p_compiler, p_while->condition, condition_reg, 1, &condition)) {
+    return false;
+  }
+  if (!materialize_into_if_not_register(p_compiler, &condition.value, condition_reg, (ast_node*)p_while)) {
+    return false;
+  }
+
+  condition_reg.error = REGISTER_OK;
+  condition_reg.index = condition.value.index;
+  condition_reg.flags = REGISTER_FLAG_NONE;
+
+  uint32_t exit_jmp;
+  if (!emit_incomplete_jump_if(p_compiler, false, condition_reg, &exit_jmp, (ast_node*)p_while)) {
+    return false;
+  }
+
+  if (!compile_statement(p_compiler, p_while->body)) {
+    return false;
+  }
+
+  if (!emit_loop(p_compiler, loop_start, (ast_node*)p_while)) {
+    return false;
+  }
+
+  if (!patch_jump_if(p_compiler, false, exit_jmp, current_chunk(p_compiler)->code.count, (ast_node*)p_while)) {
+    return false;
+  }
   CTX.continue_target = loop_start;
-  status &= emit_byte(p_compiler, OP_POP, (ast_node*)p_while);
   CTX.break_target = chunk->code.count;
-  status &= patch_loop_context(p_compiler, &CTX, (ast_node*)p_while);
-  loop_stack_remove(&fun->loop_stack, fun->loop_stack.count - 1, fun->loop_stack.count - 1);
+  if (!patch_loop_context(p_compiler, &CTX, (ast_node*)p_while)) {
+    return false;
+  }
+  pop_loop_context(ctx, alloc);
 #undef CTX
-  return status;
+  return true;
 }
 
 bool compile_for_statement(compiler* p_compiler, ast_for_statement* p_for) {
   allocators* alloc = p_compiler->alloc;
-  function* fun = current_function(p_compiler);
+  compile_context* ctx = current_context(p_compiler);
   {
-    loop_context ctx;
-    loop_context_init(&ctx, alloc);
-    if (!loop_stack_append(&fun->loop_stack, ctx)) {
-      error_at_noted(p_compiler,
-                     (ast_node*)p_for,
-                     ok_create_string_view("failed to push a new loop context.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-                     ok_create_string_view("you might be out of memory.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
-      loop_context_deinit(&ctx, alloc);
+    loop_context lctx;
+    loop_context_init(&lctx, alloc);
+    if (!loop_stack_append(&ctx->loop_stack, lctx)) {
+      loop_context_deinit(&lctx, alloc);
+      report_oom(p_compiler, (ast_node*)p_for);
       return false;
     }
   }
-#define CTX fun->loop_stack.data[fun->loop_stack.count - 1]
-  begin_scope(p_compiler);
-  chunk* chunk = current_chunk(p_compiler);
-  CTX.scope_depth = fun->scopes.count - 1;
-  bool status = true;
-  if (p_for->initializer != NULL) {
-    status &= compile_node(p_compiler, (ast_node*)p_for->initializer);
+#define CTX ctx->loop_stack.data[ctx->loop_stack.count - 1]
+  if (!begin_scope(p_compiler, (ast_node*)p_for)) {
+    pop_loop_context(ctx, alloc);
+    return false;
   }
-  uint32_t exit_jump = UINT32_MAX;
+  chunk* chunk = current_chunk(p_compiler);
+  CTX.scope_depth = ctx->scopes.count - 1;
+  if (p_for->initializer != NULL && !compile_statement(p_compiler, p_for->initializer)) {
+    goto fail;
+  }
+  bool is_exit_set = false;
+  uint32_t exit_jump;
   const uint32_t loop_start = chunk->code.count;
   if (p_for->condition != NULL) {
-    status &= compile_node(p_compiler, (ast_node*)p_for->condition);
-    exit_jump = emit_jump(p_compiler, OP_FALSY_JUMP, (ast_node*)p_for->condition);
-    status &= emit_byte(p_compiler, OP_POP, (ast_node*)p_for);
+    expression_result condition;
+    _register condition_reg;
+    if (!register_allocator_allocate_temp(&current_context(p_compiler)->register_allocator, &condition_reg)) {
+      report_oom(p_compiler, (ast_node*)p_for);
+      return false;
+    }
+    if (!compile_expression(p_compiler, p_for->condition, condition_reg, 1, &condition)) {
+      goto fail;
+    }
+    if (!materialize_into_if_not_register(p_compiler, &condition.value, condition_reg, (ast_node*)p_for)) {
+      goto fail;
+    }
+
+    condition_reg.error = REGISTER_OK;
+    condition_reg.index = condition.value.index;
+    condition_reg.flags = REGISTER_FLAG_NONE;
+
+    if (!emit_incomplete_jump_if(p_compiler, false, condition_reg, &exit_jump, (ast_node*)p_for->condition)) {
+      goto fail;
+    }
+    is_exit_set = true;
   }
   if (p_for->update != NULL) {
     CTX.continue_forward = true;
   }
-  status &= compile_node(p_compiler, (ast_node*)p_for->body);
+  if (!compile_statement(p_compiler, p_for->body)) {
+    goto fail;
+  }
 
   CTX.continue_target = loop_start;
   if (p_for->update != NULL) {
     CTX.continue_target = chunk->code.count;
-    status &= compile_node(p_compiler, (ast_node*)p_for->update);
-    status &= emit_byte(p_compiler, OP_POP, (ast_node*)p_for);
+    expression_result result;
+    _register devnull;
+    if (!register_allocator_allocate_temp(&ctx->register_allocator, &devnull)) {
+      return false;
+    }
+    devnull.flags |= REGISTER_FLAG_DEVNULL;
+    if (!compile_expression(p_compiler, p_for->update, devnull, 0, &result)) {
+      goto fail;
+    }
   }
-  emit_loop(p_compiler, loop_start, (ast_node*)p_for);
-  if (exit_jump != UINT32_MAX) {
-    status &= patch_jump(p_compiler, exit_jump, current_chunk(p_compiler)->code.count, (ast_node*)p_for);
-    status &= emit_byte(p_compiler, OP_POP, (ast_node*)p_for);
+  if (!emit_loop(p_compiler, loop_start, (ast_node*)p_for)) {
+    goto fail;
+  }
+  if (is_exit_set) {
+    if (!patch_jump_if(p_compiler, false, exit_jump, current_chunk(p_compiler)->code.count, (ast_node*)p_for)) {
+      goto fail;
+    }
   }
   CTX.break_target = chunk->code.count;
-  patch_loop_context(p_compiler, &CTX, (ast_node*)p_for);
-  loop_stack_remove(&fun->loop_stack, fun->loop_stack.count - 1, fun->loop_stack.count - 1);
-  end_scope(p_compiler, (ast_node*)p_for, true);
-  return status;
+  if (!patch_loop_context(p_compiler, &CTX, (ast_node*)p_for)) {
+    return false;
+  }
+  pop_loop_context(ctx, alloc);
+  ASSERT(end_scope(p_compiler, (ast_node*)p_for));
+  return true;
+fail:
+  pop_loop_context(ctx, alloc);
+  ASSERT(end_scope(p_compiler, (ast_node*)p_for));
+  return false;
+
 #undef CTX
 }
 
 bool compile_control_flow_statement(compiler* p_compiler, ast_control_flow_statement* p_control) {
-  function* fun = current_function(p_compiler);
-  if (fun->loop_stack.count == 0) {
+  compile_context* ctx = current_context(p_compiler);
+  if (ctx->loop_stack.count == 0) {
     error_at(p_compiler,
              (ast_node*)p_control,
-             ok_create_string_view("illegal control flow outside of loop.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+             ok_create_string_view(
+                 "illegal control flow without an enclosing loop.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
     return false;
   }
-  bool status = true;
-  loop_context* ctx = &fun->loop_stack.data[fun->loop_stack.count - 1];
-  uint32_t curr_depth = fun->scopes.count - 1;
-  if (curr_depth > ctx->scope_depth && fun->locals.count > 0) {
-    uint32_t pops = 0;
-    for (uint32_t i = fun->locals.count - 1; i-- > 0;) {
-      if (local_get_raw_index(fun->locals.data[i].info) > ctx->scope_depth) {
-        pops++;
-      }
-    }
-    for (uint32_t i = 0; i < pops; ++i) {
-      status &= emit_byte(p_compiler, OP_POP, (ast_node*)p_control);
-    }
-  }
+  loop_context* lctx = &ctx->loop_stack.data[ctx->loop_stack.count - 1];
   if (p_control->type == CONTROL_FLOW_BREAK) {
-    uint32_t jmp = emit_jump(p_compiler, OP_JUMP, (ast_node*)p_control);
-    status &= uint32_array_append(&ctx->breaks, jmp);
+    uint32_t jmp;
+    if (!emit_incomplete_jump(p_compiler, OP_JUMP, &jmp, (ast_node*)p_control)) {
+      return false;
+    }
+    if (!uint16_array_append(&lctx->breaks, jmp)) {
+      report_oom(p_compiler, (ast_node*)p_control);
+      return false;
+    }
   } else if (p_control->type == CONTROL_FLOW_CONTINUE) {
-    uint32_t jmp = emit_jump(p_compiler, ctx->continue_forward ? OP_JUMP : OP_LOOP, (ast_node*)p_control);
-    status &= uint32_array_append(&ctx->continues, jmp);
+    uint32_t jmp;
+    if (!emit_incomplete_jump(p_compiler, lctx->continue_forward ? OP_JUMP : OP_LOOP, &jmp, (ast_node*)p_control)) {
+      return false;
+    }
+    if (!uint16_array_append(&lctx->continues, jmp)) {
+      report_oom(p_compiler, (ast_node*)p_control);
+      return false;
+    }
   }
-  return status;
+  return true;
 }
 
 static bool compile_return_statement(compiler* p_compiler, ast_return_statement* p_return) {
+  // TODO: multiple returns when required by langauge.
+  // TODO: optimize return 1 to accept operands from constants table, and then materialize inplace instead of 2
+  //       instructions, since it is a really common operation (e.g. return false;).
   if (p_return->returned == NULL) {
     return emit_default_return(p_compiler, (ast_node*)p_return);
   }
-  bool status = compile_node(p_compiler, (ast_node*)p_return->returned);
-  return status & emit_byte(p_compiler, OP_RETURN, (ast_node*)p_return);
+  expression_result returned;
+  _register dest; // TODO: cant we do this in place or this a tailcall thingy?
+  if (!register_allocator_allocate_temp(&current_context(p_compiler)->register_allocator, &dest)) {
+    return false;
+  }
+  if (!compile_expression(p_compiler, p_return->returned, dest, 1, &returned)) {
+    return false;
+  }
+  if (!materialize_into_if_not_register(p_compiler, &returned.value, dest, (ast_node*)p_return)) {
+    return false;
+  }
+
+  return emit_word(p_compiler, encode_oppA(OP_RETURN_1, false, returned.value.index), (ast_node*)p_return);
 }
 
-static bool compile_number_expression(compiler* p_compiler, ast_number_expression* p_number) {
+static bool compile_number_expression(compiler* p_compiler,
+                                      ast_number_expression* p_number,
+                                      _register p_dest,
+                                      uint32_t p_requested_count,
+                                      expression_result* p_out) {
+  ASSERT(p_requested_count <= 1);
+  if (p_requested_count == 0) {
+    return true;
+  }
+
   double number = ast_number_expression_get_value(p_number);
+
   if (number == AST_NUMBER_EXPRESSION_PARSE_ERROR) {
     error_at(p_compiler,
              (ast_node*)p_number,
              ok_create_string_view("failed to parse number.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return false;
   }
-  return emit_constant(p_compiler, NUMBER_AS_VALUE(number), (ast_node*)p_number);
+
+  constant con = add_constant(p_compiler, NUMBER_AS_VALUE(number), (ast_node*)p_number);
+  if (!IS_CONSTANT_VALID(con)) {
+    return false;
+  }
+
+  p_out->type = EXPRESSION_VALUE;
+  p_out->value = (location){con.index, LOCATION_KIND_CONSTANT, LOCATION_OK};
+  p_out->lvalue = (lvalue){LVALUE_INVALID, (location){0, LOCATION_KIND_INVALID, LOCATION_OK}};
+  p_out->count = 1;
+  return true;
 }
 
-static bool compile_string_expression(compiler* p_compiler, ast_string_expression* p_string) {
+static bool compile_string_expression(compiler* p_compiler,
+                                      ast_string_expression* p_string,
+                                      _register p_dest,
+                                      uint32_t p_requested_count,
+                                      expression_result* p_out) {
+  ASSERT(p_requested_count <= 1);
+  if (p_requested_count == 0) {
+    return true;
+  }
   ok_string_view parsed_str = ast_string_expression_get_value(p_string);
   if (parsed_str.chars == NULL) {
     error_at(p_compiler,
@@ -1118,130 +1694,510 @@ static bool compile_string_expression(compiler* p_compiler, ast_string_expressio
   object_specs s = {alloc, p_compiler->objects_store};
   object_string* object_str = create_object_string(parsed_str, &s);
   if (object_str == NULL) {
-    error_at(p_compiler,
-             (ast_node*)p_string,
-             ok_create_string_view("failed create string object.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    report_oom(p_compiler, (ast_node*)p_string);
     return false;
   }
   gc_guard_up(alloc->gc, OBJECT_AS_VALUE(object_str));
-  const bool res = emit_constant(p_compiler, OBJECT_AS_VALUE(object_str), (ast_node*)p_string);
+  constant con = add_constant(p_compiler, OBJECT_AS_VALUE(object_str), (ast_node*)p_string);
+  if (!IS_CONSTANT_VALID(con)) {
+    gc_guard_down(alloc->gc);
+    return false;
+  }
+
+  p_out->type = EXPRESSION_VALUE;
+  p_out->value = (location){con.index, LOCATION_KIND_CONSTANT, LOCATION_OK};
+  p_out->lvalue = (lvalue){LVALUE_INVALID, (location){0, LOCATION_KIND_INVALID, LOCATION_OK}};
+  p_out->count = 1;
   gc_guard_down(alloc->gc);
-  return res;
-}
-
-static bool compile_prefix_unary_expression(compiler* p_compiler, ast_prefix_unary_expression* p_expression) {
-  if (!compile_node(p_compiler, (ast_node*)p_expression->right)) {
-    return false;
-  }
-  switch (p_expression->_operator) {
-  case OPERATOR_MINUS:
-    return emit_byte(p_compiler, OP_NEGATE, (ast_node*)p_expression);
-  case OPERATOR_NOT:
-  case OPERATOR_BANG:
-    return emit_byte(p_compiler, OP_NOT, (ast_node*)p_expression);
-  default:;
-  }
-  return false;
-}
-
-static bool compile_infix_binary_expression(compiler* p_compiler, ast_infix_binary_expression* p_expression) {
-  if (p_expression->_operator == OPERATOR_AND || p_expression->_operator == OPERATOR_OR) {
-    return compile_logical_operator(p_compiler, p_expression);
-  }
-  if (compile_node(p_compiler, (ast_node*)p_expression->left)) {
-    if (compile_node(p_compiler, (ast_node*)p_expression->right)) {
-      switch (p_expression->_operator) {
-      case OPERATOR_PLUS:
-        return emit_byte(p_compiler, OP_ADD, (ast_node*)p_expression);
-      case OPERATOR_MINUS:
-        return emit_byte(p_compiler, OP_SUBTRACT, (ast_node*)p_expression);
-      case OPERATOR_ASTERISK:
-        return emit_byte(p_compiler, OP_MULTIPLY, (ast_node*)p_expression);
-      case OPERATOR_SLASH:
-        return emit_byte(p_compiler, OP_DIVIDE, (ast_node*)p_expression);
-      case OPERATOR_EQUAL:
-        return emit_byte(p_compiler, OP_EQUAL, (ast_node*)p_expression);
-      case OPERATOR_BANG_EQUAL:
-        return emit_byte(p_compiler, OP_NOT_EQUAL, (ast_node*)p_expression);
-      case OPERATOR_LESS:
-        return emit_byte(p_compiler, OP_LESS, (ast_node*)p_expression);
-      case OPERATOR_GREATER:
-        return emit_byte(p_compiler, OP_GREATER, (ast_node*)p_expression);
-      case OPERATOR_LESS_EQUAL:
-        return emit_byte(p_compiler, OP_LESS_EQUAL, (ast_node*)p_expression);
-      case OPERATOR_GREATER_EQUAL:
-        return emit_byte(p_compiler, OP_GREATER_EQUAL, (ast_node*)p_expression);
-      default:
-        assert(false);
-      }
-    }
-  }
-  return false;
-}
-
-static bool compile_assign_expression(compiler* p_compiler, ast_assign_expression* p_assign) {
-  if (p_assign->left->node.node_type != AST_IDENTIFIER_EXPRESSION) {
-    return false;
-  }
-  compile_node(p_compiler, (ast_node*)p_assign->right);
-  ast_identifier_expression* ident = (ast_identifier_expression*)p_assign->left;
-  ok_string_view name = ast_identifier_expression_get_value(ident);
-  set_variable(p_compiler, name, (ast_node*)ident);
   return true;
 }
 
-static uint32_t
-compile_expressions_list(compiler* p_compiler, ast_expressions_list* p_list, uint32_t p_limit, ast_node* p_node) {
+static bool compile_prefix_unary_expression(compiler* p_compiler,
+                                            ast_prefix_unary_expression* p_expression,
+                                            _register p_dest,
+                                            uint32_t p_requested_count,
+                                            expression_result* p_out) {
+  ASSERT(p_requested_count <= 1);
+  expression_result rhs;
+  if (!compile_expression(p_compiler, p_expression->right, p_dest, 1, &rhs)) {
+    return false;
+  }
+  bool is_constant = false;
+  if (!materialize_into_if_not_common(p_compiler, &is_constant, &rhs.value, p_dest, (ast_node*)p_expression)) {
+    return false;
+  }
+
+  opcode op;
+  opcode op_long;
+  switch (p_expression->_operator) {
+  case OPERATOR_PRE_MINUS:
+    op = OP_NEGATE;
+    op_long = OP_NEGATE_LONG;
+    break;
+  case OPERATOR_PRE_NOT:
+  case OPERATOR_PRE_BANG:
+    op = OP_NOT;
+    op_long = OP_NOT_LONG;
+    break;
+  default:
+    CRASH_MSG(false, "unimplemented prefix operator."); // TODO: in future this shape need to change since ++/-- operate
+                                                        // differently and need lvalue
+  }
+  if (p_dest.index > aprime_MAX || rhs.value.index > bprime_MAX) {
+    if (!emit_word2(p_compiler,
+                    encode_OPPABCQ(op_long, is_constant, p_dest.index, rhs.value.index, 0, 0),
+                    (ast_node*)p_expression)) {
+      report_oom(p_compiler, (ast_node*)p_expression);
+      return false;
+    }
+  } else {
+    if (!emit_word(
+            p_compiler, encode_oppabprime(op, is_constant, p_dest.index, rhs.value.index), (ast_node*)p_expression)) {
+      return false;
+    }
+  }
+
+  p_out->type = EXPRESSION_VALUE;
+  p_out->value = (location){p_dest.index, LOCATION_KIND_REGISTER, LOCATION_OK};
+  p_out->lvalue = (lvalue){LVALUE_VARIABLE, (location){0, LOCATION_KIND_INVALID, LOCATION_OK}};
+  p_out->count = 1;
+  return true;
+}
+
+static bool compile_logical_operator(compiler* p_compiler,
+                                     ast_infix_binary_expression* p_logical,
+                                     _register p_dest,
+                                     expression_result* p_result) {
+  expression_result lhs;
+  expression_result rhs;
+  register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
+
+  if (!compile_expression(p_compiler, p_logical->left, p_dest, 1, &lhs)) {
+    return false;
+  }
+  if (!materialize_into_if_not_register(p_compiler, &lhs.value, p_dest, (ast_node*)p_logical)) {
+    return false;
+  }
+  // the condition register is wherever the lhs actually lives (constants were moved to p_dest)
+  _register condition = {.index = lhs.value.index, .flags = REGISTER_FLAG_NONE, .errors = REGISTER_OK};
+
+  uint32_t jmp;
+  if (!emit_incomplete_jump_if_set(
+          p_compiler, p_logical->_operator == OPERATOR_LOG_OR, condition, &jmp, (ast_node*)p_logical)) {
+    return false;
+  }
+  if (!compile_expression(p_compiler, p_logical->right, p_dest, 1, &rhs)) {
+    return false;
+  }
+
+  if (!materialize_into_if_not_register(p_compiler, &rhs.value, p_dest, (ast_node*)p_logical)) {
+    return false;
+  }
+
+  p_result->type = EXPRESSION_VALUE;
+  p_result->value = (location){p_dest.index, LOCATION_KIND_REGISTER, LOCATION_OK};
+  p_result->lvalue = (lvalue){LVALUE_INVALID};
+  p_result->count = 1;
+  return patch_jump_if_set(p_compiler, false, jmp, current_chunk(p_compiler)->code.count, p_dest, (ast_node*)p_logical);
+}
+
+static bool emit_binop(compiler* p_compiler,
+                       opcode p_op,
+                       opcode p_long_op,
+                       _register p_result,
+                       location p_lhs,
+                       location p_rhs,
+                       bool p_is_lhs_constant,
+                       bool p_is_rhs_constant,
+                       ast_node* p_author) {
+  bool is_long = p_result.index > a_MAX || p_lhs.index > b_MAX || p_rhs.index > c_MAX;
+  if (is_long) {
+    if (!emit_word2(
+            p_compiler,
+            encode_OPPABCQ(p_long_op, p_is_rhs_constant, p_result.index, p_lhs.index, p_rhs.index, p_is_lhs_constant),
+            p_author)) {
+      report_oom(p_compiler, p_author);
+      return false;
+    }
+  } else if (!emit_word(p_compiler,
+                        encode_oppabc(p_op, p_is_rhs_constant, p_result.index, p_lhs.index, p_rhs.index),
+                        p_author)) {
+    report_oom(p_compiler, p_author);
+    return false;
+  }
+  return true;
+}
+
+static bool compile_binary_value_operator(compiler* p_compiler,
+                                          ast_infix_binary_expression* p_binexpr,
+                                          _register p_dest,
+                                          expression_result* p_result) {
+  expression_result lhs;
+  expression_result rhs;
+  _register rhs_dest;
+  register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
+
+  if (!compile_expression(p_compiler, p_binexpr->left, p_dest, 1, &lhs)) {
+    return false;
+  }
+
+  if (!register_allocator_allocate_temp(regalloc, &rhs_dest)) {
+    report_oom(p_compiler, (ast_node*)p_binexpr);
+    return false;
+  }
+
+  if (!compile_expression(p_compiler, p_binexpr->right, rhs_dest, 1, &rhs)) {
+    return false;
+  }
+
+  bool is_long = p_dest.index > a_MAX || lhs.value.index > b_MAX || rhs.value.index > c_MAX;
+  bool is_lhs_constant = false;
+  bool is_rhs_constant = false;
+
+  // conditional materialization based on dest opcode to allow for more optimized emission
+  if (is_long) {
+    if (!materialize_into_if_not_common(p_compiler, &is_lhs_constant, &lhs.value, p_dest, (ast_node*)p_binexpr)) {
+      return false;
+    }
+  } else {
+    if (!materialize_into_if_not_register(p_compiler, &lhs.value, p_dest, (ast_node*)p_binexpr)) {
+      return false;
+    }
+  }
+  if (!materialize_into_if_not_common(p_compiler, &is_rhs_constant, &rhs.value, rhs_dest, (ast_node*)p_binexpr)) {
+    return false;
+  }
+
+  bool result = false;
+  switch (p_binexpr->_operator) {
+  case OPERATOR_BIN_PLUS: {
+    result = emit_binop(p_compiler,
+                        OP_ADD,
+                        OP_ADD_LONG,
+                        p_dest,
+                        lhs.value,
+                        rhs.value,
+                        is_lhs_constant,
+                        is_rhs_constant,
+                        (ast_node*)p_binexpr);
+    break;
+  }
+  case OPERATOR_BIN_MINUS: {
+    result = emit_binop(p_compiler,
+                        OP_SUBTRACT,
+                        OP_SUBTRACT_LONG,
+                        p_dest,
+                        lhs.value,
+                        rhs.value,
+                        is_lhs_constant,
+                        is_rhs_constant,
+                        (ast_node*)p_binexpr);
+
+    break;
+  }
+  case OPERATOR_BIN_ASTERISK: {
+    result = emit_binop(p_compiler,
+                        OP_MULTIPLY,
+                        OP_MULTIPLY_LONG,
+                        p_dest,
+                        lhs.value,
+                        rhs.value,
+                        is_lhs_constant,
+                        is_rhs_constant,
+                        (ast_node*)p_binexpr);
+
+    break;
+  }
+  case OPERATOR_BIN_SLASH: {
+    result = emit_binop(p_compiler,
+                        OP_DIVIDE,
+                        OP_DIVIDE_LONG,
+                        p_dest,
+                        lhs.value,
+                        rhs.value,
+                        is_lhs_constant,
+                        is_rhs_constant,
+                        (ast_node*)p_binexpr);
+
+    break;
+  }
+  case OPERATOR_BIN_EQUALS: {
+    result = emit_binop(p_compiler,
+                        OP_EQUALS,
+                        OP_EQUALS_LONG,
+                        p_dest,
+                        lhs.value,
+                        rhs.value,
+                        is_lhs_constant,
+                        is_rhs_constant,
+                        (ast_node*)p_binexpr);
+
+    break;
+  }
+  case OPERATOR_BIN_BANG_EQUAL: {
+    result = emit_binop(p_compiler,
+                        OP_NOT_EQUAL,
+                        OP_NOT_EQUAL_LONG,
+                        p_dest,
+                        lhs.value,
+                        rhs.value,
+                        is_lhs_constant,
+                        is_rhs_constant,
+                        (ast_node*)p_binexpr);
+
+    break;
+  }
+  case OPERATOR_BIN_LESS: {
+    result = emit_binop(p_compiler,
+                        OP_LESS,
+                        OP_LESS_LONG,
+                        p_dest,
+                        lhs.value,
+                        rhs.value,
+                        is_lhs_constant,
+                        is_rhs_constant,
+                        (ast_node*)p_binexpr);
+
+    break;
+  }
+  case OPERATOR_BIN_GREATER: {
+    result = emit_binop(p_compiler,
+                        OP_GREATER,
+                        OP_GREATER_LONG,
+                        p_dest,
+                        lhs.value,
+                        rhs.value,
+                        is_lhs_constant,
+                        is_rhs_constant,
+                        (ast_node*)p_binexpr);
+
+    break;
+  }
+  case OPERATOR_BIN_LESS_EQUAL: {
+    result = emit_binop(p_compiler,
+                        OP_LESS_EQUAL,
+                        OP_LESS_EQUAL_LONG,
+                        p_dest,
+                        lhs.value,
+                        rhs.value,
+                        is_lhs_constant,
+                        is_rhs_constant,
+                        (ast_node*)p_binexpr);
+
+    break;
+  }
+  case OPERATOR_BIN_GREATER_EQUAL: {
+    result = emit_binop(p_compiler,
+                        OP_GREATER_EQUAL,
+                        OP_GREATER_EQUAL_LONG,
+                        p_dest,
+                        lhs.value,
+                        rhs.value,
+                        is_lhs_constant,
+                        is_rhs_constant,
+                        (ast_node*)p_binexpr);
+
+    break;
+  }
+  default:
+    CRASH_MSG(false, "unimplemented binary value operator.");
+  }
+  p_result->type = EXPRESSION_VALUE;
+  p_result->value = (location){p_dest.index, LOCATION_KIND_REGISTER, LOCATION_OK};
+  p_result->lvalue = (lvalue){LVALUE_INVALID};
+  p_result->count = 1;
+  return result;
+}
+
+static bool compile_infix_binary_expression(compiler* p_compiler,
+                                            ast_infix_binary_expression* p_expression,
+                                            _register p_dest,
+                                            uint32_t p_requested_count,
+                                            expression_result* p_out) {
+  ASSERT(p_requested_count <= 1);
+  if (p_expression->_operator >= OPERATOR_RANGE_LOGICAL_BEGIN &&
+      p_expression->_operator <= OPERATOR_RANGE_LOGICAL_END) {
+    return compile_logical_operator(p_compiler, p_expression, p_dest, p_out);
+  } else if (p_expression->_operator >= OPERATOR_RANGE_BIN_VALUE_BEGIN &&
+             p_expression->_operator <= OPERATOR_RANGE_BIN_VALUE_END) {
+    return compile_binary_value_operator(p_compiler, p_expression, p_dest, p_out);
+  }
+  ASSERT_MSG(false, "invalid binary operator.");
+  return false;
+}
+
+static bool compile_assign_expression(compiler* p_compiler,
+                                      ast_assign_expression* p_assign,
+                                      _register p_dest,
+                                      uint32_t p_requested_count,
+                                      expression_result* p_out) {
+  CRASH_MSG(p_requested_count <= 1, "unimplemented multi-assign.");
+  lvalue lv = resolve_lvalue(p_compiler, p_assign->left);
+  if (lv.kind == LVALUE_INVALID) {
+    return false;
+  }
+  expression_result right;
+  if (!compile_expression(p_compiler, p_assign->right, p_dest, 1, &right)) {
+    return false;
+  }
+  if (!materialize_into_if_not_register(p_compiler, &right.value, p_dest, (ast_node*)p_assign)) {
+    return false;
+  }
+  if (!store_lvalue(p_compiler, lv, right, (ast_node*)p_assign)) {
+    return false;
+  }
+  *p_out = right;
+  return true;
+}
+
+static bool compile_expressions_list(
+    compiler* p_compiler, ast_expressions_list* p_list, uint32_t p_limit, _register* p_args_start, ast_node* p_author) {
   allocators* alloc = p_compiler->alloc;
+  register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
   if (p_list->count > p_limit) {
     string note = asprint(alloc, "limit is: %d.", p_limit);
     error_at_noted(p_compiler,
-                   (ast_node*)p_node,
+                   p_author,
                    ok_create_string_view("too many arguments.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
                    ok_create_string_view_from_string(note));
     string_deinit(&note, alloc);
-    return UINT32_MAX;
+    return false;
   }
   for (uint32_t i = 0; i < p_list->count; ++i) {
+    _register argreg;
+    if (!register_allocator_allocate_temp(regalloc, &argreg)) {
+      return false;
+    }
     ast_expression* arg = p_list->data[i];
-    compile_node(p_compiler, (ast_node*)arg);
+    expression_result result;
+    if (!compile_expression(p_compiler, arg, argreg, 1, &result)) {
+      return false;
+    }
+    // arguments must be materialized into the window register, even register valued ones
+    if (!materialize_into(p_compiler, &result.value, argreg, p_author)) {
+      return false;
+    }
+    if (i == 0) {
+      *p_args_start = argreg;
+    }
   }
-  return p_list->count;
+  return true;
 }
 
-bool compile_call_expression(compiler* p_compiler, ast_call_expression* p_call) {
-  bool status = compile_node(p_compiler, (ast_node*)p_call->callable);
-  uint32_t count = compile_expressions_list(p_compiler, &p_call->arguments, OP_CALL_MAX, (ast_node*)p_call);
-  status &= count != UINT32_MAX;
-  return status & emit_2bytes(p_compiler, OP_CALL, count, (ast_node*)p_call);
+bool compile_call_expression(compiler* p_compiler,
+                             ast_call_expression* p_call,
+                             _register p_dest,
+                             uint32_t p_requested_count,
+                             expression_result* p_out) {
+  CRASH_MSG(p_requested_count <= 1, "unimplemented multi-result.");
+
+  allocators* alloc = p_compiler->alloc;
+  register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
+  expression_result callable;
+  if (!compile_expression(p_compiler, p_call->callable, p_dest, 1, &callable)) {
+    return false;
+  }
+  // the call window is [p_dest, p_dest + argc]: the callable must be moved into p_dest
+  // even when it already lives in another register (e.g. a local or the function's own name)
+  if (!materialize_into(p_compiler, &callable.value, p_dest, (ast_node*)p_call)) {
+    return false;
+  }
+  _register args;
+  args.index = 0;
+  args.flags = REGISTER_FLAG_NONE;
+  args.errors = REGISTER_OK;
+  if (!compile_expressions_list(p_compiler, &p_call->arguments, A_MAX, &args, (ast_node*)p_call)) {
+    return false;
+  }
+  const uint32_t argc = p_call->arguments.count;
+  bool is_long = p_dest.index > a_MAX || (argc > 0 && args.index > a_MAX) || argc > b_MAX;
+  if (is_long) {
+    if (!emit_word2(p_compiler, encode_OPPABCQ(OP_CALL_LONG, false, p_dest.index, argc, 2, 0), (ast_node*)p_call)) {
+      report_oom(p_compiler, (ast_node*)p_call);
+      return false;
+    }
+  } else {
+    if (!emit_word(p_compiler, encode_oppabc(OP_CALL, false, p_dest.index, argc, 2), (ast_node*)p_call)) {
+      report_oom(p_compiler, (ast_node*)p_call);
+      return false;
+    }
+  }
+  p_out->value = (location){p_dest.index, LOCATION_KIND_REGISTER, LOCATION_OK};
+  p_out->lvalue = (lvalue){LVALUE_INVALID};
+  p_out->count = 1;
+  p_out->type = EXPRESSION_VALUE;
+  return true;
 }
 
-bool compile_logical_operator(compiler* p_compiler, ast_infix_binary_expression* p_logical) {
-  bool result = compile_node(p_compiler, (ast_node*)p_logical->left);
-  op_code instruction = p_logical->_operator == OPERATOR_AND ? OP_FALSY_JUMP : OP_TRUTHY_JUMP;
-  uint32_t jmp = emit_jump(p_compiler, instruction, (ast_node*)p_logical);
-  result &= emit_byte(p_compiler, OP_POP, (ast_node*)p_logical);
-  result &= compile_node(p_compiler, (ast_node*)p_logical->right);
-  return result & patch_jump(p_compiler, jmp, current_chunk(p_compiler)->code.count, (ast_node*)p_logical);
+static bool compile_postfix_unary_expression(compiler* p_compiler,
+                                             ast_postfix_unary_expression* p_expression,
+                                             _register p_dest,
+                                             uint32_t p_requested_count,
+                                             expression_result* p_out) {
+  CRASH_MSG(false, "unimplemented postfix expression.");
+  return false;
 }
 
-static bool compile_postfix_unary_expression(compiler* p_compiler, ast_postfix_unary_expression* p_expression) {
+static bool compile_boolean_expression(compiler* p_compiler,
+                                       ast_boolean_expression* p_boolean,
+                                       _register p_dest,
+                                       uint32_t p_requested_count,
+                                       expression_result* p_out) {
+  ASSERT(p_requested_count <= 1);
+  if (p_requested_count == 0) {
+    return true;
+  }
+  if (!emit_word(
+          p_compiler,
+          encode_oppA(ast_boolean_expression_get_value(p_boolean) ? OP_LOAD_TRUE : OP_LOAD_FALSE, false, p_dest.index),
+          (ast_node*)p_boolean)) {
+    report_oom(p_compiler, (ast_node*)p_boolean);
+    return false;
+  }
+  p_out->count = 1;
+  p_out->type = EXPRESSION_VALUE;
+  p_out->lvalue = (lvalue){LVALUE_INVALID};
+  p_out->value = (location){p_dest.index, LOCATION_KIND_REGISTER, LOCATION_OK};
+  return true;
 }
 
-static bool compile_boolean_expression(compiler* p_compiler, ast_boolean_expression* p_boolean) {
-  return emit_byte(p_compiler, ast_boolean_expression_get_value(p_boolean) ? OP_TRUE : OP_FALSE, (ast_node*)p_boolean);
+static bool compile_null_expression(compiler* p_compiler,
+                                    ast_null_expression* p_null,
+                                    _register p_dest,
+                                    uint32_t p_requested_count,
+                                    expression_result* p_out) {
+  if (p_requested_count == 0) {
+    return true;
+  }
+  if (!emit_word2(
+          p_compiler, encode_OPPABCQ(OP_LOAD_NULL, false, p_dest.index, p_requested_count, 0, 0), (ast_node*)p_null)) {
+    report_oom(p_compiler, (ast_node*)p_null);
+    return false;
+  }
+  p_out->count = p_requested_count;
+  p_out->type = EXPRESSION_VALUE;
+  p_out->lvalue = (lvalue){LVALUE_INVALID};
+  p_out->value = (location){p_dest.index, LOCATION_KIND_REGISTER, LOCATION_OK};
+  return true;
 }
 
-static bool compile_null_expression(compiler* p_compiler, ast_null_expression* p_null) {
-  return emit_byte(p_compiler, OP_NULL, (ast_node*)p_null);
-}
+bool compile_function_expression(compiler* p_compiler,
+                                 ast_function_expression* p_fu,
+                                 _register p_dest,
+                                 uint32_t p_requested_count,
+                                 expression_result* p_out) {
+  ASSERT(p_requested_count <= 1);
+  if (p_requested_count == 0) {
+    return true;
+  }
 
-bool compile_function_expression(compiler* p_compiler, ast_function_expression* p_fu) {
   return compile_function_impl(p_compiler,
                                ok_create_string_view("<lambda>", OK_STRING_VIEW_CALCULATE_LENGTH, true),
                                FUNCTION_FUNCTION,
                                p_fu->parameters,
                                p_fu->body,
+                               p_dest,
+                               p_out,
                                (ast_node*)p_fu);
 }
 
@@ -1250,77 +2206,137 @@ static bool compile_function_impl(compiler* p_compiler,
                                   function_type p_type,
                                   ast_bindings_list p_params,
                                   ast_statement* p_body,
-                                  ast_node* p_node) {
+                                  _register p_dest,
+                                  expression_result* p_out,
+                                  ast_node* p_author) {
   allocators* alloc = p_compiler->alloc;
   if (p_params.count > UINT8_MAX) {
     string note = asprint(alloc, "limit is: %d", UINT8_MAX);
     error_at_noted(p_compiler,
-                   p_node,
+                   p_author,
                    ok_create_string_view("too many function parameters.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
                    ok_create_string_view_from_string(note));
     string_deinit(&note, alloc);
     return false;
   }
-  bool status = push_function(p_compiler, p_name, p_type, p_params.count, p_node);
-  begin_scope(p_compiler);
-  variable_declaration decl = {.identifier = p_name, .flags = DECLARATION_NONE};
-  uint32_t function_name = add_local(p_compiler, decl, p_node);
-  status &= IS_LOCAL_INDEX_VALID(function_name);
-  if (status) {
-    status &= define_variable(p_compiler, decl, function_name, p_node);
+  if (!begin_context(p_compiler, p_name, p_type, p_params.count, p_author)) {
+    return false;
   }
+  if (!begin_scope(p_compiler, p_author)) {
+    end_context(p_compiler);
+    return false;
+  }
+  variable_declaration decl = {.identifier = p_name, .flags = DECLARATION_NONE};
+  _register funtion_name = add_local(p_compiler, decl, p_author);
+  if (!IS_REGISTER_VALID(funtion_name)) {
+    end_scope(p_compiler, p_author);
+    end_context(p_compiler);
+    return false;
+  }
+  location loc = {funtion_name.index, LOCATION_KIND_REGISTER, LOCATION_OK};
+  if (!define_variable(
+          p_compiler,
+          loc,
+          (expression_result){EXPRESSION_LVALUE | EXPRESSION_VALUE, loc, (lvalue){LVALUE_VARIABLE, loc}, 1},
+          p_author)) {
+    end_scope(p_compiler, p_author);
+    end_context(p_compiler);
+    return false;
+  }
+
   for (uint32_t i = 0; i < p_params.count; ++i) {
     ast_binding* binding = p_params.data[i];
     variable_declaration decl = {
         .identifier = ast_identifier_expression_get_value((ast_identifier_expression*)binding->lvalue),
         .flags = variable_declaration_flags_from_modifiers(DECLARATION_NONE, binding->modifiers)};
-    uint32_t index = declare_variable(p_compiler, decl, (ast_node*)binding);
-    status &= IS_VARIABLE_DECLARATION_VALID(index);
-    if (status) {
-      status &= define_variable(p_compiler, decl, index, (ast_node*)binding);
-    } else {
-      error_at(p_compiler,
-               (ast_node*)binding,
-               ok_create_string_view("failed to bind function parameter.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
-      break;
+    _register param = declare_variable(p_compiler, decl, (ast_node*)binding);
+    if (!IS_REGISTER_VALID(param)) {
+      end_scope(p_compiler, p_author);
+      end_context(p_compiler);
+      return false;
+    }
+    location loc = {param.index, LOCATION_KIND_REGISTER, LOCATION_OK};
+
+    if (!define_variable(
+            p_compiler,
+            loc,
+            (expression_result){EXPRESSION_LVALUE | EXPRESSION_VALUE, loc, (lvalue){LVALUE_VARIABLE, loc}, 1},
+            (ast_node*)binding)) {
+      end_scope(p_compiler, p_author);
+      end_context(p_compiler);
+      return false;
     }
   }
-  status &= compile_node(p_compiler, (ast_node*)p_body);
-  status &= emit_default_return(p_compiler, p_node);
-  end_scope(p_compiler, p_node, false);
-  function* current = current_function(p_compiler);
-  object_function* funct = current->function.function;
-  gc_guard_up(alloc->gc, OBJECT_AS_VALUE(funct));
-  upvalues ups = current->upvalues;
-  upvalues_init(&current->upvalues, alloc); // poor man's move construction
+  if (!compile_statement(p_compiler, p_body)) {
+    end_scope(p_compiler, p_author);
+    end_context(p_compiler);
+    return false;
+  }
+
+  if (!emit_default_return(p_compiler, (ast_node*)p_body)) {
+    end_scope(p_compiler, p_author);
+    end_context(p_compiler);
+    return false;
+  }
+
+  if (!end_scope(p_compiler, p_author)) {
+    end_context(p_compiler);
+    return false;
+  }
+
+  compile_context* function_ctx = current_context(p_compiler);
+  object_function* proto = function_ctx->function.function;
+  proto->registers = function_ctx->register_allocator.registers_count; // frame size for the VM
+  gc_guard_up(alloc->gc, OBJECT_AS_VALUE(proto));
+
+  if (function_ctx->upvalues.count > 0 &&
+      !upvalue_descriptor_array_grow(&proto->upvalues, function_ctx->upvalues.count)) {
+    end_context(p_compiler);
+    report_oom(p_compiler, p_author);
+    gc_guard_down(alloc->gc);
+    return false;
+  }
+
+  for (uint32_t i = 0; i < function_ctx->upvalues.count; ++i) {
+    upvalue up = function_ctx->upvalues.data[i];
+    upvalue_descriptor_array_append(&proto->upvalues,
+                                    (upvalue_descriptor){up.index, (up.flags & UPVALUE_FLAG_LOCAL) != 0});
+  }
 
 #if defined(OK_DEBUG_DUMP_CODE) // this is really useful
   disassembler disassembler;
-  disassembler_specs specs = {.chunk = &funct->chunk, .globals_store = p_compiler->globals_store};
+  disassembler_specs specs = {.chunk = &proto->chunk, .globals_store = p_compiler->globals_store};
   disassembler_init(&disassembler, specs);
-  debug_disassemble_chunk(&disassembler, funct->name->string.chars);
+  debug_disassemble_chunk(&disassembler, proto->name->string.chars);
   disassembler_deinit(&disassembler);
 #endif // defined (OK_DEBUG_DUMP_CODE)
 
-  status &= functions_remove(&p_compiler->functions, p_compiler->functions.count - 1, p_compiler->functions.count - 1);
-  status &= emit_byte(p_compiler, OP_CLOSURE, p_node);
-  byte bytes[OP_CONSTANT_LONG_OPERANDS_WIDTH] = {0};
-  uint32_t cons = create_constant(p_compiler, OBJECT_AS_VALUE(funct), p_node);
+  // the descriptors were copied into proto->upvalues above, the compile-side
+  // context is pure compile-time state: release it before popping (leak fix).
+  compile_context_deinit(function_ctx, p_compiler->alloc);
+  ASSERT(compile_contexts_pop(&p_compiler->contexts));
+
+  constant kproto = add_constant(p_compiler, OBJECT_AS_VALUE(proto), p_author);
   gc_guard_down(alloc->gc);
-  if (!IS_CONSTANT_VALID(cons)) {
-    error_at(p_compiler,
-             p_node,
-             ok_create_string_view("failed to create constant for function.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
-    status = false;
+
+  if (!IS_CONSTANT_VALID(kproto)) {
+    return false;
   }
-  encode_int(bytes, OP_CONSTANT_LONG_OPERANDS_WIDTH, cons);
-  status &= emit_bytes(p_compiler, bytes, OP_CONSTANT_LONG_OPERANDS_WIDTH, p_node);
-  for (uint32_t i = 0; i < ups.count; ++i) {
-    status &= emit_byte(p_compiler, (byte)upvalue_is_local(&ups.data[i]), p_node);
-    byte bytes[UINT24_BYTE_COUNT] = {0};
-    encode_int(bytes, UINT24_BYTE_COUNT, upvalue_get_index(&ups.data[i]));
-    status &= emit_bytes(p_compiler, bytes, UINT24_BYTE_COUNT, p_node);
+
+  bool is_long = p_dest.index > aprime_MAX || kproto.index > bprime_MAX;
+
+  if (is_long) {
+    if (!emit_word2(p_compiler, encode_OPPABCQ(OP_CLOSURE_LONG, false, p_dest.index, kproto.index, 0, 0), p_author)) {
+      return false;
+    }
+  } else {
+    if (!emit_word(p_compiler, encode_oppabprime(OP_CLOSURE, false, p_dest.index, kproto.index), p_author)) {
+      return false;
+    }
   }
-  upvalues_deinit(&ups, alloc);
-  return status;
+  p_out->type = EXPRESSION_VALUE;
+  p_out->lvalue = (lvalue){LVALUE_INVALID};
+  p_out->count = 1;
+  p_out->value = (location){p_dest.index, LOCATION_KIND_REGISTER, LOCATION_OK};
+  return true;
 }

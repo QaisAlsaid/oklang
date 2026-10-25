@@ -327,7 +327,7 @@ ast_expression* parse_unary_prefix(parser* p_parser, token p_trigger) {
     return NULL;
   }
   ast_specs s = {alloc};
-  ast_prefix_unary_expression_init(prefix, p_trigger, operator_type_from_token_type(p_trigger.type), opperand, &s);
+  ast_prefix_unary_expression_init(prefix, p_trigger, operator_type_from_token_type(p_trigger.type, true), opperand, &s);
   return (ast_expression*)prefix;
 }
 
@@ -515,7 +515,7 @@ ast_expression* parse_binary_infix(
     return NULL;
   }
   ast_specs s = {alloc};
-  ast_infix_binary_expression_init(infix, p_trigger, operator_type_from_token_type(p_trigger.type), p_left, right, &s);
+  ast_infix_binary_expression_init(infix, p_trigger, operator_type_from_token_type(p_trigger.type, false), p_left, right, &s);
   return (ast_expression*)infix;
 }
 

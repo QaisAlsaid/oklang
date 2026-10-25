@@ -26,7 +26,8 @@
   bool name##_grow(name* p_array, const size_type p_new_capacity);                                                     \
   bool name##_append(name* p_array, type p_element);                                                                   \
   bool name##_append_n(name* p_array, const type* p_elements, const size_type p_elements_count);                       \
-  bool name##_remove(name* p_array, const size_type p_first, const size_type p_last);
+  bool name##_remove(name* p_array, const size_type p_first, const size_type p_last);                                  \
+  bool name##_pop(name* p_array);
 
 #define ARRAY_DEFINE(name, type, size_type, size_type_max, deinit_type)                                                \
   void name##_init(name* p_array, allocators* p_alloc) {                                                               \
@@ -80,15 +81,17 @@
   }                                                                                                                    \
                                                                                                                        \
   bool name##_append_n(name* p_array, const type* p_elements, const size_type p_elements_count) {                      \
+    /* check in full width: count + n can overflow size_type and the grow target would truncate */                     \
+    if ((size_t)p_array->count + (size_t)p_elements_count > (size_t)size_type_max) {                                   \
+      return false;                                                                                                    \
+    }                                                                                                                  \
     if (p_array->capacity < p_array->count + p_elements_count) {                                                       \
       const size_t new_capacity = array_grow_capacity(p_array->capacity, p_elements_count, size_type_max);             \
       if (!name##_grow(p_array, (size_type)new_capacity)) {                                                            \
         return false;                                                                                                  \
       }                                                                                                                \
     }                                                                                                                  \
-    memcpy(p_array->data + p_array->count,                                                                             \
-           p_elements,                                                                                                 \
-           p_elements_count > size_type_max ? size_type_max : sizeof(type) * p_elements_count);                        \
+    memcpy(p_array->data + p_array->count, p_elements, sizeof(type) * (size_t)p_elements_count);                       \
     p_array->count += p_elements_count;                                                                                \
     return true;                                                                                                       \
   }                                                                                                                    \
@@ -104,6 +107,14 @@
     const size_type diff = p_array->count - p_last - 1;                                                                \
     memmove(p_array->data + p_first, p_array->data + p_last + 1, sizeof(type) * diff);                                 \
     p_array->count -= rmcount;                                                                                         \
+    return true;                                                                                                       \
+  }                                                                                                                    \
+                                                                                                                       \
+  bool name##_pop(name* p_array) {                                                                                     \
+    if (p_array->count <= 0) {                                                                                         \
+      return false;                                                                                                    \
+    }                                                                                                                  \
+    p_array->count--;                                                                                                  \
     return true;                                                                                                       \
   }
 

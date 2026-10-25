@@ -2,6 +2,7 @@ find_package(unity REQUIRED TRUE)
 set(tests 
   test_array
   test_table
+  test_nan
 )
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
