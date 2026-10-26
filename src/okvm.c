@@ -254,8 +254,45 @@ perform_add(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest
       goto invalid;
     }
   } else if (IS_VALUE_OBJECT(lhs)) {
-    goto invalid;
-    // TODO
+    if (IS_VALUE_STRING(lhs) && IS_VALUE_STRING(rhs)) {
+      // string concatenation: both operands must be strings, no implicit
+      // coercion ("a" + 1 stays an error; host-side to_str natives exist for
+      // formatting). build the combined bytes over a raw scratch buffer first:
+      // it is plain memory, invisible to the gc, so allocations inside the
+      // object creation can collect freely. create_object_string copies the
+      // view into its own dynamic buffer and the result is published into the
+      // destination register with no allocation in between — the post-
+      // store-append window that killed array NEW does not exist here (no
+      // append_n phase, nothing allocates between creation and publication).
+      const object_string* left = VALUE_AS_STRING(p_lhs);
+      const object_string* right = VALUE_AS_STRING(p_rhs);
+      const uint64_t left_length = string_get_length(&left->string);
+      const uint64_t right_length = string_get_length(&right->string);
+      char* scratch = (char*)p_vm->alloc->allocate(p_vm->alloc, left_length + right_length);
+      if (scratch == NULL) {
+        runtime_error(p_vm, "out of memory: failed to concatenate strings.");
+        interpret_result res;
+        res.status = RUNTIME_ERROR;
+        res.top_level_return = NULL_AS_VALUE();
+        return res;
+      }
+      memcpy(scratch, left->string.chars, left_length);
+      memcpy(scratch + left_length, right->string.chars, right_length);
+      object_specs specs = {p_vm->alloc, p_vm->objects_store};
+      object_string* concatenated =
+          create_object_string(ok_create_string_view(scratch, left_length + right_length, false), &specs);
+      p_vm->alloc->release(p_vm->alloc, scratch);
+      if (concatenated == NULL) {
+        runtime_error(p_vm, "out of memory: failed to concatenate strings.");
+        interpret_result res;
+        res.status = RUNTIME_ERROR;
+        res.top_level_return = NULL_AS_VALUE();
+        return res;
+      }
+      lhs = OBJECT_AS_VALUE(concatenated);
+    } else {
+      goto invalid;
+    }
   } else {
   invalid: {
     runtime_error(p_vm, "invalid operands for binary '+'.");
@@ -469,9 +506,13 @@ perform_equal(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_de
     }
   } else if (IS_VALUE_OBJECT(lhs)) {
     if (IS_VALUE_STRING(lhs) && IS_VALUE_STRING(rhs)) {
-      lhs = BOOL_AS_VALUE(strncmp(VALUE_AS_STRING(p_lhs)->string.chars,
-                                  VALUE_AS_STRING(p_rhs)->string.chars,
-                                  string_get_length(&VALUE_AS_STRING(p_lhs)->string)) == 0);
+      // value equality: equal content, not common prefix. strncmp with only
+      // the lhs length made "ab" == "abc" true.
+      const object_string* left = VALUE_AS_STRING(p_lhs);
+      const object_string* right = VALUE_AS_STRING(p_rhs);
+      const uint64_t left_length = string_get_length(&left->string);
+      lhs = BOOL_AS_VALUE(left_length == string_get_length(&right->string) &&
+                          memcmp(left->string.chars, right->string.chars, left_length) == 0);
     } else {
       goto invalid;
       // TODO others
@@ -522,9 +563,12 @@ perform_not_equal(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t 
     }
   } else if (IS_VALUE_OBJECT(lhs)) {
     if (IS_VALUE_STRING(lhs) && IS_VALUE_STRING(rhs)) {
-      lhs = BOOL_AS_VALUE(!(strncmp(VALUE_AS_STRING(p_lhs)->string.chars,
-                                    VALUE_AS_STRING(p_rhs)->string.chars,
-                                    string_get_length(&VALUE_AS_STRING(p_lhs)->string)) == 0));
+      // value equality, same length+memcmp shape as perform_equal
+      const object_string* left = VALUE_AS_STRING(p_lhs);
+      const object_string* right = VALUE_AS_STRING(p_rhs);
+      const uint64_t left_length = string_get_length(&left->string);
+      lhs = BOOL_AS_VALUE(!(left_length == string_get_length(&right->string) &&
+                            memcmp(left->string.chars, right->string.chars, left_length) == 0));
     } else {
       goto invalid;
       // TODO others

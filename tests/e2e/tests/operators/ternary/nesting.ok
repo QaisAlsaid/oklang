@@ -1,0 +1,19 @@
+// right associativity: a then b otherwise c then d otherwise e
+// parses as a then b otherwise (c then d otherwise e)
+let n = 2;
+print(n == 1 then "one" otherwise n == 2 then "two" otherwise "many"); // expect: two
+let m = 7;
+print(m == 1 then "one" otherwise m == 2 then "two" otherwise "many"); // expect: many
+let k = 1;
+print(k == 1 then "one" otherwise k == 2 then "two" otherwise "many"); // expect: one
+// nested in the then arm needs no parens (arm stops at otherwise)
+print(true then (false then 1 otherwise 2) otherwise 3); // expect: 2
+print(false then 1 otherwise (true then 4 otherwise 5)); // expect: 4
+// chained comparisons pick the first match
+fu grade(s) {
+  return s >= 90 then "a" otherwise s >= 80 then "b" otherwise s >= 70 then "c" otherwise "f";
+}
+print(grade(95)); // expect: a
+print(grade(85)); // expect: b
+print(grade(72)); // expect: c
+print(grade(10)); // expect: f

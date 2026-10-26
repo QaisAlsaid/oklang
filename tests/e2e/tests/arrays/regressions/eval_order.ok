@@ -1,0 +1,25 @@
+// evaluation order for subscript assignment: base, then index, then rhs.
+// observable through a shared counter the probes multiply into.
+let mut order = 0;
+fu base() { order = order * 10 + 1; return [0, 0]; }
+fu index() { order = order * 10 + 2; return 1; }
+fu value() { order = order * 10 + 3; return 77; }
+let slot = base();
+slot[index()] = value();
+print(order); // expect: 123
+print(slot[1]); // expect: 77
+// compound: base, index, current read, rhs — f exactly once, g after
+let mut order2 = 0;
+fu f() { order2 = order2 * 10 + 1; return 0; }
+fu g() { order2 = order2 * 10 + 2; return 7; }
+let mut c = [0, 0];
+c[f()] += g();
+print(order2); // expect: 12
+print(c[0]); // expect: 7
+// reading: base then index
+let mut order3 = 0;
+fu rb() { order3 = order3 * 10 + 1; return [[5, 6], [7, 8]]; }
+fu ri() { order3 = order3 * 10 + 2; return 1; }
+let grid = rb();
+print(grid[ri()][1]); // expect: 8
+print(order3); // expect: 12

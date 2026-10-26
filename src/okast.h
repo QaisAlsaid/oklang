@@ -148,11 +148,9 @@ typedef enum {
   DECLARATION_NONE = 0,
   DECLARATION_ERROR = 1,
   DECLARATION_GLOB = 1 << 1,
-  DECLARATION_STATIC = 1 << 2,
-  DECLARATION_ASYNC = 1 << 3,
-  DECLARATION_EXPORT = 1 << 4,
+  DECLARATION_EXPORT = 1 << 2,
 } ast_declaration_modifiers;
-#define DECLARATION_COUNT 5
+#define DECLARATION_COUNT 3
 
 typedef uint8_t ast_declaration_modifiers_t;
 string ast_declaration_modifiers_asprint(ast_declaration_modifiers_t p_modifiers, allocators* p_alloc);
@@ -295,6 +293,25 @@ void ast_assign_expression_init(ast_assign_expression* p_assign,
 void ast_assign_expression_deinit(ast_assign_expression* p_assign);
 bool ast_assign_expression_print(const ast_assign_expression* p_assign);
 string ast_assign_expression_asprint(const ast_assign_expression* p_assign);
+
+// `p_condition then p_then_arm otherwise p_otherwise_arm` — the conditional
+// (ternary) expression. both arms compile into the caller's result register.
+typedef struct {
+  ast_expression expression;
+  ast_expression* condition;
+  ast_expression* then_arm;
+  ast_expression* otherwise_arm;
+} ast_conditional_expression;
+
+void ast_conditional_expression_init(ast_conditional_expression* p_conditional,
+                                     const token p_token,
+                                     ast_expression* p_condition,
+                                     ast_expression* p_then_arm,
+                                     ast_expression* p_otherwise_arm,
+                                     ast_specs* p_specs);
+void ast_conditional_expression_deinit(ast_conditional_expression* p_conditional);
+bool ast_conditional_expression_print(const ast_conditional_expression* p_conditional);
+string ast_conditional_expression_asprint(const ast_conditional_expression* p_conditional);
 
 ARRAY_DECLARE_DEFAULT(ast_bindings_list, ast_binding*)
 

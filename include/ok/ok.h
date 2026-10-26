@@ -67,8 +67,7 @@ void* ok_value_as_native_value(ok_value p_value);
 /* debug */
 
 // every ok_run after this call dumps the compiled bytecode of all functions
-// (main first, nested protos after) before execution. p_skip_run: compile and
-// dump only, do not execute.
+// (main first, nested protos after) before execution. p_skip_run: compile and dump only, do not execute.
 void ok_debug_dump_bytecode(ok* p_ok, bool p_enabled, bool p_skip_run);
 
 #ifdef __cplusplus

@@ -1,0 +1,22 @@
+print("ab" == "ab"); // expect: true
+print("ab" == "abc"); // expect: false
+print("abc" == "ab"); // expect: false
+print("" == ""); // expect: true
+print("ab" != "ab"); // expect: false
+print("ab" != "abc"); // expect: true
+// equal content built at runtime compares equal (value semantics, not identity)
+print(("a" + "b") == "ab"); // expect: true
+print(("a" + "b") != "ac"); // expect: true
+let mut grown = "ab";
+grown += "c";
+print(grown == "abc"); // expect: true
+print(grown == "ab"); // expect: false
+// strings do not equal numbers or null (mixed equality stays identity)
+print("1" == 1); // expect: false
+print("" == null); // expect: false
+print("null" == null); // expect: false
+// in conditions
+if "ab" == "ab" ? { print("eq"); } else { print("ne"); } // expect: eq
+if "ab" == "abc" ? { print("eq"); } else { print("ne"); } // expect: ne
+let pick = "x" == "x" then 1 otherwise 2;
+print(pick); // expect: 1

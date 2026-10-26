@@ -414,6 +414,11 @@ static bool compile_assign_expression(compiler* p_compiler,
                                       _register p_dest,
                                       uint32_t p_requested_count,
                                       expression_result* p_out);
+static bool compile_conditional_expression(compiler* p_compiler,
+                                           ast_conditional_expression* p_conditional,
+                                           _register p_dest,
+                                           uint32_t p_requested_count,
+                                           expression_result* p_out);
 static bool compile_call_expression(compiler* p_compiler,
                                     ast_call_expression* p_call,
                                     _register p_dest,
@@ -658,6 +663,10 @@ static bool compile_expression(compiler* p_compiler,
   case AST_ASSIGN_EXPRESSION:
     result =
         compile_assign_expression(p_compiler, (ast_assign_expression*)p_expression, p_dest, p_requested_count, p_out);
+    break;
+  case AST_CONDITIONAL_EXPRESSION:
+    result = compile_conditional_expression(
+        p_compiler, (ast_conditional_expression*)p_expression, p_dest, p_requested_count, p_out);
     break;
   case AST_BOOLEAN_EXPRESSION:
     result =
@@ -1180,7 +1189,58 @@ static location resolve_variable(compiler* p_compiler, const ok_string_view p_id
   return invalid;
 }
 
-static lvalue resolve_lvalue(compiler* p_compiler, ast_expression* p_lvalue_expr) {
+// conservative purity check used by the container-elision guard in
+// resolve_lvalue: an expression is inert when evaluating it cannot change any
+// local's value. literals and identifiers trivially qualify; pure reads
+// (subscripts, binops, unary) propagate inertness; array literals allocate but
+// never reseat locals (the gc is non-moving, a local's reference survives a
+// collection unchanged); lambda literals are inert because creating a closure
+// runs no body — only calling it can mutate, and any call anywhere fails the
+// check anyway. calls and assignments are the reseating writers we guard
+// against: a call may mutate a captured local, an assignment (compound or not)
+// may target the container itself.
+static bool expression_is_inert(const ast_expression* p_expression) {
+  switch (p_expression->node.node_type) {
+  case AST_IDENTIFIER_EXPRESSION:
+  case AST_NUMBER_EXPRESSION:
+  case AST_STRING_EXPRESSION:
+  case AST_BOOLEAN_EXPRESSION:
+  case AST_NULL_EXPRESSION:
+  case AST_FUNCTION_EXPRESSION:
+    return true;
+  case AST_PREFIX_UNARY_EXPRESSION:
+    return expression_is_inert(((const ast_prefix_unary_expression*)p_expression)->right);
+  case AST_INFIX_BINARY_EXPRESSION: {
+    const ast_infix_binary_expression* infix = (const ast_infix_binary_expression*)p_expression;
+    return expression_is_inert(infix->left) && expression_is_inert(infix->right);
+  }
+  case AST_SUBSCRIPT_EXPRESSION: {
+    const ast_subscript_expression* subscript = (const ast_subscript_expression*)p_expression;
+    return expression_is_inert(subscript->left) && expression_is_inert(subscript->index);
+  }
+  case AST_ARRAY_EXPRESSION: {
+    const ast_array_expression* array = (const ast_array_expression*)p_expression;
+    for (uint32_t i = 0; i < array->elements.count; ++i) {
+      if (!expression_is_inert(array->elements.data[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
+  case AST_CONDITIONAL_EXPRESSION: {
+    const ast_conditional_expression* conditional = (const ast_conditional_expression*)p_expression;
+    return expression_is_inert(conditional->condition) && expression_is_inert(conditional->then_arm) &&
+           expression_is_inert(conditional->otherwise_arm);
+  }
+  default:
+    return false; // calls, assignments, anything unknown: assume it can write
+  }
+}
+
+// p_pending_rhs is the expression that will be compiled after this lvalue is
+// resolved (the right side of an assignment), or NULL for pure reads: the
+// subscript read path resolves and immediately emits its GET.
+static lvalue resolve_lvalue(compiler* p_compiler, ast_expression* p_lvalue_expr, const ast_expression* p_pending_rhs) {
   register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
   switch (p_lvalue_expr->node.node_type) {
   case AST_IDENTIFIER_EXPRESSION: {
@@ -1209,10 +1269,32 @@ static lvalue resolve_lvalue(compiler* p_compiler, ast_expression* p_lvalue_expr
     if (!compile_expression(p_compiler, sub->left, base, 1, &base_result)) {
       return (lvalue){LVALUE_INVALID};
     }
-    // the base must live in its own register: the operand pair (base, index) is
-    // what GET/SET address, and both must be stable across the rhs compile.
-    if (!materialize_into(p_compiler, &base_result.value, base, author)) {
-      return (lvalue){LVALUE_INVALID};
+    // container elision (the compound-assign disassembly follow-up): when the
+    // container compiled to a plain local's register — compilation emitted
+    // nothing, identifiers resolve to their own slots — and nothing that will
+    // be compiled before the GET/SET can reseat it, reference the local's
+    // register directly and drop the staging move. reseating writers inside
+    // the index or the pending rhs: assignments, and calls (a closure may
+    // mutate a captured local; the scope's captures_any flag cannot be trusted
+    // at this point, a lambda compiled later in the function captures just the
+    // same). the elided base also relies on the caller-side invariant that no
+    // assignment expression is ever compiled with a live local as its result
+    // register — the same invariant the assign/binop peephole already depends
+    // on (p_dest is the devnull or a temp, never a local).
+    const bool elide_container = base_result.value.kind == LOCATION_KIND_REGISTER &&
+                                 base_result.value.index != base.index && expression_is_inert(sub->index) &&
+                                 (p_pending_rhs == NULL || expression_is_inert(p_pending_rhs));
+    location base_location;
+    if (elide_container) {
+      register_allocator_rollback_temp(regalloc); // hand the staging temp back
+      base_location = base_result.value;
+    } else {
+      // the base must live in its own register: the operand pair (base, index) is
+      // what GET/SET address, and both must be stable across the rhs compile.
+      if (!materialize_into(p_compiler, &base_result.value, base, author)) {
+        return (lvalue){LVALUE_INVALID};
+      }
+      base_location = (location){base.index, LOCATION_KIND_REGISTER, LOCATION_OK};
     }
     _register index;
     if (!register_allocator_allocate_temp(regalloc, &index)) {
@@ -1229,7 +1311,7 @@ static lvalue resolve_lvalue(compiler* p_compiler, ast_expression* p_lvalue_expr
     }
     lvalue lv;
     lv.kind = LVALUE_SUBSCRIPT;
-    lv.subscript.base = (location){base.index, LOCATION_KIND_REGISTER, LOCATION_OK};
+    lv.subscript.base = base_location;
     lv.subscript.index = index_result.value; // register (== the index temp) or constant
     return lv;
   }
@@ -1938,6 +2020,78 @@ static bool compile_logical_operator(compiler* p_compiler,
   return patch_jump_if_set(p_compiler, false, jmp, current_chunk(p_compiler)->code.count, p_dest, (ast_node*)p_logical);
 }
 
+// `condition then a otherwise b`. zero new opcodes: the shape is the if
+// statement's, folded into an expression. the condition evaluates into its own
+// temp; both arms compile into the caller's p_dest — the same result register —
+// which is exactly the invariant the calling convention already guarantees
+// (callers allocate result registers, compile_expression targets them). a
+// conditional is never an lvalue; is_lvalue's whitelist keeps it that way.
+static bool compile_conditional_expression(compiler* p_compiler,
+                                           ast_conditional_expression* p_conditional,
+                                           _register p_dest,
+                                           uint32_t p_requested_count,
+                                           expression_result* p_out) {
+  CRASH_MSG(p_requested_count <= 1, "unimplemented multi-result.");
+  register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
+  ast_node* author = (ast_node*)p_conditional;
+
+  _register condition;
+  if (!register_allocator_allocate_temp(regalloc, &condition)) {
+    report_oom(p_compiler, author);
+    return false;
+  }
+  expression_result condition_result;
+  if (!compile_expression(p_compiler, p_conditional->condition, condition, 1, &condition_result)) {
+    return false;
+  }
+  // force into the temp: an identifier condition resolves to its own register
+  // without emitting anything, and the jump would read an unwritten temp.
+  if (!materialize_into(p_compiler, &condition_result.value, condition, author)) {
+    return false;
+  }
+
+  // falsy (false/null, the vm's is_falsy) jumps to the otherwise arm
+  uint32_t jump_to_otherwise;
+  if (!emit_incomplete_jump_if(p_compiler, false, condition, &jump_to_otherwise, author)) {
+    return false;
+  }
+
+  expression_result arm_result;
+  if (!compile_expression(p_compiler, p_conditional->then_arm, p_dest, 1, &arm_result)) {
+    return false;
+  }
+  // arms may resolve to constants or their own registers without emitting
+  // anything (numbers, identifiers, in-place compound assigns): land them in
+  // the result register so the taken arm always writes p_dest.
+  if (!materialize_into(p_compiler, &arm_result.value, p_dest, author)) {
+    return false;
+  }
+
+  uint32_t jump_to_end;
+  if (!emit_incomplete_jump(p_compiler, OP_JUMP, &jump_to_end, author)) {
+    return false;
+  }
+
+  if (!patch_jump_if(p_compiler, false, jump_to_otherwise, current_chunk(p_compiler)->code.count, author)) {
+    return false;
+  }
+  if (!compile_expression(p_compiler, p_conditional->otherwise_arm, p_dest, 1, &arm_result)) {
+    return false;
+  }
+  if (!materialize_into(p_compiler, &arm_result.value, p_dest, author)) {
+    return false;
+  }
+  if (!patch_jump(p_compiler, false, jump_to_end, current_chunk(p_compiler)->code.count, author)) {
+    return false;
+  }
+
+  p_out->type = EXPRESSION_VALUE;
+  p_out->value = (location){p_dest.index, LOCATION_KIND_REGISTER, LOCATION_OK};
+  p_out->lvalue = (lvalue){LVALUE_INVALID};
+  p_out->count = 1;
+  return true;
+}
+
 static bool emit_binop(compiler* p_compiler,
                        opcode p_op,
                        opcode p_long_op,
@@ -2169,7 +2323,7 @@ static bool compile_assign_expression(compiler* p_compiler,
                                       uint32_t p_requested_count,
                                       expression_result* p_out) {
   CRASH_MSG(p_requested_count <= 1, "unimplemented multi-assign.");
-  lvalue lv = resolve_lvalue(p_compiler, p_assign->left);
+  lvalue lv = resolve_lvalue(p_compiler, p_assign->left, p_assign->right);
   if (lv.kind == LVALUE_INVALID) {
     return false;
   }
@@ -2184,6 +2338,20 @@ static bool compile_assign_expression(compiler* p_compiler,
   // keep the scratch-then-store path. store_lvalue still runs afterwards:
   // the mutability gate and the (now no-op) self move check both still apply.
   _register rhs_dest = p_dest;
+  if (lv.kind == LVALUE_SUBSCRIPT) {
+    // the rhs compiles into its own temp ABOVE the lvalue's staged base/index.
+    // a call rhs opens the callee's register window at its destination, and the
+    // callee's frame ([dest, dest + fu->registers)) null-fills every slot above
+    // it — the staged base/index temps sit above p_dest, so compiling the rhs
+    // there let the callee erase them (arr[0] = reseat(), where reseat captures
+    // and reseats arr, died with "expected an array"). found by the elision-gate
+    // regression hunt; compound assigns were always safe because their cur/rhs
+    // temps are allocated after the staging.
+    if (!register_allocator_allocate_temp(&current_context(p_compiler)->register_allocator, &rhs_dest)) {
+      report_oom(p_compiler, (ast_node*)p_assign);
+      return false;
+    }
+  }
   if (lv.kind == LVALUE_VARIABLE && lv.variable.kind == LOCATION_KIND_REGISTER && p_assign->right != NULL &&
       p_assign->right->node.node_type == AST_INFIX_BINARY_EXPRESSION) {
     ast_infix_binary_expression* bin = (ast_infix_binary_expression*)p_assign->right;
@@ -2356,7 +2524,8 @@ static bool compile_subscript_expression(compiler* p_compiler,
   // read path goes through the same resolve_lvalue as writes: base and index are
   // evaluated identically in both, and a[i] compiles side effects even when its
   // value is discarded (matching compile_call_expression's behavior at count 0).
-  lvalue lv = resolve_lvalue(p_compiler, (ast_expression*)p_subscript);
+  // no pending rhs: only the index can disqualify container elision here.
+  lvalue lv = resolve_lvalue(p_compiler, (ast_expression*)p_subscript, NULL);
   if (lv.kind == LVALUE_INVALID) {
     return false;
   }
@@ -2407,7 +2576,7 @@ static bool compile_compound_assign_expression(compiler* p_compiler,
 
   // resolve the target once: base/index (subscripts) are evaluated here and never
   // again, so a[f()] += g() calls f exactly once.
-  lvalue lv = resolve_lvalue(p_compiler, p_compound->left);
+  lvalue lv = resolve_lvalue(p_compiler, p_compound->left, p_compound->right);
   if (lv.kind == LVALUE_INVALID) {
     return false;
   }

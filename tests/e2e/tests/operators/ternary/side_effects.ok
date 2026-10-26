@@ -1,0 +1,22 @@
+// only the taken arm runs
+let mut calls = 0;
+fu th() { calls += 1; return 10; }
+fu ot() { calls += 1; return 20; }
+print(true then th() otherwise ot()); // expect: 10
+print(calls); // expect: 1
+print(false then th() otherwise ot()); // expect: 20
+print(calls); // expect: 2
+// the condition evaluates exactly once, before either arm
+let mut order = 0;
+fu cond() { order = order * 10 + 1; return true; }
+fu a1() { order = order * 10 + 2; return 0; }
+fu b1() { order = order * 10 + 3; return 0; }
+print(cond() then a1() otherwise b1()); // expect: 0
+print(order); // expect: 12
+// arms inside loops keep working across iterations (modulo parses but has no
+// opcode yet — pre-existing gap, not ternary; parity via or-chain instead)
+let mut sum = 0;
+for let i = 0 : 6? {
+  sum += (i == 0 or i == 2 or i == 4) then i otherwise 0 - i;
+}
+print(sum); // expect: -3

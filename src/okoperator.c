@@ -38,10 +38,6 @@ operator_type operator_type_from_token_type(const token_type p_token_type, bool 
     return OPERATOR_BIN_BAR;
   case TOKEN_TILED:
     return OPERATOR_BIN_TILED;
-  case TOKEN_PLUS_PLUS:
-    return p_is_prefix ? OPERATOR_PRE_PLUS_PLUS : OPERATOR_POS_PLUS_PLUS;
-  case TOKEN_MINUS_MINUS:
-    return p_is_prefix ? OPERATOR_PRE_MINUS_MINUS : OPERATOR_POS_MINUS_MINUS;
   case TOKEN_PLUS_EQUAL:
     return OPERATOR_PLUS_EQUAL;
   case TOKEN_MINUS_EQUAL:

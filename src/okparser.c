@@ -61,9 +61,8 @@ static ast_expression* parse_binary_infix(
     parser* p_parser, ast_expression* p_left, precedence p_precedence, bool is_right_associative, token p_trigger);
 static ast_expression* parse_assign_expression(
     parser* p_parser, ast_expression* p_left, precedence p_precedence, bool is_right_associative, token p_trigger);
-// static ast_expression* parse_conditional(parser* p_parser, ast_expression* p_left, precedence p_precedence, bool
-// is_right_associative, token p_trigger); static ast_expression* parse_as(parser* p_parser, ast_expression* p_left,
-// precedence p_precedence, bool is_right_associative, token p_trigger);
+static ast_expression* parse_conditional_expression(
+    parser* p_parser, ast_expression* p_left, precedence p_precedence, bool is_right_associative, token p_trigger);
 
 // static ast_expression* parse_unary_postfix(parser* p_parser, ast_expression* p_left, precedence p_precedence, bool
 //  is_right_associative, token p_trigger);
@@ -95,8 +94,6 @@ static const parse_rule parse_rules[] = {
     [TOKEN_CARET] = {NULL, parse_binary_infix, PREC_BITWISE_XOR},
     [TOKEN_AMPERSAND] = {NULL, parse_binary_infix, PREC_AND},
     [TOKEN_BAR] = {NULL, parse_binary_infix, PREC_OR},
-    //[TOKEN_PLUS_PLUS] = { parse_unary_prefix, parse_unary_postfix, PREC_POSTFIX },
-    //[TOKEN_MINUS_MINUS] = { parse_unary_prefix, parse_unary_postfix, PREC_POSTFIX },
     [TOKEN_PLUS_EQUAL] = {NULL, parse_compound_assign_expression, PREC_ASSIGNMENT},
     [TOKEN_MINUS_EQUAL] = {NULL, parse_compound_assign_expression, PREC_ASSIGNMENT},
     [TOKEN_ASTERISK_EQUAL] = {NULL, parse_compound_assign_expression, PREC_ASSIGNMENT},
@@ -109,7 +106,6 @@ static const parse_rule parse_rules[] = {
     [TOKEN_SHIFT_RIGHT_EQUAL] = {NULL, parse_binary_infix, PREC_ASSIGNMENT},
     [TOKEN_COMMA] = {NULL, NULL, PREC_NONE},
     [TOKEN_COLON] = {NULL, NULL, PREC_NONE},
-    //[TOKEN_QUESTION] = { NULL, parse_conditional, PREC_NONE },
     [TOKEN_BANG] = {parse_unary_prefix, NULL, PREC_PREFIX},
     [TOKEN_BANG_EQUAL] = {NULL, parse_binary_infix, PREC_EQUALITY},
     [TOKEN_EQUAL] = {NULL, parse_binary_infix, PREC_EQUALITY},
@@ -123,7 +119,6 @@ static const parse_rule parse_rules[] = {
     [TOKEN_RIGHT_BRACE] = {NULL, NULL, PREC_NONE},
     [TOKEN_LEFT_BRACKET] = {parse_array_literal, parse_subscript, PREC_SUBSCRIPT},
     [TOKEN_RIGHT_BRACKET] = {NULL, NULL, PREC_NONE},
-    [TOKEN_ARROW] = {NULL, NULL, PREC_NONE},
     [TOKEN_IDENTIFIER] = {parse_identifier, NULL, PREC_NONE},
     [TOKEN_NUMBER] = {parse_number, NULL, PREC_NONE},
     [TOKEN_STRING] = {parse_string, NULL, PREC_NONE},
@@ -138,6 +133,8 @@ static const parse_rule parse_rules[] = {
     [TOKEN_CONTINUE] = {NULL, NULL, PREC_NONE},
     [TOKEN_IF] = {NULL, NULL, PREC_NONE},
     [TOKEN_ELSE] = {NULL, NULL, PREC_NONE},
+    [TOKEN_THEN] = {NULL, parse_conditional_expression, PREC_CONDITIONAL},
+    [TOKEN_OTHERWISE] = {NULL, NULL, PREC_NONE},
     [TOKEN_AND] = {NULL, parse_binary_infix, PREC_AND},
     [TOKEN_OR] = {NULL, parse_binary_infix, PREC_OR},
     [TOKEN_CLASS] = {NULL, NULL, PREC_NONE},
@@ -149,13 +146,9 @@ static const parse_rule parse_rules[] = {
     [TOKEN_FALSE] = {parse_boolean, NULL, PREC_NONE},
     [TOKEN_RETURN] = {NULL, NULL, PREC_NONE},
     [TOKEN_NOT] = {parse_unary_prefix, NULL, PREC_PREFIX},
-    [TOKEN_OK] = {NULL, NULL, PREC_NONE},
-    [TOKEN_OPERATOR] = {NULL, NULL, PREC_NONE},
     [TOKEN_GLOB] = {NULL, NULL, PREC_NONE},
     [TOKEN_EXPORT] = {NULL, NULL, PREC_NONE},
     [TOKEN_MUT] = {NULL, NULL, PREC_NONE},
-    [TOKEN_STATIC] = {NULL, NULL, PREC_NONE},
-    [TOKEN_ASYNC] = {NULL, NULL, PREC_NONE},
     [TOKEN_TRY] = {NULL, NULL, PREC_NONE},
     [TOKEN_CATCH] = {NULL, NULL, PREC_NONE},
     [TOKEN_THROW] = {NULL, NULL, PREC_NONE},
@@ -568,6 +561,61 @@ fail:
   return NULL;
 }
 
+// `p_left then <then_arm> otherwise <otherwise_arm>` — the conditional
+// expression. the then arm parses at PREC_CONDITIONAL so it stops at
+// `otherwise`; the otherwise arm parses one level lower (PREC_CONDITIONAL - 1)
+// making the operator right associative: a then b otherwise c then d otherwise e
+// is a then b otherwise (c then d otherwise e). assignments inside an arm need
+// parentheses, matching how the middle of the C ternary behaves.
+ast_expression* parse_conditional_expression(
+    parser* p_parser, ast_expression* p_left, precedence p_precedence, bool is_right_associative, token p_trigger) {
+  (void)p_precedence;
+  (void)is_right_associative;
+  allocators* alloc = p_parser->alloc;
+  advance(p_parser); // past 'then': parse_expression dispatches on previous
+  ast_expression* then_arm = parse_expression(p_parser, PREC_CONDITIONAL);
+  if (then_arm == NULL) {
+    goto fail;
+  }
+  if (p_parser->current.type != TOKEN_OTHERWISE) {
+    error_at(p_parser,
+             p_parser->current,
+             ok_create_string_view("expected 'otherwise' to complete the conditional.", OK_STRING_VIEW_CALCULATE_LENGTH,
+                                   true));
+    ast_dispatch_deinit((ast_node*)then_arm);
+    alloc->release(alloc, then_arm);
+    goto fail;
+  }
+  advance(p_parser); // consume 'otherwise'
+  advance(p_parser); // past it: previous becomes the arm's first token
+  ast_expression* otherwise_arm = parse_expression(p_parser, PREC_CONDITIONAL - 1);
+  if (otherwise_arm == NULL) {
+    ast_dispatch_deinit((ast_node*)then_arm);
+    alloc->release(alloc, then_arm);
+    goto fail;
+  }
+  ast_conditional_expression* conditional =
+      (ast_conditional_expression*)alloc->allocate(alloc, sizeof(ast_conditional_expression));
+  if (conditional == NULL) {
+    error_at(p_parser,
+             p_trigger,
+             ok_create_string_view("failed to allocate memory for conditional node.", OK_STRING_VIEW_CALCULATE_LENGTH,
+                                   true));
+    ast_dispatch_deinit((ast_node*)then_arm);
+    alloc->release(alloc, then_arm);
+    ast_dispatch_deinit((ast_node*)otherwise_arm);
+    alloc->release(alloc, otherwise_arm);
+    goto fail;
+  }
+  ast_specs s = {alloc};
+  ast_conditional_expression_init(conditional, p_trigger, p_left, then_arm, otherwise_arm, &s);
+  return (ast_expression*)conditional;
+fail:
+  ast_dispatch_deinit((ast_node*)p_left);
+  alloc->release(alloc, p_left);
+  return NULL;
+}
+
 ast_expression* parse_call(
     parser* p_parser, ast_expression* p_left, precedence p_precedence, bool is_right_associative, token p_trigger) {
   allocators* alloc = p_parser->alloc;
@@ -722,7 +770,12 @@ ast_statement* parse_statement(parser* p_parser) {
   case TOKEN_TRY:
   case TOKEN_CATCH:
   case TOKEN_FINALIZE:
-    assert(0);
+    // planned error-model statements, not implemented yet: parse to a clean
+    // error instead of the old assert + release-build fallthrough.
+    error_at(p_parser,
+             p_parser->previous,
+             ok_create_string_view("error handling is not implemented yet.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL;
   case TOKEN_SEMICOLON:
     return (ast_statement*)parse_empty_statement(p_parser);
   case TOKEN_EOF:
@@ -736,10 +789,6 @@ static ast_declaration_modifiers_t parse_declaration_modifier(token p_token) {
   switch (p_token.type) {
   case TOKEN_GLOB:
     return DECLARATION_GLOB;
-  case TOKEN_STATIC:
-    return DECLARATION_STATIC;
-  case TOKEN_ASYNC:
-    return DECLARATION_ASYNC;
   case TOKEN_EXPORT:
     return DECLARATION_EXPORT;
   default:
@@ -965,7 +1014,7 @@ ast_function_declaration* parse_function_declaration(parser* p_parser,
                                                      ast_declaration_modifiers_t p_declaration_modifiers) {
   allocators* alloc = p_parser->alloc;
   token fu_tok = p_parser->previous;
-  const ast_declaration_modifiers_t fu_allowed_decl_mods = DECLARATION_GLOB | DECLARATION_EXPORT | DECLARATION_ASYNC;
+  const ast_declaration_modifiers_t fu_allowed_decl_mods = DECLARATION_GLOB | DECLARATION_EXPORT;
   if ((p_declaration_modifiers & ~fu_allowed_decl_mods) != 0) {
     string mods_str = ast_declaration_modifiers_asprint(p_declaration_modifiers, alloc);
     string message = asprint(alloc,

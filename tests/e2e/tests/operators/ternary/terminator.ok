@@ -1,0 +1,15 @@
+// the conditional in statement position: the value is discarded, both arms compile
+true then 1 otherwise 2;
+false then 1 otherwise 2;
+print("done"); // expect: done
+// in a condition position, where the ? terminator applies: the condition is
+// the ternary's RESULT, so use boolean-valued arms to steer the branch
+if true then false otherwise true ? { print("a"); } else { print("b"); } // expect: b
+if false then false otherwise true ? { print("a"); } else { print("b"); } // expect: a
+if false then true otherwise false ? { print("a"); } else { print("b"); } // expect: b
+if true then true otherwise false ? { print("a"); } else { print("b"); } // expect: a
+// a number-valued ternary condition follows the truthiness doctrine
+if false then 1 otherwise 2 ? { print("n"); } else { print("z"); } // expect: n
+let mut x = 0;
+while x < (true then 2 otherwise 99) ? { x += 1; }
+print(x); // expect: 2

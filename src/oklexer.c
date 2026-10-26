@@ -180,15 +180,8 @@ static token_type lookup_identifier(lexer* p_lexer) {
   case 'a': {
     if (p_lexer->current - p_lexer->start > 1) {
       switch (p_lexer->start[1]) {
-      case 's': {
-        if (p_lexer->current - p_lexer->start > 2) {
-          switch (p_lexer->start[2]) {
-          case 'y':
-            return check_keyword(p_lexer, 3, 2, "nc", TOKEN_ASYNC);
-          }
-        }
+      case 's':
         return check_keyword(p_lexer, 2, 0, "", TOKEN_AS);
-      }
       case 'n':
         return check_keyword(p_lexer, 2, 1, "d", TOKEN_AND);
       }
@@ -242,6 +235,8 @@ static token_type lookup_identifier(lexer* p_lexer) {
             return check_keyword(p_lexer, 3, 1, "s", TOKEN_THIS);
           case 'r':
             return check_keyword(p_lexer, 3, 2, "ow", TOKEN_THROW);
+          case 'e':
+            return check_keyword(p_lexer, 3, 1, "n", TOKEN_THEN);
           }
         }
         break;
@@ -266,8 +261,6 @@ static token_type lookup_identifier(lexer* p_lexer) {
       switch (p_lexer->start[1]) {
       case 'u':
         return check_keyword(p_lexer, 2, 3, "per", TOKEN_SUPER);
-      case 't':
-        return check_keyword(p_lexer, 2, 4, "atic", TOKEN_STATIC);
       }
     }
     break;
@@ -275,10 +268,8 @@ static token_type lookup_identifier(lexer* p_lexer) {
   case 'o': {
     if (p_lexer->current - p_lexer->start > 1) {
       switch (p_lexer->start[1]) {
-      case 'p':
-        return check_keyword(p_lexer, 2, 6, "erator", TOKEN_OPERATOR);
-      case 'k':
-        return check_keyword(p_lexer, 2, 0, "", TOKEN_OK);
+      case 't':
+        return check_keyword(p_lexer, 2, 7, "herwise", TOKEN_OTHERWISE);
       case 'r':
         return check_keyword(p_lexer, 2, 0, "", TOKEN_OR);
       }
@@ -354,16 +345,9 @@ start:
                         : match(p_lexer, '>') ? match(p_lexer, '=') ? TOKEN_SHIFT_RIGHT_EQUAL : TOKEN_SHIFT_RIGHT
                                               : TOKEN_GREATER);
   case '+':
-    return create_token(p_lexer,
-                        match(p_lexer, '=')   ? TOKEN_PLUS_EQUAL
-                        : match(p_lexer, '+') ? TOKEN_PLUS_PLUS
-                                              : TOKEN_PLUS);
+    return create_token(p_lexer, match(p_lexer, '=') ? TOKEN_PLUS_EQUAL : TOKEN_PLUS);
   case '-':
-    return create_token(p_lexer,
-                        match(p_lexer, '=')   ? TOKEN_MINUS_EQUAL
-                        : match(p_lexer, '-') ? TOKEN_MINUS_MINUS
-                        : match(p_lexer, '>') ? TOKEN_ARROW
-                                              : TOKEN_MINUS);
+    return create_token(p_lexer, match(p_lexer, '=') ? TOKEN_MINUS_EQUAL : TOKEN_MINUS);
   case '*':
     return create_token(p_lexer, match(p_lexer, '=') ? TOKEN_ASTERISK_EQUAL : TOKEN_ASTERISK);
   case '^':

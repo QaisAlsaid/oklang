@@ -1,0 +1,39 @@
+// assignment arms need parentheses (then arm stops at `=` otherwise)
+let mut y = 0;
+print(true then (y = 5) otherwise (y = 6)); // expect: 5
+print(y); // expect: 5
+print(false then (y = 7) otherwise (y = 8)); // expect: 8
+print(y); // expect: 8
+// compound-assign arm
+let mut z = 1;
+print(true then (z += 10) otherwise (z += 100)); // expect: 11
+print(z); // expect: 11
+// the conditional's value is the assignment's value
+let mut w = 0;
+let r = true then (w = 42) otherwise (w = 43);
+print(r); // expect: 42
+print(w); // expect: 42
+// as a call argument
+fu add(a, b) { return a + b; }
+print(add(true then 10 otherwise 20, false then 100 otherwise 200)); // expect: 210
+// as a subscript index and inside subscripts
+let arr = [10, 20, 30, 40];
+print(arr[true then 0 otherwise 3]); // expect: 10
+print(arr[1 + (false then 0 otherwise 2)]); // expect: 40
+print(arr[true then 1 otherwise 2] + arr[false then 1 otherwise 2]); // expect: 50
+// in a while condition and body
+let mut i = 0;
+let mut seen = 0;
+while (i < 4) ? {
+  seen = seen * 10 + (i > 2 then 9 otherwise 1);
+  i += 1;
+}
+print(seen); // expect: 1119
+// closures as arms: both arms compile, only one closes over nothing harmful
+fu make(flag) { return flag then fu() { return 1; } otherwise fu() { return 2; }; }
+print(make(true)()); // expect: 1
+print(make(false)()); // expect: 2
+// conditional result is not an lvalue (assignment to it must fail to compile is
+// covered by errors/; here we only chain reads)
+let v = (true then 1 otherwise 2) + (false then 10 otherwise 20);
+print(v); // expect: 21

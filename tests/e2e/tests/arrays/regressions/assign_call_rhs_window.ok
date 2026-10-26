@@ -1,0 +1,33 @@
+// regression: a call on the rhs of a subscript assignment opens the callee's
+// register window at the rhs destination; the callee's frame null-fills every
+// slot above it. when the rhs compiled into p_dest (below the lvalue's staged
+// base/index temps), the callee erased the staging: arr[0] = reseat() died with
+// "expected an array" the moment reseat had enough registers to reach up.
+// the fix compiles the rhs into a temp above the staging. compound assigns
+// were always safe (their cur/rhs temps allocate after the staging).
+let mut arr = [1, 2];
+let alias = arr;
+fu reseat() { arr = [9, 9]; return 3; }
+arr[0] = reseat();
+print(alias[0]); // expect: 3
+print(arr[0]); // expect: 9
+// small callees (1 register) never reached the staging, but large ones do:
+fu wide() {
+  let a = 1; let b = 2; let c = 3; let d = 4;
+  let e = [a, b, c, d];
+  return e[0] + e[3];
+}
+let mut nums = [0, 0];
+nums[1] = wide();
+print(nums[0]); // expect: 0
+print(nums[1]); // expect: 5
+// nested: subscript assign as the rhs of another subscript assign
+let mut outer = [[0, 0], [0, 0]];
+outer[0][1] = (outer[1][0] = 7);
+print(outer[0][1]); // expect: 7
+print(outer[1][0]); // expect: 7
+// globals as containers
+glob let mut g = [1, 2];
+fu greseat() { g = [8, 8]; return 4; }
+g[0] = greseat();
+print(g[0]); // expect: 8

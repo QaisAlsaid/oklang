@@ -24,7 +24,7 @@
   X(AST_CALL_EXPRESSION, ast_call_expression)                                                                          \
   X(AST_ASSIGN_EXPRESSION, ast_assign_expression)                                                                      \
   X(AST_COMPOUND_ASSIGN_EXPRESSION, ast_compound_assign_expression)                                                    \
-  /*X(AST_CONDITIONAL_EXPRESSION, ast_conditional_expression)*/                                                        \
+  X(AST_CONDITIONAL_EXPRESSION, ast_conditional_expression)                                                        \
   X(AST_BOOLEAN_EXPRESSION, ast_boolean_expression)                                                                    \
   X(AST_NULL_EXPRESSION, ast_null_expression)                                                                          \
   /*X(AST_ACCESS_EXPRESSION, ast_access_expression)*/                                                                  \
@@ -172,11 +172,9 @@ string ast_binding_asprint(const ast_binding* p_binding) {
 string ast_declaration_modifiers_asprint(ast_declaration_modifiers_t p_modifiers, allocators* p_alloc) {
   return (p_modifiers & DECLARATION_NONE) != 0 ? create_static_string("", 0)
                                                : asprint(p_alloc,
-                                                         "%s%s%s%s",
+                                                         "%s%s",
                                                          (p_modifiers & DECLARATION_GLOB) != 0 ? "glob " : "",
-                                                         (p_modifiers & DECLARATION_STATIC) != 0 ? "static " : "",
-                                                         (p_modifiers & DECLARATION_EXPORT) != 0 ? "export " : "",
-                                                         (p_modifiers & DECLARATION_ASYNC) != 0 ? "async" : "");
+                                                         (p_modifiers & DECLARATION_EXPORT) != 0 ? "export" : "");
 }
 
 void ast_declaration_init(ast_declaration* p_declaration,
@@ -567,6 +565,60 @@ string ast_assign_expression_asprint(const ast_assign_expression* p_assign) {
   }
   string_deinit(&left_str, alloc);
   string_deinit(&right_str, alloc);
+  return ret;
+}
+
+void ast_conditional_expression_init(ast_conditional_expression* p_conditional,
+                                     const token p_token,
+                                     ast_expression* p_condition,
+                                     ast_expression* p_then_arm,
+                                     ast_expression* p_otherwise_arm,
+                                     ast_specs* p_specs) {
+  ast_expression_init(&p_conditional->expression, AST_CONDITIONAL_EXPRESSION, p_token, p_specs);
+  p_conditional->condition = p_condition;
+  p_conditional->then_arm = p_then_arm;
+  p_conditional->otherwise_arm = p_otherwise_arm;
+}
+
+void ast_conditional_expression_deinit(ast_conditional_expression* p_conditional) {
+  allocators* alloc = p_conditional->expression.node.alloc;
+  ast_dispatch_deinit((ast_node*)p_conditional->condition);
+  ast_dispatch_deinit((ast_node*)p_conditional->then_arm);
+  ast_dispatch_deinit((ast_node*)p_conditional->otherwise_arm);
+  alloc->release(alloc, p_conditional->condition);
+  alloc->release(alloc, p_conditional->then_arm);
+  alloc->release(alloc, p_conditional->otherwise_arm);
+  p_conditional->condition = NULL;
+  p_conditional->then_arm = NULL;
+  p_conditional->otherwise_arm = NULL;
+  ast_expression_deinit(&p_conditional->expression);
+}
+
+bool ast_conditional_expression_print(const ast_conditional_expression* p_conditional) {
+  bool ret = ast_dispatch_print((ast_node*)p_conditional->condition);
+  ret &= printf(" then ") > 0;
+  ret &= ast_dispatch_print((ast_node*)p_conditional->then_arm);
+  ret &= printf(" otherwise ") > 0;
+  ret &= ast_dispatch_print((ast_node*)p_conditional->otherwise_arm);
+  return ret;
+}
+
+string ast_conditional_expression_asprint(const ast_conditional_expression* p_conditional) {
+  allocators* alloc = p_conditional->expression.node.alloc;
+  string ret = create_static_string(NULL, 0);
+  string condition_str = ast_dispatch_asprint((ast_node*)p_conditional->condition);
+  string then_str = ast_dispatch_asprint((ast_node*)p_conditional->then_arm);
+  string otherwise_str = ast_dispatch_asprint((ast_node*)p_conditional->otherwise_arm);
+  if (condition_str.chars != NULL && then_str.chars != NULL && otherwise_str.chars != NULL) {
+    ret = asprint(p_conditional->expression.node.alloc,
+                  "%s then %s otherwise %s",
+                  condition_str.chars,
+                  then_str.chars,
+                  otherwise_str.chars);
+  }
+  string_deinit(&condition_str, alloc);
+  string_deinit(&then_str, alloc);
+  string_deinit(&otherwise_str, alloc);
   return ret;
 }
 

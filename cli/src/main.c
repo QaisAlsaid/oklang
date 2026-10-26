@@ -1,7 +1,3 @@
-// in the *near* future oklang should be built as a library (static or shared)
-// and the driver (cli) is the executable, since oklang is an embedded language.
-// but for now it is fine to have both here.
-
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -22,7 +18,7 @@ int main(int argc, char** argv) {
   } else if (argc == 2) {
     run_file(ok, argv[1]);
   } else if (argc == 3 && strcmp(argv[1], "--dump") == 0) {
-    // compile and disassemble only: the inspection tool, not a run mode
+    // compile and disassemble only: the inspection tool, dry run mode
     ok_debug_dump_bytecode(ok, true, true);
     run_file(ok, argv[2]);
   } else {

@@ -1,0 +1,10 @@
+print(true then 1 otherwise 2); // expect: 1
+print(false then 1 otherwise 2); // expect: 2
+let x = 5;
+print(x > 3 then "big" otherwise "small"); // expect: big
+print(x < 3 then "big" otherwise "small"); // expect: small
+print(x == 5 then x * 2 otherwise x - 1); // expect: 10
+let y = x > 0 then x + 1 otherwise 0 - x;
+print(y); // expect: 6
+print((1 > 2) then true otherwise false); // expect: false
+print(not true then 0 otherwise 1); // expect: 1

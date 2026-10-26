@@ -25,10 +25,6 @@
   X(OPERATOR_BIN_AMPERSAND, "&")                                                                                       \
   X(OPERATOR_BIN_BAR, "|")                                                                                             \
   X(OPERATOR_BIN_TILED, "~")                                                                                           \
-  X(OPERATOR_PRE_PLUS_PLUS, "++")                                                                                      \
-  X(OPERATOR_PRE_MINUS_MINUS, "--")                                                                                    \
-  X(OPERATOR_POS_PLUS_PLUS, "++")                                                                                      \
-  X(OPERATOR_POS_MINUS_MINUS, "--")                                                                                    \
   X(OPERATOR_PLUS_EQUAL, "+=")                                                                                     \
   X(OPERATOR_MINUS_EQUAL, "-=")                                                                                    \
   X(OPERATOR_ASTERISK_EQUAL, "*=")                                                                                 \
@@ -101,25 +97,14 @@ typedef enum {
   OPERATOR_PRE_NOT,
   OPERATOR_PRE_BANG,
   OPERATOR_RANGE_PRE_VALUE_END = OPERATOR_PRE_BANG,
-
-  // prefix that can only operate on lvalue
-  OPERATOR_RANGE_PRE_LVALUE_BEGIN,
-  OPERATOR_PRE_PLUS_PLUS = OPERATOR_RANGE_PRE_LVALUE_BEGIN,
-  OPERATOR_PRE_MINUS_MINUS,
-  OPERATOR_RANGE_PRE_LVALUE_END = OPERATOR_PRE_MINUS_MINUS,
-  OPERATOR_RANGE_PRE_END = OPERATOR_RANGE_PRE_LVALUE_END,
+  OPERATOR_RANGE_PRE_END = OPERATOR_RANGE_PRE_VALUE_END,
 
   OPERATOR_RANGE_POS_BEGIN,
   OPERATOR_RANGE_POS_VALUE_BEGIN = OPERATOR_RANGE_POS_BEGIN,
   OPERATOR_POS_CALL = OPERATOR_RANGE_POS_VALUE_BEGIN,
   OPERATOR_POS_SUBSCRIPT,
   OPERATOR_RANGE_POS_VALUE_END = OPERATOR_POS_SUBSCRIPT,
-
-  OPERATOR_RANGE_POS_LVALUE_BEGIN,
-  OPERATOR_POS_PLUS_PLUS,
-  OPERATOR_POS_MINUS_MINUS,
-  OPERATOR_RANGE_POS_LVALUE_END = OPERATOR_POS_MINUS_MINUS,
-  OPERATOR_RANGE_POS_END = OPERATOR_RANGE_POS_LVALUE_END,
+  OPERATOR_RANGE_POS_END = OPERATOR_RANGE_POS_VALUE_END,
 
   OPERATOR_RANGE_LOGICAL_BEGIN,
   OPERATOR_LOG_OR = OPERATOR_RANGE_LOGICAL_BEGIN,

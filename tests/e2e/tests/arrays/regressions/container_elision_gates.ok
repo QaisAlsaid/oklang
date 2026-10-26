@@ -1,0 +1,41 @@
+// the container-elision gates: when the container is a plain local, subscript
+// reads and writes reference the local's register directly (no staging move)
+// only when nothing between resolve and use can reseat it. these pin the
+// corners where staging MUST stay, so the elision can never change semantics.
+// rhs assignment reseats the container: the store goes to the ORIGINAL array
+let mut a = [1, 2];
+let b = a;
+a[0] = (a = 5);
+print(b[0]); // expect: 5
+print(a); // expect: 5
+// a call in the rhs may mutate a captured container: store still hits the original
+let mut arr = [1, 2];
+let alias = arr;
+fu reseat() { arr = [9, 9]; return 3; }
+arr[0] = reseat();
+print(alias[0]); // expect: 3
+print(arr[0]); // expect: 9
+// a call in the INDEX may reseat the container: staged base survives
+let mut d = [1, 2];
+let dalias = d;
+fu idx() { d = [8, 8]; return 0; }
+d[idx()] = 42;
+print(dalias[0]); // expect: 42
+print(dalias[1]); // expect: 2
+print(d[0]); // expect: 8
+// inert indexes and rhs values: elision fires, results identical
+let mut n = [10, 20, 30];
+let i = 2;
+n[i] = n[i] + 5;
+print(n[2]); // expect: 35
+n[0] += n[1];
+print(n[0]); // expect: 30
+// nested subscript reads inside the rhs of a subscript write
+let m = [[1, 2], [3, 4]];
+let mut out = [0, 0];
+out[0] = m[1][0] + m[0][1];
+print(out[0]); // expect: 5
+// lambda literal in the rhs is inert (creating a closure runs no body)
+let mut fs = [null, null];
+fs[0] = fu() { return 99; };
+print(fs[0]()); // expect: 99

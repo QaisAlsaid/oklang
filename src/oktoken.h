@@ -5,6 +5,11 @@
 
 #include "ok/ok_source.h"
 
+// dead tokens removed 2026-10-27 (cpp-era leftovers): ++/-- (rejected by
+// decision), -> (old lambda syntax), ok/operator/static/async (stackless-coro
+// and class-modifier era; re-add with the features that need them).
+// then/otherwise added for the conditional (ternary) expression.
+
 #define TOKEN_LIST_X(X)                                                                                                \
   X(TOKEN_ERROR, "error")                                                                                              \
   X(TOKEN_ILLEGAL, "illegal")                                                                                          \
@@ -19,8 +24,6 @@
   X(TOKEN_AMPERSAND, "&")                                                                                              \
   X(TOKEN_BAR, "|")                                                                                                    \
   X(TOKEN_TILED, "~")                                                                                                  \
-  X(TOKEN_PLUS_PLUS, "++")                                                                                             \
-  X(TOKEN_MINUS_MINUS, "--")                                                                                           \
   X(TOKEN_PLUS_EQUAL, "+=")                                                                                            \
   X(TOKEN_MINUS_EQUAL, "-=")                                                                                           \
   X(TOKEN_ASTERISK_EQUAL, "*=")                                                                                        \
@@ -52,7 +55,6 @@
   X(TOKEN_RIGHT_BRACE, "}")                                                                                            \
   X(TOKEN_LEFT_BRACKET, "[")                                                                                           \
   X(TOKEN_RIGHT_BRACKET, "]")                                                                                          \
-  X(TOKEN_ARROW, "->")                                                                                                 \
   X(TOKEN_IDENTIFIER, "identifier")                                                                                    \
   X(TOKEN_NUMBER, "number")                                                                                            \
   X(TOKEN_STRING, "string")                                                                                            \
@@ -67,6 +69,8 @@
   X(TOKEN_CONTINUE, "continue")                                                                                        \
   X(TOKEN_IF, "if")                                                                                                    \
   X(TOKEN_ELSE, "else")                                                                                                \
+  X(TOKEN_THEN, "then")                                                                                                \
+  X(TOKEN_OTHERWISE, "otherwise")                                                                                      \
   X(TOKEN_AND, "and")                                                                                                  \
   X(TOKEN_OR, "or")                                                                                                    \
   X(TOKEN_CLASS, "class")                                                                                              \
@@ -78,13 +82,9 @@
   X(TOKEN_FALSE, "false")                                                                                              \
   X(TOKEN_RETURN, "return")                                                                                            \
   X(TOKEN_NOT, "not")                                                                                                  \
-  X(TOKEN_OK, "ok")                                                                                                    \
-  X(TOKEN_OPERATOR, "operator")                                                                                        \
   X(TOKEN_GLOB, "glob")                                                                                                \
   X(TOKEN_EXPORT, "export")                                                                                            \
   X(TOKEN_MUT, "mut")                                                                                                  \
-  X(TOKEN_STATIC, "static")                                                                                            \
-  X(TOKEN_ASYNC, "async")                                                                                              \
   X(TOKEN_TRY, "try")                                                                                                  \
   X(TOKEN_CATCH, "catch")                                                                                              \
   X(TOKEN_THROW, "throw")                                                                                              \
@@ -104,8 +104,6 @@ typedef enum {
   TOKEN_AMPERSAND,
   TOKEN_BAR,
   TOKEN_TILED,
-  TOKEN_PLUS_PLUS,
-  TOKEN_MINUS_MINUS,
   TOKEN_PLUS_EQUAL,
   TOKEN_MINUS_EQUAL,
   TOKEN_ASTERISK_EQUAL,
@@ -137,7 +135,6 @@ typedef enum {
   TOKEN_RIGHT_BRACE,
   TOKEN_LEFT_BRACKET,
   TOKEN_RIGHT_BRACKET,
-  TOKEN_ARROW,
 
   TOKEN_IDENTIFIER,
   TOKEN_NUMBER,
@@ -154,6 +151,8 @@ typedef enum {
   TOKEN_CONTINUE,
   TOKEN_IF,
   TOKEN_ELSE,
+  TOKEN_THEN,
+  TOKEN_OTHERWISE,
   TOKEN_AND,
   TOKEN_OR,
   TOKEN_CLASS,
@@ -165,13 +164,9 @@ typedef enum {
   TOKEN_FALSE,
   TOKEN_RETURN,
   TOKEN_NOT,
-  TOKEN_OK,
-  TOKEN_OPERATOR,
   TOKEN_GLOB,
   TOKEN_EXPORT,
   TOKEN_MUT,
-  TOKEN_STATIC,
-  TOKEN_ASYNC,
   TOKEN_TRY,
   TOKEN_CATCH,
   TOKEN_THROW,

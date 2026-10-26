@@ -1,0 +1,25 @@
+// falsy is exactly: false and null. everything else is truthy (0, "", arrays).
+print(0 then "t" otherwise "f"); // expect: t
+print(0.0 then "t" otherwise "f"); // expect: t
+print("" then "t" otherwise "f"); // expect: t
+print([1] then "t" otherwise "f"); // expect: t
+print([] then "t" otherwise "f"); // expect: t
+print(null then "t" otherwise "f"); // expect: f
+print(false then "t" otherwise "f"); // expect: f
+// same doctrine through if (pins is_falsy in both directions)
+if 0 ? { print("a"); } else { print("b"); } // expect: a
+if "" ? { print("a"); } else { print("b"); } // expect: a
+if [] ? { print("a"); } else { print("b"); } // expect: a
+if null ? { print("a"); } else { print("b"); } // expect: b
+// and through while
+let mut n = 0;
+while n < 3 ? { n += 1; }
+print(n); // expect: 3
+// through and/or (value semantics, short circuit)
+print(null and 1); // expect: null
+print(false and 1); // expect: false
+print(0 and 1); // expect: 1
+print(1 and null); // expect: null
+print(1 or null); // expect: 1
+print(null or 0); // expect: 0
+print((false or "") == ""); // expect: true

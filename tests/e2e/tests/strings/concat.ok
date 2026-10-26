@@ -1,0 +1,34 @@
+print("a" + "b"); // expect: ab
+print("foo" + "" + "bar"); // expect: foobar
+print(("" + "") == ""); // expect: true
+let mut s = "x";
+s += "y";
+print(s); // expect: xy
+s = s + "!" + "?";
+print(s); // expect: xy!?
+// concat produces fresh strings: the operands are untouched
+let a = "left";
+let b = "right";
+let c = a + b;
+print(a); // expect: left
+print(b); // expect: right
+print(c); // expect: leftright
+// runtime-built strings work the same as literals
+let mut built = "";
+for let i = 0 : 3? {
+  built += "ab";
+}
+print(built == "ababab"); // expect: true
+print(built + "!"); // expect: ababab!
+// inside larger expressions
+print("n = " + "42"); // expect: n = 42
+print(("a" + "b") == "ab"); // expect: true
+// strings as array elements, concat reads them back
+let arr = ["x", "y", "z"];
+print(arr[0] + arr[2]); // expect: xz
+// compound assign on an array element
+let mut words = ["con", "cat"];
+words[0] += words[1];
+print(words[0]); // expect: concat
+// string in a conditional arm
+print(true then "yes" + "!" otherwise "no"); // expect: yes!

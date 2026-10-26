@@ -1,0 +1,46 @@
+// and/or are short-circuit VALUE operators (lua style): they return one of
+// their operands, not a boolean, and the right side only runs when needed.
+print(true and true); // expect: true
+print(true and false); // expect: false
+print(false and true); // expect: false
+print(false and false); // expect: false
+print(true or true); // expect: true
+print(true or false); // expect: true
+print(false or true); // expect: true
+print(false or false); // expect: false
+// value semantics: the returned value is the deciding operand
+print(1 and 2); // expect: 2
+print(0 and 2); // expect: 2
+print(null and 2); // expect: null
+print(false and 2); // expect: false
+print(1 or 2); // expect: 1
+print(null or 2); // expect: 2
+print(false or 2); // expect: 2
+// short circuit: the right side must not run
+let mut runs = 0;
+fu bump(v) { runs += 1; return v; }
+print(false and bump(1)); // expect: false
+print(runs); // expect: 0
+print(true or bump(1)); // expect: true
+print(runs); // expect: 0
+print(true and bump(5)); // expect: 5
+print(runs); // expect: 1
+print(false or bump(6)); // expect: 6
+print(runs); // expect: 2
+// the classic guard: safe when x is null
+fu clamp(x) { return x != null and x > 0 then x otherwise 0; }
+print(clamp(5)); // expect: 5
+print(clamp(-5)); // expect: 0
+print(clamp(null)); // expect: 0
+// precedence: not > and > or, comparison binds tighter than both
+print(not true and false); // expect: false
+print(not (true and false)); // expect: true
+print(true or false and false); // expect: true
+print((true or false) and false); // expect: false
+print(1 < 2 and 2 < 3); // expect: true
+print(1 > 2 or 2 > 3); // expect: false
+// chains
+print(1 and 2 and 3); // expect: 3
+print(null and 2 and 3); // expect: null
+// 0 is truthy, so the chain stops at 0
+print(null or 0 or 7); // expect: 0
