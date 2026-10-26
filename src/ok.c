@@ -227,7 +227,7 @@ ok_value ok_native_value_new(ok* p_ok, void* p_user_data, ok_native_destructor p
 }
 
 void* ok_value_as_native_value(ok_value p_value) {
-  if (!IS_VALUE_OBJECT(p_value)) {
+  if (!IS_VALUE_STRICTLY_OBJECT(p_value)) {
     return NULL;
   }
 
