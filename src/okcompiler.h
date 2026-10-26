@@ -87,6 +87,10 @@ typedef struct {
   lvalue_kind kind;
   union {
     location variable;
+    struct {
+      location base;  // always materialized into a register by resolve_lvalue
+      location index; // register or constant (GET/SET carry a const-index flag)
+    } subscript;
   };
 } lvalue;
 

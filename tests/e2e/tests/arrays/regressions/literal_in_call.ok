@@ -1,0 +1,8 @@
+fu first(a) {
+  return a[0];
+}
+print first([42, 43]); // expect: 42
+fu sum3(a) {
+  return a[0] + a[1] + a[2];
+}
+print sum3([1, 2, 3]); // expect: 6

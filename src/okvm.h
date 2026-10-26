@@ -24,6 +24,7 @@ typedef struct {
   uint32_t registers_base;
   uint32_t return_base;
   uint32_t return_count;
+  uint16_t argc; // set by call(): the callee's own prologue (defaults ladder) reads it
 } call_frame;
 
 ARRAY_DECLARE_DEFAULT(call_stack, call_frame)

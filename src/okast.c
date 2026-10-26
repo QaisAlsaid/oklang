@@ -23,16 +23,16 @@
   X(AST_POSTFIX_UNARY_EXPRESSION, ast_postfix_unary_expression)                                                        \
   X(AST_CALL_EXPRESSION, ast_call_expression)                                                                          \
   X(AST_ASSIGN_EXPRESSION, ast_assign_expression)                                                                      \
-  /*X(AST_COMPOUND_ASSIGN_EXPRESSION, ast_compound_assign_expression)*/                                                \
+  X(AST_COMPOUND_ASSIGN_EXPRESSION, ast_compound_assign_expression)                                                    \
   /*X(AST_CONDITIONAL_EXPRESSION, ast_conditional_expression)*/                                                        \
   X(AST_BOOLEAN_EXPRESSION, ast_boolean_expression)                                                                    \
   X(AST_NULL_EXPRESSION, ast_null_expression)                                                                          \
   /*X(AST_ACCESS_EXPRESSION, ast_access_expression)*/                                                                  \
   /*X(AST_THIS_EXPRESSION, ast_this_expression)*/                                                                      \
   /*X(AST_SUPER_EXPRESSION, ast_super_expression)*/                                                                    \
-  /*X(AST_NODE, ast_array_expression)*/                                                                                \
+  X(AST_ARRAY_EXPRESSION, ast_array_expression)                                                                        \
   /*X(AST_MAP_EXPRESSION, ast_map_expression)*/                                                                        \
-  /*X(AST_SUBSCRIPT_EXPRESSION, ast_subscript_expression)*/                                                            \
+  X(AST_SUBSCRIPT_EXPRESSION, ast_subscript_expression)                                                                \
   X(AST_FUNCTION_EXPRESSION, ast_function_expression)                                                                  \
   X(AST_EMPTY_STATEMENT, ast_empty_statement)                                                                          \
   X(AST_EXPRESSION_STATEMENT, ast_expression_statement)                                                                \
@@ -41,6 +41,7 @@
   X(AST_IF_STATEMENT, ast_if_statement)                                                                                \
   X(AST_WHILE_STATEMENT, ast_while_statement)                                                                          \
   X(AST_FOR_STATEMENT, ast_for_statement)                                                                              \
+  X(AST_FOR_IN_STATEMENT, ast_for_in_statement)                                                                        \
   X(AST_CONTROL_FLOW_STATEMENT, ast_control_flow_statement)                                                            \
   X(AST_RETURN_STATEMENT, ast_return_statement)                                                                        \
   /*X(AST_THROW_STATEMENT, ast_throw_statement)*/                                                                      \
@@ -126,11 +127,17 @@ void ast_binding_init(ast_binding* p_binding,
                       ast_specs* p_specs) {
   ast_node_init(&p_binding->node, AST_BINDING, p_token, p_specs);
   p_binding->lvalue = p_lvalue;
+  p_binding->default_value = NULL; // set by the parser when a parameter has "= <expr>"
   p_binding->modifiers = p_modifiers;
 }
 
 void ast_binding_deinit(ast_binding* p_binding) {
   allocators* alloc = p_binding->node.alloc;
+  if (p_binding->default_value != NULL) {
+    ast_dispatch_deinit((ast_node*)p_binding->default_value);
+    alloc->release(alloc, p_binding->default_value);
+    p_binding->default_value = NULL;
+  }
   ast_dispatch_deinit((ast_node*)p_binding->lvalue);
   alloc->release(alloc, p_binding->lvalue);
   p_binding->lvalue = NULL;
@@ -715,6 +722,117 @@ string ast_call_expression_asprint(const ast_call_expression* p_call) {
   return ret;
 }
 
+void ast_array_expression_init(ast_array_expression* p_array,
+                               token p_token,
+                               ast_expressions_list p_elements,
+                               ast_specs* p_specs) {
+  ast_expression_init(&p_array->expression, AST_ARRAY_EXPRESSION, p_token, p_specs);
+  p_array->elements = p_elements;
+}
+
+void ast_array_expression_deinit(ast_array_expression* p_array) {
+  ast_expressions_list_deinit(&p_array->elements, p_array->expression.node.alloc);
+  ast_expression_deinit(&p_array->expression);
+}
+
+bool ast_array_expression_print(const ast_array_expression* p_array) {
+  bool status = printf("[") > 0;
+  for (uint32_t i = 0; i < p_array->elements.count; ++i) {
+    status &= ast_dispatch_print((ast_node*)p_array->elements.data[i]);
+    status &= printf(", ") > 0;
+  }
+  status &= printf("]") > 0;
+  return status;
+}
+
+string ast_array_expression_asprint(const ast_array_expression* p_array) {
+  allocators* alloc = p_array->expression.node.alloc;
+  string elements_str = ast_expressions_list_asprint(
+      &p_array->elements, ok_create_string_view(", ", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+  string ret = asprint(alloc, "[%s]", elements_str.chars);
+  string_deinit(&elements_str, alloc);
+  return ret;
+}
+
+void ast_subscript_expression_init(ast_subscript_expression* p_subscript,
+                                   token p_token,
+                                   ast_expression* p_left,
+                                   ast_expression* p_index,
+                                   ast_specs* p_specs) {
+  ast_expression_init(&p_subscript->expression, AST_SUBSCRIPT_EXPRESSION, p_token, p_specs);
+  p_subscript->left = p_left;
+  p_subscript->index = p_index;
+}
+
+void ast_subscript_expression_deinit(ast_subscript_expression* p_subscript) {
+  allocators* alloc = p_subscript->expression.node.alloc;
+  ast_dispatch_deinit((ast_node*)p_subscript->left);
+  alloc->release(alloc, p_subscript->left);
+  p_subscript->left = NULL;
+  ast_dispatch_deinit((ast_node*)p_subscript->index);
+  alloc->release(alloc, p_subscript->index);
+  p_subscript->index = NULL;
+  ast_expression_deinit(&p_subscript->expression);
+}
+
+bool ast_subscript_expression_print(const ast_subscript_expression* p_subscript) {
+  bool status = ast_dispatch_print((ast_node*)p_subscript->left);
+  status &= printf("[") > 0;
+  status &= ast_dispatch_print((ast_node*)p_subscript->index);
+  status &= printf("]") > 0;
+  return status;
+}
+
+string ast_subscript_expression_asprint(const ast_subscript_expression* p_subscript) {
+  allocators* alloc = p_subscript->expression.node.alloc;
+  string left_str = ast_dispatch_asprint((ast_node*)p_subscript->left);
+  string index_str = ast_dispatch_asprint((ast_node*)p_subscript->index);
+  string ret = asprint(alloc, "%s[%s]", left_str.chars, index_str.chars);
+  string_deinit(&left_str, alloc);
+  string_deinit(&index_str, alloc);
+  return ret;
+}
+
+void ast_compound_assign_expression_init(ast_compound_assign_expression* p_compound,
+                                         token p_token,
+                                         const operator_type p_operator,
+                                         ast_expression* p_left,
+                                         ast_expression* p_right,
+                                         ast_specs* p_specs) {
+  ast_expression_init(&p_compound->expression, AST_COMPOUND_ASSIGN_EXPRESSION, p_token, p_specs);
+  p_compound->_operator = p_operator;
+  p_compound->left = p_left;
+  p_compound->right = p_right;
+}
+
+void ast_compound_assign_expression_deinit(ast_compound_assign_expression* p_compound) {
+  allocators* alloc = p_compound->expression.node.alloc;
+  ast_dispatch_deinit((ast_node*)p_compound->left);
+  alloc->release(alloc, p_compound->left);
+  p_compound->left = NULL;
+  ast_dispatch_deinit((ast_node*)p_compound->right);
+  alloc->release(alloc, p_compound->right);
+  p_compound->right = NULL;
+  ast_expression_deinit(&p_compound->expression);
+}
+
+bool ast_compound_assign_expression_print(const ast_compound_assign_expression* p_compound) {
+  bool status = ast_dispatch_print((ast_node*)p_compound->left);
+  status &= printf(" ?= ") > 0;
+  status &= ast_dispatch_print((ast_node*)p_compound->right);
+  return status;
+}
+
+string ast_compound_assign_expression_asprint(const ast_compound_assign_expression* p_compound) {
+  allocators* alloc = p_compound->expression.node.alloc;
+  string left_str = ast_dispatch_asprint((ast_node*)p_compound->left);
+  string right_str = ast_dispatch_asprint((ast_node*)p_compound->right);
+  string ret = asprint(alloc, "%s ?= %s", left_str.chars, right_str.chars);
+  string_deinit(&left_str, alloc);
+  string_deinit(&right_str, alloc);
+  return ret;
+}
+
 void ast_eof_statement_init(ast_eof_statement* p_eof, token p_token, ast_specs* p_specs) {
   ast_statement_init(&p_eof->statement, AST_EOF_STATEMENT, p_token, p_specs);
 }
@@ -929,6 +1047,43 @@ void ast_for_statement_init(ast_for_statement* p_for, token p_token, ast_specs* 
   p_for->condition = NULL;
   p_for->update = NULL;
   p_for->body = NULL;
+}
+
+void ast_for_in_statement_init(ast_for_in_statement* p_for_in, token p_token, ast_specs* p_specs) {
+  ast_statement_init(&p_for_in->statement, AST_FOR_IN_STATEMENT, p_token, p_specs);
+  p_for_in->binding = NULL;
+  p_for_in->iterable = NULL;
+  p_for_in->body = NULL;
+}
+
+void ast_for_in_statement_deinit(ast_for_in_statement* p_for_in) {
+  allocators* alloc = p_for_in->statement.node.alloc;
+  if (p_for_in->binding != NULL) {
+    ast_binding_deinit(p_for_in->binding);
+    alloc->release(alloc, p_for_in->binding);
+    p_for_in->binding = NULL;
+  }
+  if (p_for_in->iterable != NULL) {
+    ast_dispatch_deinit((ast_node*)p_for_in->iterable);
+    alloc->release(alloc, p_for_in->iterable);
+    p_for_in->iterable = NULL;
+  }
+  if (p_for_in->body != NULL) {
+    ast_dispatch_deinit((ast_node*)p_for_in->body);
+    alloc->release(alloc, p_for_in->body);
+    p_for_in->body = NULL;
+  }
+  ast_statement_deinit(&p_for_in->statement);
+}
+
+bool ast_for_in_statement_print(const ast_for_in_statement* p_for_in) {
+  bool status = ast_dispatch_print((ast_node*)p_for_in->iterable);
+  status &= ast_dispatch_print((ast_node*)p_for_in->body);
+  return status;
+}
+
+string ast_for_in_statement_asprint(const ast_for_in_statement* p_for_in) {
+  return create_static_string("for in", STRING_CALCULATE_LENGTH);
 }
 
 void ast_for_statement_deinit(ast_for_statement* p_for) {

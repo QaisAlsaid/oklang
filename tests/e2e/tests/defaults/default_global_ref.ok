@@ -1,0 +1,5 @@
+glob let base = 100;
+fu f(a = base) {
+  return a;
+}
+print f(); // expect: 100

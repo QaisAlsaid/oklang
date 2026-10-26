@@ -1,0 +1,5 @@
+let f = fu(a, b = 10) {
+  return a + b;
+};
+print f(1); // expect: 11
+print f(1, 2); // expect: 3

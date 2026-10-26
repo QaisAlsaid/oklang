@@ -1,0 +1,7 @@
+fu f(a = 1, b = 2, c = 3) {
+  return a * 100 + b * 10 + c;
+}
+print f(); // expect: 123
+print f(9); // expect: 923
+print f(9, 8); // expect: 983
+print f(9, 8, 7); // expect: 987

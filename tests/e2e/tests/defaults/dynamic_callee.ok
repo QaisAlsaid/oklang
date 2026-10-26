@@ -1,0 +1,8 @@
+fu make() {
+  return fu(a, b = 7) {
+    return a * b;
+  };
+}
+let g = make();
+print g(6); // expect: 42
+print g(6, 3); // expect: 18

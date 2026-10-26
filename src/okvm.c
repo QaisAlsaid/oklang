@@ -836,6 +836,52 @@ static inline interpret_result top_level_return(register_file* p_registers, call
   return result;
 }
 
+// array index resolution shared by OP_ARRAY_GET / OP_ARRAY_SET (and nothing else:
+// natives reimplement their own validation because this is static and vm-opaque).
+// number-gate first, exactly like perform_add: a raw double can alias the non-strict
+// tag bits, so IS_VALUE_INT is only safe to consult after IS_VALUE_NUMBER ruled out.
+// strictness doctrine: this is a gate (called on arbitrary operand values), not a chain.
+static bool resolve_array_index(vm* p_vm, value p_index, uint32_t p_count, uint32_t* p_out) {
+  if (IS_VALUE_NUMBER(p_index)) {
+    const double d = VALUE_AS_NUMBER(p_index);
+    // numeric literals are raw doubles (D3), so m[0] arrives as 0.0: integral doubles
+    // must be accepted or every literal index errors. refusing non-integral ones keeps
+    // m[1.5] loud instead of silently truncating.
+    // (cast-based integrality, not trunc(): keeps the link line free of libm. safe
+    // because the range guard runs before any narrowing could overflow int64.)
+    if (!(d >= MIN_SAFE_INTEGER && d <= MAX_SAFE_INTEGER) || d != (double)(int64_t)d) {
+      runtime_error(p_vm, "array index must be a whole number, got %g.", d);
+      return false;
+    }
+    if (d < 0 || d >= (double)p_count) {
+      runtime_error(p_vm, "index out of bounds: %g (len %u).", d, p_count);
+      return false;
+    }
+    *p_out = (uint32_t)d;
+    return true;
+  }
+  if (IS_VALUE_INT(p_index)) {
+    const int64_t i = VALUE_AS_INT(p_index);
+    if (i < 0 || (uint64_t)i >= (uint64_t)p_count) {
+      runtime_error(p_vm, "index out of bounds: %lld (len %u).", (long long)i, p_count);
+      return false;
+    }
+    *p_out = (uint32_t)i;
+    return true;
+  }
+  runtime_error(p_vm, "array index must be a number.");
+  return false;
+}
+
+// strict gate + cast for the subscript base operand: errors name the operand type
+static object_array* resolve_array_base(vm* p_vm, value p_base) {
+  if (!value_is_object_type(p_base, OBJ_ARRAY)) {
+    runtime_error(p_vm, "invalid operand for '[]': expected an array.");
+    return NULL;
+  }
+  return VALUE_AS_ARRAY(p_base);
+}
+
 interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
   execution_state* exe = p_vm->current_execution_state;
   call_frame* frame = &exe->call_stack.data[exe->call_stack.count - 1];
@@ -1441,6 +1487,138 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       }
       break;
     }
+    case OP_ARRAY_NEW: {
+      const uint8_t a = a_of(instruction);
+      const uint8_t b = b_of(instruction);
+      const uint8_t c = c_of(instruction);
+      // elements are live frame registers ([0, top) rooted). but value_array_grow
+      // reallocs through the gc-aware allocator, which does collect on growth:
+      // between creation and publication the array is linked in the store yet
+      // unreachable, so a collect inside append_n would sweep it (aggressive GC
+      // found this on every array test). guard the window.
+      object_specs s = {p_vm->alloc, p_vm->objects_store};
+      object_array* arr = create_object_array(&s);
+      if (arr == NULL) {
+        goto oom_new;
+      }
+      gc_guard_up(p_vm->alloc->gc, OBJECT_AS_VALUE(arr));
+      const bool appended = c == 0 || value_array_append_n(&arr->values, &REG_AT(b), c);
+      gc_guard_down(p_vm->alloc->gc);
+      if (!appended) {
+        goto oom_new;
+      }
+      REG_AT(a) = OBJECT_AS_VALUE(arr);
+      break;
+    oom_new:
+      runtime_error(p_vm, "out of memory: failed to allocate array.");
+      interpret_result result;
+      result.status = RUNTIME_ERROR;
+      result.top_level_return = NULL_AS_VALUE();
+      return result;
+    }
+    case OP_ARRAY_NEW_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      object_specs s = {p_vm->alloc, p_vm->objects_store};
+      object_array* arr = create_object_array(&s);
+      if (arr == NULL) {
+        goto oom_new_long;
+      }
+      gc_guard_up(p_vm->alloc->gc, OBJECT_AS_VALUE(arr));
+      const bool appended = C == 0 || value_array_append_n(&arr->values, &REG_AT(B), C);
+      gc_guard_down(p_vm->alloc->gc);
+      if (!appended) {
+        goto oom_new_long;
+      }
+      REG_AT(A) = OBJECT_AS_VALUE(arr);
+      break;
+    oom_new_long:
+      runtime_error(p_vm, "out of memory: failed to allocate array.");
+      interpret_result result;
+      result.status = RUNTIME_ERROR;
+      result.top_level_return = NULL_AS_VALUE();
+      return result;
+    }
+    case OP_ARRAY_GET: {
+      const bool p = p_of(instruction);
+      const uint8_t a = a_of(instruction);
+      const uint8_t b = b_of(instruction);
+      const uint8_t c = c_of(instruction);
+      const object_array* arr = resolve_array_base(p_vm, REG_AT(b));
+      uint32_t index = 0;
+      if (arr == NULL || !resolve_array_index(p_vm, resolve_operand(frame, reg, c, p), arr->values.count, &index)) {
+        interpret_result result;
+        result.status = RUNTIME_ERROR;
+        result.top_level_return = NULL_AS_VALUE();
+        return result;
+      }
+      REG_AT(a) = arr->values.data[index];
+      break;
+    }
+    case OP_ARRAY_GET_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool p = p_of(words);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      const object_array* arr = resolve_array_base(p_vm, REG_AT(B));
+      uint32_t index = 0;
+      if (arr == NULL || !resolve_array_index(p_vm, resolve_operand(frame, reg, C, p), arr->values.count, &index)) {
+        interpret_result result;
+        result.status = RUNTIME_ERROR;
+        result.top_level_return = NULL_AS_VALUE();
+        return result;
+      }
+      REG_AT(A) = arr->values.data[index];
+      break;
+    }
+    case OP_ARRAY_SET: {
+      const bool p = p_of(instruction);
+      const uint8_t a = a_of(instruction);
+      const uint8_t b = b_of(instruction);
+      const uint8_t c = c_of(instruction);
+      const object_array* arr = resolve_array_base(p_vm, REG_AT(a));
+      uint32_t index = 0;
+      if (arr == NULL || !resolve_array_index(p_vm, resolve_operand(frame, reg, b, p), arr->values.count, &index)) {
+        interpret_result result;
+        result.status = RUNTIME_ERROR;
+        result.top_level_return = NULL_AS_VALUE();
+        return result;
+      }
+      // narrow SET has no room for a value-const flag (p is spent on the index):
+      // the compiler materializes constant values, c is always a register here.
+      ((object_array*)arr)->values.data[index] = REG_AT(c);
+      break;
+    }
+    case OP_ARRAY_SET_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool p = p_of(words);
+      const bool q = Q_of(words);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      const object_array* arr = resolve_array_base(p_vm, REG_AT(A));
+      uint32_t index = 0;
+      if (arr == NULL || !resolve_array_index(p_vm, resolve_operand(frame, reg, B, p), arr->values.count, &index)) {
+        interpret_result result;
+        result.status = RUNTIME_ERROR;
+        result.top_level_return = NULL_AS_VALUE();
+        return result;
+      }
+      ((object_array*)arr)->values.data[index] = resolve_operand(frame, reg, C, q);
+      break;
+    }
+    case OP_JUMP_IF_ARGC: {
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const bool p = p_of(words);
+      const bool jump = (p ? 1u : 0u) == (frame->argc > B ? 1u : 0u);
+      ip += jump * A;
+      break;
+    }
     case OP_PRINT: {
       const bool p = p_of(instruction);
       value_debug_print(resolve_operand(frame, reg, Alarge_of(instruction), p));
@@ -1519,12 +1697,25 @@ static inline bool call(vm* p_vm,
                         uint32_t p_callee,
                         uint16_t p_argc,
                         uint32_t p_retc) {
-  if (p_argc != p_closure->function->arity) {
-    runtime_error(p_vm,
-                  "invalid call to '%s': expected %d arguments, got: %d.",
-                  p_closure->function->name->string.chars,
-                  p_closure->function->arity,
-                  p_argc);
+  const object_function* fu = p_closure->function;
+  if (p_argc < (uint32_t)(fu->arity - fu->ndefaults) || p_argc > fu->arity) {
+    if (fu->ndefaults == 0) {
+      // exact-arity message is load-bearing: pre-defaults tests and hosts pin it
+      runtime_error(
+          p_vm, "invalid call to '%s': expected %d arguments, got: %d.", fu->name->string.chars, fu->arity, p_argc);
+    } else if (p_argc < fu->arity - fu->ndefaults) {
+      runtime_error(p_vm,
+                    "invalid call to '%s': expected at least %d arguments, got: %d.",
+                    fu->name->string.chars,
+                    fu->arity - fu->ndefaults,
+                    p_argc);
+    } else {
+      runtime_error(p_vm,
+                    "invalid call to '%s': expected at most %d arguments, got: %d.",
+                    fu->name->string.chars,
+                    fu->arity,
+                    p_argc);
+    }
     return false;
   }
   const uint32_t frame_top = p_callee + p_closure->function->registers;
@@ -1570,6 +1761,7 @@ static inline bool call(vm* p_vm,
   frame.registers_base = p_callee;
   frame.return_base = p_callee;
   frame.return_count = p_retc;
+  frame.argc = p_argc;
   return call_stack_append(&p_exe->call_stack, frame);
 }
 

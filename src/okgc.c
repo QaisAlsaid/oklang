@@ -284,6 +284,14 @@ static bool trace_object(gc* p_gc, object* p_object) {
     }
     break;
   }
+  case OBJ_ARRAY: {
+    // the whole point of arrays: elements are values, values can be objects.
+    // mark_value_array already exists for chunk constants (okgc.c).
+    if (!mark_value_array(p_gc, &((object_array*)p_object)->values)) {
+      return false;
+    }
+    break;
+  }
   }
   return true;
 }

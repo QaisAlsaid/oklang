@@ -1,0 +1,7 @@
+let mut m = [0, 0, 0];
+m[0] = 10;
+m[1] = 20;
+m[2] = 30;
+print m[0] + m[1] + m[2]; // expect: 60
+let i = 1;
+print m[i]; // expect: 20

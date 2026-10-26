@@ -127,6 +127,10 @@ static bool op_is_two_words(opcode p_op) {
   case OP_LESS_LONG:
   case OP_GREATER_EQUAL_LONG:
   case OP_LESS_EQUAL_LONG:
+  case OP_ARRAY_NEW_LONG:
+  case OP_ARRAY_GET_LONG:
+  case OP_ARRAY_SET_LONG:
+  case OP_JUMP_IF_ARGC:
     return true;
   default:
     return false;

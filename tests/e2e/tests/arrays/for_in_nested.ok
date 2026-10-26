@@ -1,0 +1,10 @@
+let grid = [[1, 2], [3, 4]];
+for let row : grid? {
+  for let v : row? {
+    print v;
+  }
+}
+// expect: 1
+// expect: 2
+// expect: 3
+// expect: 4

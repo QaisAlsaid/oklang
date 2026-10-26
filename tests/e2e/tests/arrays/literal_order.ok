@@ -1,0 +1,8 @@
+glob let mut log = [];
+fu note(x) {
+  push(log, x);
+  return x;
+}
+let a = [note(1), note(2), note(3)];
+print len(log); // expect: 3
+print a[2]; // expect: 3

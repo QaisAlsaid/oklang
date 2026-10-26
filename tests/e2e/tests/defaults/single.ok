@@ -1,0 +1,5 @@
+fu f(a, b = 5) {
+  return a * b;
+}
+print f(3); // expect: 15
+print f(3, 4); // expect: 12

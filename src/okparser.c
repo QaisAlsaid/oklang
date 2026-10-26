@@ -43,6 +43,11 @@ static ast_expression* parse_unary_prefix(parser* p_parser, token p_trigger);
 static ast_expression* parse_grouping(parser* p_parser, token p_trigger);
 // static ast_expression* parse_map(parser* p_parser, token p_trigger);
 // static ast_expression* parse_array(parser* p_parser, token p_trigger);
+static ast_expression* parse_array_literal(parser* p_parser, token p_trigger);
+static ast_expression* parse_subscript(
+    parser* p_parser, ast_expression* p_left, precedence p_precedence, bool is_right_associative, token p_trigger);
+static ast_expression* parse_compound_assign_expression(
+    parser* p_parser, ast_expression* p_left, precedence p_precedence, bool is_right_associative, token p_trigger);
 static ast_expression* parse_identifier(parser* p_parser, token p_trigger);
 static ast_expression* parse_string(parser* p_parser, token p_trigger);
 static ast_expression* parse_number(parser* p_parser, token p_trigger);
@@ -92,10 +97,10 @@ static const parse_rule parse_rules[] = {
     [TOKEN_BAR] = {NULL, parse_binary_infix, PREC_OR},
     //[TOKEN_PLUS_PLUS] = { parse_unary_prefix, parse_unary_postfix, PREC_POSTFIX },
     //[TOKEN_MINUS_MINUS] = { parse_unary_prefix, parse_unary_postfix, PREC_POSTFIX },
-    [TOKEN_PLUS_EQUAL] = {NULL, parse_binary_infix, PREC_ASSIGNMENT},
-    [TOKEN_MINUS_EQUAL] = {NULL, parse_binary_infix, PREC_ASSIGNMENT},
-    [TOKEN_ASTERISK_EQUAL] = {NULL, parse_binary_infix, PREC_ASSIGNMENT},
-    [TOKEN_SLASH_EQUAL] = {NULL, parse_binary_infix, PREC_ASSIGNMENT},
+    [TOKEN_PLUS_EQUAL] = {NULL, parse_compound_assign_expression, PREC_ASSIGNMENT},
+    [TOKEN_MINUS_EQUAL] = {NULL, parse_compound_assign_expression, PREC_ASSIGNMENT},
+    [TOKEN_ASTERISK_EQUAL] = {NULL, parse_compound_assign_expression, PREC_ASSIGNMENT},
+    [TOKEN_SLASH_EQUAL] = {NULL, parse_compound_assign_expression, PREC_ASSIGNMENT},
     [TOKEN_MODULO_EQUAL] = {NULL, parse_binary_infix, PREC_ASSIGNMENT},
     [TOKEN_CARET_EQUAL] = {NULL, parse_binary_infix, PREC_ASSIGNMENT},
     [TOKEN_AMPERSAND_EQUAL] = {NULL, parse_binary_infix, PREC_ASSIGNMENT},
@@ -116,7 +121,7 @@ static const parse_rule parse_rules[] = {
     [TOKEN_RIGHT_PAREN] = {NULL, NULL, PREC_NONE},
     [TOKEN_LEFT_BRACE] = {NULL, NULL, PREC_NONE},
     [TOKEN_RIGHT_BRACE] = {NULL, NULL, PREC_NONE},
-    [TOKEN_LEFT_BRACKET] = {NULL, NULL, PREC_SUBSCRIPT},
+    [TOKEN_LEFT_BRACKET] = {parse_array_literal, parse_subscript, PREC_SUBSCRIPT},
     [TOKEN_RIGHT_BRACKET] = {NULL, NULL, PREC_NONE},
     [TOKEN_ARROW] = {NULL, NULL, PREC_NONE},
     [TOKEN_IDENTIFIER] = {parse_identifier, NULL, PREC_NONE},
@@ -327,7 +332,8 @@ ast_expression* parse_unary_prefix(parser* p_parser, token p_trigger) {
     return NULL;
   }
   ast_specs s = {alloc};
-  ast_prefix_unary_expression_init(prefix, p_trigger, operator_type_from_token_type(p_trigger.type, true), opperand, &s);
+  ast_prefix_unary_expression_init(
+      prefix, p_trigger, operator_type_from_token_type(p_trigger.type, true), opperand, &s);
   return (ast_expression*)prefix;
 }
 
@@ -515,7 +521,8 @@ ast_expression* parse_binary_infix(
     return NULL;
   }
   ast_specs s = {alloc};
-  ast_infix_binary_expression_init(infix, p_trigger, operator_type_from_token_type(p_trigger.type, false), p_left, right, &s);
+  ast_infix_binary_expression_init(
+      infix, p_trigger, operator_type_from_token_type(p_trigger.type, false), p_left, right, &s);
   return (ast_expression*)infix;
 }
 
@@ -586,6 +593,112 @@ ast_expression* parse_call(
   ast_specs s = {alloc};
   ast_call_expression_init(call, trigger, p_left, args, &s);
   return (ast_expression*)call;
+}
+
+ast_expression* parse_array_literal(parser* p_parser, token p_trigger) {
+  allocators* alloc = p_parser->alloc;
+  token trigger = p_parser->previous; // '['
+  ast_expressions_list elements = parse_expressions_list(p_parser, TOKEN_COMMA, TOKEN_RIGHT_BRACKET);
+  if (elements.capacity == 1 && elements.count == 0) {
+    error_at(p_parser,
+             p_parser->previous,
+             ok_create_string_view("failed to parse array elements.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL;
+  }
+  advance(p_parser); // ']'
+  ast_array_expression* array = (ast_array_expression*)alloc->allocate(alloc, sizeof(ast_array_expression));
+  if (array == NULL) {
+    error_at(p_parser,
+             trigger,
+             ok_create_string_view("failed to allocate memory for array node.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    ast_expressions_list_deinit(&elements, alloc);
+    return NULL;
+  }
+  ast_specs s = {alloc};
+  ast_array_expression_init(array, trigger, elements, &s);
+  return (ast_expression*)array;
+}
+
+ast_expression* parse_subscript(
+    parser* p_parser, ast_expression* p_left, precedence p_precedence, bool is_right_associative, token p_trigger) {
+  (void)p_precedence;
+  (void)is_right_associative;
+  allocators* alloc = p_parser->alloc;
+  token trigger = p_parser->previous; // '['
+  advance(p_parser);                  // move the first index token into previous for parse_expression
+  ast_expression* index = parse_expression(p_parser, PREC_NONE);
+  if (index == NULL) {
+    ast_dispatch_deinit((ast_node*)p_left);
+    alloc->release(alloc, p_left);
+    return NULL;
+  }
+  if (p_parser->current.type != TOKEN_RIGHT_BRACKET) {
+    error_at(
+        p_parser, p_parser->current, ok_create_string_view("expected ']'.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    ast_dispatch_deinit((ast_node*)index);
+    alloc->release(alloc, index);
+    ast_dispatch_deinit((ast_node*)p_left);
+    alloc->release(alloc, p_left);
+    return NULL;
+  }
+  advance(p_parser); // ']'
+  ast_subscript_expression* subscript =
+      (ast_subscript_expression*)alloc->allocate(alloc, sizeof(ast_subscript_expression));
+  if (subscript == NULL) {
+    error_at(
+        p_parser,
+        trigger,
+        ok_create_string_view("failed to allocate memory for subscript node.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    ast_dispatch_deinit((ast_node*)index);
+    alloc->release(alloc, index);
+    ast_dispatch_deinit((ast_node*)p_left);
+    alloc->release(alloc, p_left);
+    return NULL;
+  }
+  ast_specs s = {alloc};
+  ast_subscript_expression_init(subscript, trigger, p_left, index, &s);
+  return (ast_expression*)subscript;
+}
+
+ast_expression* parse_compound_assign_expression(
+    parser* p_parser, ast_expression* p_left, precedence p_precedence, bool is_right_associative, token p_trigger) {
+  (void)p_precedence;
+  (void)is_right_associative;
+  allocators* alloc = p_parser->alloc;
+  advance(p_parser); // first rhs token into previous
+  if (!is_lvalue(p_left)) {
+    error_at_noted(p_parser,
+                   p_trigger,
+                   ok_create_string_view("invalid compound assignment target.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                   ok_create_string_view(
+                       "the left side must be a variable, field or subscript.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    goto fail;
+  }
+  {
+    ast_expression* right = parse_expression(p_parser, PREC_ASSIGNMENT - 1);
+    if (right == NULL) {
+      goto fail;
+    }
+    ast_compound_assign_expression* compound =
+        (ast_compound_assign_expression*)alloc->allocate(alloc, sizeof(ast_compound_assign_expression));
+    if (compound == NULL) {
+      error_at(p_parser,
+               p_trigger,
+               ok_create_string_view(
+                   "failed to allocate memory for compound assign node.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      ast_dispatch_deinit((ast_node*)right);
+      alloc->release(alloc, right);
+      goto fail;
+    }
+    ast_specs s = {alloc};
+    ast_compound_assign_expression_init(
+        compound, p_trigger, operator_type_from_token_type(p_trigger.type, false), p_left, right, &s);
+    return (ast_expression*)compound;
+  }
+fail:
+  ast_dispatch_deinit((ast_node*)p_left);
+  alloc->release(alloc, p_left);
+  return NULL;
 }
 
 ast_statement* parse_statement(parser* p_parser) {
@@ -1179,6 +1292,160 @@ ast_while_statement* parse_while_statement(parser* p_parser) {
   return _while;
 }
 
+// called with current == TOKEN_COLON and the loop-variable head already consumed:
+// `for (let (mut)?) IDENT :` the rest is `<iterable> ? <statement>`.
+static ast_for_in_statement*
+parse_for_in_rest(parser* p_parser, token p_for_tok, token p_name_tok, ast_binding_modifiers_t p_binds) {
+  allocators* alloc = p_parser->alloc;
+  advance(p_parser); // ':' consumed, current = first iterable token
+  advance(p_parser); // iterable's first token into previous
+  ast_expression* iterable = parse_expression(p_parser, PREC_NONE);
+  if (iterable == NULL) {
+    error_at(p_parser,
+             p_parser->previous,
+             ok_create_string_view("expected an expression to iterate.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL;
+  }
+  if (p_parser->current.type != TOKEN_QUESTION) {
+    error_at(p_parser,
+             p_parser->current,
+             ok_create_string_view("expected '?' after ranged-for iterable.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    ast_dispatch_deinit((ast_node*)iterable);
+    alloc->release(alloc, iterable);
+    return NULL;
+  }
+  advance(p_parser); // '?'
+  advance(p_parser); // '{' (or first body token)
+  ast_statement* body = parse_statement(p_parser);
+  if (body == NULL) {
+    error_at(p_parser,
+             p_parser->previous,
+             ok_create_string_view("expected a statement as ranged-for body.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    ast_dispatch_deinit((ast_node*)iterable);
+    alloc->release(alloc, iterable);
+    return NULL;
+  }
+  ast_identifier_expression* ident =
+      (ast_identifier_expression*)alloc->allocate(alloc, sizeof(ast_identifier_expression));
+  if (ident == NULL) {
+    error_at(p_parser,
+             p_for_tok,
+             ok_create_string_view(
+                 "failed to allocate memory for ranged-for binding.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    goto fail_body;
+  }
+  ast_binding* binding = (ast_binding*)alloc->allocate(alloc, sizeof(ast_binding));
+  if (binding == NULL) {
+    error_at(p_parser,
+             p_for_tok,
+             ok_create_string_view(
+                 "failed to allocate memory for ranged-for binding.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    ast_identifier_expression_deinit(ident);
+    alloc->release(alloc, ident);
+    goto fail_body;
+  }
+  ast_for_in_statement* fin = (ast_for_in_statement*)alloc->allocate(alloc, sizeof(ast_for_in_statement));
+  if (fin == NULL) {
+    error_at(
+        p_parser,
+        p_for_tok,
+        ok_create_string_view("failed to allocate memory for ranged-for node.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    ast_binding_deinit(binding); // frees ident
+    alloc->release(alloc, binding);
+    goto fail_body;
+  }
+  ast_specs s = {alloc};
+  ast_identifier_expression_init(ident, p_name_tok, &s);
+  ast_binding_init(binding, (ast_expression*)ident, p_binds, p_name_tok, &s);
+  ast_for_in_statement_init(fin, p_for_tok, &s);
+  fin->binding = binding;
+  fin->iterable = iterable;
+  fin->body = body;
+  return fin;
+fail_body:
+  ast_dispatch_deinit((ast_node*)body);
+  alloc->release(alloc, body);
+  ast_dispatch_deinit((ast_node*)iterable);
+  alloc->release(alloc, iterable);
+  return NULL;
+}
+
+// rebuilds `let (mut)? IDENT (= expr)? ;` from tokens the for-in discrimination already
+// consumed, mirroring parse_let_declaration's extraction. leaves the parser exactly
+// where the original C style for flow expects it: previous = the init's ';'.
+static ast_let_declaration*
+build_let_init(parser* p_parser, token p_let_tok, token p_name_tok, ast_binding_modifiers_t p_binds) {
+  allocators* alloc = p_parser->alloc;
+  ast_expression* expr = parse_expression(p_parser, PREC_NONE);
+  ast_binding* binding = (ast_binding*)alloc->allocate(alloc, sizeof(ast_binding));
+  ast_let_declaration* let = (ast_let_declaration*)alloc->allocate(alloc, sizeof(ast_let_declaration));
+  if (binding == NULL || let == NULL) {
+    error_at(p_parser,
+             p_let_tok,
+             ok_create_string_view("failed to allocate memory for let node.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    if (expr != NULL) {
+      ast_dispatch_deinit((ast_node*)expr);
+      alloc->release(alloc, expr);
+    }
+    if (binding != NULL) {
+      alloc->release(alloc, binding);
+    }
+    if (let != NULL) {
+      alloc->release(alloc, let);
+    }
+    return NULL;
+  }
+  ast_specs s = {alloc};
+  ast_null_expression* null = NULL; // set for the bare `let x;` form, initialized by the ';'
+  if (expr != NULL && expr->node.node_type == AST_ASSIGN_EXPRESSION) {
+    ast_assign_expression* assign = (ast_assign_expression*)expr;
+    if (assign->left->node.node_type == AST_IDENTIFIER_EXPRESSION) {
+      ast_binding_init(binding, assign->left, p_binds, p_name_tok, &s);
+      ast_let_declaration_init(let, binding, assign->right, DECLARATION_NONE, p_let_tok, &s);
+      assign->left = NULL;
+      assign->right = NULL;
+      alloc->release(alloc, expr);
+    } else {
+      ast_dispatch_deinit((ast_node*)expr);
+      goto malformed;
+    }
+  } else if (expr != NULL && expr->node.node_type == AST_IDENTIFIER_EXPRESSION) {
+    // `let x;` style null initializer: the node is authored by the ';' (see below)
+    null = (ast_null_expression*)alloc->allocate(alloc, sizeof(ast_null_expression));
+    if (null == NULL) {
+      ast_dispatch_deinit((ast_node*)expr);
+      goto malformed;
+    }
+    ast_binding_init(binding, expr, p_binds, p_name_tok, &s);
+    ast_let_declaration_init(let, binding, (ast_expression*)null, DECLARATION_NONE, p_let_tok, &s);
+  } else {
+    if (expr != NULL) {
+      ast_dispatch_deinit((ast_node*)expr);
+    }
+    goto malformed;
+  }
+  advance(p_parser);
+  if (p_parser->previous.type != TOKEN_SEMICOLON) {
+    error_at(p_parser,
+             p_parser->previous,
+             ok_create_string_view("expected ';' after for initializer.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    ast_let_declaration_deinit(let);
+    alloc->release(alloc, let);
+    return NULL;
+  }
+  if (null != NULL) {
+    ast_null_expression_init(null, p_parser->previous, &s); // the ';' authored the null
+  }
+  return let;
+malformed:
+  error_at(p_parser,
+           p_let_tok,
+           ok_create_string_view("expected an identifier in let declaration.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+  alloc->release(alloc, binding);
+  alloc->release(alloc, let);
+  return NULL;
+}
+
 ast_for_statement* parse_for_statement(parser* p_parser) {
   allocators* alloc = p_parser->alloc;
   token for_tok = p_parser->previous;
@@ -1187,7 +1454,33 @@ ast_for_statement* parse_for_statement(parser* p_parser) {
   ast_expression* cond = NULL;
   ast_expression* up = NULL;
 
-  if (p_parser->previous.type != TOKEN_SEMICOLON) {
+  if (p_parser->previous.type == TOKEN_LET) {
+    // `for let ...` is either the for-in form (`for let v : arr? {`) or a C style
+    // let initializer (`for let mut i = 0; ...`). one token lookahead: consume the
+    // binding head, then discriminate on ':'.
+    const ast_binding_modifiers_t binds = parse_binding_modifiers(p_parser, BINDING_MUT);
+    if (binds == BINDING_ERROR) {
+      return NULL;
+    }
+    if (p_parser->current.type != TOKEN_IDENTIFIER) {
+      error_at(
+          p_parser,
+          p_parser->current,
+          ok_create_string_view("expected an identifier in for declaration.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      return NULL;
+    }
+    const token name_tok = p_parser->current;
+    advance(p_parser); // previous = name, current = ':' | '=' | ';' | ...
+    if (p_parser->current.type == TOKEN_COLON) {
+      // the cast is safe: both statements share the ast_statement prefix.
+      // the caller dispatches on node_type.
+      return (ast_for_statement*)parse_for_in_rest(p_parser, for_tok, name_tok, binds);
+    }
+    init = (ast_statement*)build_let_init(p_parser, for_tok, name_tok, binds);
+    if (init == NULL) {
+      return NULL;
+    }
+  } else if (p_parser->previous.type != TOKEN_SEMICOLON) {
     init = try_parse_declaration(p_parser);
     if (init == NULL) {
       error_at(p_parser,
@@ -1338,6 +1631,7 @@ parse_bindings_list(parser* p_parser, ast_binding_modifiers_t p_allowed_binds, t
   allocators* alloc = p_parser->alloc;
   ast_bindings_list list;
   ast_bindings_list_init(&list, alloc);
+  bool seen_default = false; // defaults must be trailing: there are no keyword arguments
   while (p_parser->current.type != p_end && p_parser->current.type != TOKEN_EOF) {
     ast_binding_modifiers_t binds = parse_binding_modifiers(p_parser, p_allowed_binds);
     token tok = p_parser->previous;
@@ -1355,12 +1649,53 @@ parse_bindings_list(parser* p_parser, ast_binding_modifiers_t p_allowed_binds, t
       goto free_bind_list;
     }
     advance(p_parser);
-    ast_expression* ident = parse_expression(p_parser, PREC_NONE);
+    // the name is parsed with the assign infix disabled (PREC_ASSIGNMENT blocks
+    // TOKEN_ASSIGN's rule): a bare identifier is the only valid binding lvalue here.
+    // parsing at PREC_NONE used to swallow `b = null` into an assign node that the
+    // compiler later cast to an identifier. silent garbage, was never covered by a test.
+    ast_expression* ident = parse_expression(p_parser, PREC_ASSIGNMENT);
     if (ident == NULL) {
       error_at(p_parser,
                p_parser->previous,
                ok_create_string_view("failed to parse parameter.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
       goto free_bind_list;
+    }
+    if (ident->node.node_type != AST_IDENTIFIER_EXPRESSION) {
+      error_at(
+          p_parser,
+          p_parser->previous,
+          ok_create_string_view("expected an identifier as parameter name.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      ast_dispatch_deinit((ast_node*)ident);
+      alloc->release(alloc, ident);
+      goto free_bind_list;
+    }
+    ast_expression* default_value = NULL;
+    if (p_parser->current.type == TOKEN_ASSIGN) {
+      advance(p_parser); // consume '='
+      advance(p_parser); // first default token into previous (parse_expression starts there)
+      default_value = parse_expression(p_parser, PREC_NONE);
+      if (default_value == NULL) {
+        error_at(p_parser,
+                 p_parser->previous,
+                 ok_create_string_view("failed to parse parameter default.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+        ast_dispatch_deinit((ast_node*)ident);
+        alloc->release(alloc, ident);
+        goto free_bind_list;
+      }
+    }
+    if (default_value == NULL && seen_default) {
+      error_at_noted(
+          p_parser,
+          p_parser->previous,
+          ok_create_string_view("required parameter after a defaulted one.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+          ok_create_string_view(
+              "defaults must be trailing. there are no keyword arguments.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      ast_dispatch_deinit((ast_node*)ident);
+      alloc->release(alloc, ident);
+      goto free_bind_list;
+    }
+    if (default_value != NULL) {
+      seen_default = true;
     }
     ast_binding* binding = (ast_binding*)alloc->allocate(alloc, sizeof(ast_binding));
     if (binding == NULL) {
@@ -1368,10 +1703,11 @@ parse_bindings_list(parser* p_parser, ast_binding_modifiers_t p_allowed_binds, t
                p_parser->previous,
                ok_create_string_view(
                    "failed to allocate memory for parameter binding node.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
-      goto free_bind_list;
+      goto free_ident;
     }
     ast_specs s = {alloc};
     ast_binding_init(binding, ident, binds, tok, &s);
+    binding->default_value = default_value;
     if (!ast_bindings_list_append(&list, binding)) {
       goto free_bind_list;
     }
@@ -1380,6 +1716,15 @@ parse_bindings_list(parser* p_parser, ast_binding_modifiers_t p_allowed_binds, t
     } else if (p_parser->current.type != p_end) {
       goto expect_end;
     }
+    continue;
+  free_ident:
+    if (default_value != NULL) {
+      ast_dispatch_deinit((ast_node*)default_value);
+      alloc->release(alloc, default_value);
+    }
+    ast_dispatch_deinit((ast_node*)ident);
+    alloc->release(alloc, ident);
+    goto free_bind_list;
   }
   if (p_parser->current.type != p_end) {
   expect_end: { // label followed by decl is c23 ext lol.

@@ -1,0 +1,6 @@
+let v = "outer";
+let a = [1];
+for let v : a? {
+  print v; // expect: 1
+}
+print v; // expect: outer

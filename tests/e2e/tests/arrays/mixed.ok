@@ -1,0 +1,6 @@
+let a = [1, "two", true, null, [5]];
+print a[0]; // expect: 1
+print a[1]; // expect: two
+print a[2]; // expect: true
+print a[3]; // expect: null
+print a[4][0]; // expect: 5

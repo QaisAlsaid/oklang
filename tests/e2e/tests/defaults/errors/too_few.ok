@@ -1,0 +1,4 @@
+fu f(a, b = 2) {
+  return a;
+}
+print f(); // expect error

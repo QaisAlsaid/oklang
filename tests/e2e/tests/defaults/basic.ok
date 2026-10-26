@@ -1,0 +1,6 @@
+fu f(a, b = 20, c = 30) {
+  return a + b + c;
+}
+print f(1); // expect: 51
+print f(1, 2); // expect: 33
+print f(1, 2, 3); // expect: 6

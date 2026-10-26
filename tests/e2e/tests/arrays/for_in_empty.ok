@@ -1,0 +1,4 @@
+for let v : []? {
+  print v;
+}
+print "done"; // expect: done

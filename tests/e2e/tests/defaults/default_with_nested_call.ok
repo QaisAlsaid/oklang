@@ -1,0 +1,8 @@
+fu inner(x) {
+  return x + 1;
+}
+fu outer(a = inner(10)) {
+  return a;
+}
+print outer(); // expect: 11
+print outer(5); // expect: 5

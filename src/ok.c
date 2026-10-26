@@ -2,8 +2,6 @@
 #include <stdlib.h>
 
 #define OK_GC_EXPOSE
-#include "okgc.h"
-
 #include "ok/ok.h"
 #include "okcompiler.h"
 #include "okgc.h"
@@ -11,6 +9,7 @@
 #include "okobject_store.h"
 #include "okparser.h"
 #include "okspecs.h"
+#include "okutils.h"
 #include "okvalue.h"
 #include "okvm.h"
 
@@ -24,6 +23,129 @@ struct ok {
   allocators alloc;
   ok_allocators raw_alloc;
 };
+
+// when classes + methods are implemented, push/pop/remove become methods and these globals
+// either retire or stay as free functions (len likely stays, go style).
+// errors go through the supported path ok_native_error -> vm_native_error.
+
+static ok_value native_len(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  if (!IS_VALUE_ARRAY(p_argv[0])) {
+    ok_native_error(
+        p_ok,
+        ok_create_string_view("invalid argument: 'len' expects an array.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  // f64, never an int, numbers are the only public numeric type
+  return NUMBER_AS_VALUE((double)VALUE_AS_ARRAY(p_argv[0])->values.count);
+}
+
+static ok_value native_push(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  if (!IS_VALUE_ARRAY(p_argv[0])) {
+    ok_native_error(
+        p_ok,
+        ok_create_string_view("invalid argument: 'push' expects an array.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  object_array* arr = VALUE_AS_ARRAY(p_argv[0]);
+  // no gc guard needed here: the array is rooted through the caller's argument
+  // window [0, top), and value_array_append only reallocs the array's
+  // own buffer. it never triggers a collection. do not "fix" this in the future.
+  if (!value_array_append(&arr->values, p_argv[1])) {
+    ok_native_error(
+        p_ok, ok_create_string_view("out of memory: failed to grow array.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  return NULL_AS_VALUE(); // inert
+}
+
+static ok_value native_pop(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  if (!IS_VALUE_ARRAY(p_argv[0])) {
+    ok_native_error(
+        p_ok,
+        ok_create_string_view("invalid argument: 'pop' expects an array.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  object_array* arr = VALUE_AS_ARRAY(p_argv[0]);
+  if (arr->values.count == 0) {
+    return NULL_AS_VALUE(); // pop on empty is null.
+  }
+  const value popped = arr->values.data[arr->values.count - 1];
+  value_array_pop(&arr->values); // does not shrink capacity.
+  return popped;
+}
+
+// remove(a, [m, n)): in place removal of the half open range [m, n). the language
+// surface is half open, the underlying OK_ARRAY remove is
+// inclusive end, so translation happen here.
+static ok_value native_remove(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  if (!IS_VALUE_ARRAY(p_argv[0])) {
+    ok_native_error(
+        p_ok,
+        ok_create_string_view("invalid argument: 'remove' expects an array.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  uint32_t range[2] = {0, 0};
+  for (uint8_t i = 1; i < 3; ++i) {
+    const value v = p_argv[i];
+    if (IS_VALUE_NUMBER(v)) {
+      const double d = VALUE_AS_NUMBER(v);
+      // cast based integrality (no libm). the range guard runs first
+      if (!(d >= MIN_SAFE_INTEGER && d <= MAX_SAFE_INTEGER) || d != (double)(int64_t)d) {
+        ok_native_error(p_ok,
+                        ok_create_string_view("invalid range for 'remove': bounds must be whole numbers.",
+                                              OK_STRING_VIEW_CALCULATE_LENGTH,
+                                              true));
+        return NULL_AS_VALUE();
+      }
+      if (d < 0 || d > (double)UINT32_MAX) {
+        ok_native_error(p_ok,
+                        ok_create_string_view("invalid range for 'remove'.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+        return NULL_AS_VALUE();
+      }
+      range[i - 1] = (uint32_t)d;
+    } else if (IS_VALUE_INT(v)) {
+      const int64_t iv = VALUE_AS_INT(v);
+      if (iv < 0 || iv > (int64_t)UINT32_MAX) {
+        ok_native_error(p_ok,
+                        ok_create_string_view("invalid range for 'remove'.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+        return NULL_AS_VALUE();
+      }
+      range[i - 1] = (uint32_t)iv;
+    } else {
+      ok_native_error(p_ok,
+                      ok_create_string_view("invalid range for 'remove': bounds must be numbers.",
+                                            OK_STRING_VIEW_CALCULATE_LENGTH,
+                                            true));
+      return NULL_AS_VALUE();
+    }
+  }
+  object_array* arr = VALUE_AS_ARRAY(p_argv[0]);
+  if (range[0] > range[1] || range[1] > arr->values.count) {
+    ok_native_error(p_ok, ok_create_string_view("invalid range for 'remove'.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  if (range[0] < range[1]) {                                  // empty range is a legal
+    value_array_remove(&arr->values, range[0], range[1] - 1); // inclusive end underlying impl
+  }
+  return NULL_AS_VALUE();
+}
+
+static bool ok_define_core_natives(ok* p_ok) {
+  bool status = true;
+  status &= ok_global_define_native_function(
+      p_ok, ok_create_string_view("len", OK_STRING_VIEW_CALCULATE_LENGTH, true), 1, native_len);
+  status &= ok_global_define_native_function(
+      p_ok, ok_create_string_view("push", OK_STRING_VIEW_CALCULATE_LENGTH, true), 2, native_push);
+  status &= ok_global_define_native_function(
+      p_ok, ok_create_string_view("pop", OK_STRING_VIEW_CALCULATE_LENGTH, true), 1, native_pop);
+  status &= ok_global_define_native_function(
+      p_ok, ok_create_string_view("remove", OK_STRING_VIEW_CALCULATE_LENGTH, true), 3, native_remove);
+  return status;
+}
 
 ok* ok_create(ok_specs p_specs) {
   patch_specs(&p_specs);
@@ -49,6 +171,10 @@ ok* ok_create(ok_specs p_specs) {
       .alloc = &okay->alloc, .globals_store = &okay->globals_store, .objects_store = &okay->objects_store, .ok = okay};
   vm_init(&okay->vm, vm_specs);
   gc_watch_vm(&okay->gc, &okay->vm);
+  if (!ok_define_core_natives(okay)) { // beware we not compiling yet
+    ok_free(okay);
+    return NULL;
+  }
   return okay;
 }
 

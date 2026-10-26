@@ -148,7 +148,7 @@ typedef enum {
   OP_STORE_UPVALUE,      // w:    (p, a', b')     -> u[a'] = p then k[b'] otherwise r[b']
   OP_STORE_UPVALUE_LONG, // 2w:   (p, A, B)       -> u[A] = p then k[B] otherwise r[B];
   OP_CLOSE_UPVALUES,     // w:    (A)             -> close upvalues where index >= A
-  OP_CALL,               // w:    (p, a, b, c)    -> r[a] ... r[a + c - 2] = r[a](r[a + 1] ... r[a + b]); { p == 1 ? argc = r[a + 1] ... r[top - 1] } { c == 0 => take all returned, else take c - 1 }
+  OP_CALL,               // w:    (p, a, b, c)    -> r[a] ... r[a + c - 2] = r[a](r[a + 1] ... r[a + b]); { p == 1 => argc = r[a + 1] ... r[top - 1] } { c == 0 => take all returned, else take c - 1 }
   OP_CALL_LONG,          // 2w:   (p, A, B, C)    -> r[A] ... r[A + C - 2] = r[A](r[A + 1] ... r[A + B - 1]); { same as narrow variant }
   OP_RETURN,             // w:    (a', b')        -> return r[a'] ... r[a' + b' - 1] { b' == 0 => return r[a'] ... r[top - 1] (passthrough) }
   OP_RETURN_LONG,        // 2w:   (A, B)          -> return r[A] ... r[A + B - 1]; { same as narrow variant }
@@ -161,25 +161,32 @@ typedef enum {
   OP_NEGATE_LONG,        // 2w:   (p, A, B)       -> r[A] = p == 0 then -r[B] otherwise -k[B]
   OP_ADD,                // w:    (p, a, b, c)    -> r[a] = r[b] + p then k[c] otherwise r[c]
   OP_ADD_LONG,           // 2w:   (p, A, B, C, q) -> r[A] = q then k[B] otherwise r[B] + p then k[C] otherwise r[C];
-  OP_SUBTRACT,           // w:    (p, a, b, c)    -> r[a] = r[b] - (p ? k[c] : r[c])
-  OP_SUBTRACT_LONG,      // 2w:   (p, A, B, C, q) -> r[A] = (q ? k[B] : r[B]) - (p ? k[C] : r[C]); ip += w
-  OP_MULTIPLY,           // w:    (p, a, b, c)    -> r[a] = r[b] * (p ? k[c] : r[c])
-  OP_MULTIPLY_LONG,      // 2w:   (p, A, B, C, q) -> r[A] = (q ? k[B] : r[B]) * (p ? k[C] : r[C]); ip += w
-  OP_DIVIDE,             // w:    (p, a, b, c)    -> r[a] = r[b] / (p ? k[c] : r[c])
-  OP_DIVIDE_LONG,        // 2w:   (p, A, B, C, q) -> r[A] = (q ? k[B] : r[B]) / (p ? k[C] : r[C]); ip += w
-  OP_EQUALS,             // w:    (p, a, b, c)    -> r[a] = r[b] == (p ? k[c] : r[c])
-  OP_EQUALS_LONG,        // 2w:   (p, A, B, C, q) -> r[A] = (q ? k[B] : r[B]) == (p ? k[C] : r[C]); ip += w
-  OP_NOT_EQUAL,          // w:    (p, a, b, c)    -> r[a] = r[b] != (p ? k[c] : r[c])
-  OP_NOT_EQUAL_LONG,     // 2w:   (p, A, B, C, q) -> r[A] = (q ? k[B] : r[B]) != (p ? k[C] : r[C]); ip += w
-  OP_GREATER,            // w:    (p, a, b, c)    -> r[a] = r[b] > (p ? k[c] : r[c])
-  OP_GREATER_LONG,       // 2w:   (p, A, B, C, q) -> r[A] = (q ? k[B] : r[B]) > (p ? k[C] : r[C]); ip += w
-  OP_LESS,               // w:    (p, a, b, c)    -> r[a] = r[b] < (p ? k[c] : r[c])
-  OP_LESS_LONG,          // 2w:   (p, A, B, C, q) -> r[A] = (q ? k[B] : r[B]) < (p ? k[C] : r[C]); ip += w
-  OP_GREATER_EQUAL,      // w:    (p, a, b, c)    -> r[a] = r[b] >= (p ? k[c] : r[c])
-  OP_GREATER_EQUAL_LONG, // 2w:   (p, A, B, C, q) -> r[A] = (q ? k[B] : r[B]) >= (p ? k[C] : r[C]); ip += w
-  OP_LESS_EQUAL,         // w:    (p, a, b, c)    -> r[a] = r[b] <= (p ? k[c] : r[c])
-  OP_LESS_EQUAL_LONG,    // 2w:   (p, A, B, C, q) -> r[A] = (q ? k[B] : r[B]) <= (p ? k[C] : r[C]); ip += w
+  OP_SUBTRACT,           // w:    (p, a, b, c)    -> r[a] = r[b] - (p then k[c] otherwise r[c])
+  OP_SUBTRACT_LONG,      // 2w:   (p, A, B, C, q) -> r[A] = (q then k[B] otherwise r[B]) - (p then k[C] otherwise r[C]); ip += w
+  OP_MULTIPLY,           // w:    (p, a, b, c)    -> r[a] = r[b] * (p then k[c] otherwise r[c])
+  OP_MULTIPLY_LONG,      // 2w:   (p, A, B, C, q) -> r[A] = (q then k[B] otherwise r[B]) * (p then k[C] otherwise r[C]); ip += w
+  OP_DIVIDE,             // w:    (p, a, b, c)    -> r[a] = r[b] / (p then k[c] otherwise r[c])
+  OP_DIVIDE_LONG,        // 2w:   (p, A, B, C, q) -> r[A] = (q then k[B] otherwise r[B]) / (p then k[C] otherwise r[C]); ip += w
+  OP_EQUALS,             // w:    (p, a, b, c)    -> r[a] = r[b] == (p then k[c] otherwise r[c])
+  OP_EQUALS_LONG,        // 2w:   (p, A, B, C, q) -> r[A] = (q then k[B] otherwise r[B]) == (p then k[C] otherwise r[C]); ip += w
+  OP_NOT_EQUAL,          // w:    (p, a, b, c)    -> r[a] = r[b] != (p then k[c] otherwise r[c])
+  OP_NOT_EQUAL_LONG,     // 2w:   (p, A, B, C, q) -> r[A] = (q then k[B] otherwise r[B]) != (p then k[C] otherwise r[C]); ip += w
+  OP_GREATER,            // w:    (p, a, b, c)    -> r[a] = r[b] > (p then k[c] otherwise r[c])
+  OP_GREATER_LONG,       // 2w:   (p, A, B, C, q) -> r[A] = (q then k[B] otherwise r[B]) > (p then k[C] otherwise r[C]); ip += w
+  OP_LESS,               // w:    (p, a, b, c)    -> r[a] = r[b] < (p then k[c] otherwise r[c])
+  OP_LESS_LONG,          // 2w:   (p, A, B, C, q) -> r[A] = (q then k[B] otherwise r[B]) < (p then k[C] otherwise r[C]); ip += w
+  OP_GREATER_EQUAL,      // w:    (p, a, b, c)    -> r[a] = r[b] >= (p then k[c] otherwise r[c])
+  OP_GREATER_EQUAL_LONG, // 2w:   (p, A, B, C, q) -> r[A] = (q then k[B] otherwise r[B]) >= (p then k[C] otherwise r[C]); ip += w
+  OP_LESS_EQUAL,         // w:    (p, a, b, c)    -> r[a] = r[b] <= (p then k[c] otherwise r[c])
+  OP_LESS_EQUAL_LONG,    // 2w:   (p, A, B, C, q) -> r[A] = (q then k[B] otherwise r[B]) <= (p then k[C] otherwise r[C]); ip += w
   OP_PRINT,              // w:    (p, A)          -> print r[A]
+  OP_ARRAY_NEW,          // w:    (a, b, c)       -> r[a] = c != 0 then Array(r[b]..r[b + c - 1]) otherwise Array()
+  OP_ARRAY_NEW_LONG,     // 2w:   (A, B, C)       -> same; ip += w
+  OP_ARRAY_GET,          // w:    (p, a, b, c)    -> r[a] = r[b][p then k[c] otherwise r[c]]
+  OP_ARRAY_GET_LONG,     // 2w:   (p, A, B, C)    -> r[A] = r[B][p then k[C] otherwise r[C]]; ip += w
+  OP_ARRAY_SET,          // w:    (p, a, b, c)    -> r[a][p then k[b] otherwise r[b]] = r[c] (value is a register in narrow)
+  OP_ARRAY_SET_LONG,     // 2w:   (p, q, A, B, C) -> r[A][p then k[B] : r[B]] = (q otherwise k[C] : r[C]); ip += w
+  OP_JUMP_IF_ARGC,       // 2w:   (p, A, B)       -> ip += A when (p == 1) == (frame->argc > B); B is the 0-based parameter position
 } opcode;
 
 // clang-format on

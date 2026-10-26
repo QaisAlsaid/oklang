@@ -58,6 +58,7 @@ typedef enum {
   AST_COMPOUND_STATEMENT,
   AST_IF_STATEMENT,
   AST_FOR_STATEMENT,
+  AST_FOR_IN_STATEMENT,
   AST_WHILE_STATEMENT,
   AST_CONTROL_FLOW_STATEMENT,
   AST_RETURN_STATEMENT,
@@ -129,6 +130,7 @@ string ast_binding_modifiers_asprint(ast_binding_modifiers_t p_modifiers);
 typedef struct {
   ast_node node;
   ast_expression* lvalue;
+  ast_expression* default_value; // parameter default (NULL = required) (functions only)
   ast_binding_modifiers modifiers;
 } ast_binding;
 
@@ -314,6 +316,51 @@ ARRAY_DECLARE_DEFAULT(ast_expressions_list, ast_expression*)
 
 typedef struct {
   ast_expression expression;
+  ast_expressions_list elements;
+} ast_array_expression;
+
+void ast_array_expression_init(ast_array_expression* p_array,
+                               token p_token,
+                               ast_expressions_list p_elements,
+                               ast_specs* p_specs);
+void ast_array_expression_deinit(ast_array_expression* p_array);
+bool ast_array_expression_print(const ast_array_expression* p_array);
+string ast_array_expression_asprint(const ast_array_expression* p_array);
+
+typedef struct {
+  ast_expression expression;
+  ast_expression* left;
+  ast_expression* index;
+} ast_subscript_expression;
+
+void ast_subscript_expression_init(ast_subscript_expression* p_subscript,
+                                   token p_token,
+                                   ast_expression* p_left,
+                                   ast_expression* p_index,
+                                   ast_specs* p_specs);
+void ast_subscript_expression_deinit(ast_subscript_expression* p_subscript);
+bool ast_subscript_expression_print(const ast_subscript_expression* p_subscript);
+string ast_subscript_expression_asprint(const ast_subscript_expression* p_subscript);
+
+typedef struct {
+  ast_expression expression;
+  operator_type _operator;
+  ast_expression* left;
+  ast_expression* right;
+} ast_compound_assign_expression;
+
+void ast_compound_assign_expression_init(ast_compound_assign_expression* p_compound,
+                                         token p_token,
+                                         const operator_type p_operator,
+                                         ast_expression* p_left,
+                                         ast_expression* p_right,
+                                         ast_specs* p_specs);
+void ast_compound_assign_expression_deinit(ast_compound_assign_expression* p_compound);
+bool ast_compound_assign_expression_print(const ast_compound_assign_expression* p_compound);
+string ast_compound_assign_expression_asprint(const ast_compound_assign_expression* p_compound);
+
+typedef struct {
+  ast_expression expression;
   ast_expression* callable;
   ast_expressions_list arguments;
 } ast_call_expression;
@@ -416,6 +463,18 @@ void ast_for_statement_init(ast_for_statement* p_for, token p_token, ast_specs* 
 void ast_for_statement_deinit(ast_for_statement* p_for);
 bool ast_for_statement_print(const ast_for_statement* p_for);
 string ast_for_statement_asprint(const ast_for_statement* p_for);
+
+typedef struct {
+  ast_statement statement;
+  ast_binding* binding;     // the loop variable (name + mutability)
+  ast_expression* iterable; // evaluated once at loop entry
+  ast_statement* body;
+} ast_for_in_statement;
+
+void ast_for_in_statement_init(ast_for_in_statement* p_for_in, token p_token, ast_specs* p_specs);
+void ast_for_in_statement_deinit(ast_for_in_statement* p_for_in);
+bool ast_for_in_statement_print(const ast_for_in_statement* p_for_in);
+string ast_for_in_statement_asprint(const ast_for_in_statement* p_for_in);
 
 typedef enum {
   CONTROL_FLOW_NONE,

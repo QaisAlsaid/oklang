@@ -20,6 +20,7 @@
 #define IS_VALUE_UPVALUE(value) value_is_object_type(value, OBJ_UPVALUE)
 #define IS_VALUE_NATIVE_VALUE(value) value_is_object_type(value, OBJ_NATIVE_VALUE)
 #define IS_VALUE_NATIVE_FUNCTION(value) value_is_object_type(value, OBJ_NATIVE_FUNCTION)
+#define IS_VALUE_ARRAY(value) value_is_object_type(value, OBJ_ARRAY)
 
 #define VALUE_AS_STRING(value) ((object_string*)VALUE_AS_OBJECT(value))
 #define VALUE_AS_FUNCTION(value) ((object_function*)VALUE_AS_OBJECT(value))
@@ -27,6 +28,7 @@
 #define VALUE_AS_UPVALUE(value) ((object_upvalue*)VALUE_AS_OBJECT(value))
 #define VALUE_AS_NATIVE_VALUE(value) ((object_native_type*)VALUE_AS_OBJECT(value))
 #define VALUE_AS_NATIVE_FUNCTION(value) ((object_native_function*)VALUE_AS_OBJECT(value))
+#define VALUE_AS_ARRAY(value) ((object_array*)VALUE_AS_OBJECT(value))
 
 typedef struct {
   allocators* alloc;
@@ -40,6 +42,7 @@ typedef enum {
   OBJ_UPVALUE,
   OBJ_NATIVE_VALUE,
   OBJ_NATIVE_FUNCTION,
+  OBJ_ARRAY,
 } object_type;
 
 struct object {
@@ -75,6 +78,7 @@ typedef struct {
   object_string* name;
   chunk chunk;
   uint16_t arity;
+  uint16_t ndefaults; // trailing defaulted params: floor = arity - ndefaults
   uint16_t registers;
   upvalue_descriptor_array upvalues;
 } object_function;
@@ -123,6 +127,13 @@ typedef struct {
 
 object_native_function*
 create_object_native_function(ok_string_view p_name, uint16_t p_arity, ok_native_fn p_cb, object_specs* p_specs);
+
+typedef struct {
+  object object;
+  value_array values; // ARRAY_DECLARE(value_array, value, uint32_t) in okvalue.h
+} object_array;
+
+object_array* create_object_array(object_specs* p_specs);
 
 void object_dispatch_deinit(object* p_object, object_specs* p_specs);
 void objects_list_deinit(object* p_head, object_specs* p_specs);

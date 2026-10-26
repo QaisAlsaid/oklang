@@ -1,0 +1,9 @@
+fu fresh(box = []) {
+  return box;
+}
+let a = fresh();
+let b = fresh();
+push(a, 1);
+push(a, 2);
+print len(a); // expect: 2
+print len(b); // expect: 0

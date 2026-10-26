@@ -1,0 +1,4 @@
+fu f(a, b = 2 + 3 * 4) {
+  return b;
+}
+print f(0); // expect: 14

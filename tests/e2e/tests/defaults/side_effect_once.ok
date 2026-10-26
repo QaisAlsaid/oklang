@@ -1,0 +1,14 @@
+glob let mut calls = 0;
+fu tick() {
+  calls += 1;
+  return 9;
+}
+fu f(a = tick()) {
+  return a;
+}
+print f(1); // expect: 1
+print calls; // expect: 0
+print f(); // expect: 9
+print calls; // expect: 1
+print f(); // expect: 9
+print calls; // expect: 2

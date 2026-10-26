@@ -1,0 +1,15 @@
+// the closures-as-objects dogfood: array state + closure behavior, the reason
+// gc-rooted arrays exist at all (dorg3's parallel-globals era ends here).
+fu make_counter(start) {
+  let box = [start];
+  return fu() {
+    box[0] += 1;
+    return box[0];
+  };
+}
+let c1 = make_counter(10);
+let c2 = make_counter(100);
+print c1(); // expect: 11
+print c1(); // expect: 12
+print c2(); // expect: 101
+print c1(); // expect: 13

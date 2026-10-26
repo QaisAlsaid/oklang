@@ -1,0 +1,5 @@
+let a = [];
+print len(a); // expect: 0
+push(a, 9);
+print len(a); // expect: 1
+print a[0]; // expect: 9

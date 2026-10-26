@@ -1,0 +1,5 @@
+fu f(a, b = a * 2) {
+  return b;
+}
+print f(4); // expect: 8
+print f(4, 1); // expect: 1

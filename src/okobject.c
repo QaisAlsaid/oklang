@@ -56,6 +56,7 @@ static void object_function_init(object_function* p_object_function,
   object_init(&p_object_function->object, OBJ_FUNCTION);
   p_object_function->name = p_name;
   p_object_function->arity = p_arity;
+  p_object_function->ndefaults = 0; // compiler sets this when the function is complete
   p_object_function->registers = 0; // compiler sets this when the function is complete
   upvalue_descriptor_array_init(&p_object_function->upvalues, p_specs->alloc);
   chunk_init(&p_object_function->chunk, p_specs->alloc);
@@ -211,6 +212,28 @@ create_object_native_function(ok_string_view p_name, uint16_t p_arity, ok_native
   return native_function;
 }
 
+static void object_array_init(object_array* p_object_array, object_specs* p_specs) {
+  object_init(&p_object_array->object, OBJ_ARRAY);
+  value_array_init(&p_object_array->values, p_specs->alloc);
+}
+
+static void object_array_deinit(object_array* p_object_array, object_specs* p_specs) {
+  // element values are gc owned (value_array's element deinit is a no-op), this only
+  // releases the backing buffer.
+  value_array_deinit(&p_object_array->values, p_specs->alloc);
+  object_deinit(&p_object_array->object);
+}
+
+object_array* create_object_array(object_specs* p_specs) {
+  object_array* object_arr = (object_array*)p_specs->alloc->allocate(p_specs->alloc, sizeof(object_array));
+  if (object_arr == NULL) {
+    return NULL;
+  }
+  object_array_init(object_arr, p_specs);
+  object_store_append(p_specs->store, (object*)object_arr);
+  return object_arr;
+}
+
 void object_dispatch_deinit(object* p_object, object_specs* p_specs) {
   switch (object_get_type(p_object)) {
   case OBJ_STRING:
@@ -230,6 +253,9 @@ void object_dispatch_deinit(object* p_object, object_specs* p_specs) {
     break;
   case OBJ_NATIVE_FUNCTION:
     object_native_function_deinit((object_native_function*)p_object, p_specs);
+    break;
+  case OBJ_ARRAY:
+    object_array_deinit((object_array*)p_object, p_specs);
     break;
   }
 }

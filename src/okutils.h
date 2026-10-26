@@ -10,6 +10,10 @@
 #include "okstring.h"
 #include "oktoken.h"
 
+// TODO: remove to somewhere better
+#define MAX_SAFE_INTEGER (9.0e15)
+#define MIN_SAFE_INTEGER (-(MAX_SAFE_INTEGER))
+
 void encode_int(uint8_t* p_bytes, const uint8_t p_bytes_count, const uint64_t p_value);
 uint64_t decode_int(const uint8_t* p_bytes, const uint8_t p_bytes_count);
 

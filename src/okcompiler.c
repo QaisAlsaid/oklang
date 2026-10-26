@@ -379,6 +379,7 @@ static bool compile_compound_statement(compiler* p_compiler, ast_compound_statem
 static bool compile_if_statement(compiler* p_compiler, ast_if_statement* p_if);
 static bool compile_while_statement(compiler* p_compiler, ast_while_statement* p_while);
 static bool compile_for_statement(compiler* p_compiler, ast_for_statement* p_for);
+static bool compile_for_in_statement(compiler* p_compiler, ast_for_in_statement* p_for_in);
 static bool compile_control_flow_statement(compiler* p_compiler, ast_control_flow_statement* p_control);
 static bool compile_return_statement(compiler* p_compiler, ast_return_statement* p_return);
 
@@ -437,6 +438,21 @@ static bool compile_function_expression(compiler* p_compiler,
                                         _register p_dest,
                                         uint32_t p_requested_count,
                                         expression_result* p_out);
+static bool compile_array_expression(compiler* p_compiler,
+                                     ast_array_expression* p_array,
+                                     _register p_dest,
+                                     uint32_t p_requested_count,
+                                     expression_result* p_out);
+static bool compile_subscript_expression(compiler* p_compiler,
+                                         ast_subscript_expression* p_subscript,
+                                         _register p_dest,
+                                         uint32_t p_requested_count,
+                                         expression_result* p_out);
+static bool compile_compound_assign_expression(compiler* p_compiler,
+                                               ast_compound_assign_expression* p_compound,
+                                               _register p_dest,
+                                               uint32_t p_requested_count,
+                                               expression_result* p_out);
 
 static bool compile_function_impl(compiler* p_compiler,
                                   ok_string_view p_name,
@@ -571,6 +587,9 @@ static bool compile_statement(compiler* p_compiler, ast_statement* p_statement) 
   case AST_FOR_STATEMENT:
     result = compile_for_statement(p_compiler, (ast_for_statement*)p_statement);
     break;
+  case AST_FOR_IN_STATEMENT:
+    result = compile_for_in_statement(p_compiler, (ast_for_in_statement*)p_statement);
+    break;
   case AST_CONTROL_FLOW_STATEMENT:
     result = compile_control_flow_statement(p_compiler, (ast_control_flow_statement*)p_statement);
     break;
@@ -646,6 +665,18 @@ static bool compile_expression(compiler* p_compiler,
   case AST_FUNCTION_EXPRESSION:
     result = compile_function_expression(
         p_compiler, (ast_function_expression*)p_expression, p_dest, p_requested_count, p_out);
+    break;
+  case AST_ARRAY_EXPRESSION:
+    result =
+        compile_array_expression(p_compiler, (ast_array_expression*)p_expression, p_dest, p_requested_count, p_out);
+    break;
+  case AST_SUBSCRIPT_EXPRESSION:
+    result = compile_subscript_expression(
+        p_compiler, (ast_subscript_expression*)p_expression, p_dest, p_requested_count, p_out);
+    break;
+  case AST_COMPOUND_ASSIGN_EXPRESSION:
+    result = compile_compound_assign_expression(
+        p_compiler, (ast_compound_assign_expression*)p_expression, p_dest, p_requested_count, p_out);
     break;
   default: {
     CRASH_MSG(false, "unimplemented expression.");
@@ -1143,6 +1174,7 @@ static location resolve_variable(compiler* p_compiler, const ok_string_view p_id
 }
 
 static lvalue resolve_lvalue(compiler* p_compiler, ast_expression* p_lvalue_expr) {
+  register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
   switch (p_lvalue_expr->node.node_type) {
   case AST_IDENTIFIER_EXPRESSION: {
     ast_identifier_expression* ident = (ast_identifier_expression*)p_lvalue_expr;
@@ -1151,6 +1183,48 @@ static lvalue resolve_lvalue(compiler* p_compiler, ast_expression* p_lvalue_expr
       return (lvalue){LVALUE_INVALID};
     }
     return (lvalue){LVALUE_VARIABLE, var};
+  }
+  case AST_SUBSCRIPT_EXPRESSION: {
+    // the 3 temp discipline: base and index are evaluated once, into their own
+    // registers, above the assignment's checkpoint. they must survive
+    // compilation of the rhs: compile_expression resets temps to its
+    // entry checkpoint, which sits above these two, so they do.
+    // the index is snapshotted even when it names a mutable local: a[i] = f()
+    // uses the i from evaluation time, not whatever f left behind (left to right).
+    ast_subscript_expression* sub = (ast_subscript_expression*)p_lvalue_expr;
+    ast_node* author = (ast_node*)p_lvalue_expr;
+    _register base;
+    if (!register_allocator_allocate_temp(regalloc, &base)) {
+      report_oom(p_compiler, author);
+      return (lvalue){LVALUE_INVALID};
+    }
+    expression_result base_result;
+    if (!compile_expression(p_compiler, sub->left, base, 1, &base_result)) {
+      return (lvalue){LVALUE_INVALID};
+    }
+    // the base must live in its own register: the operand pair (base, index) is
+    // what GET/SET address, and both must be stable across the rhs compile.
+    if (!materialize_into(p_compiler, &base_result.value, base, author)) {
+      return (lvalue){LVALUE_INVALID};
+    }
+    _register index;
+    if (!register_allocator_allocate_temp(regalloc, &index)) {
+      report_oom(p_compiler, author);
+      return (lvalue){LVALUE_INVALID};
+    }
+    expression_result index_result;
+    if (!compile_expression(p_compiler, sub->index, index, 1, &index_result)) {
+      return (lvalue){LVALUE_INVALID};
+    }
+    if (index_result.value.kind != LOCATION_KIND_CONSTANT &&
+        !materialize_into(p_compiler, &index_result.value, index, author)) {
+      return (lvalue){LVALUE_INVALID};
+    }
+    lvalue lv;
+    lv.kind = LVALUE_SUBSCRIPT;
+    lv.subscript.base = (location){base.index, LOCATION_KIND_REGISTER, LOCATION_OK};
+    lv.subscript.index = index_result.value; // register (== the index temp) or constant
+    return lv;
   }
   default:
     error_at(p_compiler,
@@ -1178,6 +1252,36 @@ static bool store_lvalue(compiler* p_compiler, lvalue p_lvalue, expression_resul
   switch (p_lvalue.kind) {
   case LVALUE_VARIABLE:
     return store_variable(p_compiler, p_lvalue.variable, p_value, p_author);
+  case LVALUE_SUBSCRIPT: {
+    // constants may flow through the long form's q flag. the narrow form has no
+    // value const room (p is spent on the index), so constant values force long.
+    bool is_value_constant = false;
+    location value = p_value.value;
+    if (!materialize_if_not_common(p_compiler, &is_value_constant, &value, p_author)) {
+      return false;
+    }
+    const bool is_index_constant = p_lvalue.subscript.index.kind == LOCATION_KIND_CONSTANT;
+    const uint16_t base_index = p_lvalue.subscript.base.index;
+    const uint16_t index_operand = p_lvalue.subscript.index.index;
+    if (!is_value_constant && base_index <= a_MAX && index_operand <= b_MAX && value.index <= c_MAX) {
+      if (!emit_word(p_compiler,
+                     encode_oppabc(OP_ARRAY_SET, is_index_constant, base_index, index_operand, value.index),
+                     p_author)) {
+        report_oom(p_compiler, p_author);
+        return false;
+      }
+      return true;
+    }
+    if (!emit_word2(
+            p_compiler,
+            encode_OPPABCQ(
+                OP_ARRAY_SET_LONG, is_index_constant, base_index, index_operand, value.index, is_value_constant),
+            p_author)) {
+      report_oom(p_compiler, p_author);
+      return false;
+    }
+    return true;
+  }
   case LVALUE_INVALID:
     ASSERT_MSG(false, "invalid lvalue.");
     return false;
@@ -1293,6 +1397,19 @@ static bool emit_incomplete_jump_if_set(
     compiler* p_compiler, bool p_truthy, _register p_condition, uint32_t* p_out, ast_node* p_author) {
   *p_out = current_chunk(p_compiler)->code.count;
   if (!emit_word2(p_compiler, encode_OPPABCQ(OP_JUMP_IF_SET, p_truthy, 0, p_condition.index, 0, 0), p_author)) {
+    report_oom(p_compiler, p_author);
+    return false;
+  }
+  return true;
+}
+
+// defaults ladder guard: jump forward when the argument for parameter position
+// p_position was supplied (frame->argc > position). patched with patch_jump_if,
+// which preserves B (the position) while rewriting A.
+static bool emit_incomplete_jump_if_argc(
+    compiler* p_compiler, bool p_supplied, uint16_t p_position, uint32_t* p_out, ast_node* p_author) {
+  *p_out = current_chunk(p_compiler)->code.count;
+  if (!emit_word2(p_compiler, encode_OPPABCQ(OP_JUMP_IF_ARGC, p_supplied, 0, p_position, 0, 0), p_author)) {
     report_oom(p_compiler, p_author);
     return false;
   }
@@ -1437,7 +1554,6 @@ static bool patch_loop_context(compiler* p_compiler, loop_context* p_ctx, ast_no
   return cleanup_scope(p_compiler, scp, p_author);
 }
 
-// TODO: fix cleanup path in both for/while
 bool compile_while_statement(compiler* p_compiler, ast_while_statement* p_while) {
   allocators* alloc = p_compiler->alloc;
   compile_context* ctx = current_context(p_compiler);
@@ -2129,6 +2245,421 @@ bool compile_call_expression(compiler* p_compiler,
   return true;
 }
 
+// r[p_dest] = r[p_base][p_index]. base is always a register (resolve_lvalue
+// materializes it), index may be a constant (GET carries a const-index flag).
+static bool
+emit_array_get(compiler* p_compiler, _register p_dest, location p_base, location p_index, ast_node* p_author) {
+  const bool is_index_constant = p_index.kind == LOCATION_KIND_CONSTANT;
+  if (p_dest.index > a_MAX || p_base.index > b_MAX || p_index.index > c_MAX) {
+    if (!emit_word2(
+            p_compiler,
+            encode_OPPABCQ(OP_ARRAY_GET_LONG, is_index_constant, p_dest.index, p_base.index, p_index.index, false),
+            p_author)) {
+      report_oom(p_compiler, p_author);
+      return false;
+    }
+    return true;
+  }
+  if (!emit_word(p_compiler,
+                 encode_oppabc(OP_ARRAY_GET, is_index_constant, p_dest.index, p_base.index, p_index.index),
+                 p_author)) {
+    report_oom(p_compiler, p_author);
+    return false;
+  }
+  return true;
+}
+
+static bool compile_array_expression(compiler* p_compiler,
+                                     ast_array_expression* p_array,
+                                     _register p_dest,
+                                     uint32_t p_requested_count,
+                                     expression_result* p_out) {
+  (void)p_requested_count;
+  ast_node* author = (ast_node*)p_array;
+  // elements compile into consecutive temps at the start (compile_expressions_list
+  // allocates them one by one), so they end up exactly at [start .. start + count).
+  // NEW's (dest, src, count) operands are independent: the array lands directly in
+  // p_dest. a local slot, a temp, or the devnull, with no move.
+  _register elements_start = {0, REGISTER_FLAG_NONE, REGISTER_OK};
+  if (!compile_expressions_list(p_compiler, &p_array->elements, C_MAX, &elements_start, author)) {
+    return false;
+  }
+  const uint32_t count = p_array->elements.count;
+  const uint16_t src = count > 0 ? (uint16_t)elements_start.index : (uint16_t)p_dest.index; // unused when count == 0
+  if (p_dest.index > a_MAX || src > b_MAX || count > c_MAX) {
+    if (!emit_word2(p_compiler, encode_OPPABCQ(OP_ARRAY_NEW_LONG, false, p_dest.index, src, count, false), author)) {
+      report_oom(p_compiler, author);
+      return false;
+    }
+  } else if (!emit_word(p_compiler, encode_oppabc(OP_ARRAY_NEW, false, p_dest.index, src, (uint8_t)count), author)) {
+    report_oom(p_compiler, author);
+    return false;
+  }
+  p_out->type = EXPRESSION_VALUE;
+  p_out->value = (location){p_dest.index, LOCATION_KIND_REGISTER, LOCATION_OK};
+  p_out->lvalue = (lvalue){LVALUE_INVALID};
+  p_out->count = 1;
+  return true;
+}
+
+static bool compile_subscript_expression(compiler* p_compiler,
+                                         ast_subscript_expression* p_subscript,
+                                         _register p_dest,
+                                         uint32_t p_requested_count,
+                                         expression_result* p_out) {
+  (void)p_requested_count;
+  // read path goes through the same resolve_lvalue as writes: base and index are
+  // evaluated identically in both, and a[i] compiles side effects even when its
+  // value is discarded (matching compile_call_expression's behavior at count 0).
+  lvalue lv = resolve_lvalue(p_compiler, (ast_expression*)p_subscript);
+  if (lv.kind == LVALUE_INVALID) {
+    return false;
+  }
+  if (!emit_array_get(p_compiler, p_dest, lv.subscript.base, lv.subscript.index, (ast_node*)p_subscript)) {
+    return false;
+  }
+  p_out->type = EXPRESSION_VALUE | EXPRESSION_SUBSCRIPT;
+  p_out->value = (location){p_dest.index, LOCATION_KIND_REGISTER, LOCATION_OK};
+  p_out->lvalue = lv;
+  p_out->count = 1;
+  return true;
+}
+
+static bool compile_compound_assign_expression(compiler* p_compiler,
+                                               ast_compound_assign_expression* p_compound,
+                                               _register p_dest,
+                                               uint32_t p_requested_count,
+                                               expression_result* p_out) {
+  CRASH_MSG(p_requested_count <= 1, "unimplemented multi-assign.");
+  register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
+  ast_node* author = (ast_node*)p_compound;
+
+  opcode op;
+  opcode op_long;
+  switch (p_compound->_operator) {
+  case OPERATOR_PLUS_EQUAL:
+    op = OP_ADD;
+    op_long = OP_ADD_LONG;
+    break;
+  case OPERATOR_MINUS_EQUAL:
+    op = OP_SUBTRACT;
+    op_long = OP_SUBTRACT_LONG;
+    break;
+  case OPERATOR_ASTERISK_EQUAL:
+    op = OP_MULTIPLY;
+    op_long = OP_MULTIPLY_LONG;
+    break;
+  case OPERATOR_SLASH_EQUAL:
+    op = OP_DIVIDE;
+    op_long = OP_DIVIDE_LONG;
+    break;
+  default:
+    error_at(p_compiler,
+             author,
+             ok_create_string_view("unsupported compound assignment operator.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return false;
+  }
+
+  // resolve the target once: base/index (subscripts) are evaluated here and never
+  // again, so a[f()] += g() calls f exactly once.
+  lvalue lv = resolve_lvalue(p_compiler, p_compound->left);
+  if (lv.kind == LVALUE_INVALID) {
+    return false;
+  }
+
+  // current value: locals update in place (they are registers), everything else
+  // loads into a temp first. the local mutability check happens before any code
+  // is emitted for it.
+  _register cur;
+  location cur_loc;
+  if (lv.kind == LVALUE_VARIABLE && lv.variable.kind == LOCATION_KIND_REGISTER) {
+    const _register local = current_context(p_compiler)->register_allocator.registers.data[lv.variable.index];
+    if ((local.flags & REGISTER_FLAG_MUTABLE) == 0) {
+      error_at_noted(
+          p_compiler,
+          author,
+          ok_create_string_view(
+              "attempting to mutate an immutable local variable.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+          ok_create_string_view("did you forget to declare it 'mut'?", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      return false;
+    }
+    cur = (_register){lv.variable.index, REGISTER_FLAG_NONE, REGISTER_OK};
+    cur_loc = lv.variable;
+  } else {
+    if (!register_allocator_allocate_temp(regalloc, &cur)) {
+      report_oom(p_compiler, author);
+      return false;
+    }
+    if (lv.kind == LVALUE_VARIABLE) {
+      if (!materialize_value(p_compiler, cur, lv.variable, author)) {
+        return false;
+      }
+    } else if (!emit_array_get(p_compiler, cur, lv.subscript.base, lv.subscript.index, author)) {
+      return false;
+    }
+    cur_loc = (location){cur.index, LOCATION_KIND_REGISTER, LOCATION_OK};
+  }
+
+  // right side into its own temp: evaluation order is base, index, current, rhs
+  _register rhs_reg;
+  if (!register_allocator_allocate_temp(regalloc, &rhs_reg)) {
+    report_oom(p_compiler, author);
+    return false;
+  }
+  expression_result rhs;
+  if (!compile_expression(p_compiler, p_compound->right, rhs_reg, 1, &rhs)) {
+    return false;
+  }
+  bool is_rhs_constant = false;
+  if (!materialize_into_if_not_common(p_compiler, &is_rhs_constant, &rhs.value, rhs_reg, author)) {
+    return false;
+  }
+
+  // cur = cur OP rhs (in place for locals: one ADD, per the desugaring table)
+  if (!emit_binop(p_compiler, op, op_long, cur, cur_loc, rhs.value, false, is_rhs_constant, author)) {
+    return false;
+  }
+
+  // store back through the same target
+  if (lv.kind == LVALUE_VARIABLE) {
+    if (lv.variable.kind == LOCATION_KIND_REGISTER) {
+      // updated in place
+    } else {
+      expression_result stored = {EXPRESSION_VALUE, cur_loc, (lvalue){LVALUE_INVALID}, 1};
+      if (!store_variable(p_compiler, lv.variable, stored, author)) {
+        return false; // mutability of the global/upvalue is checked here
+      }
+    }
+  } else {
+    // subscript: value is the cur register, store_lvalue handles narrow/long
+    expression_result stored = {EXPRESSION_VALUE, cur_loc, (lvalue){LVALUE_INVALID}, 1};
+    if (!store_lvalue(p_compiler, lv, stored, author)) {
+      return false;
+    }
+  }
+
+  *p_out = (expression_result){EXPRESSION_VALUE, cur_loc, (lvalue){LVALUE_INVALID}, 1};
+  return true;
+}
+
+static bool compile_for_in_statement(compiler* p_compiler, ast_for_in_statement* p_for_in) {
+  allocators* alloc = p_compiler->alloc;
+  compile_context* ctx = current_context(p_compiler);
+  register_allocator* regalloc = &ctx->register_allocator;
+  ast_node* author = (ast_node*)p_for_in;
+  {
+    loop_context lctx;
+    loop_context_init(&lctx, alloc);
+    if (!loop_stack_append(&ctx->loop_stack, lctx)) {
+      report_oom(p_compiler, author);
+      loop_context_deinit(&lctx, alloc);
+      return false;
+    }
+  }
+  if (!begin_scope(p_compiler, author)) {
+    pop_loop_context(ctx, alloc);
+    return false;
+  }
+  chunk* chunk = current_chunk(p_compiler);
+#define CTX ctx->loop_stack.data[ctx->loop_stack.count - 1]
+  CTX.scope_depth = ctx->scopes.count - 1;
+
+  // hidden state must be locals, not temps: every body statement resets temps to
+  // local_top, which sits below any temp allocated here. the registers would be
+  // handed out to the body's own expressions and clobbered. the leading space makes
+  // the names untypeable, and this loop's dedicated scope makes nesting safe.
+  variable_declaration arr_decl = {.identifier = ok_create_string_view(" arr", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                                   .flags = VARIABLE_DECLARATION_FLAGS_MUTABLE};
+  _register arr = add_local(p_compiler, arr_decl, author);
+  if (!IS_REGISTER_VALID(arr)) {
+    goto fail;
+  }
+  variable_declaration len_decl = {.identifier = ok_create_string_view(" len", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                                   .flags = VARIABLE_DECLARATION_FLAGS_MUTABLE};
+  _register len = add_local(p_compiler, len_decl, author);
+  if (!IS_REGISTER_VALID(len)) {
+    goto fail;
+  }
+  variable_declaration i_decl = {.identifier = ok_create_string_view(" i", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                                 .flags = VARIABLE_DECLARATION_FLAGS_MUTABLE};
+  _register counter = add_local(p_compiler, i_decl, author);
+  if (!IS_REGISTER_VALID(counter)) {
+    goto fail;
+  }
+  variable_declaration var_decl = {
+      .identifier = ast_identifier_expression_get_value((ast_identifier_expression*)p_for_in->binding->lvalue),
+      .flags = variable_declaration_flags_from_modifiers(DECLARATION_NONE, p_for_in->binding->modifiers)};
+  _register var = add_local(p_compiler, var_decl, (ast_node*)p_for_in->binding);
+  if (!IS_REGISTER_VALID(var)) {
+    goto fail;
+  }
+  // the loop variable is defined by the first GET: clear the uninit flag so body
+  // resolution finds it (resolve_local skips uninitialized locals for shadowing).
+  regalloc->registers.data[var.index].flags &= ~REGISTER_FLAG_UNINITIALIZED;
+
+  // arr = <iterable> (evaluated exactly once, at loop entry)
+  {
+    expression_result iterable;
+    if (!compile_expression(p_compiler, p_for_in->iterable, arr, 1, &iterable)) {
+      goto fail;
+    }
+    if (!materialize_into(p_compiler, &iterable.value, arr, author)) {
+      goto fail;
+    }
+  }
+
+  // len = len(arr): the builtin native, by its compile-time global index. len is
+  // effectively reserved while for-in looks like this. reassigning it breaks
+  // loops. the future iteration protocol (post classes) retires this dependency.
+  {
+    const global len_global = globals_store_get(p_compiler->globals_store,
+                                                ok_create_string_view("len", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    if (!IS_GLOBAL_VALID(len_global)) {
+      error_at_noted(p_compiler,
+                     author,
+                     ok_create_string_view("undefined variable: len.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                     ok_create_string_view("ranged for needs the 'len' builtin. ok_create registers it.",
+                                           OK_STRING_VIEW_CALCULATE_LENGTH,
+                                           true));
+      goto fail;
+    }
+    _register t_len;
+    if (!register_allocator_allocate_temp(regalloc, &t_len)) {
+      report_oom(p_compiler, author);
+      goto fail;
+    }
+    if (t_len.index > aprime_MAX || len_global.index > bprime_MAX) {
+      if (!emit_word2(
+              p_compiler, encode_OPPABCQ(OP_LOAD_GLOBAL_LONG, false, t_len.index, len_global.index, 0, 0), author)) {
+        report_oom(p_compiler, author);
+        goto fail;
+      }
+    } else if (!emit_word(
+                   p_compiler, encode_oppabprime(OP_LOAD_GLOBAL, false, t_len.index, len_global.index), author)) {
+      report_oom(p_compiler, author);
+      goto fail;
+    }
+    // stage the call window: callable at t_len, argument at t_len + 1
+    _register t_arg;
+    if (!register_allocator_allocate_temp(regalloc, &t_arg)) {
+      report_oom(p_compiler, author);
+      goto fail;
+    }
+    if (!materialize_value(p_compiler, t_arg, (location){arr.index, LOCATION_KIND_REGISTER, LOCATION_OK}, author)) {
+      goto fail;
+    }
+    if (t_len.index > a_MAX || t_arg.index > a_MAX) {
+      if (!emit_word2(p_compiler, encode_OPPABCQ(OP_CALL_LONG, false, t_len.index, 1, 2, 0), author)) {
+        report_oom(p_compiler, author);
+        goto fail;
+      }
+    } else if (!emit_word(p_compiler, encode_oppabc(OP_CALL, false, t_len.index, 1, 2), author)) {
+      report_oom(p_compiler, author);
+      goto fail;
+    }
+    // t_len now holds the count: move it into the hidden len local
+    if (!materialize_value(p_compiler, len, (location){t_len.index, LOCATION_KIND_REGISTER, LOCATION_OK}, author)) {
+      goto fail;
+    }
+  }
+
+  // i = 0
+  {
+    constant zero = add_constant(p_compiler, NUMBER_AS_VALUE(0), author);
+    if (!IS_CONSTANT_VALID(zero)) {
+      goto fail;
+    }
+    if (counter.index > aprime_MAX || zero.index > bprime_MAX) {
+      if (!emit_word2(
+              p_compiler, encode_OPPABCQ(OP_LOAD_CONSTANT_LONG, false, counter.index, zero.index, 0, 0), author)) {
+        report_oom(p_compiler, author);
+        goto fail;
+      }
+    } else if (!emit_word(p_compiler, encode_oppabprime(OP_LOAD_CONSTANT, false, counter.index, zero.index), author)) {
+      report_oom(p_compiler, author);
+      goto fail;
+    }
+  }
+
+  {
+    const uint32_t loop_start = chunk->code.count;
+    _register cond;
+    if (!register_allocator_allocate_temp(regalloc, &cond)) {
+      report_oom(p_compiler, author);
+      goto fail;
+    }
+    if (!emit_binop(p_compiler,
+                    OP_LESS,
+                    OP_LESS_LONG,
+                    cond,
+                    (location){counter.index, LOCATION_KIND_REGISTER, LOCATION_OK},
+                    (location){len.index, LOCATION_KIND_REGISTER, LOCATION_OK},
+                    false,
+                    false,
+                    author)) {
+      goto fail;
+    }
+    uint32_t exit_jump;
+    if (!emit_incomplete_jump_if(p_compiler, false, cond, &exit_jump, author)) {
+      goto fail;
+    }
+
+    // var = arr[i] (fresh each iteration through the same slot; the body may
+    // capture it. same shared-slot semantics as the C style for today)
+    if (!emit_array_get(p_compiler,
+                        var,
+                        (location){arr.index, LOCATION_KIND_REGISTER, LOCATION_OK},
+                        (location){counter.index, LOCATION_KIND_REGISTER, LOCATION_OK},
+                        author)) {
+      goto fail;
+    }
+
+    CTX.continue_forward = true; // continue jumps to the increment, like C for update
+    if (!compile_statement(p_compiler, p_for_in->body)) {
+      goto fail;
+    }
+
+    CTX.continue_target = chunk->code.count;
+    {
+      constant one = add_constant(p_compiler, NUMBER_AS_VALUE(1), author);
+      if (!IS_CONSTANT_VALID(one)) {
+        goto fail;
+      }
+      if (!emit_binop(p_compiler,
+                      OP_ADD,
+                      OP_ADD_LONG,
+                      counter,
+                      (location){counter.index, LOCATION_KIND_REGISTER, LOCATION_OK},
+                      (location){one.index, LOCATION_KIND_CONSTANT, LOCATION_OK},
+                      false,
+                      true,
+                      author)) {
+        goto fail;
+      }
+    }
+
+    if (!emit_loop(p_compiler, loop_start, author)) {
+      goto fail;
+    }
+    if (!patch_jump_if(p_compiler, false, exit_jump, current_chunk(p_compiler)->code.count, author)) {
+      goto fail;
+    }
+    CTX.break_target = current_chunk(p_compiler)->code.count;
+  }
+
+  if (!patch_loop_context(p_compiler, &CTX, author)) {
+    goto fail;
+  }
+  pop_loop_context(ctx, alloc);
+  ASSERT(end_scope(p_compiler, author));
+  return true;
+fail:
+  pop_loop_context(ctx, alloc);
+  ASSERT(end_scope(p_compiler, author));
+  return false;
+#undef CTX
+}
+
 static bool compile_postfix_unary_expression(compiler* p_compiler,
                                              ast_postfix_unary_expression* p_expression,
                                              _register p_dest,
@@ -2244,6 +2775,7 @@ static bool compile_function_impl(compiler* p_compiler,
     return false;
   }
 
+  location param_locations[UINT8_MAX + 1];
   for (uint32_t i = 0; i < p_params.count; ++i) {
     ast_binding* binding = p_params.data[i];
     variable_declaration decl = {
@@ -2256,6 +2788,7 @@ static bool compile_function_impl(compiler* p_compiler,
       return false;
     }
     location loc = {param.index, LOCATION_KIND_REGISTER, LOCATION_OK};
+    param_locations[i] = loc;
 
     if (!define_variable(
             p_compiler,
@@ -2265,6 +2798,47 @@ static bool compile_function_impl(compiler* p_compiler,
       end_scope(p_compiler, p_author);
       end_context(p_compiler);
       return false;
+    }
+  }
+
+  // the defaults ladder, as the function's first code: one guard per defaulted
+  // param, skipping the default when the argument was supplied. call-time
+  // evaluation, c++ style. fresh mutable defaults per call, earlier params in
+  // scope. functions without defaults emit nothing at all.
+  {
+    uint16_t ndefaults = 0;
+    for (uint32_t i = 0; i < p_params.count; ++i) {
+      if (p_params.data[i]->default_value != NULL) {
+        ndefaults = (uint16_t)(p_params.count - i); // defaults are trailing, parser enforced
+        break;
+      }
+    }
+    current_context(p_compiler)->function.function->ndefaults = ndefaults;
+    for (uint32_t i = p_params.count - ndefaults; i < p_params.count; ++i) {
+      ast_binding* binding = p_params.data[i];
+      uint32_t guard;
+      if (!emit_incomplete_jump_if_argc(p_compiler, true, (uint16_t)i, &guard, (ast_node*)binding)) {
+        end_scope(p_compiler, p_author);
+        end_context(p_compiler);
+        return false;
+      }
+      _register param_reg = {param_locations[i].index, REGISTER_FLAG_NONE, REGISTER_OK};
+      expression_result filled;
+      if (!compile_expression(p_compiler, binding->default_value, param_reg, 1, &filled)) {
+        end_scope(p_compiler, p_author);
+        end_context(p_compiler);
+        return false;
+      }
+      if (!materialize_into(p_compiler, &filled.value, param_reg, (ast_node*)binding)) {
+        end_scope(p_compiler, p_author);
+        end_context(p_compiler);
+        return false;
+      }
+      if (!patch_jump_if(p_compiler, false, guard, current_chunk(p_compiler)->code.count, (ast_node*)binding)) {
+        end_scope(p_compiler, p_author);
+        end_context(p_compiler);
+        return false;
+      }
     }
   }
   if (!compile_statement(p_compiler, p_body)) {
@@ -2286,7 +2860,7 @@ static bool compile_function_impl(compiler* p_compiler,
 
   compile_context* function_ctx = current_context(p_compiler);
   object_function* proto = function_ctx->function.function;
-  proto->registers = function_ctx->register_allocator.registers_count; // frame size for the VM
+  proto->registers = function_ctx->register_allocator.registers_count; // frame size for the vm
   gc_guard_up(alloc->gc, OBJECT_AS_VALUE(proto));
 
   if (function_ctx->upvalues.count > 0 &&

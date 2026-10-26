@@ -1,0 +1,12 @@
+let mut m = [1, 2, 3];
+m[0] += 10;
+m[1] -= 1;
+m[2] *= 4;
+print m[0]; // expect: 11
+print m[1]; // expect: 1
+print m[2]; // expect: 12
+let mut x = 5;
+x += 2;
+print x; // expect: 7
+x *= 3;
+print x; // expect: 21
