@@ -1370,13 +1370,122 @@ fail_body:
   return NULL;
 }
 
-// rebuilds `let (mut)? IDENT (= expr)? ;` from tokens the for-in discrimination already
-// consumed, mirroring parse_let_declaration's extraction. leaves the parser exactly
-// where the original C style for flow expects it: previous = the init's ';'.
-static ast_let_declaration*
-build_let_init(parser* p_parser, token p_let_tok, token p_name_tok, ast_binding_modifiers_t p_binds) {
+// `for let (mut)? IDENT = <start> : <limit> (: <step>)? ? <statement>`.
+// called with current == TOKEN_COLON and the head already parsed into p_init_expr
+// (an `IDENT = <expr>` assign expression, dismantled here the same way
+// build_let_init dismantles the C style initializer).
+static ast_for_numeric_statement* parse_for_numeric_rest(
+    parser* p_parser, token p_for_tok, token p_name_tok, ast_binding_modifiers_t p_binds, ast_expression* p_init_expr) {
   allocators* alloc = p_parser->alloc;
-  ast_expression* expr = parse_expression(p_parser, PREC_NONE);
+  if (p_init_expr == NULL || p_init_expr->node.node_type != AST_ASSIGN_EXPRESSION ||
+      ((ast_assign_expression*)p_init_expr)->left->node.node_type != AST_IDENTIFIER_EXPRESSION) {
+    error_at(p_parser,
+             p_name_tok,
+             ok_create_string_view("expected '=' after the for binding.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    if (p_init_expr != NULL) {
+      ast_dispatch_deinit((ast_node*)p_init_expr);
+      alloc->release(alloc, p_init_expr);
+    }
+    return NULL;
+  }
+  ast_assign_expression* assign = (ast_assign_expression*)p_init_expr;
+
+  advance(p_parser); // ':' consumed, current = first limit token
+  advance(p_parser); // limit's first token into previous
+  ast_expression* limit = parse_expression(p_parser, PREC_NONE);
+  if (limit == NULL) {
+    error_at(p_parser,
+             p_parser->previous,
+             ok_create_string_view("expected an expression as numeric for limit.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    goto fail_assign;
+  }
+
+  ast_expression* step = NULL;
+  if (p_parser->current.type == TOKEN_COLON) {
+    advance(p_parser); // second ':' consumed, current = first step token
+    advance(p_parser); // step's first token into previous
+    step = parse_expression(p_parser, PREC_NONE);
+    if (step == NULL) {
+      error_at(p_parser,
+               p_parser->previous,
+               ok_create_string_view("expected an expression as numeric for step.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      goto fail_limit;
+    }
+  }
+
+  if (p_parser->current.type != TOKEN_QUESTION) {
+    error_at(p_parser,
+             p_parser->current,
+             ok_create_string_view("expected '?' after numeric for clauses.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    goto fail_step;
+  }
+  advance(p_parser); // '?'
+  advance(p_parser); // '{' (or first body token)
+  ast_statement* body = parse_statement(p_parser);
+  if (body == NULL) {
+    error_at(p_parser,
+             p_parser->previous,
+             ok_create_string_view("expected a statement as numeric for body.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    goto fail_step;
+  }
+
+  ast_binding* binding = (ast_binding*)alloc->allocate(alloc, sizeof(ast_binding));
+  if (binding == NULL) {
+    error_at(p_parser,
+             p_for_tok,
+             ok_create_string_view(
+                 "failed to allocate memory for numeric for binding.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    goto fail_body;
+  }
+  ast_for_numeric_statement* fnum = (ast_for_numeric_statement*)alloc->allocate(alloc, sizeof(ast_for_numeric_statement));
+  if (fnum == NULL) {
+    error_at(p_parser,
+             p_for_tok,
+             ok_create_string_view(
+                 "failed to allocate memory for numeric for node.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    alloc->release(alloc, binding);
+    goto fail_body;
+  }
+  ast_specs s = {alloc};
+  // steal the assign's sides like build_let_init does, then free the hollow shell
+  ast_binding_init(binding, assign->left, p_binds, p_name_tok, &s);
+  ast_for_numeric_statement_init(fnum, p_for_tok, &s);
+  fnum->binding = binding;
+  fnum->start = assign->right;
+  fnum->limit = limit;
+  fnum->step = step;
+  fnum->body = body;
+  assign->left = NULL;
+  assign->right = NULL;
+  alloc->release(alloc, assign);
+  return fnum;
+fail_body:
+  ast_dispatch_deinit((ast_node*)body);
+  alloc->release(alloc, body);
+fail_step:
+  if (step != NULL) {
+    ast_dispatch_deinit((ast_node*)step);
+    alloc->release(alloc, step);
+  }
+fail_limit:
+  ast_dispatch_deinit((ast_node*)limit);
+  alloc->release(alloc, limit);
+fail_assign:
+  ast_dispatch_deinit((ast_node*)assign);
+  alloc->release(alloc, assign);
+  return NULL;
+}
+
+// rebuilds `let (mut)? IDENT (= expr)? ;` from the expression the for head
+// discrimination already parsed, mirroring parse_let_declaration's extraction.
+// leaves the parser exactly where the original C style for flow expects it:
+// previous = the init's ';'.
+static ast_let_declaration* build_let_init_from_expression(parser* p_parser,
+                                                           token p_let_tok,
+                                                           token p_name_tok,
+                                                           ast_binding_modifiers_t p_binds,
+                                                           ast_expression* expr) {
+  allocators* alloc = p_parser->alloc;
   ast_binding* binding = (ast_binding*)alloc->allocate(alloc, sizeof(ast_binding));
   ast_let_declaration* let = (ast_let_declaration*)alloc->allocate(alloc, sizeof(ast_let_declaration));
   if (binding == NULL || let == NULL) {
@@ -1476,7 +1585,17 @@ ast_for_statement* parse_for_statement(parser* p_parser) {
       // the caller dispatches on node_type.
       return (ast_for_statement*)parse_for_in_rest(p_parser, for_tok, name_tok, binds);
     }
-    init = (ast_statement*)build_let_init(p_parser, for_tok, name_tok, binds);
+    // `for let (mut)? IDENT = <expr> ...` or the bare `for let x; ...` C init:
+    // parse the head expression once (previous = name, so `x = 0` parses as an
+    // assign expression exactly like build_let_init's own parse did), then
+    // discriminate on its terminator: ':' -> numeric, ';' -> C style.
+    ast_expression* init_expr = parse_expression(p_parser, PREC_NONE);
+    if (p_parser->current.type == TOKEN_COLON) {
+      // the cast is safe: both statements share the ast_statement prefix.
+      // the caller dispatches on node_type.
+      return (ast_for_statement*)parse_for_numeric_rest(p_parser, for_tok, name_tok, binds, init_expr);
+    }
+    init = (ast_statement*)build_let_init_from_expression(p_parser, for_tok, name_tok, binds, init_expr);
     if (init == NULL) {
       return NULL;
     }

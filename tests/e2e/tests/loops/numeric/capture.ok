@@ -1,0 +1,13 @@
+let mut late = null;
+for let i = 0 : 3? {
+  let f = fu() {
+    return i;
+  };
+  if i == 1? {
+    late = f;
+    print f();
+  }
+}
+print late();
+// expect: 1
+// expect: 3

@@ -187,6 +187,14 @@ typedef enum {
   OP_ARRAY_SET,          // w:    (p, a, b, c)    -> r[a][p then k[b] otherwise r[b]] = r[c] (value is a register in narrow)
   OP_ARRAY_SET_LONG,     // 2w:   (p, q, A, B, C) -> r[A][p then k[B] : r[B]] = (q otherwise k[C] : r[C]); ip += w
   OP_JUMP_IF_ARGC,       // 2w:   (p, A, B)       -> ip += A when (p == 1) == (frame->argc > B); B is the 0-based parameter position
+  OP_FOR_PREP,           // 2w:   (A, B)          -> numeric for entry: r[B] is the counter, r[B + 1] the limit, r[B + 2] the step
+                         //                          (compiler allocates the three adjacently and asserts it). validates all
+                         //                          three are numbers, errors when the step is zero, then runs the first
+                         //                          bounds test (step > 0 then r[B] < r[B + 1] otherwise r[B] > r[B + 1]):
+                         //                          when it fails ip += A (skip the whole loop, A is a forward offset like OP_JUMP_IF's)
+  OP_FOR_LOOP,           // 2w:   (A, B)          -> numeric for back edge: r[B] = r[B] + r[B + 2] (counter += step), then
+                         //                          when still in range (step > 0 then r[B] < r[B + 1] otherwise r[B] > r[B + 1])
+                         //                          ip -= A (jump back to the body top, A is a backward offset like OP_LOOP's)
 } opcode;
 
 // clang-format on

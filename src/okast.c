@@ -42,6 +42,7 @@
   X(AST_WHILE_STATEMENT, ast_while_statement)                                                                          \
   X(AST_FOR_STATEMENT, ast_for_statement)                                                                              \
   X(AST_FOR_IN_STATEMENT, ast_for_in_statement)                                                                        \
+  X(AST_FOR_NUMERIC_STATEMENT, ast_for_numeric_statement)                                                                        \
   X(AST_CONTROL_FLOW_STATEMENT, ast_control_flow_statement)                                                            \
   X(AST_RETURN_STATEMENT, ast_return_statement)                                                                        \
   /*X(AST_THROW_STATEMENT, ast_throw_statement)*/                                                                      \
@@ -1084,6 +1085,56 @@ bool ast_for_in_statement_print(const ast_for_in_statement* p_for_in) {
 
 string ast_for_in_statement_asprint(const ast_for_in_statement* p_for_in) {
   return create_static_string("for in", STRING_CALCULATE_LENGTH);
+}
+
+void ast_for_numeric_statement_init(ast_for_numeric_statement* p_for_numeric, token p_token, ast_specs* p_specs) {
+  ast_statement_init(&p_for_numeric->statement, AST_FOR_NUMERIC_STATEMENT, p_token, p_specs);
+  p_for_numeric->binding = NULL;
+  p_for_numeric->start = NULL;
+  p_for_numeric->limit = NULL;
+  p_for_numeric->step = NULL;
+  p_for_numeric->body = NULL;
+}
+
+void ast_for_numeric_statement_deinit(ast_for_numeric_statement* p_for_numeric) {
+  allocators* alloc = p_for_numeric->statement.node.alloc;
+  if (p_for_numeric->binding != NULL) {
+    ast_binding_deinit(p_for_numeric->binding);
+    alloc->release(alloc, p_for_numeric->binding);
+    p_for_numeric->binding = NULL;
+  }
+  if (p_for_numeric->start != NULL) {
+    ast_dispatch_deinit((ast_node*)p_for_numeric->start);
+    alloc->release(alloc, p_for_numeric->start);
+    p_for_numeric->start = NULL;
+  }
+  if (p_for_numeric->limit != NULL) {
+    ast_dispatch_deinit((ast_node*)p_for_numeric->limit);
+    alloc->release(alloc, p_for_numeric->limit);
+    p_for_numeric->limit = NULL;
+  }
+  if (p_for_numeric->step != NULL) {
+    ast_dispatch_deinit((ast_node*)p_for_numeric->step);
+    alloc->release(alloc, p_for_numeric->step);
+    p_for_numeric->step = NULL;
+  }
+  if (p_for_numeric->body != NULL) {
+    ast_dispatch_deinit((ast_node*)p_for_numeric->body);
+    alloc->release(alloc, p_for_numeric->body);
+    p_for_numeric->body = NULL;
+  }
+  ast_statement_deinit(&p_for_numeric->statement);
+}
+
+bool ast_for_numeric_statement_print(const ast_for_numeric_statement* p_for_numeric) {
+  bool status = ast_dispatch_print((ast_node*)p_for_numeric->start);
+  status &= ast_dispatch_print((ast_node*)p_for_numeric->limit);
+  status &= ast_dispatch_print((ast_node*)p_for_numeric->body);
+  return status;
+}
+
+string ast_for_numeric_statement_asprint(const ast_for_numeric_statement* p_for_numeric) {
+  return create_static_string("for numeric", STRING_CALCULATE_LENGTH);
 }
 
 void ast_for_statement_deinit(ast_for_statement* p_for) {

@@ -873,6 +873,22 @@ static bool resolve_array_index(vm* p_vm, value p_index, uint32_t p_count, uint3
   return false;
 }
 
+// strict gate + cast for the numeric for operands. int-tagged values are
+// accepted and widened: the int48 fast path is parked (D3), but the door stays
+// honest so a future int surface cannot silently miscompare here.
+static bool for_operand_as_number(vm* p_vm, value p_value, const char* p_which, double* p_out) {
+  if (IS_VALUE_NUMBER(p_value)) {
+    *p_out = VALUE_AS_NUMBER(p_value);
+    return true;
+  }
+  if (IS_VALUE_INT(p_value)) {
+    *p_out = (double)VALUE_AS_INT(p_value);
+    return true;
+  }
+  runtime_error(p_vm, "%s must be a number.", p_which);
+  return false;
+}
+
 // strict gate + cast for the subscript base operand: errors name the operand type
 static object_array* resolve_array_base(vm* p_vm, value p_base) {
   if (!value_is_object_type(p_base, OBJ_ARRAY)) {
@@ -1617,6 +1633,58 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const bool p = p_of(words);
       const bool jump = (p ? 1u : 0u) == (frame->argc > B ? 1u : 0u);
       ip += jump * A;
+      break;
+    }
+    case OP_FOR_PREP: {
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t A = A_of(words); // forward offset to the loop exit
+      const uint16_t B = B_of(words); // counter; limit at B + 1, step at B + 2
+      double start, limit, step;
+      if (!for_operand_as_number(p_vm, REG_AT(B), "numeric for start", &start) ||
+          !for_operand_as_number(p_vm, REG_AT(B + 1), "numeric for limit", &limit) ||
+          !for_operand_as_number(p_vm, REG_AT(B + 2), "numeric for step", &step)) {
+        interpret_result result;
+        result.status = RUNTIME_ERROR;
+        result.top_level_return = NULL_AS_VALUE();
+        return result;
+      }
+      if (step == 0.0) {
+        runtime_error(p_vm, "numeric for step is zero.");
+        interpret_result result;
+        result.status = RUNTIME_ERROR;
+        result.top_level_return = NULL_AS_VALUE();
+        return result;
+      }
+      // direction is the step's sign, derived per test — the branch predictor
+      // eats it (loop invariant), and no enum slots are spent on UP/DOWN twins.
+      const bool in_range = step > 0.0 ? start < limit : start > limit;
+      if (!in_range) {
+        ip += A;
+      }
+      break;
+    }
+    case OP_FOR_LOOP: {
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t A = A_of(words); // backward offset to the body top
+      const uint16_t B = B_of(words); // counter; limit at B + 1, step at B + 2
+      // only the counter is reachable by name (mut reseats it): gate it. the
+      // limit and step are hidden locals validated once by FOR_PREP — read them
+      // without revalidation, tag check only to widen ints.
+      double counter;
+      if (!for_operand_as_number(p_vm, REG_AT(B), "numeric for counter", &counter)) {
+        interpret_result result;
+        result.status = RUNTIME_ERROR;
+        result.top_level_return = NULL_AS_VALUE();
+        return result;
+      }
+      const double limit = IS_VALUE_NUMBER(REG_AT(B + 1)) ? VALUE_AS_NUMBER(REG_AT(B + 1)) : (double)VALUE_AS_INT(REG_AT(B + 1));
+      const double step = IS_VALUE_NUMBER(REG_AT(B + 2)) ? VALUE_AS_NUMBER(REG_AT(B + 2)) : (double)VALUE_AS_INT(REG_AT(B + 2));
+      counter += step;
+      REG_AT(B) = NUMBER_AS_VALUE(counter);
+      const bool in_range = step > 0.0 ? counter < limit : counter > limit;
+      if (in_range) {
+        ip -= A;
+      }
       break;
     }
     case OP_PRINT: {

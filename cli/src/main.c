@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "ok/ok.h"
 
@@ -20,8 +21,12 @@ int main(int argc, char** argv) {
     repl(ok);
   } else if (argc == 2) {
     run_file(ok, argv[1]);
+  } else if (argc == 3 && strcmp(argv[1], "--dump") == 0) {
+    // compile and disassemble only: the inspection tool, not a run mode
+    ok_debug_dump_bytecode(ok, true, true);
+    run_file(ok, argv[2]);
   } else {
-    fprintf(stderr, "usage: ok [path]");
+    fprintf(stderr, "usage: ok [--dump] [path]");
   }
   ok_free(ok);
 }

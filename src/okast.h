@@ -59,6 +59,7 @@ typedef enum {
   AST_IF_STATEMENT,
   AST_FOR_STATEMENT,
   AST_FOR_IN_STATEMENT,
+  AST_FOR_NUMERIC_STATEMENT,
   AST_WHILE_STATEMENT,
   AST_CONTROL_FLOW_STATEMENT,
   AST_RETURN_STATEMENT,
@@ -475,6 +476,20 @@ void ast_for_in_statement_init(ast_for_in_statement* p_for_in, token p_token, as
 void ast_for_in_statement_deinit(ast_for_in_statement* p_for_in);
 bool ast_for_in_statement_print(const ast_for_in_statement* p_for_in);
 string ast_for_in_statement_asprint(const ast_for_in_statement* p_for_in);
+
+typedef struct {
+  ast_statement statement;
+  ast_binding* binding;     // the loop counter (name + mutability)
+  ast_expression* start;    // evaluated once at loop entry
+  ast_expression* limit;    // evaluated once at loop entry, frozen for the whole trip
+  ast_expression* step;     // nullable, defaults to 1; zero step is a runtime error
+  ast_statement* body;
+} ast_for_numeric_statement;
+
+void ast_for_numeric_statement_init(ast_for_numeric_statement* p_for_numeric, token p_token, ast_specs* p_specs);
+void ast_for_numeric_statement_deinit(ast_for_numeric_statement* p_for_numeric);
+bool ast_for_numeric_statement_print(const ast_for_numeric_statement* p_for_numeric);
+string ast_for_numeric_statement_asprint(const ast_for_numeric_statement* p_for_numeric);
 
 typedef enum {
   CONTROL_FLOW_NONE,

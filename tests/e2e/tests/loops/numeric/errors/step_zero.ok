@@ -1,0 +1,4 @@
+for let i = 0 : 5 : 0? {
+  print i;
+}
+// expect error

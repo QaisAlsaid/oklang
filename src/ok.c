@@ -4,6 +4,7 @@
 #define OK_GC_EXPOSE
 #include "ok/ok.h"
 #include "okcompiler.h"
+#include "okdebug.h"
 #include "okgc.h"
 #include "okobject.h"
 #include "okobject_store.h"
@@ -22,6 +23,8 @@ struct ok {
   ok_source source;
   allocators alloc;
   ok_allocators raw_alloc;
+  bool dump_bytecode;
+  bool dump_skip_run;
 };
 
 // when classes + methods are implemented, push/pop/remove become methods and these globals
@@ -155,6 +158,8 @@ ok* ok_create(ok_specs p_specs) {
   }
   okay->raw_alloc = p_specs.allocators;
   okay->alloc = create_allocators(&okay->raw_alloc);
+  okay->dump_bytecode = false;
+  okay->dump_skip_run = false;
 
   object_store_init(&okay->objects_store, &okay->alloc);
 
@@ -206,6 +211,19 @@ ok_result ok_run(ok* p_ok, ok_source p_source) {
   if (compile_result.status != COMPILE_OK) {
     return OK_COMPILE_ERROR;
   }
+  if (p_ok->dump_bytecode) {
+    gc_pause(&p_ok->gc);
+    disassembler disassembler;
+    disassembler_specs disassembler_specs = {
+        .chunk = &compile_result.function->chunk, .globals_store = &p_ok->globals_store};
+    disassembler_init(&disassembler, disassembler_specs);
+    debug_disassemble_function(&disassembler, compile_result.function, "<main>");
+    disassembler_deinit(&disassembler);
+    gc_resume(&p_ok->gc);
+    if (p_ok->dump_skip_run) {
+      return OK;
+    }
+  }
   interpret_specs interpret_specs;
   interpret_specs.function = compile_result.function;
   interpret_specs.source = &p_ok->source;
@@ -216,6 +234,11 @@ ok_result ok_run(ok* p_ok, ok_source p_source) {
   }
 
   return OK;
+}
+
+void ok_debug_dump_bytecode(ok* p_ok, bool p_enabled, bool p_skip_run) {
+  p_ok->dump_bytecode = p_enabled;
+  p_ok->dump_skip_run = p_skip_run;
 }
 
 void ok_free(ok* p_ok) {

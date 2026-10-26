@@ -1,0 +1,5 @@
+// reseating a mut counter to a non-number fails loudly at the back edge.
+for let mut i = 0 : 5? {
+  i = "x";
+}
+// expect error

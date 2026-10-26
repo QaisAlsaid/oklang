@@ -1,0 +1,7 @@
+// a mut counter can be reassigned: it reseats the current iteration's value,
+// the trip itself follows the reseat (documented, lua-adjacent but explicit).
+for let mut i = 0 : 5? {
+  i = i + 10;
+  print i;
+}
+// expect: 10

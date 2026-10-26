@@ -1,0 +1,9 @@
+let s = 2;
+for let i = 0 : 9 : s? {
+  print i;
+}
+// expect: 0
+// expect: 2
+// expect: 4
+// expect: 6
+// expect: 8

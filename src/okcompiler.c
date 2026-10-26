@@ -380,6 +380,7 @@ static bool compile_if_statement(compiler* p_compiler, ast_if_statement* p_if);
 static bool compile_while_statement(compiler* p_compiler, ast_while_statement* p_while);
 static bool compile_for_statement(compiler* p_compiler, ast_for_statement* p_for);
 static bool compile_for_in_statement(compiler* p_compiler, ast_for_in_statement* p_for_in);
+static bool compile_for_numeric_statement(compiler* p_compiler, ast_for_numeric_statement* p_for_numeric);
 static bool compile_control_flow_statement(compiler* p_compiler, ast_control_flow_statement* p_control);
 static bool compile_return_statement(compiler* p_compiler, ast_return_statement* p_return);
 
@@ -590,6 +591,9 @@ static bool compile_statement(compiler* p_compiler, ast_statement* p_statement) 
   case AST_FOR_IN_STATEMENT:
     result = compile_for_in_statement(p_compiler, (ast_for_in_statement*)p_statement);
     break;
+  case AST_FOR_NUMERIC_STATEMENT:
+    result = compile_for_numeric_statement(p_compiler, (ast_for_numeric_statement*)p_statement);
+    break;
   case AST_CONTROL_FLOW_STATEMENT:
     result = compile_control_flow_statement(p_compiler, (ast_control_flow_statement*)p_statement);
     break;
@@ -687,6 +691,9 @@ static bool compile_expression(compiler* p_compiler,
 }
 
 static bool materialize_value(compiler* p_compiler, _register p_dest, location p_value, ast_node* p_author) {
+  if (p_value.kind == LOCATION_KIND_REGISTER && p_value.index == p_dest.index) {
+    return true; // already there: no self move
+  }
   opcode op;
   opcode op_long;
   switch (p_value.kind) {
@@ -1410,6 +1417,20 @@ static bool emit_incomplete_jump_if_argc(
     compiler* p_compiler, bool p_supplied, uint16_t p_position, uint32_t* p_out, ast_node* p_author) {
   *p_out = current_chunk(p_compiler)->code.count;
   if (!emit_word2(p_compiler, encode_OPPABCQ(OP_JUMP_IF_ARGC, p_supplied, 0, p_position, 0, 0), p_author)) {
+    report_oom(p_compiler, p_author);
+    return false;
+  }
+  return true;
+}
+
+// numeric for jump pair: both carry their offset in A (PREP forwards to the loop
+// exit, LOOP backwards to the body top) and the counter register in B, with the
+// limit and step at B + 1 and B + 2. patched with patch_jump_if, which preserves
+// B while rewriting A — same contract as OP_JUMP_IF.
+static bool
+emit_incomplete_for_jump(compiler* p_compiler, opcode p_op, _register p_counter, uint32_t* p_out, ast_node* p_author) {
+  *p_out = current_chunk(p_compiler)->code.count;
+  if (!emit_word2(p_compiler, encode_OPPABCQ(p_op, false, 0, p_counter.index, 0, 0), p_author)) {
     report_oom(p_compiler, p_author);
     return false;
   }
@@ -2152,11 +2173,35 @@ static bool compile_assign_expression(compiler* p_compiler,
   if (lv.kind == LVALUE_INVALID) {
     return false;
   }
+  // `local = <simple> op <rhs>`: compile the rhs straight into the variable's
+  // register and skip the temp + move-back pair (the local_pressure finding:
+  // `a = a + 1` cost ADD-to-temp + MOVE, 2 dispatches where 1 suffices). safe
+  // because value binops write their destination exactly once, at the final
+  // op, reading both operands at emit time — the destination may alias an
+  // operand. the left operand must stay simple (identifier/literal): shapes
+  // like `a = (a + 1) + a` or `a = f() + a` re-read the variable after the
+  // left side may have staged intermediate state in the destination, so they
+  // keep the scratch-then-store path. store_lvalue still runs afterwards:
+  // the mutability gate and the (now no-op) self move check both still apply.
+  _register rhs_dest = p_dest;
+  if (lv.kind == LVALUE_VARIABLE && lv.variable.kind == LOCATION_KIND_REGISTER && p_assign->right != NULL &&
+      p_assign->right->node.node_type == AST_INFIX_BINARY_EXPRESSION) {
+    ast_infix_binary_expression* bin = (ast_infix_binary_expression*)p_assign->right;
+    if (bin->_operator >= OPERATOR_RANGE_BIN_VALUE_BEGIN && bin->_operator <= OPERATOR_RANGE_BIN_VALUE_END) {
+      const ast_node_type left_type = bin->left->node.node_type;
+      if (left_type == AST_IDENTIFIER_EXPRESSION || left_type == AST_NUMBER_EXPRESSION ||
+          left_type == AST_BOOLEAN_EXPRESSION || left_type == AST_STRING_EXPRESSION) {
+        rhs_dest.errors = REGISTER_OK;
+        rhs_dest.index = lv.variable.index;
+        rhs_dest.flags = REGISTER_FLAG_NONE;
+      }
+    }
+  }
   expression_result right;
-  if (!compile_expression(p_compiler, p_assign->right, p_dest, 1, &right)) {
+  if (!compile_expression(p_compiler, p_assign->right, rhs_dest, 1, &right)) {
     return false;
   }
-  if (!materialize_into_if_not_register(p_compiler, &right.value, p_dest, (ast_node*)p_assign)) {
+  if (!materialize_into_if_not_register(p_compiler, &right.value, rhs_dest, (ast_node*)p_assign)) {
     return false;
   }
   if (!store_lvalue(p_compiler, lv, right, (ast_node*)p_assign)) {
@@ -2468,22 +2513,33 @@ static bool compile_for_in_statement(compiler* p_compiler, ast_for_in_statement*
   // local_top, which sits below any temp allocated here. the registers would be
   // handed out to the body's own expressions and clobbered. the leading space makes
   // the names untypeable, and this loop's dedicated scope makes nesting safe.
+  // the counter, limit and step are declared adjacently because the FOR ops read
+  // the limit at counter + 1 and the step at counter + 2 (the same fused back edge
+  // the numeric for uses — one increment/test dispatch per iteration).
+  variable_declaration counter_decl = {.identifier = ok_create_string_view(" i", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                                       .flags = VARIABLE_DECLARATION_FLAGS_MUTABLE};
+  _register counter = add_local(p_compiler, counter_decl, author);
+  if (!IS_REGISTER_VALID(counter)) {
+    goto fail;
+  }
+  variable_declaration limit_decl = {.identifier =
+                                         ok_create_string_view(" limit", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                                     .flags = VARIABLE_DECLARATION_FLAGS_MUTABLE};
+  _register limit = add_local(p_compiler, limit_decl, author);
+  if (!IS_REGISTER_VALID(limit)) {
+    goto fail;
+  }
+  variable_declaration step_decl = {.identifier = ok_create_string_view(" step", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                                    .flags = VARIABLE_DECLARATION_FLAGS_MUTABLE};
+  _register step = add_local(p_compiler, step_decl, author);
+  if (!IS_REGISTER_VALID(step)) {
+    goto fail;
+  }
+  ASSERT(limit.index == counter.index + 1 && step.index == counter.index + 2);
   variable_declaration arr_decl = {.identifier = ok_create_string_view(" arr", OK_STRING_VIEW_CALCULATE_LENGTH, true),
                                    .flags = VARIABLE_DECLARATION_FLAGS_MUTABLE};
   _register arr = add_local(p_compiler, arr_decl, author);
   if (!IS_REGISTER_VALID(arr)) {
-    goto fail;
-  }
-  variable_declaration len_decl = {.identifier = ok_create_string_view(" len", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-                                   .flags = VARIABLE_DECLARATION_FLAGS_MUTABLE};
-  _register len = add_local(p_compiler, len_decl, author);
-  if (!IS_REGISTER_VALID(len)) {
-    goto fail;
-  }
-  variable_declaration i_decl = {.identifier = ok_create_string_view(" i", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-                                 .flags = VARIABLE_DECLARATION_FLAGS_MUTABLE};
-  _register counter = add_local(p_compiler, i_decl, author);
-  if (!IS_REGISTER_VALID(counter)) {
     goto fail;
   }
   variable_declaration var_decl = {
@@ -2508,7 +2564,7 @@ static bool compile_for_in_statement(compiler* p_compiler, ast_for_in_statement*
     }
   }
 
-  // len = len(arr): the builtin native, by its compile-time global index. len is
+  // limit = len(arr): the builtin native, by its compile-time global index. len is
   // effectively reserved while for-in looks like this. reassigning it breaks
   // loops. the future iteration protocol (post classes) retires this dependency.
   {
@@ -2557,13 +2613,13 @@ static bool compile_for_in_statement(compiler* p_compiler, ast_for_in_statement*
       report_oom(p_compiler, author);
       goto fail;
     }
-    // t_len now holds the count: move it into the hidden len local
-    if (!materialize_value(p_compiler, len, (location){t_len.index, LOCATION_KIND_REGISTER, LOCATION_OK}, author)) {
+    // t_len now holds the count: move it into the hidden limit local
+    if (!materialize_value(p_compiler, limit, (location){t_len.index, LOCATION_KIND_REGISTER, LOCATION_OK}, author)) {
       goto fail;
     }
   }
 
-  // i = 0
+  // counter = 0, step = 1: constants feeding the fused FOR pair
   {
     constant zero = add_constant(p_compiler, NUMBER_AS_VALUE(0), author);
     if (!IS_CONSTANT_VALID(zero)) {
@@ -2580,72 +2636,205 @@ static bool compile_for_in_statement(compiler* p_compiler, ast_for_in_statement*
       goto fail;
     }
   }
-
   {
-    const uint32_t loop_start = chunk->code.count;
-    _register cond;
-    if (!register_allocator_allocate_temp(regalloc, &cond)) {
+    constant one = add_constant(p_compiler, NUMBER_AS_VALUE(1), author);
+    if (!IS_CONSTANT_VALID(one)) {
+      goto fail;
+    }
+    if (step.index > aprime_MAX || one.index > bprime_MAX) {
+      if (!emit_word2(p_compiler, encode_OPPABCQ(OP_LOAD_CONSTANT_LONG, false, step.index, one.index, 0, 0), author)) {
+        report_oom(p_compiler, author);
+        goto fail;
+      }
+    } else if (!emit_word(p_compiler, encode_oppabprime(OP_LOAD_CONSTANT, false, step.index, one.index), author)) {
       report_oom(p_compiler, author);
       goto fail;
     }
-    if (!emit_binop(p_compiler,
-                    OP_LESS,
-                    OP_LESS_LONG,
-                    cond,
-                    (location){counter.index, LOCATION_KIND_REGISTER, LOCATION_OK},
-                    (location){len.index, LOCATION_KIND_REGISTER, LOCATION_OK},
-                    false,
-                    false,
-                    author)) {
-      goto fail;
-    }
-    uint32_t exit_jump;
-    if (!emit_incomplete_jump_if(p_compiler, false, cond, &exit_jump, author)) {
-      goto fail;
-    }
-
-    // var = arr[i] (fresh each iteration through the same slot; the body may
-    // capture it. same shared-slot semantics as the C style for today)
-    if (!emit_array_get(p_compiler,
-                        var,
-                        (location){arr.index, LOCATION_KIND_REGISTER, LOCATION_OK},
-                        (location){counter.index, LOCATION_KIND_REGISTER, LOCATION_OK},
-                        author)) {
-      goto fail;
-    }
-
-    CTX.continue_forward = true; // continue jumps to the increment, like C for update
-    if (!compile_statement(p_compiler, p_for_in->body)) {
-      goto fail;
-    }
-
-    CTX.continue_target = chunk->code.count;
-    {
-      constant one = add_constant(p_compiler, NUMBER_AS_VALUE(1), author);
-      if (!IS_CONSTANT_VALID(one)) {
-        goto fail;
-      }
-      if (!emit_binop(p_compiler,
-                      OP_ADD,
-                      OP_ADD_LONG,
-                      counter,
-                      (location){counter.index, LOCATION_KIND_REGISTER, LOCATION_OK},
-                      (location){one.index, LOCATION_KIND_CONSTANT, LOCATION_OK},
-                      false,
-                      true,
-                      author)) {
-        goto fail;
-      }
-    }
-
-    if (!emit_loop(p_compiler, loop_start, author)) {
-      goto fail;
-    }
-    if (!patch_jump_if(p_compiler, false, exit_jump, current_chunk(p_compiler)->code.count, author)) {
-      goto fail;
-    }
-    CTX.break_target = current_chunk(p_compiler)->code.count;
   }
+
+  // entry: FOR_PREP runs the first bounds test (0 < len) and skips the whole
+  // loop for empty iterables. per iteration from here on: one ARRAY_GET at the
+  // body top, one FOR_LOOP at the bottom — the counter machinery is the same
+  // fused back edge as the numeric for.
+  uint32_t prep;
+  if (!emit_incomplete_for_jump(p_compiler, OP_FOR_PREP, counter, &prep, author)) {
+    goto fail;
+  }
+
+  const uint32_t body_start = chunk->code.count;
+
+  // var = arr[i] (fresh each iteration through the same slot; the body may
+  // capture it. same shared-slot semantics as the C style for today)
+  if (!emit_array_get(p_compiler,
+                      var,
+                      (location){arr.index, LOCATION_KIND_REGISTER, LOCATION_OK},
+                      (location){counter.index, LOCATION_KIND_REGISTER, LOCATION_OK},
+                      author)) {
+    goto fail;
+  }
+
+  CTX.continue_forward = true; // continue jumps to the increment, like C for update
+  if (!compile_statement(p_compiler, p_for_in->body)) {
+    goto fail;
+  }
+
+  CTX.continue_target = chunk->code.count;
+  uint32_t back_edge;
+  if (!emit_incomplete_for_jump(p_compiler, OP_FOR_LOOP, counter, &back_edge, author)) {
+    goto fail;
+  }
+  if (!patch_jump_if(p_compiler, true, back_edge, body_start, author)) {
+    goto fail;
+  }
+  if (!patch_jump_if(p_compiler, false, prep, chunk->code.count, author)) {
+    goto fail;
+  }
+  CTX.break_target = chunk->code.count;
+
+  if (!patch_loop_context(p_compiler, &CTX, author)) {
+    goto fail;
+  }
+  pop_loop_context(ctx, alloc);
+  ASSERT(end_scope(p_compiler, author));
+  return true;
+fail:
+  pop_loop_context(ctx, alloc);
+  ASSERT(end_scope(p_compiler, author));
+  return false;
+#undef CTX
+}
+
+// `for let (mut)? i = <start> : <limit> (: <step>)? <statement>` — the fused
+// numeric loop. start, limit and step are evaluated once, left to right, before
+// the first bounds test; the limit is frozen for the whole trip (lua style). the
+// counter is a normal binding: assignable when `mut` (reseats the current
+// iteration's value, never the trip), captureable with shared slot semantics.
+static bool compile_for_numeric_statement(compiler* p_compiler, ast_for_numeric_statement* p_for_numeric) {
+  allocators* alloc = p_compiler->alloc;
+  compile_context* ctx = current_context(p_compiler);
+  register_allocator* regalloc = &ctx->register_allocator;
+  ast_node* author = (ast_node*)p_for_numeric;
+  {
+    loop_context lctx;
+    loop_context_init(&lctx, alloc);
+    if (!loop_stack_append(&ctx->loop_stack, lctx)) {
+      report_oom(p_compiler, author);
+      loop_context_deinit(&lctx, alloc);
+      return false;
+    }
+  }
+  if (!begin_scope(p_compiler, author)) {
+    pop_loop_context(ctx, alloc);
+    return false;
+  }
+  chunk* chunk = current_chunk(p_compiler);
+#define CTX ctx->loop_stack.data[ctx->loop_stack.count - 1]
+  CTX.scope_depth = ctx->scopes.count - 1;
+
+  // the counter is the user-visible binding, declared first so the two hidden
+  // locals can sit directly after it: the FOR ops read the limit at B + 1 and
+  // the step at B + 2, so the three declarations must stay adjacent (asserted).
+  // the hidden names' leading space makes them untypeable, and this loop's
+  // dedicated scope makes nesting safe. hidden state must be locals, not temps:
+  // every body statement resets temps to local_top and would clobber them.
+  variable_declaration counter_decl = {
+      .identifier = ast_identifier_expression_get_value((ast_identifier_expression*)p_for_numeric->binding->lvalue),
+      .flags = variable_declaration_flags_from_modifiers(DECLARATION_NONE, p_for_numeric->binding->modifiers)};
+  _register counter = add_local(p_compiler, counter_decl, (ast_node*)p_for_numeric->binding);
+  if (!IS_REGISTER_VALID(counter)) {
+    goto fail;
+  }
+  variable_declaration limit_decl = {.identifier =
+                                         ok_create_string_view(" limit", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                                     .flags = VARIABLE_DECLARATION_FLAGS_MUTABLE};
+  _register limit = add_local(p_compiler, limit_decl, author);
+  if (!IS_REGISTER_VALID(limit)) {
+    goto fail;
+  }
+  variable_declaration step_decl = {.identifier = ok_create_string_view(" step", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                                    .flags = VARIABLE_DECLARATION_FLAGS_MUTABLE};
+  _register step = add_local(p_compiler, step_decl, author);
+  if (!IS_REGISTER_VALID(step)) {
+    goto fail;
+  }
+  ASSERT(limit.index == counter.index + 1 && step.index == counter.index + 2);
+
+  // counter = <start>. the counter stays uninitialized while the start resolves,
+  // so it behaves like a let initializer: `for let i = i : ...` sees the outer i.
+  {
+    expression_result start;
+    if (!compile_expression(p_compiler, p_for_numeric->start, counter, 1, &start)) {
+      goto fail;
+    }
+    if (!materialize_into(p_compiler, &start.value, counter, author)) {
+      goto fail;
+    }
+  }
+  // from here the counter is live: the limit and step see it, like sequential lets.
+  regalloc->registers.data[counter.index].flags &= ~REGISTER_FLAG_UNINITIALIZED;
+
+  // limit = <limit expr> (evaluated once, frozen for the whole trip)
+  {
+    expression_result limit_value;
+    if (!compile_expression(p_compiler, p_for_numeric->limit, limit, 1, &limit_value)) {
+      goto fail;
+    }
+    if (!materialize_into(p_compiler, &limit_value.value, limit, author)) {
+      goto fail;
+    }
+  }
+
+  // step = <step expr> or the default 1
+  if (p_for_numeric->step != NULL) {
+    expression_result step_value;
+    if (!compile_expression(p_compiler, p_for_numeric->step, step, 1, &step_value)) {
+      goto fail;
+    }
+    if (!materialize_into(p_compiler, &step_value.value, step, author)) {
+      goto fail;
+    }
+  } else {
+    constant one = add_constant(p_compiler, NUMBER_AS_VALUE(1), author);
+    if (!IS_CONSTANT_VALID(one)) {
+      goto fail;
+    }
+    if (step.index > aprime_MAX || one.index > bprime_MAX) {
+      if (!emit_word2(p_compiler, encode_OPPABCQ(OP_LOAD_CONSTANT_LONG, false, step.index, one.index, 0, 0), author)) {
+        report_oom(p_compiler, author);
+        goto fail;
+      }
+    } else if (!emit_word(p_compiler, encode_oppabprime(OP_LOAD_CONSTANT, false, step.index, one.index), author)) {
+      report_oom(p_compiler, author);
+      goto fail;
+    }
+  }
+
+  // entry: validate + first bounds test, skip the whole loop when it fails
+  uint32_t prep;
+  if (!emit_incomplete_for_jump(p_compiler, OP_FOR_PREP, counter, &prep, author)) {
+    goto fail;
+  }
+
+  // body. continue lands on the FOR_LOOP back edge (the increment site, same
+  // discipline as the C style for's update clause); break lands after it.
+  const uint32_t body_start = chunk->code.count;
+  CTX.continue_forward = true;
+  if (!compile_statement(p_compiler, p_for_numeric->body)) {
+    goto fail;
+  }
+
+  CTX.continue_target = chunk->code.count;
+  uint32_t back_edge;
+  if (!emit_incomplete_for_jump(p_compiler, OP_FOR_LOOP, counter, &back_edge, author)) {
+    goto fail;
+  }
+  if (!patch_jump_if(p_compiler, true, back_edge, body_start, author)) {
+    goto fail;
+  }
+  if (!patch_jump_if(p_compiler, false, prep, chunk->code.count, author)) {
+    goto fail;
+  }
+  CTX.break_target = chunk->code.count;
 
   if (!patch_loop_context(p_compiler, &CTX, author)) {
     goto fail;

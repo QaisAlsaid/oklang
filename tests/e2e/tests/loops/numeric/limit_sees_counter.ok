@@ -1,0 +1,8 @@
+// like sequential lets: the start sees the outer binding, the limit sees the counter.
+let i = 40;
+for let i = i + 2 : i + 3? {
+  print i;
+}
+// expect: 42
+// expect: 43
+// expect: 44

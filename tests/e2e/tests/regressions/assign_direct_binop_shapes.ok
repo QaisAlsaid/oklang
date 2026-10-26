@@ -1,0 +1,25 @@
+// the direct-into-local binop assignment and the shapes that must NOT take it.
+let mut a = 1;
+a = a + 1;
+print a;
+// expect: 2
+
+// left operand is not simple: the variable is re-read after the left side
+// evaluates, so this must keep the scratch path (and stay correct).
+a = (a + 1) + a;
+print a;
+// expect: 5
+
+// call on the left: same rule, the call may stage state in the destination.
+fu ten() {
+  return 10;
+}
+a = ten() + a;
+print a;
+// expect: 15
+
+// the destination appears on the right only: still one fused op, still correct.
+let mut b = 4;
+b = b * b;
+print b;
+// expect: 16

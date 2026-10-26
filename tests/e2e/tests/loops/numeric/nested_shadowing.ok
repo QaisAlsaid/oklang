@@ -1,0 +1,12 @@
+for let i = 0 : 2? {
+  for let i = 10 : 12? {
+    print i;
+  }
+  print i;
+}
+// expect: 10
+// expect: 11
+// expect: 0
+// expect: 10
+// expect: 11
+// expect: 1

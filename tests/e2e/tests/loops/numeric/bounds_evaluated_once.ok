@@ -1,0 +1,11 @@
+fu limit() {
+  print 7;
+  return 3;
+}
+for let i = 0 : limit()? {
+  print i;
+}
+// expect: 7
+// expect: 0
+// expect: 1
+// expect: 2

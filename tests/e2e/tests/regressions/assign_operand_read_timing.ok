@@ -1,0 +1,10 @@
+// binop operands are read at op time: a mutating call on the right side of
+// `a = a + f()` observes the mutation before the add (pinned behavior).
+let mut a = 1;
+let mutate = fu() {
+  a = 100;
+  return 5;
+};
+a = a + mutate();
+print a;
+// expect: 105

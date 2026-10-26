@@ -1,0 +1,10 @@
+let a = [1, 2];
+for let i = 0 : 2? {
+  for let v : a? {
+    print i * 10 + v;
+  }
+}
+// expect: 1
+// expect: 2
+// expect: 11
+// expect: 12
