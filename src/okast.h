@@ -294,7 +294,7 @@ void ast_assign_expression_deinit(ast_assign_expression* p_assign);
 bool ast_assign_expression_print(const ast_assign_expression* p_assign);
 string ast_assign_expression_asprint(const ast_assign_expression* p_assign);
 
-// `p_condition then p_then_arm otherwise p_otherwise_arm` — the conditional
+// `p_condition then p_then_arm otherwise p_otherwise_arm` - the conditional
 // (ternary) expression. both arms compile into the caller's result register.
 typedef struct {
   ast_expression expression;

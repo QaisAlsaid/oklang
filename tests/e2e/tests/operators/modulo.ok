@@ -1,5 +1,5 @@
 // floored remainder (python/lua): the sign follows the divisor, so the result
-// of x % n for positive n always lands in [0, n) — negative indices included.
+// of x % n for positive n always lands in [0, n) - negative indices included.
 print(7 % 3); // expect: 1
 print(7.5 % 2); // expect: 1.5
 print(-7 % 3); // expect: 2
@@ -33,7 +33,7 @@ for let i = 0 : 10? {
 }
 print(evens); // expect: 5
 
-// dogfood: wraparound with a negative offset — the floor payoff
+// dogfood: wraparound with a negative offset - the floor payoff
 let tiles = ["a", "b", "c"];
 let mut pos = 0 - 1;
 print(tiles[pos % 3]); // expect: c

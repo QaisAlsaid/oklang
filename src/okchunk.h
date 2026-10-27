@@ -201,9 +201,9 @@ typedef enum {
                          //                          when still in range (step > 0 then r[B] < r[B + 1] otherwise r[B] > r[B + 1])
                          //                          ip -= A (jump back to the body top, A is a backward offset like OP_LOOP's).
                          //                          p == 1: the compiler proved the counter immutable (plain `let`, or the for-in
-                         //                          hidden counter) — all three operands read as raw doubles, no per-trip tag
+                         //                          hidden counter) - all three operands read as raw doubles, no per-trip tag
                          //                          checks (FOR_PREP's normalization holds: the limit/step are nameless, the
-                         //                          counter is statically unwritable). p == 0: `let mut` — the counter is gated
+                         //                          counter is statically unwritable). p == 0: `let mut` - the counter is gated
                          //                          each trip, the body may reseat it to any value.
 } opcode;
 

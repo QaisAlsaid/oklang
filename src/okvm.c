@@ -262,7 +262,7 @@ perform_add(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest
       // it is plain memory, invisible to the gc, so allocations inside the
       // object creation can collect freely. create_object_string copies the
       // view into its own dynamic buffer and the result is published into the
-      // destination register with no allocation in between — the post-
+      // destination register with no allocation in between - the post-
       // store-append window that killed array NEW does not exist here (no
       // append_n phase, nothing allocates between creation and publication).
       const object_string* left = VALUE_AS_STRING(p_lhs);
@@ -490,7 +490,7 @@ static double floor_mod(double p_lhs, double p_rhs) {
 static interpret_result
 perform_modulo(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
   // floored modulo (python/lua): the result's sign follows the divisor, so
-  // -7 % 3 == 2 and 7 % -3 == -2 — the wraparound-friendly rule (x % n for
+  // -7 % 3 == 2 and 7 % -3 == -2 - the wraparound-friendly rule (x % n for
   // positive n always lands in [0, n), negative indices included, which is
   // what a game script wants out of a modulo). C's truncated remainder stays
   // available host-side (fmod) for the rare caller that needs it. the int48
@@ -1820,13 +1820,13 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       // normalize the triple to number-tagged doubles in place: int-tagged
       // operands (the dormant int48 door) are widened once here so OP_FOR_LOOP
       // can read all three as raw doubles for the whole trip. the limit and
-      // step are nameless hidden locals — nothing in the language can store
-      // to them — and an immutable counter (FOR_LOOP's p flag) is statically
+      // step are nameless hidden locals - nothing in the language can store
+      // to them - and an immutable counter (FOR_LOOP's p flag) is statically
       // unwritable, so the tags hold until the loop exits.
       REG_AT(B) = NUMBER_AS_VALUE(start);
       REG_AT(B + 1) = NUMBER_AS_VALUE(limit);
       REG_AT(B + 2) = NUMBER_AS_VALUE(step);
-      // direction is the step's sign, derived per test — the branch predictor
+      // direction is the step's sign, derived per test - the branch predictor
       // eats it (loop invariant), and no enum slots are spent on UP/DOWN twins.
       const bool in_range = step > 0.0 ? start < limit : start > limit;
       if (!in_range) {
@@ -1842,9 +1842,9 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       if (p_of(instruction)) {
         // p: the compiler proved the counter immutable (plain `let`, or the
         // for-in hidden counter). after FOR_PREP's normalization nothing can
-        // store to r[B]..r[B + 2] — imutability is enforced on every store
+        // store to r[B]..r[B + 2] - imutability is enforced on every store
         // path, calls open their windows at temps above local_top, and the
-        // limit/step are nameless — so the hot back edge reads raw doubles.
+        // limit/step are nameless - so the hot back edge reads raw doubles.
         counter = VALUE_AS_NUMBER(REG_AT(B));
       } else if (!for_operand_as_number(p_vm, REG_AT(B), "numeric for counter", &counter)) {
         // mut counter: the body may reseat it to any value, keep the gate.
@@ -1854,7 +1854,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
         return result;
       }
       // only the counter is reachable by name; the limit and step are hidden
-      // locals validated and normalized once by FOR_PREP — raw double reads.
+      // locals validated and normalized once by FOR_PREP - raw double reads.
       const double limit = VALUE_AS_NUMBER(REG_AT(B + 1));
       const double step = VALUE_AS_NUMBER(REG_AT(B + 2));
       counter += step;

@@ -1195,7 +1195,7 @@ static location resolve_variable(compiler* p_compiler, const ok_string_view p_id
 // (subscripts, binops, unary) propagate inertness; array literals allocate but
 // never reseat locals (the gc is non-moving, a local's reference survives a
 // collection unchanged); lambda literals are inert because creating a closure
-// runs no body — only calling it can mutate, and any call anywhere fails the
+// runs no body - only calling it can mutate, and any call anywhere fails the
 // check anyway. calls and assignments are the reseating writers we guard
 // against: a call may mutate a captured local, an assignment (compound or not)
 // may target the container itself.
@@ -1270,8 +1270,8 @@ static lvalue resolve_lvalue(compiler* p_compiler, ast_expression* p_lvalue_expr
       return (lvalue){LVALUE_INVALID};
     }
     // container elision (the compound-assign disassembly follow-up): when the
-    // container compiled to a plain local's register — compilation emitted
-    // nothing, identifiers resolve to their own slots — and nothing that will
+    // container compiled to a plain local's register - compilation emitted
+    // nothing, identifiers resolve to their own slots - and nothing that will
     // be compiled before the GET/SET can reseat it, reference the local's
     // register directly and drop the staging move. reseating writers inside
     // the index or the pending rhs: assignments, and calls (a closure may
@@ -1279,7 +1279,7 @@ static lvalue resolve_lvalue(compiler* p_compiler, ast_expression* p_lvalue_expr
     // at this point, a lambda compiled later in the function captures just the
     // same). the elided base also relies on the caller-side invariant that no
     // assignment expression is ever compiled with a live local as its result
-    // register — the same invariant the assign/binop peephole already depends
+    // register - the same invariant the assign/binop peephole already depends
     // on (p_dest is the devnull or a temp, never a local).
     const bool elide_container = base_result.value.kind == LOCATION_KIND_REGISTER &&
                                  base_result.value.index != base.index && expression_is_inert(sub->index) &&
@@ -1508,7 +1508,7 @@ static bool emit_incomplete_jump_if_argc(
 // numeric for jump pair: both carry their offset in A (PREP forwards to the loop
 // exit, LOOP backwards to the body top) and the counter register in B, with the
 // limit and step at B + 1 and B + 2. patched with patch_jump_if, which preserves
-// B (and p) while rewriting A — same contract as OP_JUMP_IF. p is only consumed
+// B (and p) while rewriting A - same contract as OP_JUMP_IF. p is only consumed
 // by FOR_LOOP: p == 1 is the compiler's immutability proof for the counter.
 static bool
 emit_incomplete_for_jump(
@@ -2024,7 +2024,7 @@ static bool compile_logical_operator(compiler* p_compiler,
 
 // `condition then a otherwise b`. zero new opcodes: the shape is the if
 // statement's, folded into an expression. the condition evaluates into its own
-// temp; both arms compile into the caller's p_dest — the same result register —
+// temp; both arms compile into the caller's p_dest - the same result register -
 // which is exactly the invariant the calling convention already guarantees
 // (callers allocate result registers, compile_expression targets them). a
 // conditional is never an lvalue; is_lvalue's whitelist keeps it that way.
@@ -2346,7 +2346,7 @@ static bool compile_assign_expression(compiler* p_compiler,
   // register and skip the temp + move-back pair (the local_pressure finding:
   // `a = a + 1` cost ADD-to-temp + MOVE, 2 dispatches where 1 suffices). safe
   // because value binops write their destination exactly once, at the final
-  // op, reading both operands at emit time — the destination may alias an
+  // op, reading both operands at emit time - the destination may alias an
   // operand. the left operand must stay simple (identifier/literal): shapes
   // like `a = (a + 1) + a` or `a = f() + a` re-read the variable after the
   // left side may have staged intermediate state in the destination, so they
@@ -2357,7 +2357,7 @@ static bool compile_assign_expression(compiler* p_compiler,
     // the rhs compiles into its own temp ABOVE the lvalue's staged base/index.
     // a call rhs opens the callee's register window at its destination, and the
     // callee's frame ([dest, dest + fu->registers)) null-fills every slot above
-    // it — the staged base/index temps sit above p_dest, so compiling the rhs
+    // it - the staged base/index temps sit above p_dest, so compiling the rhs
     // there let the callee erase them (arr[0] = reseat(), where reseat captures
     // and reseats arr, died with "expected an array"). found by the elision-gate
     // regression hunt; compound assigns were always safe because their cur/rhs
@@ -2703,7 +2703,7 @@ static bool compile_for_in_statement(compiler* p_compiler, ast_for_in_statement*
   // the names untypeable, and this loop's dedicated scope makes nesting safe.
   // the counter, limit and step are declared adjacently because the FOR ops read
   // the limit at counter + 1 and the step at counter + 2 (the same fused back edge
-  // the numeric for uses — one increment/test dispatch per iteration).
+  // the numeric for uses - one increment/test dispatch per iteration).
   variable_declaration counter_decl = {.identifier = ok_create_string_view(" i", OK_STRING_VIEW_CALCULATE_LENGTH, true),
                                        .flags = VARIABLE_DECLARATION_FLAGS_MUTABLE};
   _register counter = add_local(p_compiler, counter_decl, author);
@@ -2842,7 +2842,7 @@ static bool compile_for_in_statement(compiler* p_compiler, ast_for_in_statement*
 
   // entry: FOR_PREP runs the first bounds test (0 < len) and skips the whole
   // loop for empty iterables. per iteration from here on: one ARRAY_GET at the
-  // body top, one FOR_LOOP at the bottom — the counter machinery is the same
+  // body top, one FOR_LOOP at the bottom - the counter machinery is the same
   // fused back edge as the numeric for.
   uint32_t prep;
   if (!emit_incomplete_for_jump(p_compiler, OP_FOR_PREP, false, counter, &prep, author)) {
@@ -2867,7 +2867,7 @@ static bool compile_for_in_statement(compiler* p_compiler, ast_for_in_statement*
   }
 
   // the back edge's p flag: the for-in counter is a nameless hidden local,
-  // unwritable by construction — the raw-read fast path always applies.
+  // unwritable by construction - the raw-read fast path always applies.
   const bool counter_immutable = true;
 
   CTX.continue_target = chunk->code.count;
@@ -2896,7 +2896,7 @@ fail:
 #undef CTX
 }
 
-// `for let (mut)? i = <start> : <limit> (: <step>)? <statement>` — the fused
+// `for let (mut)? i = <start> : <limit> (: <step>)? <statement>` - the fused
 // numeric loop. start, limit and step are evaluated once, left to right, before
 // the first bounds test; the limit is frozen for the whole trip (lua style). the
 // counter is a normal binding: assignable when `mut` (reseats the current

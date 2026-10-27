@@ -561,7 +561,7 @@ fail:
   return NULL;
 }
 
-// `p_left then <then_arm> otherwise <otherwise_arm>` — the conditional
+// `p_left then <then_arm> otherwise <otherwise_arm>` - the conditional
 // expression. the then arm parses at PREC_CONDITIONAL so it stops at
 // `otherwise`; the otherwise arm parses one level lower (PREC_CONDITIONAL - 1)
 // making the operator right associative: a then b otherwise c then d otherwise e

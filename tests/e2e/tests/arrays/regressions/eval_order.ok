@@ -8,7 +8,7 @@ let slot = base();
 slot[index()] = value();
 print(order); // expect: 123
 print(slot[1]); // expect: 77
-// compound: base, index, current read, rhs — f exactly once, g after
+// compound: base, index, current read, rhs - f exactly once, g after
 let mut order2 = 0;
 fu f() { order2 = order2 * 10 + 1; return 0; }
 fu g() { order2 = order2 * 10 + 2; return 7; }

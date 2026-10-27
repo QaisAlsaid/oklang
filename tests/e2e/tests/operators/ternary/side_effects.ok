@@ -14,7 +14,7 @@ fu b1() { order = order * 10 + 3; return 0; }
 print(cond() then a1() otherwise b1()); // expect: 0
 print(order); // expect: 12
 // arms inside loops keep working across iterations (modulo parses but has no
-// opcode yet — pre-existing gap, not ternary; parity via or-chain instead)
+// opcode yet - pre-existing gap, not ternary; parity via or-chain instead)
 let mut sum = 0;
 for let i = 0 : 6? {
   sum += (i == 0 or i == 2 or i == 4) then i otherwise 0 - i;
