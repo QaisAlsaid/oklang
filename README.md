@@ -24,7 +24,7 @@ But seriously, it is lightweight, has nice syntax, is steadily gaining features,
 
 ## Example
 
-```oklang
+```javascript
 let mut total = 0;
 
 fu feed(bird) {
