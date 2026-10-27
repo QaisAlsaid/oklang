@@ -1,0 +1,33 @@
+// truncated remainder (C/fmod): the sign follows the dividend, not the floor.
+// -7 % 3 == -1 where lua/python give 2 — pinned here so the choice is visible.
+print(7 % 3); // expect: 1
+print(7.5 % 2); // expect: 1.5
+print(-7 % 3); // expect: -1
+print(7 % -3); // expect: 1
+print(-7.5 % 2); // expect: -1.5
+print(0 % 5); // expect: 0
+print(5.3 % 2.1); // expect: 1.1
+
+// precedence: % sits with * and / (PREC_PRODUCT), left-associative
+print(10 % 4 + 1); // expect: 3
+print(2 + 10 % 4); // expect: 4
+print(2 * 5 % 3); // expect: 1
+print(100 % 30 % 7); // expect: 3
+
+// compound assign: names in place, single evaluation
+let mut x = 10;
+x %= 3;
+print(x); // expect: 1
+let mut y = 100;
+y %= 30;
+y %= 7;
+print(y); // expect: 3
+
+// dogfood: parity in a numeric-for
+let mut evens = 0;
+for let i = 0 : 10? {
+  if i % 2 == 0? {
+    evens = evens + 1;
+  }
+}
+print(evens); // expect: 5

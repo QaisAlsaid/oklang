@@ -167,6 +167,9 @@ typedef enum {
   OP_MULTIPLY_LONG,      // 2w:   (p, A, B, C, q) -> r[A] = (q then k[B] otherwise r[B]) * (p then k[C] otherwise r[C]); ip += w
   OP_DIVIDE,             // w:    (p, a, b, c)    -> r[a] = r[b] / (p then k[c] otherwise r[c])
   OP_DIVIDE_LONG,        // 2w:   (p, A, B, C, q) -> r[A] = (q then k[B] otherwise r[B]) / (p then k[C] otherwise r[C]); ip += w
+  OP_MODULUS,            // w:    (p, a, b, c)    -> r[a] = r[b] % (p then k[c] otherwise r[c]); truncated remainder
+                         //                          (C/fmod: sign follows the dividend; rhs 0 is a runtime error like '/')
+  OP_MODULUS_LONG,       // 2w:   (p, A, B, C, q) -> r[A] = (q then k[B] otherwise r[B]) % (p then k[C] otherwise r[C]); ip += w
   OP_EQUALS,             // w:    (p, a, b, c)    -> r[a] = r[b] == (p then k[c] otherwise r[c])
   OP_EQUALS_LONG,        // 2w:   (p, A, B, C, q) -> r[A] = (q then k[B] otherwise r[B]) == (p then k[C] otherwise r[C]); ip += w
   OP_NOT_EQUAL,          // w:    (p, a, b, c)    -> r[a] = r[b] != (p then k[c] otherwise r[c])
@@ -189,12 +192,19 @@ typedef enum {
   OP_JUMP_IF_ARGC,       // 2w:   (p, A, B)       -> ip += A when (p == 1) == (frame->argc > B); B is the 0-based parameter position
   OP_FOR_PREP,           // 2w:   (A, B)          -> numeric for entry: r[B] is the counter, r[B + 1] the limit, r[B + 2] the step
                          //                          (compiler allocates the three adjacently and asserts it). validates all
-                         //                          three are numbers, errors when the step is zero, then runs the first
-                         //                          bounds test (step > 0 then r[B] < r[B + 1] otherwise r[B] > r[B + 1]):
-                         //                          when it fails ip += A (skip the whole loop, A is a forward offset like OP_JUMP_IF's)
-  OP_FOR_LOOP,           // 2w:   (A, B)          -> numeric for back edge: r[B] = r[B] + r[B + 2] (counter += step), then
+                         //                          three are numbers, errors when the step is zero, normalizes the triple to
+                         //                          number-tagged doubles in place (int-tagged operands widen once here), then
+                         //                          runs the first bounds test (step > 0 then r[B] < r[B + 1] otherwise r[B] > r[B + 1]):
+                         //                          when it fails ip += A (skip the whole loop, A is a forward offset like OP_JUMP_IF's).
+                         //                          (p unused, always false)
+  OP_FOR_LOOP,           // 2w:   (p, A, B)       -> numeric for back edge: r[B] = r[B] + r[B + 2] (counter += step), then
                          //                          when still in range (step > 0 then r[B] < r[B + 1] otherwise r[B] > r[B + 1])
-                         //                          ip -= A (jump back to the body top, A is a backward offset like OP_LOOP's)
+                         //                          ip -= A (jump back to the body top, A is a backward offset like OP_LOOP's).
+                         //                          p == 1: the compiler proved the counter immutable (plain `let`, or the for-in
+                         //                          hidden counter) — all three operands read as raw doubles, no per-trip tag
+                         //                          checks (FOR_PREP's normalization holds: the limit/step are nameless, the
+                         //                          counter is statically unwritable). p == 0: `let mut` — the counter is gated
+                         //                          each trip, the body may reseat it to any value.
 } opcode;
 
 // clang-format on

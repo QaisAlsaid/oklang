@@ -1,3 +1,4 @@
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -468,6 +469,80 @@ perform_divide(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_d
   }
 division_by_zero: {
   runtime_error(p_vm, "division by zero.");
+  interpret_result res;
+  res.status = RUNTIME_ERROR;
+  res.top_level_return = NULL_AS_VALUE();
+  return res;
+}
+}
+
+static interpret_result
+perform_modulo(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
+  // truncated division remainder (C99 fmod): the result's sign follows the
+  // dividend, so -7 % 3 is -1, where lua/python floor to 2. deliberate: the
+  // dormant int48 path is C's % by definition, and fmod is its f64 twin — one
+  // rule, two domains, no mixed-semantics seam. rhs 0 errors like '/' does.
+  const uint32_t base = p_frame->registers_base;
+  value lhs = p_lhs;
+  value rhs = p_rhs;
+  if (IS_VALUE_NUMBER(lhs)) {
+    if (IS_VALUE_NUMBER(rhs)) {
+      if (VALUE_AS_NUMBER(rhs) == 0.0f) {
+        goto modulo_by_zero;
+      }
+      lhs = NUMBER_AS_VALUE(fmod(VALUE_AS_NUMBER(lhs), VALUE_AS_NUMBER(rhs)));
+    } else if (IS_VALUE_INT(rhs)) {
+      if (VALUE_AS_INT(rhs) == 0) {
+        goto modulo_by_zero;
+      }
+      lhs = NUMBER_AS_VALUE(fmod(VALUE_AS_NUMBER(lhs), (double)VALUE_AS_INT(rhs)));
+    } else if (IS_VALUE_OBJECT(rhs)) {
+      goto invalid;
+      // TODO
+      // not sure if we should allow this for objects or they have to be strictly lhs.
+      // TBD after we add classes.
+    } else {
+      goto invalid;
+    }
+  } else if (IS_VALUE_INT(lhs)) {
+    if (IS_VALUE_INT(rhs)) {
+      if (VALUE_AS_INT(rhs) == 0) {
+        goto modulo_by_zero;
+      }
+      lhs = INT_AS_VALUE(VALUE_AS_INT(lhs) % VALUE_AS_INT(rhs));
+    } else if (IS_VALUE_NUMBER(rhs)) {
+      if (VALUE_AS_NUMBER(rhs) == 0.0f) {
+        goto modulo_by_zero;
+      }
+      lhs = NUMBER_AS_VALUE(fmod((double)VALUE_AS_INT(lhs), VALUE_AS_NUMBER(rhs)));
+    } else if (IS_VALUE_OBJECT(rhs)) {
+      goto invalid;
+      // TODO
+      // not sure if we should allow this for objects or they have to be strictly lhs.
+      // TBD after we add classes.
+    } else {
+      goto invalid;
+    }
+  } else if (IS_VALUE_OBJECT(lhs)) {
+    goto invalid;
+    // TODO
+  } else {
+  invalid: {
+    runtime_error(p_vm, "invalid operands for binary '%%'.");
+    interpret_result res;
+    res.status = RUNTIME_ERROR;
+    res.top_level_return = NULL_AS_VALUE();
+    return res;
+  }
+  }
+  {
+    p_reg->array.data[base + p_dest] = lhs;
+    interpret_result res;
+    res.status = RUNTIME_OK;
+    return res;
+  }
+modulo_by_zero: {
+  runtime_error(p_vm, "modulo by zero.");
   interpret_result res;
   res.status = RUNTIME_ERROR;
   res.top_level_return = NULL_AS_VALUE();
@@ -1397,6 +1472,31 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       }
       break;
     }
+    case OP_MODULUS: {
+      const bool p = p_of(instruction);
+      const uint8_t a = a_of(instruction);
+      const uint8_t b = b_of(instruction);
+      const uint8_t c = c_of(instruction);
+      interpret_result res = perform_modulo(p_vm, reg, frame, a, REG_AT(b), resolve_operand(frame, reg, c, p));
+      if (res.status != RUNTIME_OK) {
+        return res;
+      }
+      break;
+    }
+    case OP_MODULUS_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool p = p_of(instruction);
+      const bool q = Q_of(words);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      interpret_result res =
+          perform_modulo(p_vm, reg, frame, A, resolve_operand(frame, reg, B, q), resolve_operand(frame, reg, C, p));
+      if (res.status != RUNTIME_OK) {
+        return res;
+      }
+      break;
+    }
     case OP_EQUALS: {
       const bool p = p_of(instruction);
       const uint8_t a = a_of(instruction);
@@ -1699,6 +1799,15 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
         result.top_level_return = NULL_AS_VALUE();
         return result;
       }
+      // normalize the triple to number-tagged doubles in place: int-tagged
+      // operands (the dormant int48 door) are widened once here so OP_FOR_LOOP
+      // can read all three as raw doubles for the whole trip. the limit and
+      // step are nameless hidden locals — nothing in the language can store
+      // to them — and an immutable counter (FOR_LOOP's p flag) is statically
+      // unwritable, so the tags hold until the loop exits.
+      REG_AT(B) = NUMBER_AS_VALUE(start);
+      REG_AT(B + 1) = NUMBER_AS_VALUE(limit);
+      REG_AT(B + 2) = NUMBER_AS_VALUE(step);
       // direction is the step's sign, derived per test — the branch predictor
       // eats it (loop invariant), and no enum slots are spent on UP/DOWN twins.
       const bool in_range = step > 0.0 ? start < limit : start > limit;
@@ -1711,18 +1820,25 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const word2 words = JOIN_WORD(instruction);
       const uint16_t A = A_of(words); // backward offset to the body top
       const uint16_t B = B_of(words); // counter; limit at B + 1, step at B + 2
-      // only the counter is reachable by name (mut reseats it): gate it. the
-      // limit and step are hidden locals validated once by FOR_PREP — read them
-      // without revalidation, tag check only to widen ints.
       double counter;
-      if (!for_operand_as_number(p_vm, REG_AT(B), "numeric for counter", &counter)) {
+      if (p_of(instruction)) {
+        // p: the compiler proved the counter immutable (plain `let`, or the
+        // for-in hidden counter). after FOR_PREP's normalization nothing can
+        // store to r[B]..r[B + 2] — imutability is enforced on every store
+        // path, calls open their windows at temps above local_top, and the
+        // limit/step are nameless — so the hot back edge reads raw doubles.
+        counter = VALUE_AS_NUMBER(REG_AT(B));
+      } else if (!for_operand_as_number(p_vm, REG_AT(B), "numeric for counter", &counter)) {
+        // mut counter: the body may reseat it to any value, keep the gate.
         interpret_result result;
         result.status = RUNTIME_ERROR;
         result.top_level_return = NULL_AS_VALUE();
         return result;
       }
-      const double limit = IS_VALUE_NUMBER(REG_AT(B + 1)) ? VALUE_AS_NUMBER(REG_AT(B + 1)) : (double)VALUE_AS_INT(REG_AT(B + 1));
-      const double step = IS_VALUE_NUMBER(REG_AT(B + 2)) ? VALUE_AS_NUMBER(REG_AT(B + 2)) : (double)VALUE_AS_INT(REG_AT(B + 2));
+      // only the counter is reachable by name; the limit and step are hidden
+      // locals validated and normalized once by FOR_PREP — raw double reads.
+      const double limit = VALUE_AS_NUMBER(REG_AT(B + 1));
+      const double step = VALUE_AS_NUMBER(REG_AT(B + 2));
       counter += step;
       REG_AT(B) = NUMBER_AS_VALUE(counter);
       const bool in_range = step > 0.0 ? counter < limit : counter > limit;

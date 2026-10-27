@@ -67,6 +67,8 @@ target_include_directories(ok PUBLIC
   ${PROJECT_SOURCE_DIR}/include
 )
 
+target_link_libraries(ok PUBLIC m)
+
 target_compile_options(ok PRIVATE
   -Wall
   -Wextra

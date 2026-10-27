@@ -1508,11 +1508,13 @@ static bool emit_incomplete_jump_if_argc(
 // numeric for jump pair: both carry their offset in A (PREP forwards to the loop
 // exit, LOOP backwards to the body top) and the counter register in B, with the
 // limit and step at B + 1 and B + 2. patched with patch_jump_if, which preserves
-// B while rewriting A — same contract as OP_JUMP_IF.
+// B (and p) while rewriting A — same contract as OP_JUMP_IF. p is only consumed
+// by FOR_LOOP: p == 1 is the compiler's immutability proof for the counter.
 static bool
-emit_incomplete_for_jump(compiler* p_compiler, opcode p_op, _register p_counter, uint32_t* p_out, ast_node* p_author) {
+emit_incomplete_for_jump(
+    compiler* p_compiler, opcode p_op, bool p_imm, _register p_counter, uint32_t* p_out, ast_node* p_author) {
   *p_out = current_chunk(p_compiler)->code.count;
-  if (!emit_word2(p_compiler, encode_OPPABCQ(p_op, false, 0, p_counter.index, 0, 0), p_author)) {
+  if (!emit_word2(p_compiler, encode_OPPABCQ(p_op, p_imm, 0, p_counter.index, 0, 0), p_author)) {
     report_oom(p_compiler, p_author);
     return false;
   }
@@ -2212,6 +2214,19 @@ static bool compile_binary_value_operator(compiler* p_compiler,
 
     break;
   }
+  case OPERATOR_BIN_MODULO: {
+    result = emit_binop(p_compiler,
+                        OP_MODULUS,
+                        OP_MODULUS_LONG,
+                        p_dest,
+                        lhs.value,
+                        rhs.value,
+                        is_lhs_constant,
+                        is_rhs_constant,
+                        (ast_node*)p_binexpr);
+
+    break;
+  }
   case OPERATOR_BIN_EQUALS: {
     result = emit_binop(p_compiler,
                         OP_EQUALS,
@@ -2567,6 +2582,10 @@ static bool compile_compound_assign_expression(compiler* p_compiler,
     op = OP_DIVIDE;
     op_long = OP_DIVIDE_LONG;
     break;
+  case OPERATOR_MODULO_EQUAL:
+    op = OP_MODULUS;
+    op_long = OP_MODULUS_LONG;
+    break;
   default:
     error_at(p_compiler,
              author,
@@ -2826,7 +2845,7 @@ static bool compile_for_in_statement(compiler* p_compiler, ast_for_in_statement*
   // body top, one FOR_LOOP at the bottom — the counter machinery is the same
   // fused back edge as the numeric for.
   uint32_t prep;
-  if (!emit_incomplete_for_jump(p_compiler, OP_FOR_PREP, counter, &prep, author)) {
+  if (!emit_incomplete_for_jump(p_compiler, OP_FOR_PREP, false, counter, &prep, author)) {
     goto fail;
   }
 
@@ -2847,9 +2866,13 @@ static bool compile_for_in_statement(compiler* p_compiler, ast_for_in_statement*
     goto fail;
   }
 
+  // the back edge's p flag: the for-in counter is a nameless hidden local,
+  // unwritable by construction — the raw-read fast path always applies.
+  const bool counter_immutable = true;
+
   CTX.continue_target = chunk->code.count;
   uint32_t back_edge;
-  if (!emit_incomplete_for_jump(p_compiler, OP_FOR_LOOP, counter, &back_edge, author)) {
+  if (!emit_incomplete_for_jump(p_compiler, OP_FOR_LOOP, counter_immutable, counter, &back_edge, author)) {
     goto fail;
   }
   if (!patch_jump_if(p_compiler, true, back_edge, body_start, author)) {
@@ -2978,9 +3001,14 @@ static bool compile_for_numeric_statement(compiler* p_compiler, ast_for_numeric_
     }
   }
 
+  // the back edge's p flag: a plain `let` counter is statically unwritable
+  // (immutability is enforced on every store path), so the VM drops the
+  // per-trip counter gate; `let mut` keeps it.
+  const bool counter_immutable = (regalloc->registers.data[counter.index].flags & REGISTER_FLAG_MUTABLE) == 0;
+
   // entry: validate + first bounds test, skip the whole loop when it fails
   uint32_t prep;
-  if (!emit_incomplete_for_jump(p_compiler, OP_FOR_PREP, counter, &prep, author)) {
+  if (!emit_incomplete_for_jump(p_compiler, OP_FOR_PREP, false, counter, &prep, author)) {
     goto fail;
   }
 
@@ -2994,7 +3022,7 @@ static bool compile_for_numeric_statement(compiler* p_compiler, ast_for_numeric_
 
   CTX.continue_target = chunk->code.count;
   uint32_t back_edge;
-  if (!emit_incomplete_for_jump(p_compiler, OP_FOR_LOOP, counter, &back_edge, author)) {
+  if (!emit_incomplete_for_jump(p_compiler, OP_FOR_LOOP, counter_immutable, counter, &back_edge, author)) {
     goto fail;
   }
   if (!patch_jump_if(p_compiler, true, back_edge, body_start, author)) {

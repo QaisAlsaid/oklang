@@ -50,6 +50,8 @@ static const char* const OPCODE_NAMES[] = {
     "MULTIPLY_LONG",
     "DIVIDE",
     "DIVIDE_LONG",
+    "MODULUS",
+    "MODULUS_LONG",
     "EQUALS",
     "EQUALS_LONG",
     "NOT_EQUAL",
@@ -91,6 +93,9 @@ static const char* binop_symbol(const opcode p_op) {
   case OP_DIVIDE:
   case OP_DIVIDE_LONG:
     return "/";
+  case OP_MODULUS:
+  case OP_MODULUS_LONG:
+    return "%";
   case OP_EQUALS:
   case OP_EQUALS_LONG:
     return "==";
@@ -154,6 +159,7 @@ static bool op_is_two_words(opcode p_op) {
   case OP_SUBTRACT_LONG:
   case OP_MULTIPLY_LONG:
   case OP_DIVIDE_LONG:
+  case OP_MODULUS_LONG:
   case OP_EQUALS_LONG:
   case OP_NOT_EQUAL_LONG:
   case OP_GREATER_LONG:
@@ -461,7 +467,7 @@ uint32_t debug_disassemble_instruction(disassembler* p_disassembler, uint32_t p_
     printf("i=r%u limit=r%u step=r%u, empty -> %04u", B, B + 1, B + 2, p_offset + 2 + A);
     break;
   case OP_FOR_LOOP:
-    printf("i=r%u += r%u, -> %04u (back)", B, B + 2, p_offset + 2 - A);
+    printf("i=r%u += r%u, -> %04u (back)%s", B, B + 2, p_offset + 2 - A, p ? " imm" : "");
     break;
   case OP_PRINT:
     printf("print r%u", Al);
