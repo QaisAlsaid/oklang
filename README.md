@@ -1,18 +1,18 @@
 # OKLang
 
-![C99 Compliance](https://img.shields.io/badge/Language-C99-748D9C?style=flat&logo=c)
+<p align='center'>
 
+![C99 Compliance](https://img.shields.io/badge/Language-C99-748D9C?style=flat&logo=c)
 ![Build Status](https://img.shields.io/github/actions/workflow/status/QaisAlsaid/oklang/ci.yml?branch=master&label=build&color=2491CA)
 ![Codecov Coverage](https://img.shields.io/codecov/c/github/QaisAlsaid/oklang?color=145070)
-
 ![GitHub release](https://img.shields.io/github/v/release/QaisAlsaid/oklang?include_prereleases&color=BD5F42)
-
 ![Repo Size](https://img.shields.io/github/repo-size/QaisAlsaid/oklang?color=99D0EC)
-
 ![License](https://img.shields.io/github/license/QaisAlsaid/oklang?color=748D9C)
 
+</p>
 
 A small embedded scripting language written in C99.
+
 
 ## Why OKLang?
 
@@ -21,6 +21,7 @@ Honestly why not?
 I needed a scripting language that i could use in my other projects, and thought, why not just make one.
 
 But seriously, it is lightweight, has nice syntax, is steadily gaining features, and is written in highly portable C99.
+
 
 ## Example
 

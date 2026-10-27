@@ -6,6 +6,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 # a newer push to the same branch replaces the older run
 concurrency:
   group: ci-${{ github.ref }}
