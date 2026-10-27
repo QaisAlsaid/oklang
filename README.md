@@ -2,12 +2,11 @@
 
 <p align='center'>
 
-![C99 Compliance](https://img.shields.io/badge/Language-C99-748D9C?style=flat&logo=c)
-![Build Status](https://img.shields.io/github/actions/workflow/status/QaisAlsaid/oklang/ci.yml?branch=master&label=build&color=2491CA)
-![Codecov Coverage](https://img.shields.io/codecov/c/github/QaisAlsaid/oklang?color=145070)
-![GitHub release](https://img.shields.io/github/v/release/QaisAlsaid/oklang?include_prereleases&color=BD5F42)
-![Repo Size](https://img.shields.io/github/repo-size/QaisAlsaid/oklang?color=99D0EC)
-![License](https://img.shields.io/github/license/QaisAlsaid/oklang?color=748D9C)
+![CI](https://img.shields.io/github/actions/workflow/status/QaisAlsaid/oklang/ci.yml?branch=master&style=for-the-badge&label=CI&passed_color=C3E3F2&failed_color=BD5F42&aborted_color=8196A4&logo=github)
+![C99](https://img.shields.io/badge/Language-C99-748D9C?style=for-the-badge&logo=c&color=8196A4)
+![Coverage](https://img.shields.io/codecov/c/github/QaisAlsaid/oklang?style=for-the-badge&color=206680)
+![Release](https://img.shields.io/github/v/release/QaisAlsaid/oklang?style=for-the-badge&include_prereleases&color=BD5F42)
+![License](https://img.shields.io/github/license/QaisAlsaid/oklang?style=for-the-badge&color=A31F34)
 
 </p>
 
