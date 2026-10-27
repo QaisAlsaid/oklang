@@ -38,6 +38,11 @@ jobs:
 
       - name: build
         run: cmake --build build --parallel
+      - name: Inspect coverage instrumentation
+        if: ${{ matrix.name == 'coverage' }}
+        run: |
+          echo "=== Coverage notes ==="
+          find build -name '*.gcno' -print
 
       - name: unit tests
         run: ctest --test-dir build --output-on-failure
@@ -48,6 +53,12 @@ jobs:
 
       - name: embedding test
         run: ./build/tests/integration/embedding/oktest_embedding
+
+      - name: Inspect generated coverage data
+        if: ${{ matrix.name == 'coverage' }}
+        run: |
+          echo "=== Coverage data ==="
+          find . \( -name '*.gcda' -o -name '*.gcov' \) -print
 
       - name: upload coverage to codecov
         if: ${{ matrix.name == 'coverage' }}
