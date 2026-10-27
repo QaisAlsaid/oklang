@@ -58,6 +58,17 @@ target_sources(ok PRIVATE
   src/okgc.c
 )
 
+if(CMAKE_BUILD_TYPE STREQUAL "Coverage")
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        message(STATUS "building libok with code coverage instrumentation...")
+        target_compile_options(ok PRIVATE -fprofile-arcs -ftest-coverage)
+        target_link_options(ok PRIVATE -fprofile-arcs -ftest-coverage)
+    else()
+        message(FATAL_ERROR "coverage build type requires GCC or Clang")
+    endif()
+endif()
+
+
 target_include_directories(ok 
   PRIVATE
   ${PROJECT_SOURCE_DIR}/src

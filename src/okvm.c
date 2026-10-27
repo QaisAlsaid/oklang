@@ -476,12 +476,26 @@ division_by_zero: {
 }
 }
 
+// floored modulo over doubles: fmod gives the truncated remainder; when it
+// and the divisor disagree on sign, one addition of the divisor lands on the
+// floor. keeps the python/lua invariant a == floor(a / b) * b + a % b.
+static double floor_mod(double p_lhs, double p_rhs) {
+  const double remainder = fmod(p_lhs, p_rhs);
+  if (remainder != 0.0 && ((remainder < 0.0) != (p_rhs < 0.0))) {
+    return remainder + p_rhs;
+  }
+  return remainder;
+}
+
 static interpret_result
 perform_modulo(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
-  // truncated division remainder (C99 fmod): the result's sign follows the
-  // dividend, so -7 % 3 is -1, where lua/python floor to 2. deliberate: the
-  // dormant int48 path is C's % by definition, and fmod is its f64 twin — one
-  // rule, two domains, no mixed-semantics seam. rhs 0 errors like '/' does.
+  // floored modulo (python/lua): the result's sign follows the divisor, so
+  // -7 % 3 == 2 and 7 % -3 == -2 — the wraparound-friendly rule (x % n for
+  // positive n always lands in [0, n), negative indices included, which is
+  // what a game script wants out of a modulo). C's truncated remainder stays
+  // available host-side (fmod) for the rare caller that needs it. the int48
+  // arm applies the same adjustment, so both domains share one rule. rhs 0
+  // errors like '/' does.
   const uint32_t base = p_frame->registers_base;
   value lhs = p_lhs;
   value rhs = p_rhs;
@@ -490,12 +504,12 @@ perform_modulo(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_d
       if (VALUE_AS_NUMBER(rhs) == 0.0f) {
         goto modulo_by_zero;
       }
-      lhs = NUMBER_AS_VALUE(fmod(VALUE_AS_NUMBER(lhs), VALUE_AS_NUMBER(rhs)));
+      lhs = NUMBER_AS_VALUE(floor_mod(VALUE_AS_NUMBER(lhs), VALUE_AS_NUMBER(rhs)));
     } else if (IS_VALUE_INT(rhs)) {
       if (VALUE_AS_INT(rhs) == 0) {
         goto modulo_by_zero;
       }
-      lhs = NUMBER_AS_VALUE(fmod(VALUE_AS_NUMBER(lhs), (double)VALUE_AS_INT(rhs)));
+      lhs = NUMBER_AS_VALUE(floor_mod(VALUE_AS_NUMBER(lhs), (double)VALUE_AS_INT(rhs)));
     } else if (IS_VALUE_OBJECT(rhs)) {
       goto invalid;
       // TODO
@@ -509,12 +523,16 @@ perform_modulo(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_d
       if (VALUE_AS_INT(rhs) == 0) {
         goto modulo_by_zero;
       }
-      lhs = INT_AS_VALUE(VALUE_AS_INT(lhs) % VALUE_AS_INT(rhs));
+      int64_t remainder = VALUE_AS_INT(lhs) % VALUE_AS_INT(rhs);
+      if (remainder != 0 && ((remainder < 0) != (VALUE_AS_INT(rhs) < 0))) {
+        remainder += VALUE_AS_INT(rhs); // |remainder| < |rhs|: cannot leave the int48 domain
+      }
+      lhs = INT_AS_VALUE(remainder);
     } else if (IS_VALUE_NUMBER(rhs)) {
       if (VALUE_AS_NUMBER(rhs) == 0.0f) {
         goto modulo_by_zero;
       }
-      lhs = NUMBER_AS_VALUE(fmod((double)VALUE_AS_INT(lhs), VALUE_AS_NUMBER(rhs)));
+      lhs = NUMBER_AS_VALUE(floor_mod((double)VALUE_AS_INT(lhs), VALUE_AS_NUMBER(rhs)));
     } else if (IS_VALUE_OBJECT(rhs)) {
       goto invalid;
       // TODO
