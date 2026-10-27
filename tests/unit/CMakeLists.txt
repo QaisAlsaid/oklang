@@ -1,4 +1,3 @@
-find_package(unity REQUIRED TRUE)
 set(tests 
   test_array
   test_table
