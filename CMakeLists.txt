@@ -58,7 +58,7 @@ target_sources(ok PRIVATE
   src/okgc.c
 )
 
-if(CMAKE_BUILD_TYPE STREQUAL "coverage")
+if(CMAKE_BUILD_TYPE STREQUAL "Coverage")
     if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
         message(STATUS "building libok with code coverage instrumentation")
         target_compile_options(ok PRIVATE --coverage)
