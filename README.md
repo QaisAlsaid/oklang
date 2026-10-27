@@ -17,7 +17,6 @@ A small embedded scripting language written in C99.
 ## Why OKLang?
 
 Honestly why not?
-
 I needed a scripting language that i could use in my other projects, and thought, why not just make one.
 
 But seriously, it is lightweight, has nice syntax, is steadily gaining features, and is written in highly portable C99.
@@ -35,7 +34,7 @@ fu feed(bird) {
   if is_nice()? {
     print(bird + " nice food nice!");
   } else {
-    print(bird + " not nice 😟");
+    print(bird + " not nice " + bird + " food!");
   }
   total += 1;
 }
@@ -54,7 +53,7 @@ output:
 crow nice food nice!
 sparrow nice food nice!
 owl nice food nice!
-chicken not nice 😟
+chicken not nice chicken food!
 i fed this many birds: 
 4
 ```
