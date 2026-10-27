@@ -6,9 +6,6 @@ on:
   pull_request:
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 # a newer push to the same branch replaces the older run
 concurrency:
   group: ci-${{ github.ref }}
@@ -67,7 +64,7 @@ jobs:
       - name: post commit status
         env:
           CB_TOKEN: ${{ secrets.CODEBERG_TOKEN }}
-          CB_REPO: ${{ variables.CODEBERG_REPO }}
+          CB_REPO: ${{ vars.CODEBERG_REPO }}
           RESULT: ${{ needs.build-test.result }}
         run: |
           # no token configured: keep the run green, skip the cross-post
