@@ -573,15 +573,15 @@ ast_expression* parse_conditional_expression(
   (void)is_right_associative;
   allocators* alloc = p_parser->alloc;
   advance(p_parser); // past 'then': parse_expression dispatches on previous
-  ast_expression* then_arm = parse_expression(p_parser, PREC_CONDITIONAL);
+  ast_expression* then_arm = parse_expression(p_parser, PREC_CONDITIONAL - 1);
   if (then_arm == NULL) {
     goto fail;
   }
   if (p_parser->current.type != TOKEN_OTHERWISE) {
     error_at(p_parser,
              p_parser->current,
-             ok_create_string_view("expected 'otherwise' to complete the conditional.", OK_STRING_VIEW_CALCULATE_LENGTH,
-                                   true));
+             ok_create_string_view(
+                 "expected 'otherwise' to complete the conditional.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
     ast_dispatch_deinit((ast_node*)then_arm);
     alloc->release(alloc, then_arm);
     goto fail;
@@ -599,8 +599,8 @@ ast_expression* parse_conditional_expression(
   if (conditional == NULL) {
     error_at(p_parser,
              p_trigger,
-             ok_create_string_view("failed to allocate memory for conditional node.", OK_STRING_VIEW_CALCULATE_LENGTH,
-                                   true));
+             ok_create_string_view(
+                 "failed to allocate memory for conditional node.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
     ast_dispatch_deinit((ast_node*)then_arm);
     alloc->release(alloc, then_arm);
     ast_dispatch_deinit((ast_node*)otherwise_arm);
@@ -1443,9 +1443,10 @@ static ast_for_numeric_statement* parse_for_numeric_rest(
   advance(p_parser); // limit's first token into previous
   ast_expression* limit = parse_expression(p_parser, PREC_NONE);
   if (limit == NULL) {
-    error_at(p_parser,
-             p_parser->previous,
-             ok_create_string_view("expected an expression as numeric for limit.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    error_at(
+        p_parser,
+        p_parser->previous,
+        ok_create_string_view("expected an expression as numeric for limit.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
     goto fail_assign;
   }
 
@@ -1455,9 +1456,10 @@ static ast_for_numeric_statement* parse_for_numeric_rest(
     advance(p_parser); // step's first token into previous
     step = parse_expression(p_parser, PREC_NONE);
     if (step == NULL) {
-      error_at(p_parser,
-               p_parser->previous,
-               ok_create_string_view("expected an expression as numeric for step.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      error_at(
+          p_parser,
+          p_parser->previous,
+          ok_create_string_view("expected an expression as numeric for step.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
       goto fail_limit;
     }
   }
@@ -1486,7 +1488,8 @@ static ast_for_numeric_statement* parse_for_numeric_rest(
                  "failed to allocate memory for numeric for binding.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
     goto fail_body;
   }
-  ast_for_numeric_statement* fnum = (ast_for_numeric_statement*)alloc->allocate(alloc, sizeof(ast_for_numeric_statement));
+  ast_for_numeric_statement* fnum =
+      (ast_for_numeric_statement*)alloc->allocate(alloc, sizeof(ast_for_numeric_statement));
   if (fnum == NULL) {
     error_at(p_parser,
              p_for_tok,
@@ -1529,11 +1532,8 @@ fail_assign:
 // discrimination already parsed, mirroring parse_let_declaration's extraction.
 // leaves the parser exactly where the original C style for flow expects it:
 // previous = the init's ';'.
-static ast_let_declaration* build_let_init_from_expression(parser* p_parser,
-                                                           token p_let_tok,
-                                                           token p_name_tok,
-                                                           ast_binding_modifiers_t p_binds,
-                                                           ast_expression* expr) {
+static ast_let_declaration* build_let_init_from_expression(
+    parser* p_parser, token p_let_tok, token p_name_tok, ast_binding_modifiers_t p_binds, ast_expression* expr) {
   allocators* alloc = p_parser->alloc;
   ast_binding* binding = (ast_binding*)alloc->allocate(alloc, sizeof(ast_binding));
   ast_let_declaration* let = (ast_let_declaration*)alloc->allocate(alloc, sizeof(ast_let_declaration));
