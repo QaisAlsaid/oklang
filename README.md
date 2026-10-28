@@ -105,22 +105,6 @@ or run the REPL:
 ./ok
 ```
 
-## Tests
-
-The project has an E2E test suite, unit tests for most critical parts, and a minimal embedding test.
-
-Tests can be enabled with the `-DOK_BUILD_TESTS=ON` CMake flag:
-
-```bash
-cmake .. -DOK_BUILD_TESTS=ON
-cmake --build .
-ctest                                                    # unit tests
-./tests/e2e/oktest-e2e-runner ./ok ../tests/e2e/tests/   # end-to-end
-./tests/integration/embedding/oktest_embedding           # embedding
-```
-> The unit-testing framework [Unity](https://github.com/throwtheswitch/unity) comes as a git submodule, clone with `--recursive` if you care about running tests
-
-
 ## Embedding
 
 OKLang can be embedded into C or C++ through a simple C API `#include <ok/ok.h>`.
@@ -137,8 +121,8 @@ You can build as shared library instead of static with `-DOK_BUILD_SHARED=ON` CM
 
 ### Example
 ```C
-#include <stdio.h>
 #include <ok/ok.h>
+#include <stdio.h>
 
 int main() {
   ok* state = ok_create({0}); // no specs, default initializes, uses libc allocators, and stdout/stderr
@@ -147,21 +131,22 @@ int main() {
     return -1;
   }
   if (!ok_global_define(state,
-      ok_create_string_view("c", // the global name
-          OK_STRING_VIEW_CALCULATE_LENGTH,
-          true /* is the provided string null terminated? */ 
-          ),
-      ok_value_number(99), // the global value
-      false /* should this global be mutable? */
-    )) {
+                        ok_create_string_view("c", // the global name
+                                              OK_STRING_VIEW_CALCULATE_LENGTH,
+                                              true /* is the provided string null terminated? */
+                                              ),
+                        ok_value_number(99), // the global value
+                        false                /* should this global be mutable? */
+                        )) {
     fprintf(stderr, "failed to define global.");
     return -1;
   }
-  if (ok_run(state, {
-    OK_FROM_FILE, //  use the provided source name for diagnostics
-    "print('Hello from OKLang!'); print(c);", // the OKLang script to run
-    "embedded" // source name, used for diagnostics
-  }) != OK) {
+  if (ok_run(state,
+             {
+                 OK_FROM_FILE,                             //  use the provided source name for diagnostics
+                 "print('Hello from OKLang!'); print(c);", // the OKLang script to run
+                 "embedded"                                // source name, used for diagnostics
+             }) != OK) {
     fprintf(stderr, "failed to run oklang script.");
     return -1;
   }
@@ -175,6 +160,37 @@ Hello from OKLang!
 99
 ```
 
+## Rough Roadmap
+
+1. Maps
+2. Classes
+3. Error model
+4. Coroutines
+5. A small standard library
+6. Performance and stabilization
+
+
+## Editor support
+
+See: [tree-sitter-oklang](https://codeberg.org/qais/tree-sitter-oklang)
+
+
+## Tests
+
+The project has an E2E test suite, unit tests for most critical parts, and a minimal embedding test.
+
+Tests can be enabled with the `-DOK_BUILD_TESTS=ON` CMake flag:
+
+```bash
+cmake .. -DOK_BUILD_TESTS=ON
+cmake --build .
+ctest                                                    # unit tests
+./tests/e2e/oktest-e2e-runner ./ok ../tests/e2e/tests/   # end-to-end
+./tests/integration/embedding/oktest_embedding           # embedding
+```
+> The unit-testing framework [Unity](https://github.com/throwtheswitch/unity) comes as a git submodule, clone with `--recursive` if you care about running tests
+
+
 ## CMake options
 
 * `OK_BUILD_CLI` - build the CLI. On by default.
@@ -185,18 +201,6 @@ Hello from OKLang!
 * `OK_PEDANTIC` - additional failure checking.
 * `OK_AGGRESSIVE_GC` - collect on every allocation (GC stress testing).
 
-## Rough Roadmap
-
-1. Maps
-2. Classes
-3. Error model
-4. Coroutines
-5. A small standard library
-6. Performance and stabilization
-
-## Editor support
-
-See: [tree-sitter-oklang](https://codeberg.org/qais/tree-sitter-oklang)
 
 ## Thank You
 
