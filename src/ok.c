@@ -142,6 +142,8 @@ static bool ok_define_core_natives(ok* p_ok) {
   status &= ok_global_define_native_function(
       p_ok, ok_create_string_view("len", OK_STRING_VIEW_CALCULATE_LENGTH, true), 1, native_len);
   status &= ok_global_define_native_function(
+      p_ok, ok_create_string_view(" len", OK_STRING_VIEW_CALCULATE_LENGTH, true), 1, native_len); // compiler intrinsic
+  status &= ok_global_define_native_function(
       p_ok, ok_create_string_view("push", OK_STRING_VIEW_CALCULATE_LENGTH, true), 2, native_push);
   status &= ok_global_define_native_function(
       p_ok, ok_create_string_view("pop", OK_STRING_VIEW_CALCULATE_LENGTH, true), 1, native_pop);
@@ -214,8 +216,8 @@ ok_result ok_run(ok* p_ok, ok_source p_source) {
   if (p_ok->dump_bytecode) {
     gc_pause(&p_ok->gc);
     disassembler disassembler;
-    disassembler_specs disassembler_specs = {
-        .chunk = &compile_result.function->chunk, .globals_store = &p_ok->globals_store};
+    disassembler_specs disassembler_specs = {.chunk = &compile_result.function->chunk,
+                                             .globals_store = &p_ok->globals_store};
     disassembler_init(&disassembler, disassembler_specs);
     debug_disassemble_function(&disassembler, compile_result.function, "<main>");
     disassembler_deinit(&disassembler);

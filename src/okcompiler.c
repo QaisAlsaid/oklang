@@ -1510,8 +1510,7 @@ static bool emit_incomplete_jump_if_argc(
 // limit and step at B + 1 and B + 2. patched with patch_jump_if, which preserves
 // B (and p) while rewriting A - same contract as OP_JUMP_IF. p is only consumed
 // by FOR_LOOP: p == 1 is the compiler's immutability proof for the counter.
-static bool
-emit_incomplete_for_jump(
+static bool emit_incomplete_for_jump(
     compiler* p_compiler, opcode p_op, bool p_imm, _register p_counter, uint32_t* p_out, ast_node* p_author) {
   *p_out = current_chunk(p_compiler)->code.count;
   if (!emit_word2(p_compiler, encode_OPPABCQ(p_op, p_imm, 0, p_counter.index, 0, 0), p_author)) {
@@ -2752,12 +2751,9 @@ static bool compile_for_in_statement(compiler* p_compiler, ast_for_in_statement*
     }
   }
 
-  // limit = len(arr): the builtin native, by its compile-time global index. len is
-  // effectively reserved while for-in looks like this. reassigning it breaks
-  // loops. the future iteration protocol (post classes) retires this dependency.
   {
     const global len_global = globals_store_get(p_compiler->globals_store,
-                                                ok_create_string_view("len", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+                                                ok_create_string_view(" len", OK_STRING_VIEW_CALCULATE_LENGTH, true));
     if (!IS_GLOBAL_VALID(len_global)) {
       error_at_noted(p_compiler,
                      author,
