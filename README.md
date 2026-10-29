@@ -30,7 +30,7 @@ fu feed(bird) {
   fu is_nice() {
     return bird != 'chicken';
   }
-  if is_nice()? {
+  if is_nice() {
     print(bird + " nice food nice!");
   } else {
     print(bird + " not nice " + bird + " food!");
@@ -40,7 +40,7 @@ fu feed(bird) {
 
 let birds = ["crow", "sparrow", "owl", 'chicken'];
 
-for let bird : birds? {
+for let bird : birds {
   feed(bird);
 }
 
