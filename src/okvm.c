@@ -476,9 +476,6 @@ division_by_zero: {
 }
 }
 
-// floored modulo over doubles: fmod gives the truncated remainder; when it
-// and the divisor disagree on sign, one addition of the divisor lands on the
-// floor. keeps the python/lua invariant a == floor(a / b) * b + a % b.
 static double floor_mod(double p_lhs, double p_rhs) {
   const double remainder = fmod(p_lhs, p_rhs);
   if (remainder != 0.0 && ((remainder < 0.0) != (p_rhs < 0.0))) {
@@ -489,13 +486,6 @@ static double floor_mod(double p_lhs, double p_rhs) {
 
 static interpret_result
 perform_modulo(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
-  // floored modulo (python/lua): the result's sign follows the divisor, so
-  // -7 % 3 == 2 and 7 % -3 == -2 - the wraparound-friendly rule (x % n for
-  // positive n always lands in [0, n), negative indices included, which is
-  // what a game script wants out of a modulo). C's truncated remainder stays
-  // available host-side (fmod) for the rare caller that needs it. the int48
-  // arm applies the same adjustment, so both domains share one rule. rhs 0
-  // errors like '/' does.
   const uint32_t base = p_frame->registers_base;
   value lhs = p_lhs;
   value rhs = p_rhs;
@@ -904,12 +894,7 @@ perform_less_equal(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t
 static inline void cleanup_frame(execution_state* p_exe, register_file* p_registers, call_frame* p_frame) {
   close_upvalues(p_exe, p_frame->registers_base);
   call_stack_remove(&p_exe->call_stack, p_exe->call_stack.count - 1, p_exe->call_stack.count - 1);
-  // the register watermark must go back to the calller's frame top, never to the
-  // callee's base slot: mark_vm roots registers in [0, top) and the caller's
-  // locals/temps above the call window are still live. collapsing to the base
-  // slot unroots them and the next collection sweeps live closures,
-  // with no caller left (top level popped, or ok_call from C) nothing in the
-  // file is live: so we fold to 0 so the next ok_call can stage from the bottom.
+  // the register watermark must go back to the calller's frame top
   if (p_exe->call_stack.count > 0) {
     call_frame* caller = &p_exe->call_stack.data[p_exe->call_stack.count - 1];
     p_registers->top = caller->registers_base + caller->closure->function->registers;
@@ -973,19 +958,10 @@ static inline interpret_result top_level_return(register_file* p_registers, call
   return result;
 }
 
-// array index resolution shared by OP_ARRAY_GET / OP_ARRAY_SET (and nothing else:
-// natives reimplement their own validation because this is static and vm-opaque).
-// number-gate first, exactly like perform_add: a raw double can alias the non-strict
-// tag bits, so IS_VALUE_INT is only safe to consult after IS_VALUE_NUMBER ruled out.
-// strictness doctrine: this is a gate (called on arbitrary operand values), not a chain.
+// array index resolution shared by OP_ARRAY_GET / OP_ARRAY_SET
 static bool resolve_array_index(vm* p_vm, value p_index, uint32_t p_count, uint32_t* p_out) {
   if (IS_VALUE_NUMBER(p_index)) {
     const double d = VALUE_AS_NUMBER(p_index);
-    // numeric literals are raw doubles (D3), so m[0] arrives as 0.0: integral doubles
-    // must be accepted or every literal index errors. refusing non-integral ones keeps
-    // m[1.5] loud instead of silently truncating.
-    // (cast-based integrality, not trunc(): keeps the link line free of libm. safe
-    // because the range guard runs before any narrowing could overflow int64.)
     if (!(d >= MIN_SAFE_INTEGER && d <= MAX_SAFE_INTEGER) || d != (double)(int64_t)d) {
       runtime_error(p_vm, "array index must be a whole number, got %g.", d);
       return false;
@@ -1010,9 +986,6 @@ static bool resolve_array_index(vm* p_vm, value p_index, uint32_t p_count, uint3
   return false;
 }
 
-// strict gate + cast for the numeric for operands. int-tagged values are
-// accepted and widened: the int48 fast path is parked (D3), but the door stays
-// honest so a future int surface cannot silently miscompare here.
 static bool for_operand_as_number(vm* p_vm, value p_value, const char* p_which, double* p_out) {
   if (IS_VALUE_NUMBER(p_value)) {
     *p_out = VALUE_AS_NUMBER(p_value);
@@ -1026,7 +999,6 @@ static bool for_operand_as_number(vm* p_vm, value p_value, const char* p_which, 
   return false;
 }
 
-// strict gate + cast for the subscript base operand: errors name the operand type
 static object_array* resolve_array_base(vm* p_vm, value p_base) {
   if (!value_is_object_type(p_base, OBJ_ARRAY)) {
     runtime_error(p_vm, "invalid operand for '[]': expected an array.");
@@ -1125,12 +1097,6 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const word2 words = JOIN_WORD(instruction);
       const uint16_t A = A_of(words);
       const uint16_t B = B_of(words);
-      // B is a count, it is not an exclusive end index: the chunk contract is
-      // "r[A] ... r[A + B - 1] = null" (okchunk.h) and the compiler emits
-      // (dest, requested_count). the loop used to be `i < B`, which matched
-      // the contract only when A == 0: any null materialized into a register
-      // other than r[0] wrote nothing and left stale bits in place.
-      // a regression test was written for this very case.
       for (uint32_t i = A; i < (uint32_t)A + (uint32_t)B; ++i) {
         REG_AT(i) = NULL_AS_VALUE();
       }
@@ -1672,8 +1638,8 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       // elements are live frame registers ([0, top) rooted). but value_array_grow
       // reallocs through the gc-aware allocator, which does collect on growth:
       // between creation and publication the array is linked in the store yet
-      // unreachable, so a collect inside append_n would sweep it (aggressive GC
-      // found this on every array test). guard the window.
+      // unreachable, so a collect inside append_n would sweep it (aggressive gc
+      // found this on every array test). so guard the window.
       object_specs s = {p_vm->alloc, p_vm->objects_store};
       object_array* arr = create_object_array(&s);
       if (arr == NULL) {
@@ -1800,7 +1766,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
     case OP_FOR_PREP: {
       const word2 words = JOIN_WORD(instruction);
       const uint16_t A = A_of(words); // forward offset to the loop exit
-      const uint16_t B = B_of(words); // counter; limit at B + 1, step at B + 2
+      const uint16_t B = B_of(words); // counter. limit at B + 1, step at B + 2
       double start, limit, step;
       if (!for_operand_as_number(p_vm, REG_AT(B), "numeric for start", &start) ||
           !for_operand_as_number(p_vm, REG_AT(B + 1), "numeric for limit", &limit) ||
@@ -1817,17 +1783,10 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
         result.top_level_return = NULL_AS_VALUE();
         return result;
       }
-      // normalize the triple to number-tagged doubles in place: int-tagged
-      // operands (the dormant int48 door) are widened once here so OP_FOR_LOOP
-      // can read all three as raw doubles for the whole trip. the limit and
-      // step are nameless hidden locals - nothing in the language can store
-      // to them - and an immutable counter (FOR_LOOP's p flag) is statically
-      // unwritable, so the tags hold until the loop exits.
+
       REG_AT(B) = NUMBER_AS_VALUE(start);
       REG_AT(B + 1) = NUMBER_AS_VALUE(limit);
       REG_AT(B + 2) = NUMBER_AS_VALUE(step);
-      // direction is the step's sign, derived per test - the branch predictor
-      // eats it (loop invariant), and no enum slots are spent on UP/DOWN twins.
       const bool in_range = step > 0.0 ? start < limit : start > limit;
       if (!in_range) {
         ip += A;
@@ -1837,14 +1796,9 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
     case OP_FOR_LOOP: {
       const word2 words = JOIN_WORD(instruction);
       const uint16_t A = A_of(words); // backward offset to the body top
-      const uint16_t B = B_of(words); // counter; limit at B + 1, step at B + 2
+      const uint16_t B = B_of(words); // counter. limit at B + 1, step at B + 2
       double counter;
       if (p_of(instruction)) {
-        // p: the compiler proved the counter immutable (plain `let`, or the
-        // for-in hidden counter). after FOR_PREP's normalization nothing can
-        // store to r[B]..r[B + 2] - imutability is enforced on every store
-        // path, calls open their windows at temps above local_top, and the
-        // limit/step are nameless - so the hot back edge reads raw doubles.
         counter = VALUE_AS_NUMBER(REG_AT(B));
       } else if (!for_operand_as_number(p_vm, REG_AT(B), "numeric for counter", &counter)) {
         // mut counter: the body may reseat it to any value, keep the gate.
@@ -1853,8 +1807,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
         result.top_level_return = NULL_AS_VALUE();
         return result;
       }
-      // only the counter is reachable by name; the limit and step are hidden
-      // locals validated and normalized once by FOR_PREP - raw double reads.
+      // only the counter is reachable by name
       const double limit = VALUE_AS_NUMBER(REG_AT(B + 1));
       const double step = VALUE_AS_NUMBER(REG_AT(B + 2));
       counter += step;
@@ -1946,7 +1899,6 @@ static inline bool call(vm* p_vm,
   const object_function* fu = p_closure->function;
   if (p_argc < (uint32_t)(fu->arity - fu->ndefaults) || p_argc > fu->arity) {
     if (fu->ndefaults == 0) {
-      // exact-arity message is load-bearing: pre-defaults tests and hosts pin it
       runtime_error(
           p_vm, "invalid call to '%s': expected %d arguments, got: %d.", fu->name->string.chars, fu->arity, p_argc);
     } else if (p_argc < fu->arity - fu->ndefaults) {
