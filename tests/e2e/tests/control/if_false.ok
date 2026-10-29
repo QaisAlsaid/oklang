@@ -1,2 +1,4 @@
-if false? print "damn!";
+if false {
+  print "damn!";
+}
 print "phew"; // expect: phew

@@ -5,11 +5,9 @@ fu make() {
 
     return fu(x) {
         total = total + x;
-
-        if total > 10 ? {
+        if total > 10 {
             return total;
         }
-
         return total * multiplier;
     };
 }
@@ -18,7 +16,7 @@ let f = make();
 
 let mut i = 0;
 
-while i < 4? {
+while i < 4 {
     print(f(i));
     i = i + 1;
 }

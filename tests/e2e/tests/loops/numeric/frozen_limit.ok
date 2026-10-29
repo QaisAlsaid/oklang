@@ -1,5 +1,5 @@
 let mut n = 3;
-for let i = 0 : n? {
+for let i = 0 : n {
   n = 100;
   print i;
 }

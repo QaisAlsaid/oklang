@@ -1246,14 +1246,13 @@ ast_if_statement* parse_if_statement(parser* p_parser) {
              ok_create_string_view("expected an expression as if condition.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
     return NULL;
   }
-  if (p_parser->current.type != TOKEN_QUESTION) {
+  if (p_parser->current.type != TOKEN_LEFT_BRACE) {
     error_at(p_parser,
              p_parser->current,
-             ok_create_string_view("expected '?' after if condition.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+             ok_create_string_view("expected '{' after if condition.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
     goto fail_cond;
   }
-  advance(p_parser);
-  advance(p_parser);
+  advance(p_parser); // to '{'
   ast_statement* cons = parse_statement(p_parser);
   if (cons == NULL) {
     error_at(p_parser,
@@ -1264,8 +1263,8 @@ ast_if_statement* parse_if_statement(parser* p_parser) {
   ast_statement* alt = NULL;
   if (p_parser->current.type == TOKEN_ELSE) {
     advance(p_parser);
-    if (p_parser->current.type == TOKEN_QUESTION) {
-      advance(p_parser);
+    if (p_parser->current.type == TOKEN_LEFT_BRACE) {
+      // advance(p_parser);
     }
     advance(p_parser);
     alt = parse_statement(p_parser);
@@ -1306,14 +1305,13 @@ ast_while_statement* parse_while_statement(parser* p_parser) {
         ok_create_string_view("expected an expression as while condition.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
     return NULL;
   }
-  if (p_parser->current.type != TOKEN_QUESTION) {
+  if (p_parser->current.type != TOKEN_LEFT_BRACE) {
     error_at(p_parser,
              p_parser->current,
-             ok_create_string_view("expected '?' after while condition.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+             ok_create_string_view("expected '{' after while condition.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
     goto fail_cond;
   }
-  advance(p_parser);
-  advance(p_parser);
+  advance(p_parser); // to '{'
   ast_statement* body = parse_statement(p_parser);
   if (body == NULL) {
     error_at(p_parser,
@@ -1342,7 +1340,7 @@ ast_while_statement* parse_while_statement(parser* p_parser) {
 }
 
 // called with current == TOKEN_COLON and the loop-variable head already consumed:
-// `for (let (mut)?) IDENT :` the rest is `<iterable> ? <statement>`.
+// `for (let (mut)?) IDENT :` the rest is `<iterable> <compound_statement>`.
 static ast_for_in_statement*
 parse_for_in_rest(parser* p_parser, token p_for_tok, token p_name_tok, ast_binding_modifiers_t p_binds) {
   allocators* alloc = p_parser->alloc;
@@ -1355,16 +1353,15 @@ parse_for_in_rest(parser* p_parser, token p_for_tok, token p_name_tok, ast_bindi
              ok_create_string_view("expected an expression to iterate.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
     return NULL;
   }
-  if (p_parser->current.type != TOKEN_QUESTION) {
+  if (p_parser->current.type != TOKEN_LEFT_BRACE) {
     error_at(p_parser,
              p_parser->current,
-             ok_create_string_view("expected '?' after ranged-for iterable.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+             ok_create_string_view("expected '{' after ranged-for iterable.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
     ast_dispatch_deinit((ast_node*)iterable);
     alloc->release(alloc, iterable);
     return NULL;
   }
-  advance(p_parser); // '?'
-  advance(p_parser); // '{' (or first body token)
+  advance(p_parser); // to '{'
   ast_statement* body = parse_statement(p_parser);
   if (body == NULL) {
     error_at(p_parser,
@@ -1419,7 +1416,7 @@ fail_body:
   return NULL;
 }
 
-// `for let (mut)? IDENT = <start> : <limit> (: <step>)? ? <statement>`.
+// `for let (mut)? IDENT = <start> : <limit> (: <step>)? <compound_statement>`.
 // called with current == TOKEN_COLON and the head already parsed into p_init_expr
 // (an `IDENT = <expr>` assign expression, dismantled here the same way
 // build_let_init dismantles the C style initializer).
@@ -1464,14 +1461,13 @@ static ast_for_numeric_statement* parse_for_numeric_rest(
     }
   }
 
-  if (p_parser->current.type != TOKEN_QUESTION) {
+  if (p_parser->current.type != TOKEN_LEFT_BRACE) {
     error_at(p_parser,
              p_parser->current,
-             ok_create_string_view("expected '?' after numeric for clauses.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+             ok_create_string_view("expected '{' after numeric for clauses.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
     goto fail_step;
   }
-  advance(p_parser); // '?'
-  advance(p_parser); // '{' (or first body token)
+  advance(p_parser); // to '{'
   ast_statement* body = parse_statement(p_parser);
   if (body == NULL) {
     error_at(p_parser,
@@ -1613,7 +1609,7 @@ ast_for_statement* parse_for_statement(parser* p_parser) {
   ast_expression* up = NULL;
 
   if (p_parser->previous.type == TOKEN_LET) {
-    // `for let ...` is either the for-in form (`for let v : arr? {`) or a C style
+    // `for let ...` is either the for-in form (`for let v : arr {`) or a C style
     // let initializer (`for let mut i = 0; ...`). one token lookahead: consume the
     // binding head, then discriminate on ':'.
     const ast_binding_modifiers_t binds = parse_binding_modifiers(p_parser, BINDING_MUT);
@@ -1679,7 +1675,7 @@ ast_for_statement* parse_for_statement(parser* p_parser) {
   }
   advance(p_parser);
 
-  if (p_parser->previous.type != TOKEN_QUESTION) {
+  if (p_parser->previous.type != TOKEN_LEFT_BRACE) {
     up = parse_expression(p_parser, PREC_NONE);
     if (up == NULL) {
       error_at(
@@ -1691,13 +1687,13 @@ ast_for_statement* parse_for_statement(parser* p_parser) {
     advance(p_parser);
   }
 
-  if (p_parser->previous.type != TOKEN_QUESTION) {
+  if (p_parser->previous.type != TOKEN_LEFT_BRACE) {
     error_at(p_parser,
              p_parser->previous,
-             ok_create_string_view("excpected '?' after for clauses", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+             ok_create_string_view("excpected '{' after for clauses", OK_STRING_VIEW_CALCULATE_LENGTH, true));
     goto free_up;
   }
-  advance(p_parser);
+  // advance(p_parser);
 
   ast_statement* body = parse_statement(p_parser);
   if (body == NULL) {

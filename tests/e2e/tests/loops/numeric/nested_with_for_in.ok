@@ -1,6 +1,6 @@
 let a = [1, 2];
-for let i = 0 : 2? {
-  for let v : a? {
+for let i = 0 : 2 {
+  for let v : a {
     print i * 10 + v;
   }
 }

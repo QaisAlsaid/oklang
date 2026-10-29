@@ -2,7 +2,7 @@ let arr = [1, 2, 3, 4];
 
 
 glob let len = 67;
-for let i : arr? {
+for let i : arr {
   print(i);
   print(len);
 }

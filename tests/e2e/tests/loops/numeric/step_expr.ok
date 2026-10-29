@@ -1,5 +1,5 @@
 let s = 2;
-for let i = 0 : 9 : s? {
+for let i = 0 : 9 : s {
   print i;
 }
 // expect: 0

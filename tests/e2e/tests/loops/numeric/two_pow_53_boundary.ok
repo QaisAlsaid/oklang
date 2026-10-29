@@ -1,7 +1,6 @@
 // every integer below 2^53 is exact in f64: the trip count is exact at the edge.
 let mut count = 0;
-for let i = 9007199254740988 : 9007199254740992? {
+for let i = 9007199254740988 : 9007199254740992 {
   count = count + 1;
 }
-print count;
-// expect: 4
+print count; // expect: 4

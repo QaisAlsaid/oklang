@@ -1,1 +1,3 @@
-if true? print("yes"); // expect: yes
+if true {
+  print("yes"); // expect: yes
+}

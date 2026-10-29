@@ -3,7 +3,7 @@ fu take(p_fu) {
 }
 
 fu close(p_delta) {
-  for let mut i = 0; i < 5; i = i + 1? {
+  for let mut i = 0; i < 5; i = i + 1 {
     take(fu() {
       print i;
     });

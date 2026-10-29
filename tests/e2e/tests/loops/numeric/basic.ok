@@ -1,4 +1,4 @@
-for let i = 0 : 5? {
+for let i = 0 : 5 {
   print i;
 }
 // expect: 0

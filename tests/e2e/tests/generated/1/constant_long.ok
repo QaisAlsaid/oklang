@@ -1,6 +1,4 @@
-// expect: 255
-// expect: 256
-if false? {
+if false {
 0;
 1;
 2;
@@ -259,5 +257,5 @@ if false? {
 255;
 256;
 }
-print(255);
-print(256);
+print(255); // expect: 255
+print(256); // expect: 256

@@ -1,7 +1,7 @@
 let a = [1, 2, 3, 4, 5];
-for let v : a? {
-  if v == 2? { continue; }
-  if v == 4? { break; }
+for let v : a {
+  if v == 2 { continue; }
+  if v == 4 { break; }
   print v;
 }
 // expect: 1

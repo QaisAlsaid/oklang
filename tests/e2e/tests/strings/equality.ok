@@ -16,7 +16,7 @@ print("1" == 1); // expect: false
 print("" == null); // expect: false
 print("null" == null); // expect: false
 // in conditions
-if "ab" == "ab" ? { print("eq"); } else { print("ne"); } // expect: eq
-if "ab" == "abc" ? { print("eq"); } else { print("ne"); } // expect: ne
+if "ab" == "ab" { print("eq"); } else { print("ne"); } // expect: eq
+if "ab" == "abc" { print("eq"); } else { print("ne"); } // expect: ne
 let pick = "x" == "x" then 1 otherwise 2;
 print(pick); // expect: 1

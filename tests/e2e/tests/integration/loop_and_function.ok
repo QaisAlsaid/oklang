@@ -4,7 +4,7 @@ fu double(x) {
 
 let mut i = 0;
 
-while i < 3? {
+while i < 3 {
     print(double(i));
     i = i + 1;
 }

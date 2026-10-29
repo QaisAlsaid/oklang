@@ -26,8 +26,8 @@ print(y); // expect: 3
 
 // dogfood: parity in a numeric-for
 let mut evens = 0;
-for let i = 0 : 10? {
-  if i % 2 == 0? {
+for let i = 0 : 10 {
+  if i % 2 == 0 {
     evens = evens + 1;
   }
 }

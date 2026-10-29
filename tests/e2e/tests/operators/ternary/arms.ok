@@ -24,7 +24,7 @@ print(arr[true then 1 otherwise 2] + arr[false then 1 otherwise 2]); // expect: 
 // in a while condition and body
 let mut i = 0;
 let mut seen = 0;
-while (i < 4) ? {
+while (i < 4) {
   seen = seen * 10 + (i > 2 then 9 otherwise 1);
   i += 1;
 }

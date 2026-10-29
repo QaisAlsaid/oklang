@@ -1,5 +1,5 @@
 let a = [10, 20, 30];
-for let v : a? {
+for let v : a {
   print v;
 }
 // expect: 10

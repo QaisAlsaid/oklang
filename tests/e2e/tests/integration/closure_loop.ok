@@ -1,6 +1,5 @@
 fu make_counter() {
     let mut x = 0;
-
     return fu() {
         x = x + 1;
         return x;
@@ -8,10 +7,9 @@ fu make_counter() {
 }
 
 let counter = make_counter();
-
 let mut i = 0;
 
-while i < 3? {
+while i < 3 {
     print(counter());
     i = i + 1;
 }

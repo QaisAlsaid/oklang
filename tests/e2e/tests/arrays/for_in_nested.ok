@@ -1,6 +1,6 @@
 let grid = [[1, 2], [3, 4]];
-for let row : grid? {
-  for let v : row? {
+for let row : grid {
+  for let v : row {
     print v;
   }
 }

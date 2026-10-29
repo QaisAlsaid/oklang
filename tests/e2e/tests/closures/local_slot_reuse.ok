@@ -1,10 +1,9 @@
 fu make(side) {
-  if side == 1? {
+  if side == 1 {
     let x = 10;
     return fu() { return x; };
   }
-
-  if side == 2? {
+  if side == 2 {
     let x = 20;
     return fu() { return x; };
   }

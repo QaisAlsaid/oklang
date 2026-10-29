@@ -1,4 +1,6 @@
 let mut i = 0;
-while i < 0 ? print(i);
+while i < 0 { 
+  print(i);
+}
 
 print "nothing"; // expect: nothing

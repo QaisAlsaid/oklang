@@ -1,9 +1,9 @@
 let mut i = 0;
 
-while i < 3? {
+while i < 3 {
     let mut j = 0;
 
-    while j < 2? {
+    while j < 2 {
         print(i * 2 + j);
         j = j + 1;
     }

@@ -1,4 +1,4 @@
-for let mut i = 0; i < 3; i = i + 1? {
+for let mut i = 0; i < 3; i = i + 1 {
   print i;
 }
 // expect: 0

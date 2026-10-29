@@ -1,5 +1,4 @@
-// expect: ok
-if false? {
+if false {
 0;
 0;
 0;
@@ -300,4 +299,6 @@ if false? {
 0;
 0;
 0;
-} else? print "ok";
+} else { 
+  print "ok"; // expect: ok
+}

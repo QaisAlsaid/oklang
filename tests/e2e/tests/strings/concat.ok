@@ -15,7 +15,7 @@ print(b); // expect: right
 print(c); // expect: leftright
 // runtime-built strings work the same as literals
 let mut built = "";
-for let i = 0 : 3? {
+for let i = 0 : 3 {
   built += "ab";
 }
 print(built == "ababab"); // expect: true

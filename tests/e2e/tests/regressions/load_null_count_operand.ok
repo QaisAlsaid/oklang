@@ -39,7 +39,7 @@ fu local_null() {
 print local_null(); // expect: true
 
 glob let mut current = null;
-if current != null? {
+if current != null {
   print "bad: guard passed";
 } else {
   print "guard ok"; // expect: guard ok

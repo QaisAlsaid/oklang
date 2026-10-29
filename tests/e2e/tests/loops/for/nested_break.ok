@@ -1,11 +1,9 @@
-for let mut i = 0; i < 2; i = i + 1? {
+for let mut i = 0; i < 2; i = i + 1 {
     print("outer");
-
-    for let mut j = 0; j < 2; j = j + 1? {
+    for let mut j = 0; j < 2; j = j + 1 {
         print("inner");
         break;
     }
-
     print("after-inner");
 }
 

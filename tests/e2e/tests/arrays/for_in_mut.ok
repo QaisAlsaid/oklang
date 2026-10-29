@@ -1,5 +1,5 @@
 let a = [1, 2, 3];
-for let mut v : a? {
+for let mut v : a {
   v = v * 10;
   print v;
 }

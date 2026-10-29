@@ -7,13 +7,13 @@ print([] then "t" otherwise "f"); // expect: t
 print(null then "t" otherwise "f"); // expect: f
 print(false then "t" otherwise "f"); // expect: f
 // same doctrine through if (pins is_falsy in both directions)
-if 0 ? { print("a"); } else { print("b"); } // expect: a
-if "" ? { print("a"); } else { print("b"); } // expect: a
-if [] ? { print("a"); } else { print("b"); } // expect: a
-if null ? { print("a"); } else { print("b"); } // expect: b
+if 0 { print("a"); } else { print("b"); } // expect: a
+if "" { print("a"); } else { print("b"); } // expect: a
+if [] { print("a"); } else { print("b"); } // expect: a
+if null { print("a"); } else { print("b"); } // expect: b
 // and through while
 let mut n = 0;
-while n < 3 ? { n += 1; }
+while n < 3 { n += 1; }
 print(n); // expect: 3
 // through and/or (value semantics, short circuit)
 print(null and 1); // expect: null

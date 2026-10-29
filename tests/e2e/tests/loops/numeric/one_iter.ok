@@ -1,6 +1,6 @@
-for let i = 0 : 1? {
+for let i = 0 : 1 {
   print i;
 }
-print 99;
+print 99; 
 // expect: 0
 // expect: 99
