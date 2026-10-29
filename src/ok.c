@@ -96,7 +96,7 @@ static ok_value native_remove(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) 
     const value v = p_argv[i];
     if (IS_VALUE_NUMBER(v)) {
       const double d = VALUE_AS_NUMBER(v);
-      // cast based integrality (no libm). the range guard runs first
+      // cast based integrality. the range guard runs first
       if (!(d >= MIN_SAFE_INTEGER && d <= MAX_SAFE_INTEGER) || d != (double)(int64_t)d) {
         ok_native_error(p_ok,
                         ok_create_string_view("invalid range for 'remove': bounds must be whole numbers.",
@@ -274,7 +274,6 @@ ok_value ok_value_string(ok* p_ok, ok_string_view p_string) {
 }
 
 bool ok_value_is_null(ok_value p_value) {
-  // strict checks: raw doubles alias the non-strict tag bits (see okvalue.h)
   return IS_VALUE_STRICTLY_NULL(p_value);
 }
 
