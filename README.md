@@ -44,8 +44,7 @@ for let bird : birds {
   feed(bird);
 }
 
-print("i fed this many birds: ");
-print(total);
+print("i fed " + total as str + " birds.");
 ```
 output:
 ```txt
@@ -53,8 +52,7 @@ crow nice food nice!
 sparrow nice food nice!
 owl nice food nice!
 chicken not nice chicken food!
-i fed this many birds: 
-4
+i fed 4.000000 birds.
 ```
 
 ## Status
