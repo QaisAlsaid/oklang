@@ -1,6 +1,6 @@
 // conversions between the three core type tags.
 let n = 12;
-print n as str; // expect: 12.000000
+print n as str; // expect: 12
 print "34" as num; // expect: 34
 print true as str; // expect: true
 print false as str; // expect: false
