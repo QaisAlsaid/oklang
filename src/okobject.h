@@ -113,10 +113,13 @@ typedef struct {
   object object;
   void* user_data;
   ok_native_destructor destructor;
+  ok_native_tracer tracer; // NULL: opaque to the collector (no ok_values inside)
 } object_native_value;
 
-object_native_value*
-create_object_native_value(void* p_user_data, ok_native_destructor p_destructor, object_specs* p_specs);
+object_native_value* create_object_native_value(void* p_user_data,
+                                                ok_native_destructor p_destructor,
+                                                ok_native_tracer p_tracer,
+                                                object_specs* p_specs);
 
 typedef struct {
   object object;

@@ -314,6 +314,11 @@ void ok_debug_dump_bytecode(ok* p_ok, bool p_enabled, bool p_skip_run) {
   p_ok->dump_skip_run = p_skip_run;
 }
 
+void ok_set_print(ok* p_ok, ok_print_fn p_cb, void* p_ctx) {
+  p_ok->vm.print_cb = p_cb;
+  p_ok->vm.print_ctx = p_ctx;
+}
+
 void ok_free(ok* p_ok) {
   vm_deinit(&p_ok->vm);
   compiler_deinit(&p_ok->compiler);
@@ -438,9 +443,10 @@ bool ok_native_error(ok* p_ok, ok_string_view p_message) {
   return vm_native_error(&p_ok->vm, p_message);
 }
 
-ok_value ok_native_value_new(ok* p_ok, void* p_user_data, ok_native_destructor p_destructor) {
+ok_value
+ok_native_value_new(ok* p_ok, void* p_user_data, ok_native_destructor p_destructor, ok_native_tracer p_tracer) {
   object_specs s = {.alloc = &p_ok->alloc, .store = &p_ok->objects_store};
-  object_native_value* native = create_object_native_value(p_user_data, p_destructor, &s);
+  object_native_value* native = create_object_native_value(p_user_data, p_destructor, p_tracer, &s);
   if (native == NULL) {
     return NULL_AS_VALUE();
   }
@@ -460,4 +466,90 @@ void* ok_value_as_native_value(ok_value p_value) {
 
   object_native_value* native = (object_native_value*)obj;
   return native->user_data;
+}
+
+bool ok_value_is_native_value(ok_value p_value) {
+  return IS_VALUE_NATIVE_VALUE(p_value);
+}
+
+bool ok_gc_mark_value(ok* p_ok, ok_value p_value) {
+  return gc_mark_value_user(&p_ok->gc, p_value);
+}
+
+uint32_t ok_root(ok* p_ok, ok_value p_value) {
+  // null is the roots' free-slot marker, so rooting it cannot be supported.
+  if (IS_VALUE_STRICTLY_NULL(p_value)) {
+    return OK_ROOT_INVALID;
+  }
+  return gc_root(&p_ok->gc, p_value);
+}
+
+bool ok_unroot(ok* p_ok, uint32_t p_root) {
+  return gc_unroot(&p_ok->gc, p_root);
+}
+
+ok_value ok_array_new(ok* p_ok, const ok_value* p_items, uint32_t p_count) {
+  object_specs s = {.alloc = &p_ok->alloc, .store = &p_ok->objects_store};
+  object_array* arr = create_object_array(&s);
+  if (arr == NULL) {
+    return NULL_AS_VALUE();
+  }
+  // mirror OP_ARRAY_NEW: between creation and publication the array is linked
+  // in the store yet unreachable, and every append grows through the gc-aware
+  // allocator (collects). the items are host locals, equally invisible: guard
+  // the array for the whole loop and each item across its own append. guard
+  // depth peaks at 2 (capacity 16), mirroring the VM's unchecked pattern.
+  gc_guard_up(&p_ok->gc, OBJECT_AS_VALUE(arr));
+  for (uint32_t i = 0; i < p_count; ++i) {
+    gc_guard_up(&p_ok->gc, p_items[i]);
+    const bool appended = value_array_append(&arr->values, p_items[i]);
+    gc_guard_down(&p_ok->gc);
+    if (!appended) {
+      gc_guard_down(&p_ok->gc);
+      return NULL_AS_VALUE();
+    }
+  }
+  gc_guard_down(&p_ok->gc);
+  return OBJECT_AS_VALUE(arr);
+}
+
+bool ok_value_is_array(ok_value p_value) {
+  return IS_VALUE_ARRAY(p_value);
+}
+
+uint32_t ok_array_len(ok_value p_value) {
+  if (!IS_VALUE_ARRAY(p_value)) {
+    return 0;
+  }
+  return VALUE_AS_ARRAY(p_value)->values.count;
+}
+
+ok_value ok_array_get(ok_value p_value, uint32_t p_index) {
+  if (!IS_VALUE_ARRAY(p_value) || p_index >= VALUE_AS_ARRAY(p_value)->values.count) {
+    return NULL_AS_VALUE();
+  }
+  return VALUE_AS_ARRAY(p_value)->values.data[p_index];
+}
+
+bool ok_array_set(ok_value p_value, uint32_t p_index, ok_value p_new_value) {
+  if (!IS_VALUE_ARRAY(p_value) || p_index >= VALUE_AS_ARRAY(p_value)->values.count) {
+    return false;
+  }
+  VALUE_AS_ARRAY(p_value)->values.data[p_index] = p_new_value;
+  return true;
+}
+
+bool ok_array_push(ok* p_ok, ok_value p_array, ok_value p_value) {
+  if (!IS_VALUE_ARRAY(p_array)) {
+    return false;
+  }
+  // unlike the ' push' core native (whose arguments are rooted through the
+  // caller's register window), a host-held array and value are invisible to
+  // the collector: both need the guard while the append may grow (collect).
+  gc_guard_up(&p_ok->gc, p_array);
+  gc_guard_up(&p_ok->gc, p_value);
+  const bool appended = value_array_append(&VALUE_AS_ARRAY(p_array)->values, p_value);
+  gc_guard_down(&p_ok->gc);
+  gc_guard_down(&p_ok->gc);
+  return appended;
 }

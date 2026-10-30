@@ -4,6 +4,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
+#include <vector>
 
 static int g_destructor_calls = 0;
 
@@ -37,14 +39,13 @@ static ok_value native_fail(ok* p_ok, uint8_t argc, const ok_value* argv) {
   return ok_value_null();
 }
 
-// regression (2026-10-25, dorg3 "invalid call: value is not callable" + SIGSEGV):
+// regression:
 // a native that calls back into the vm while the script's call stack is live.
 // prefix this crashed two ways: vm_call double-based the callee slot (read
 // data[base + base] instead of data[base] -> "value is not callable" whenever
 // ok_call ran with top > 0), and when the inner call errored, call_native
 // returned success and the interpreter resumed on a cleared call stack
-// (frame reload from data[count - 1] with count == 0 -> segfault right after
-// the error report).
+// (frame reload from data[count - 1] with count == 0 -> segfault right after the error report).
 static ok_value native_apply(ok* p_ok, uint8_t argc, const ok_value* argv) {
   assert(argc == 2);
   assert(ok_value_is_object(argv[0]));
@@ -70,6 +71,37 @@ static void native_destructor(void* ptr) {
 
   delete value;
   g_destructor_calls++;
+}
+
+struct string_bag {
+  std::vector<ok_value> items;
+  int* destructor_calls;
+};
+
+static bool string_bag_trace(ok* p_ok, void* p_data) {
+  auto* bag = static_cast<string_bag*>(p_data);
+  for (ok_value item : bag->items) {
+    if (!ok_gc_mark_value(p_ok, item)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static void string_bag_destructor(void* p_data) {
+  auto* bag = static_cast<string_bag*>(p_data);
+  (*bag->destructor_calls)++;
+  delete bag;
+}
+
+static ok_value native_bag_item(ok* p_ok, uint8_t argc, const ok_value* argv) {
+  (void)p_ok;
+  assert(argc == 2);
+  auto* bag = static_cast<string_bag*>(ok_value_as_native_value(argv[0]));
+  assert(bag != nullptr);
+  const uint32_t index = static_cast<uint32_t>(ok_value_as_number(argv[1]));
+  assert(index < bag->items.size());
+  return bag->items[index];
 }
 
 static ok_value native_get_opaque(ok* p_ok, uint8_t argc, const ok_value* argv) {
@@ -160,7 +192,7 @@ int main() {
 
   int* userdata = new int(44);
 
-  ok_value native_value = ok_native_value_new(vm, userdata, native_destructor);
+  ok_value native_value = ok_native_value_new(vm, userdata, native_destructor, nullptr);
 
   assert(ok_value_is_object(native_value));
   assert(ok_value_as_native_value(native_value) == userdata);
@@ -195,27 +227,26 @@ int main() {
     }
 
     let a = host_add(22, 22);
-    if a != 44? print "bad: add";
+    if a != 44 { print "bad: add"; }
 
-    if host_number != 44? print "bad: number";
+    if host_number != 44 { print "bad: number"; }
 
     host_mutable = 99;
-    if host_mutable != 99? print "bad: mutable";
+    if host_mutable != 99 { print "bad: mutable"; }
 
     let echoed = host_echo("hello");
-    if echoed != "hello"? print "bad: echo";
+    if echoed != "hello" { print "bad: echo"; }
 
     let object_value = host_get_object(host_object);
-    if object_value != 44? print "bad: object";
+    if object_value != 44 { print "bad: object"; }
 
-    // native -> vm callback while main's frame is on the call stack (the
-    // array_foreach pattern from dorg3). exercises ok_call with top > 0.
+    // native -> vm callback while main's frame is on the call stack. exercises ok_call with top > 0.
     glob fu double_it(x) {
       return x * 2;
     }
 
     let applied = host_apply(double_it, 21);
-    if applied != 42? print "bad: apply";
+    if applied != 42 { print "bad: apply"; }
   )";
 
   ok_source source = {
@@ -313,8 +344,8 @@ int main() {
 
   assert(result == OK_RUNTIME_ERROR);
 
-  // error propagation THROUGH a native callback: the closure errors inside
-  // the native's ok_call; call_native must fail the OP_CALL (not resume on a
+  // error propagation through a native callback: the closure errors inside
+  // the native's ok_call. call_native must fail the OP_CALL (not resume on a
   // cleared call stack) so ok_run reports OK_RUNTIME_ERROR instead of dying.
   const char* callback_error_code = R"(
     glob fu boom(x) {
@@ -350,9 +381,201 @@ int main() {
 
   assert(ok_value_as_number(recover_result) == 3);
 
+  // null is the free-slot marker, so rooting it is rejected.
+  assert(ok_root(vm, ok_value_null()) == OK_ROOT_INVALID);
+
+  ok_value rooted_string = ok_value_string(vm, ok_create_string_view("rooted", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+  const uint32_t root_id = ok_root(vm, rooted_string);
+  assert(root_id != OK_ROOT_INVALID);
+  assert(ok_unroot(vm, root_id));
+  assert(!ok_unroot(vm, root_id)); // double unroot is rejected
+  const uint32_t recycled_id = ok_root(vm, rooted_string);
+  assert(recycled_id == root_id); // freelist recycles lifo
+  assert(ok_unroot(vm, recycled_id));
+  // contract demonstration: rooted_string is no longer reachable from any
+  // root, so the very next allocation may sweep it. do not touch the value
+  // after its unroot. negative checks use a value we know is alive.
+  assert(!ok_value_is_native_value(ok_value_number(42)));
+
+  int bag_destructor_calls = 0;
+  auto* bag = new string_bag{{}, &bag_destructor_calls};
+
+  ok_value bag_value = ok_native_value_new(vm, bag, string_bag_destructor, string_bag_trace);
+  assert(ok_value_is_object(bag_value));
+  assert(ok_value_is_native_value(bag_value));
+  assert(ok_value_as_native_value(bag_value) == bag);
+
+  // root before populating: from here on, every collection walks the vector's
+  // current contents through string_bag_trace.
+  const uint32_t bag_root = ok_root(vm, bag_value);
+  assert(bag_root != OK_ROOT_INVALID);
+
+  assert(ok_global_define_native_function(
+      vm, ok_create_string_view("bag_item", OK_STRING_VIEW_CALCULATE_LENGTH, true), 2, native_bag_item));
+
+  for (int i = 0; i < 8; ++i) {
+    char buffer[32];
+    std::snprintf(buffer, sizeof(buffer), "bag item %d", i);
+    // each creation allocates: under aggressive collection the earlier items
+    // stay alive only through the rooted bag's tracer.
+    bag->items.push_back(ok_value_string(vm, ok_create_string_view(buffer, OK_STRING_VIEW_CALCULATE_LENGTH, true)));
+  }
+
+  // allocation churn with the bag reachable only via the root + tracer.
+  const char* churn_code = R"(
+    glob fu churn(n) {
+      let mut sink = "";
+      for let i = 0 : n {
+        sink = sink + "chunk " + i as str;
+      }
+      return sink;
+    }
+
+    let s = churn(300);
+    if s == "" {
+      print "bad: churn";
+    }
+  )";
+
+  ok_source churn_source = {
+      .from = OK_FROM_FILE,
+      .code = churn_code,
+      .path = "churn",
+  };
+
+  result = ok_run(vm, churn_source);
+  assert(result == OK);
+
+  // the strings survived the churn: read one back out through the vm.
+  ok_value bag_item = ok_value_null();
+  assert(ok_global_get(vm, ok_create_string_view("bag_item", OK_STRING_VIEW_CALCULATE_LENGTH, true), &bag_item));
+
+  ok_value bag_args[] = {
+      bag_value,
+      ok_value_number(3),
+  };
+
+  ok_value bag_result = ok_value_null();
+  assert(ok_call(vm, bag_item, 2, bag_args, &bag_result));
+  assert(ok_value_is_string(bag_result));
+
+  ok_cstring_view bag_text = ok_value_as_string(bag_result);
+  assert(std::strcmp(bag_text.chars, "bag item 3") == 0);
+  ok_cstring_view_deinit(&bag_text);
+
+  assert(ok_unroot(vm, bag_root));
+
+  ok_value empty_array = ok_array_new(vm, nullptr, 0);
+  assert(ok_value_is_array(empty_array));
+  assert(ok_array_len(empty_array) == 0);
+  assert(ok_value_is_null(ok_array_get(empty_array, 0)));
+  assert(!ok_array_set(empty_array, 0, ok_value_number(1)));
+
+  // 16 items on purpose: the values buffer must grow mid-construction, which
+  // collects under the aggressive build -> the guards must hold.
+  ok_value items[16];
+  for (uint32_t i = 0; i < 16; ++i) {
+    items[i] = ok_value_number((double)(i * i));
+  }
+  ok_value squares = ok_array_new(vm, items, 16);
+  assert(ok_value_is_array(squares));
+  assert(ok_array_len(squares) == 16);
+  assert(ok_value_as_number(ok_array_get(squares, 7)) == 49);
+  assert(ok_value_is_null(ok_array_get(squares, 16))); // oob is null
+  assert(!ok_value_is_array(ok_value_number(42)));
+  assert(ok_array_len(ok_value_number(42)) == 0);
+
+  assert(ok_array_set(squares, 0, ok_value_number(100)));
+  assert(ok_value_as_number(ok_array_get(squares, 0)) == 100);
+  assert(!ok_array_set(squares, 99, ok_value_number(1))); // oob rejected
+
+  // hand it to the script and read back what the script did to it.
+  assert(
+      ok_global_define(vm, ok_create_string_view("host_array", OK_STRING_VIEW_CALCULATE_LENGTH, true), squares, false));
+
+  assert(ok_array_push(
+      vm, squares, ok_value_string(vm, ok_create_string_view("tail", OK_STRING_VIEW_CALCULATE_LENGTH, true))));
+  assert(ok_array_len(squares) == 17);
+  assert(ok_value_is_string(ok_array_get(squares, 16)));
+
+  const char* array_code = R"(
+    if host_array[0] != 100 {
+      print "bad: host->script array read";
+    }
+    if len(host_array) != 17 {
+      print "bad: script sees host push";
+    }
+    host_array[1] = 12345;
+    push(host_array, 7);
+  )";
+
+  ok_source array_source = {
+      .from = OK_FROM_FILE,
+      .code = array_code,
+      .path = "array",
+  };
+
+  result = ok_run(vm, array_source);
+  assert(result == OK);
+
+  assert(ok_value_as_number(ok_array_get(squares, 1)) == 12345); // script -> host write
+  assert(ok_array_len(squares) == 18);                           // script push -> host len
+  assert(ok_value_as_number(ok_array_get(squares, 17)) == 7);
+
+  std::vector<std::string> printed_lines;
+  ok_set_print(
+      vm,
+      [](void* p_ctx, ok_value p_value) {
+        auto* sink = static_cast<std::vector<std::string>*>(p_ctx);
+        char buffer[64];
+        if (ok_value_is_number(p_value)) {
+          std::snprintf(buffer, sizeof(buffer), "%g", ok_value_as_number(p_value));
+          sink->emplace_back(buffer);
+        } else if (ok_value_is_string(p_value)) {
+          ok_cstring_view text = ok_value_as_string(p_value);
+          sink->emplace_back(text.chars, std::strlen(text.chars));
+          ok_cstring_view_deinit(&text);
+        } else if (ok_value_is_bool(p_value)) {
+          sink->emplace_back(ok_value_as_bool(p_value) ? "true" : "false");
+        } else if (ok_value_is_null(p_value)) {
+          sink->emplace_back("null");
+        } else {
+          sink->emplace_back("<object>");
+        }
+      },
+      &printed_lines);
+
+  const char* print_code = R"(
+    print 4;
+    print 1.5;
+    print "hello from oklang";
+    print true;
+    print null;
+    print [1, 2, 3];
+  )";
+
+  ok_source print_source = {
+      .from = OK_FROM_FILE,
+      .code = print_code,
+      .path = "print",
+  };
+
+  result = ok_run(vm, print_source);
+  assert(result == OK);
+  ok_set_print(vm, nullptr, nullptr);
+
+  assert(printed_lines.size() == 6);
+  assert(printed_lines[0] == "4");
+  assert(printed_lines[1] == "1.5");
+  assert(printed_lines[2] == "hello from oklang");
+  assert(printed_lines[3] == "true");
+  assert(printed_lines[4] == "null");
+  assert(printed_lines[5] == "<object>");
+
   ok_free(vm);
 
   assert(g_destructor_calls == 1);
+  assert(bag_destructor_calls == 1);
 
   std::puts("embedding API: OK");
   return 0;

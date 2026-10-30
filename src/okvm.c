@@ -63,6 +63,8 @@ void vm_init(vm* p_vm, vm_specs p_specs) {
   p_vm->globals_store = p_specs.globals_store;
   p_vm->source = NULL;
   p_vm->ok = p_specs.ok;
+  p_vm->print_cb = NULL;
+  p_vm->print_ctx = NULL;
   // TODO: temp
   p_vm->current_execution_state = p_vm->alloc->allocate(p_vm->alloc, sizeof(execution_state));
   p_vm->current_execution_state->open_upvalues = NULL;
@@ -2181,8 +2183,13 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
     }
     case OP_PRINT: {
       const bool p = p_of(instruction);
-      value_debug_print(resolve_operand(frame, reg, Alarge_of(instruction), p));
-      puts("");
+      const value printed = resolve_operand(frame, reg, Alarge_of(instruction), p);
+      if (p_vm->print_cb != NULL) {
+        p_vm->print_cb(p_vm->print_ctx, printed);
+      } else {
+        value_debug_print(printed);
+        puts("");
+      }
       break;
     }
     }

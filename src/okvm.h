@@ -50,6 +50,9 @@ struct vm {
   globals_store* globals_store;
   allocators* alloc;
   ok* ok;
+  // print routing (ok_set_print): NULL keeps the CLI's formatted stdout.
+  ok_print_fn print_cb;
+  void* print_ctx;
 };
 
 typedef enum {

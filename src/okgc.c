@@ -17,6 +17,11 @@
 #define GC_GROWTH_FACTOR 2
 
 ARRAY_DEFINE_DEFAULT(grays, object*, ARRAY_DEFAULT_TYPE_DEINIT)
+ARRAY_DEFINE_DEFAULT(gc_root_freelist, uint32_t, ARRAY_DEFAULT_TYPE_DEINIT)
+
+static bool collect(gc* p_gc);
+static bool trace(gc* p_gc);
+static bool mark_value(gc* p_gc, value p_value);
 
 void gc_init(gc* p_gc, object_store* p_heap, allocators* p_alloc) {
   p_gc->compiler = NULL;
@@ -28,15 +33,21 @@ void gc_init(gc* p_gc, object_store* p_heap, allocators* p_alloc) {
   p_gc->allocated_bytes = 0;
   p_gc->next = 1024 * 1024; // 1mb
   grays_init(&p_gc->grays, &p_gc->raw_alloc_wrapper);
+  // raw allocator on purpose: rooting must never itself trigger the collector.
+  value_array_init(&p_gc->roots, &p_gc->raw_alloc_wrapper);
+  gc_root_freelist_init(&p_gc->root_freelist, &p_gc->raw_alloc_wrapper);
   for (uint32_t i = 0; i < OK_GC_GUARD_CAPACITY; ++i) {
     p_gc->guarded[i] = NULL_AS_VALUE();
   }
   p_gc->guard_count = 0;
   p_gc->is_paused = false;
+  p_gc->is_tracing = false;
 }
 
 void gc_deinit(gc* p_gc) {
   grays_deinit(&p_gc->grays, &p_gc->raw_alloc_wrapper);
+  value_array_deinit(&p_gc->roots, &p_gc->raw_alloc_wrapper);
+  gc_root_freelist_deinit(&p_gc->root_freelist, &p_gc->raw_alloc_wrapper);
   for (uint32_t i = 0; i < OK_GC_GUARD_CAPACITY; ++i) {
     p_gc->guarded[i] = NULL_AS_VALUE();
   }
@@ -48,11 +59,12 @@ void gc_deinit(gc* p_gc) {
   p_gc->allocated_bytes = 0;
   p_gc->next = 1024 * 1024; // 1mb
   p_gc->is_paused = true;
+  p_gc->is_tracing = false;
 }
 
 bool gc_guard_up(gc* p_gc, value p_value) {
-  // LIFO stack: nested pairs compose; overflow is a programming error the
-  // caller must treat as "could not root" (return false), never ignore.
+  // lifo stack: nested pairs compose. overflow is a programming error the
+  // caller must treat as "could not root" (returns false), never ignore.
   if (p_gc->guard_count >= OK_GC_GUARD_CAPACITY) {
     return false;
   }
@@ -66,6 +78,41 @@ void gc_guard_down(gc* p_gc) {
     p_gc->guard_count--;
     p_gc->guarded[p_gc->guard_count] = NULL_AS_VALUE();
   }
+}
+
+uint32_t gc_root(gc* p_gc, value p_value) {
+  // caller rejects strictly-null values: a null slot is the free marker.
+  if (p_gc->root_freelist.count > 0) {
+    const uint32_t slot = p_gc->root_freelist.data[p_gc->root_freelist.count - 1];
+    gc_root_freelist_pop(&p_gc->root_freelist);
+    p_gc->roots.data[slot] = p_value;
+    return slot + 1;
+  }
+  // the roots array uses the raw allocator: appending cannot collect, so
+  // p_value cannot be swept between entry and publication.
+  if (!value_array_append(&p_gc->roots, p_value)) {
+    return 0;
+  }
+  return p_gc->roots.count;
+}
+
+bool gc_unroot(gc* p_gc, uint32_t p_root) {
+  if (p_root == 0 || p_root > p_gc->roots.count) {
+    return false;
+  }
+  value* slot = &p_gc->roots.data[p_root - 1];
+  if (IS_VALUE_STRICTLY_NULL(*slot)) {
+    return false; // already freed (double unroot)
+  }
+  *slot = NULL_AS_VALUE();
+  return gc_root_freelist_append(&p_gc->root_freelist, p_root - 1);
+}
+
+bool gc_mark_value_user(gc* p_gc, value p_value) {
+  if (!p_gc->is_tracing) {
+    return false;
+  }
+  return mark_value(p_gc, p_value);
 }
 
 void gc_pause(gc* p_gc) {
@@ -87,9 +134,6 @@ void gc_watch_compiler(gc* p_gc, compiler* p_compiler) {
 void gc_watch_globals(gc* p_gc, globals_store* p_globals) {
   p_gc->globals_store = p_globals;
 }
-
-static bool collect(gc* p_gc);
-static bool trace(gc* p_gc);
 
 bool gc_collect(gc* p_gc, size_t p_predict, size_t p_old) {
   p_gc->allocated_bytes += p_predict - p_old;
@@ -187,6 +231,12 @@ static bool mark(gc* p_gc) {
   }
   for (uint32_t i = 0; i < p_gc->guard_count; ++i) {
     if (!mark_value(p_gc, p_gc->guarded[i])) {
+      return false;
+    }
+  }
+  for (uint32_t i = 0; i < p_gc->roots.count; ++i) {
+    // freed slots hold tagged null and mark_value's strict check skips them.
+    if (!mark_value(p_gc, p_gc->roots.data[i])) {
       return false;
     }
   }
@@ -297,6 +347,17 @@ static bool trace_object(gc* p_gc, object* p_object) {
     }
     break;
   }
+  case OBJ_NATIVE_VALUE: {
+    // the embedder's structure is opaque to the collector: the tracer walks
+    // it and reports every ok_value it still holds through ok_gc_mark_value.
+    object_native_value* native = (object_native_value*)p_object;
+    if (native->tracer != NULL && p_gc->vm != NULL) {
+      if (!native->tracer(p_gc->vm->ok, native->user_data)) {
+        return false;
+      }
+    }
+    break;
+  }
   case OBJ_ARRAY: {
     if (!mark_value_array(p_gc, &((object_array*)p_object)->values)) {
       return false;
@@ -308,15 +369,14 @@ static bool trace_object(gc* p_gc, object* p_object) {
 }
 
 static bool trace(gc* p_gc) {
-  while (p_gc->grays.count > 0) {
+  bool res = true;
+  p_gc->is_tracing = true;
+  while (res && p_gc->grays.count > 0) {
     uint32_t index = p_gc->grays.count - 1;
     object* obj = p_gc->grays.data[index];
-    if (!trace_object(p_gc, obj)) {
-      return false;
-    }
-    if (!grays_remove(&p_gc->grays, index, index)) {
-      return false;
-    }
+    res = trace_object(p_gc, obj);
+    res = res && grays_remove(&p_gc->grays, index, index);
   }
-  return true;
+  p_gc->is_tracing = false;
+  return res;
 }

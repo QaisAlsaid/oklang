@@ -156,10 +156,12 @@ object_upvalue* create_object_upvalue(uint32_t p_location, object_specs* p_specs
 void object_native_value_init(object_native_value* p_native_value,
                               void* p_user_data,
                               ok_native_destructor p_destructor,
+                              ok_native_tracer p_tracer,
                               object_specs* p_specs) {
   object_init(&p_native_value->object, OBJ_NATIVE_VALUE);
   p_native_value->user_data = p_user_data;
   p_native_value->destructor = p_destructor;
+  p_native_value->tracer = p_tracer;
 }
 
 void object_native_value_deinit(object_native_value* p_native_value, object_specs* p_specs) {
@@ -170,14 +172,16 @@ void object_native_value_deinit(object_native_value* p_native_value, object_spec
   object_deinit(&p_native_value->object);
 }
 
-object_native_value*
-create_object_native_value(void* p_user_data, ok_native_destructor p_destructor, object_specs* p_specs) {
+object_native_value* create_object_native_value(void* p_user_data,
+                                                ok_native_destructor p_destructor,
+                                                ok_native_tracer p_tracer,
+                                                object_specs* p_specs) {
   object_native_value* native_value =
       (object_native_value*)p_specs->alloc->allocate(p_specs->alloc, sizeof(object_native_value));
   if (native_value == NULL) {
     return NULL;
   }
-  object_native_value_init(native_value, p_user_data, p_destructor, p_specs);
+  object_native_value_init(native_value, p_user_data, p_destructor, p_tracer, p_specs);
   object_store_append(p_specs->store, (object*)native_value);
   return native_value;
 }
