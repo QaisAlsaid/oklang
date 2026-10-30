@@ -74,6 +74,7 @@ typedef struct {
 typedef struct {
   ok_source* source;
   object_function* function;
+  value_array top_level_values;
 } interpret_specs;
 
 void vm_init(vm* p_vm, vm_specs p_specs);
@@ -81,5 +82,7 @@ void vm_deinit(vm* p_vm);
 interpret_result vm_interpret(vm* p_vm, interpret_specs p_specs);
 interpret_result vm_call(vm* p_vm, value p_callee, uint32_t p_argc);
 bool vm_native_error(vm* p_vm, ok_string_view p_message);
+
+typedef enum { TT_STR, TT_NUM, TT_BOOL } temporary_type_tags;
 
 #endif // OK_VM_H

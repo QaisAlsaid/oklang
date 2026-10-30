@@ -140,16 +140,66 @@ static ok_value native_remove(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) 
 static bool ok_define_core_natives(ok* p_ok) {
   bool status = true;
   status &= ok_global_define_native_function(
-      p_ok, ok_create_string_view("len", OK_STRING_VIEW_CALCULATE_LENGTH, true), 1, native_len);
+      p_ok, ok_create_string_view(" len", OK_STRING_VIEW_CALCULATE_LENGTH, true), 1, native_len);
   status &= ok_global_define_native_function(
-      p_ok, ok_create_string_view(" len", OK_STRING_VIEW_CALCULATE_LENGTH, true), 1, native_len); // compiler intrinsic
+      p_ok, ok_create_string_view(" push", OK_STRING_VIEW_CALCULATE_LENGTH, true), 2, native_push);
   status &= ok_global_define_native_function(
-      p_ok, ok_create_string_view("push", OK_STRING_VIEW_CALCULATE_LENGTH, true), 2, native_push);
+      p_ok, ok_create_string_view(" pop", OK_STRING_VIEW_CALCULATE_LENGTH, true), 1, native_pop);
   status &= ok_global_define_native_function(
-      p_ok, ok_create_string_view("pop", OK_STRING_VIEW_CALCULATE_LENGTH, true), 1, native_pop);
-  status &= ok_global_define_native_function(
-      p_ok, ok_create_string_view("remove", OK_STRING_VIEW_CALCULATE_LENGTH, true), 3, native_remove);
+      p_ok, ok_create_string_view(" remove", OK_STRING_VIEW_CALCULATE_LENGTH, true), 3, native_remove);
   return status;
+}
+
+static bool ok_define_temporary_types(ok* p_ok) {
+  bool status = true;
+  status &= ok_global_define(
+      p_ok, ok_create_string_view(" str", OK_STRING_VIEW_CALCULATE_LENGTH, true), RESERVED_1_AS_VALUE(TT_STR), false);
+  status &= ok_global_define(
+      p_ok, ok_create_string_view(" num", OK_STRING_VIEW_CALCULATE_LENGTH, true), RESERVED_1_AS_VALUE(TT_NUM), false);
+  status &= ok_global_define(
+      p_ok, ok_create_string_view(" bool", OK_STRING_VIEW_CALCULATE_LENGTH, true), RESERVED_1_AS_VALUE(TT_BOOL), false);
+  return status;
+}
+
+static top_level_declarations ok_get_top_level_declarations(ok* p_ok, bool* p_error) {
+  top_level_declarations decls;
+  top_level_declarations_init(&decls, &p_ok->alloc);
+  variable_declaration raw_decls[] = {{ok_create_string_view("len", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
+                                      {ok_create_string_view("push", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
+                                      {ok_create_string_view("pop", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
+                                      {ok_create_string_view("remove", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
+                                      {ok_create_string_view("str", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
+                                      {ok_create_string_view("num", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
+                                      {ok_create_string_view("bool", OK_STRING_VIEW_CALCULATE_LENGTH, true)}};
+
+  *p_error = !top_level_declarations_append_n(&decls, raw_decls, sizeof(raw_decls) / sizeof(variable_declaration));
+  return decls;
+}
+
+static value_array ok_get_top_level_values(ok* p_ok, bool* p_error) {
+  ok_string_view raw_idents[] = {ok_create_string_view(" len", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                                 ok_create_string_view(" push", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                                 ok_create_string_view(" pop", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                                 ok_create_string_view(" remove", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                                 ok_create_string_view(" str", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                                 ok_create_string_view(" num", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                                 ok_create_string_view(" bool", OK_STRING_VIEW_CALCULATE_LENGTH, true)};
+
+  value_array vals;
+  value_array_init(&vals, &p_ok->alloc);
+
+  for (uint32_t i = 0; i < sizeof(raw_idents) / sizeof(ok_string_view); ++i) {
+    value temp;
+    if (!ok_global_get(p_ok, raw_idents[i], &temp)) {
+      *p_error = true;
+      break;
+    }
+    if (!value_array_append(&vals, temp)) {
+      *p_error = true;
+      break;
+    }
+  }
+  return vals;
 }
 
 ok* ok_create(ok_specs p_specs) {
@@ -182,6 +232,10 @@ ok* ok_create(ok_specs p_specs) {
     ok_free(okay);
     return NULL;
   }
+  if (!ok_define_temporary_types(okay)) {
+    ok_free(okay);
+    return NULL;
+  }
   return okay;
 }
 
@@ -208,7 +262,13 @@ ok_result ok_run(ok* p_ok, ok_source p_source) {
   compile_specs compile_specs;
   compile_specs.root = parse_result.root;
   compile_specs.source = &p_ok->source;
+  bool err = false;
+  compile_specs.top_level_declarations = ok_get_top_level_declarations(p_ok, &err);
+  if (err) {
+    return OK_INIT_ERROR;
+  }
   compile_result compile_result = compiler_compile(&p_ok->compiler, compile_specs);
+  top_level_declarations_deinit(&compile_specs.top_level_declarations, &p_ok->alloc);
   parse_result_deinit(&parse_result);
   if (compile_result.status != COMPILE_OK) {
     return OK_COMPILE_ERROR;
@@ -229,7 +289,13 @@ ok_result ok_run(ok* p_ok, ok_source p_source) {
   interpret_specs interpret_specs;
   interpret_specs.function = compile_result.function;
   interpret_specs.source = &p_ok->source;
+  err = false;
+  interpret_specs.top_level_values = ok_get_top_level_values(p_ok, &err);
+  if (err) {
+    return OK_INIT_ERROR;
+  }
   interpret_result interpret_result = vm_interpret(&p_ok->vm, interpret_specs);
+  value_array_deinit(&interpret_specs.top_level_values, &p_ok->alloc);
   if (interpret_result.status != RUNTIME_OK) {
     interpret_result_deinit(&interpret_result);
     return OK_RUNTIME_ERROR;

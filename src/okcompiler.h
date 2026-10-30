@@ -101,6 +101,18 @@ typedef struct {
   uint32_t count;
 } expression_result;
 
+typedef enum {
+  VARIABLE_DECLRATION_FLAGS_NONE = 0,
+  VARIABLE_DECLARATION_FLAGS_MUTABLE = 1 << 0,
+  VARIABLE_DECLARATION_FLAGS_GLOBAL = 1 << 1,
+} variable_declaration_flags;
+typedef uint8_t variable_declaration_flags_t;
+
+typedef struct {
+  ok_string_view identifier;
+  variable_declaration_flags_t flags;
+} variable_declaration;
+
 ARRAY_DECLARE_DEFAULT(uint16_array, uint16_t)
 TABLE_DECLARE_DEFAULT(scope_registers, hashed_string, uint16_t /* index to the scope's registers array */, hash_t)
 ARRAY_DECLARE_DEFAULT(registers, _register)
@@ -174,6 +186,8 @@ typedef struct {
   object_function* function;
 } compile_result;
 
+ARRAY_DECLARE_DEFAULT(top_level_declarations, variable_declaration);
+
 typedef struct {
   allocators* alloc;
   object_store* objects_store;
@@ -183,6 +197,7 @@ typedef struct {
 typedef struct {
   ok_source* source;
   ast_root* root;
+  top_level_declarations top_level_declarations;
 } compile_specs;
 
 void compiler_init(compiler* compiler, compiler_specs p_specs);

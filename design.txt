@@ -1,0 +1,80 @@
+// 1: shadowing inconsistencies:
+
+// A: lexcical-aware `as` (types)
+fu () {
+  let str = 'hi';
+  print 1 as str; // error: str is not a type!
+}();
+
+fu () {
+  print 1 as str; // prints: 1
+  // because str is not shadowed by your decl, and normal lexical scopes apply here!
+}();
+
+// B: hidden len is not
+fu () {
+  let arr = [1, 2, 3];
+  let len = 22;
+  for i : arr {
+    print i as str + len as str; // prints: ${i}22
+    // because 'len' is temporary dependency for the ranged-for, thus it should try to align with the future-invisioned design
+    // thus the compiler declares it as an intrinsic ' len'
+  }
+}();
+
+// Conclusion:
+
+// therfore in both cases the language surface will not change as we implement the proper versions of these
+// only the impl details will, and it will become more general.
+// and this is my justification of those design decisions
+
+
+// 2: dropping the '?'
+// old:
+// let is_nice = false;
+// if is_nice? print 'nice!';
+
+// new:
+let is_nice = false;
+if is_nice {
+  print 'nice!';
+}
+
+// the first instinct i had for '?' is was it reads nice with boolean conditions, where you have a clear name that indicates uncertainty.
+// while also not locking the language to '()' everywhere, think of python's ':', but i had other plans for ':', so naturally i decided on '?' since the first impl was if statements
+// then i added while loops to the language and it also read failry good, but then when i added c-style for loop the thing became ugly.
+// also i noticed confusion, whenever i show a snippet of oklang source code to some llm, it would assume that '?' is some boolean assertion type of operator, and not mearly a terminator
+// and also single statement loops/conditions, are highly error prone. (while at first i thought it is flixeable for a language to have (why c have them while i can't?) thus the became a thing).
+
+// Conclusion:
+// therfore i decided to drop the '?' and the signle statement bodies, for killing the source of confusion, and also aligning with the design of functions (where they only accept compound statements as bodies)
+// and keep all bodies as compound statements only, swift-style!
+
+
+// 3: conversions:
+
+// it is simple, we always value explicit, so something like: 
+// let arr = [];
+// arr as num;
+// is a runtime error, not 0 (the array length), you want that? use len, why shady?
+
+// as for the thing that broke the rule of explicit, is booleans, i decided to take ruby-like approach, where false and null are the only falsy values and thus the convert to false
+// everything else, is true. i wanted to treat it as runtime error first, since it is always a source of confusion in other languages, no matter how clear or unclear the semantics are
+// (of course confusion is a spectrum here, something like ruby is far less confusing than something like weird java script), but still!
+// but the thing that held me from that is what we consider truthy vs falsy in other places, so i just made the bool converter match that.
+
+
+// 4: the compiler new api for declaring variables on top of TUs, and the new hidden scope:
+// i added an api in the compiler that allows you to declare variables for each TU (future module)
+// why so, so we can use it to declare the "core" functions (array: len, push, pop, remove) and the type tags: (str, num, bool)
+// why not global? globals are bad, not the generic globals are bad preach, but in a way that will make one TU able to break the reast of the codebase
+// so if some code in some TU overrides one of the core functions or tags, it will become for ever broken, for the rest of the program cycle for all TUs
+// now we only have one TU since there is no module system, but i thought it was worth it
+// so now the compiler accepts array of values to declare them in the outer most scope, this way any override even if at the very top level will only break this TU
+// and why the new scope we already have outer scope? oh it was made to elemenate the type of hidden bugs, where you try to declare say len at the top, but the compiler will refuse saying
+// attempting to redeclare in same scope, which is confusing, so the new scope was added, now lexical rules apply
+// i am not sure if this is the best approach, or design, because it will allow for easy override of those functions, but i guess every language has this problem
+// and there is no soultion, only warnings
+// also as a quick and dirty stash, i am defining them as globals, that start with space so it is not reachable, just as a quick and dirty rooted reusable collection, no reason for them to be globals other than that!
+
+// known issues: debug assumes constant, now as operator uses g, fix!

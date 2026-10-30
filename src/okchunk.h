@@ -68,8 +68,16 @@ typedef enum {
  * MSB                               LSB
  *  ↓                                 ↓
  *  0000000 0 0000000000000000 00000000
- *     ↓    ↓        ↓            ↓
- *     op   p        A           free
+ *     ↓    ↓        ↓           ↓
+ *     op   p        A          free
+ *
+ *            (large-ex mode)
+ * MSB                               LSB
+ *  ↓                                 ↓
+ *  0000000 0 0000000000000000 000 00000
+ *     ↓    ↓        ↓          ↓    ↓
+ *     op   p        A          e  reserved
+
  *
  *=============================================*/
 
@@ -87,12 +95,13 @@ typedef enum {
  *
  * BINARY ALWAYS READS LSB => MSB. (i.e. op always starts at offset 0 exactly).
  *
- * word(w):     32bit word size, also the maximum size of the code array.
- * op(op')(OP): 7bit, the actual opcode being dispatched.
- * p(p')(P), q: 1bit, meaning defined by each op.
- * a, b, c:     8bit, meaning defined by each op.
- * a', b':      12bit, meaning defined by each op.
- * A, B, C:     16bit, meaning defined by each op.
+ * word(w):           32bit word size, also the maximum size of the code array.
+ * op(op')(OP):       7bit, the actual opcode being dispatched.
+ * p(p')(P), q, s, r: 1bit, meaning defined by each op.
+ * a, b, c:           8bit, meaning defined by each op.
+ * a', b':            12bit, meaning defined by each op.
+ * A, B, C:           16bit, meaning defined by each op.
+ * e:                 3bit, value defined by the RETURNED enum
  *
  * top:  frame top (in active calls is the same as register top but the vm separates the 2 concepts)
  * r[x]: register (*relevant* frame window)
@@ -152,7 +161,7 @@ typedef enum {
   OP_CALL_LONG,          // 2w:   (p, A, B, C)    -> r[A] ... r[A + C - 2] = r[A](r[A + 1] ... r[A + B - 1]); { same as narrow variant }
   OP_RETURN,             // w:    (a', b')        -> return r[a'] ... r[a' + b' - 1] { b' == 0 => return r[a'] ... r[top - 1] (passthrough) }
   OP_RETURN_LONG,        // 2w:   (A, B)          -> return r[A] ... r[A + B - 1]; { same as narrow variant }
-  OP_RETURN_1,           // w:    (p, A)          -> return p == true then null otherwise r[A]
+  OP_RETURN_1,           // w:    (A, e)          -> return switch RETURNED(e)
   OP_CLOSURE,            // w:    (a', b')        -> r[a'] = closure(k[b'])
   OP_CLOSURE_LONG,       // 2w:   (A, B)          -> r[A] = closure(k[B])
   OP_NOT,                // w:    (p, a', b')     -> r[a'] = p == 0 then !r[b'] otherwise !k[b'] 
@@ -168,7 +177,8 @@ typedef enum {
   OP_DIVIDE,             // w:    (p, a, b, c)    -> r[a] = r[b] / (p then k[c] otherwise r[c])
   OP_DIVIDE_LONG,        // 2w:   (p, A, B, C, q) -> r[A] = (q then k[B] otherwise r[B]) / (p then k[C] otherwise r[C]); ip += w
   OP_MODULUS,            // w:    (p, a, b, c)    -> r[a] = r[b] % (p then k[c] otherwise r[c]); floored remainder
-                         //                          (python/lua: sign follows the divisor, -7 % 3 == 2; rhs 0 is a runtime error like '/')
+  OP_AS,                 // w:    (p, a, b, c)    -> r[a] = r[b] as (p then g[c] otherwise r[c])
+  OP_AS_LONG,            // 2w:   (p, A, B, C, q) -> r[A] = (q then k[B] otherwise r[B]) as (p then g[C] otherwise r[C]); ip += w
   OP_MODULUS_LONG,       // 2w:   (p, A, B, C, q) -> r[A] = (q then k[B] otherwise r[B]) % (p then k[C] otherwise r[C]); ip += w
   OP_EQUALS,             // w:    (p, a, b, c)    -> r[a] = r[b] == (p then k[c] otherwise r[c])
   OP_EQUALS_LONG,        // 2w:   (p, A, B, C, q) -> r[A] = (q then k[B] otherwise r[B]) == (p then k[C] otherwise r[C]); ip += w
@@ -239,7 +249,9 @@ ARRAY_DECLARE_DEFAULT(identifiers, string)
 #define bprime_LOFFSET (aprime_LOFFSET + 12u)
 
 #define A_LARGE_MASK UINT32_C(0x00ffff00)
+#define e_LARGE_MASK UINT32_C(0x00000010)
 #define A_LARGE_LOFFSET a_LOFFSET
+#define e_LARGE_LOFFSET b_LOFFSET
 
 // 2 words
 
@@ -270,6 +282,16 @@ ARRAY_DECLARE_DEFAULT(identifiers, string)
 #define B_MAX A_MAX
 #define C_MAX B_MAX
 
+typedef enum {
+  RETURNED_NULL = 0,
+  RETURNED_CONSTANT = 1,
+  RETURNED_GLOBAL = 2,
+  RETURNED_UPVALUE = 3,
+  RETURNED_REGISTER = 4,
+  RETURNED_KTRUE = 5,
+  RETURNED_KFALSE = 6,
+} returned;
+
 static inline word2 join_words(word p_w1, word p_w2) {
   return ((word2)p_w1 << 32u) | p_w2;
 }
@@ -291,6 +313,11 @@ encode_oppabprime(const opcode p_op, const bool p_p, const uint16_t p_aprime, co
 static inline word encode_oppA(const opcode p_op, const bool p_p, const uint16_t p_A) {
   return ((uint32_t)p_op << op_LOFFSET) & op_MASK | (((uint32_t)p_p) << p_LOFFSET) & p_MASK |
          (((uint32_t)p_A) << A_LARGE_LOFFSET) & A_LARGE_MASK;
+}
+
+static inline word encode_oppAe(const opcode p_op, const bool p_p, const uint16_t p_A, const bool p_e) {
+  return ((uint32_t)p_op << op_LOFFSET) & op_MASK | (((uint32_t)p_p) << p_LOFFSET) & p_MASK |
+         (((uint32_t)p_A) << A_LARGE_LOFFSET) & A_LARGE_MASK | (((uint32_t)p_e) << e_LARGE_LOFFSET) & e_LARGE_MASK;
 }
 
 static inline word2 encode_OPPABCQ(
@@ -330,6 +357,10 @@ static inline uint16_t bprime_of(const word p_word) {
 
 static inline uint16_t Alarge_of(const word p_word) {
   return (p_word & A_LARGE_MASK) >> A_LARGE_LOFFSET;
+}
+
+static inline uint8_t elarge_of(const word p_word) {
+  return (p_word & e_LARGE_MASK) >> e_LARGE_LOFFSET;
 }
 
 static inline uint16_t A_of(const word2 p_word) {

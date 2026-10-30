@@ -46,6 +46,8 @@ void repl(ok* p_ok) {
       fprintf(stderr, "compiler error occurred.\n");
     } else if (result == OK_RUNTIME_ERROR) {
       fprintf(stderr, "runtime error occurred.\n");
+    } else if (result == OK_INIT_ERROR) {
+      fprintf(stderr, "init error occurred.\n");
     }
   }
 }
@@ -63,7 +65,7 @@ void run_file(ok* p_ok, const char* p_path) {
   free(src);
   if (result == OK_PARSE_ERROR || result == OK_COMPILE_ERROR) {
     exit(65);
-  } else if (result == OK_RUNTIME_ERROR) {
+  } else if (result == OK_RUNTIME_ERROR || result == OK_INIT_ERROR) {
     exit(70);
   }
 }

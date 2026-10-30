@@ -64,6 +64,8 @@ static const char* const OPCODE_NAMES[] = {
     "GREATER_EQUAL_LONG",
     "LESS_EQUAL",
     "LESS_EQUAL_LONG",
+    "AS",
+    "AS_LONG",
     "PRINT",
     "ARRAY_NEW",
     "ARRAY_NEW_LONG",
@@ -75,9 +77,7 @@ static const char* const OPCODE_NAMES[] = {
     "FOR_PREP",
     "FOR_LOOP",
 };
-typedef char opcode_names_in_sync[(sizeof(OPCODE_NAMES) / sizeof(OPCODE_NAMES[0]) == (size_t)OP_FOR_LOOP + 1)
-                                      ? 1
-                                      : -1];
+typedef char opcode_names_in_sync[(sizeof(OPCODE_NAMES) / sizeof(OPCODE_NAMES[0]) == (size_t)OP_FOR_LOOP + 1) ? 1 : -1];
 
 static const char* binop_symbol(const opcode p_op) {
   switch (p_op) {
@@ -114,6 +114,9 @@ static const char* binop_symbol(const opcode p_op) {
   case OP_LESS_EQUAL:
   case OP_LESS_EQUAL_LONG:
     return "<=";
+  case OP_AS:
+  case OP_AS_LONG:
+    return " as ";
   default:
     return NULL;
   }
@@ -166,6 +169,7 @@ static bool op_is_two_words(opcode p_op) {
   case OP_LESS_LONG:
   case OP_GREATER_EQUAL_LONG:
   case OP_LESS_EQUAL_LONG:
+  case OP_AS_LONG:
   case OP_ARRAY_NEW_LONG:
   case OP_ARRAY_GET_LONG:
   case OP_ARRAY_SET_LONG:
@@ -234,6 +238,7 @@ uint32_t debug_disassemble_instruction(disassembler* p_disassembler, uint32_t p_
   const uint16_t b = b_of(instruction);
   const uint16_t c = c_of(instruction);
   const uint16_t Al = Alarge_of(instruction);
+  const uint8_t e = elarge_of(joined);
   const uint16_t A = A_of(joined);
   const uint16_t B = B_of(joined);
   const uint16_t C = C_of(joined);
@@ -357,10 +362,28 @@ uint32_t debug_disassemble_instruction(disassembler* p_disassembler, uint32_t p_
     }
     break;
   case OP_RETURN_1:
-    if (p) {
+    switch (e) {
+    case RETURNED_NULL:
       printf("return null");
-    } else {
-      printf("return r%u", Al);
+      break;
+    case RETURNED_KFALSE:
+      printf("return false");
+      break;
+    case RETURNED_KTRUE:
+      printf("return true");
+      break;
+    case RETURNED_CONSTANT:
+      printf("return k[%u]", Al);
+      break;
+    case RETURNED_REGISTER:
+      printf("return r[%u]", Al);
+      break;
+    case RETURNED_GLOBAL:
+      printf("return r[%u]", Al);
+      break;
+    case RETURNED_UPVALUE:
+      printf("return u[%u]", Al);
+      break;
     }
     break;
   case OP_CLOSURE:
@@ -511,9 +534,12 @@ bool debug_disassemble_function(disassembler* p_disassembler, const object_funct
   const chunk* saved = p_disassembler->chunk;
   p_disassembler->chunk = &p_function->chunk;
   gc_pause(p_function->chunk.alloc->gc);
-  printf("=== %s: %u instructions, %u constants, %u registers, %u upvalues ===\n", p_name,
-         (unsigned)p_function->chunk.code.count, (unsigned)p_function->chunk.constants.count,
-         (unsigned)p_function->registers, (unsigned)p_function->upvalues.count);
+  printf("=== %s: %u instructions, %u constants, %u registers, %u upvalues ===\n",
+         p_name,
+         (unsigned)p_function->chunk.code.count,
+         (unsigned)p_function->chunk.constants.count,
+         (unsigned)p_function->registers,
+         (unsigned)p_function->upvalues.count);
   for (uint32_t i = 0; i < p_function->upvalues.count; ++i) {
     const upvalue_descriptor ud = p_function->upvalues.data[i];
     printf("  up[%u] = %s r%u\n", i, ud.is_local ? "local" : "up", ud.index);

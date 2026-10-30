@@ -25,19 +25,19 @@
   X(OPERATOR_BIN_AMPERSAND, "&")                                                                                       \
   X(OPERATOR_BIN_BAR, "|")                                                                                             \
   X(OPERATOR_BIN_TILED, "~")                                                                                           \
-  X(OPERATOR_PLUS_EQUAL, "+=")                                                                                     \
-  X(OPERATOR_MINUS_EQUAL, "-=")                                                                                    \
-  X(OPERATOR_ASTERISK_EQUAL, "*=")                                                                                 \
-  X(OPERATOR_SLASH_EQUAL, "/=")                                                                                    \
-  X(OPERATOR_MODULO_EQUAL, "%=")                                                                                   \
-  X(OPERATOR_CARET_EQUAL, "^=")                                                                                    \
-  X(OPERATOR_AMPERSAND_EQUAL, "&=")                                                                                \
-  X(OPERATOR_BAR_EQUAL, "|=")                                                                                      \
-  X(OPERATOR_TILED_EQUAL, "~=")                                                                                    \
-  X(OPERATOR_SHIFT_LEFT, "<<")                                                                                     \
-  X(OPERATOR_SHIFT_RIGHT, ">>")                                                                                    \
-  X(OPERATOR_SHIFT_LEFT_EQUAL, "<<=")                                                                              \
-  X(OPERATOR_SHIFT_RIGHT_EQUAL, ">>=")                                                                             \
+  X(OPERATOR_PLUS_EQUAL, "+=")                                                                                         \
+  X(OPERATOR_MINUS_EQUAL, "-=")                                                                                        \
+  X(OPERATOR_ASTERISK_EQUAL, "*=")                                                                                     \
+  X(OPERATOR_SLASH_EQUAL, "/=")                                                                                        \
+  X(OPERATOR_MODULO_EQUAL, "%=")                                                                                       \
+  X(OPERATOR_CARET_EQUAL, "^=")                                                                                        \
+  X(OPERATOR_AMPERSAND_EQUAL, "&=")                                                                                    \
+  X(OPERATOR_BAR_EQUAL, "|=")                                                                                          \
+  X(OPERATOR_TILED_EQUAL, "~=")                                                                                        \
+  X(OPERATOR_SHIFT_LEFT, "<<")                                                                                         \
+  X(OPERATOR_SHIFT_RIGHT, ">>")                                                                                        \
+  X(OPERATOR_SHIFT_LEFT_EQUAL, "<<=")                                                                                  \
+  X(OPERATOR_SHIFT_RIGHT_EQUAL, ">>=")                                                                                 \
   X(OPERATOR_PRE_NOT, "not")                                                                                           \
   X(OPERATOR_LOG_OR, "or")                                                                                             \
   X(OPERATOR_LOG_AND, "and")
@@ -67,7 +67,8 @@ typedef enum {
   OPERATOR_BIN_GREATER_EQUAL,
   OPERATOR_BIN_LESS,
   OPERATOR_BIN_LESS_EQUAL,
-  OPERATOR_RANGE_BIN_VALUE_END = OPERATOR_BIN_LESS_EQUAL,
+  OPERATOR_BIN_AS,
+  OPERATOR_RANGE_BIN_VALUE_END = OPERATOR_BIN_AS,
 
   // binary that can only operate on lvalues
   OPERATOR_RANGE_BIN_LVALUE_BEGIN,

@@ -14,6 +14,7 @@ extern "C" {
 
 typedef enum {
   OK,
+  OK_INIT_ERROR,
   OK_PARSE_ERROR,
   OK_COMPILE_ERROR,
   OK_RUNTIME_ERROR,

@@ -5,11 +5,6 @@
 
 #include "ok/ok_source.h"
 
-// dead tokens removed 2026-10-27 (cpp-era leftovers): ++/-- (rejected by
-// decision), -> (old lambda syntax), ok/operator/static/async (stackless-coro
-// and class-modifier era; re-add with the features that need them).
-// then/otherwise added for the conditional (ternary) expression.
-
 #define TOKEN_LIST_X(X)                                                                                                \
   X(TOKEN_ERROR, "error")                                                                                              \
   X(TOKEN_ILLEGAL, "illegal")                                                                                          \

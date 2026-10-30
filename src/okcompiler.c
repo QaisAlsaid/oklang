@@ -10,22 +10,12 @@
 #include "okutils.h"
 #include "okvalue.h"
 
-typedef enum {
-  VARIABLE_DECLRATION_FLAGS_NONE = 0,
-  VARIABLE_DECLARATION_FLAGS_MUTABLE = 1 << 0,
-  VARIABLE_DECLARATION_FLAGS_GLOBAL = 1 << 1,
-} variable_declaration_flags;
-typedef uint8_t variable_declaration_flags_t;
-
-typedef struct {
-  ok_string_view identifier;
-  variable_declaration_flags_t flags;
-} variable_declaration;
-
 #define ARE_KEYS_EQUAL(lhs, rhs)                                                                                       \
   (string_get_length(&lhs.string) == string_get_length(&rhs.string) &&                                                 \
    strncmp(lhs.string.chars, rhs.string.chars, string_get_length(&lhs.string)) == 0)
 #define GET_HASH(key) (key.hash)
+
+ARRAY_DEFINE_DEFAULT(top_level_declarations, variable_declaration, ARRAY_DEFAULT_TYPE_DEINIT);
 
 TABLE_DEFINE_DEFAULT(scope_registers,
                      hashed_string,
@@ -221,7 +211,7 @@ static inline bool emit_word2(compiler* p_compiler, word2 p_words, ast_node* p_a
 }
 
 static bool emit_default_return(compiler* p_compiler, ast_node* p_author) {
-  return emit_word(p_compiler, encode_oppA(OP_RETURN_1, true, 0), p_author);
+  return emit_word(p_compiler, encode_oppAe(OP_RETURN_1, true, 0, RETURNED_NULL), p_author);
 }
 
 static bool begin_scope(compiler* p_compiler, ast_node* p_author) {
@@ -295,7 +285,8 @@ static inline void end_context(compiler* p_compiler) {
   ASSERT(compile_contexts_pop(&p_compiler->contexts));
 }
 
-static _register add_local(compiler* p_compiler, const variable_declaration p_declration, ast_node* p_author) {
+static _register
+add_local(compiler* p_compiler, const variable_declaration p_declration, bool p_initialized, ast_node* p_author) {
   // full flag set must be computed before any allocation: the metadata array copies the
   // register at append time inside allocate_local, later changes to the local copy will drift.
   register_flags flags =
@@ -503,13 +494,23 @@ compile_result compiler_compile(compiler* p_compiler, compile_specs p_specs) {
   if (!begin_scope(p_compiler, (ast_node*)p_specs.root)) {
     goto ret;
   }
-  if (!IS_REGISTER_VALID(add_local(p_compiler, decl, (ast_node*)p_specs.root))) {
+  if (!IS_REGISTER_VALID(add_local(p_compiler, decl, true, (ast_node*)p_specs.root))) {
     goto ret;
   }
+  // if (!begin_scope(p_compiler, (ast_node*)p_specs.root)) { // hidden scope
+  //   goto ret;
+  // }
+  // for (uint32_t i = 0; i < p_specs.top_level_declarations.count; ++i) {
+  //   if (!IS_REGISTER_VALID(add_local(p_compiler, p_specs.top_level_declarations.data[i], true, p_specs.root))) {
+  //     goto ret;
+  //   }
+  // }
+  //
   bool res = compile_root(p_compiler, p_specs.root);
   result.function = current_context(p_compiler)->function.function;
   result.function->registers = current_context(p_compiler)->register_allocator.registers_count;
   res &= emit_default_return(p_compiler, (ast_node*)p_specs.root);
+  // res &= end_scope(p_compiler, (ast_node*)p_specs.root); // hidden scope
   res &= end_scope(p_compiler, (ast_node*)p_specs.root);
   end_context(p_compiler);
   if (p_compiler->had_error == false && res != false) {
@@ -791,16 +792,38 @@ static bool materialize_if_not_register(compiler* p_compiler, location* p_locati
   return true;
 }
 
-static bool materialize_into_if_not_common(
-    compiler* p_compiler, bool* p_is_constant, location* p_location, _register p_dest, ast_node* p_author) {
-  *p_is_constant = false;
+static bool materialize_into_if_not_common(compiler* p_compiler,
+                                           bool* p_is_common,
+                                           location_kind p_common_kind,
+                                           location* p_location,
+                                           _register p_dest,
+                                           ast_node* p_author) {
+  *p_is_common = false;
   switch (p_location->kind) {
   case LOCATION_KIND_CONSTANT:
-    *p_is_constant = true;
-    break;
+    if (p_common_kind == LOCATION_KIND_CONSTANT) {
+      *p_is_common = true;
+      break;
+    }
+    goto materialize;
+  case LOCATION_KIND_GLOBAL: {
+    if (p_common_kind == LOCATION_KIND_GLOBAL) {
+      *p_is_common = true;
+      break;
+    }
+    goto materialize;
+  }
+  case LOCATION_KIND_UPVALUE: {
+    if (p_common_kind == LOCATION_KIND_UPVALUE) {
+      *p_is_common = true;
+      break;
+    }
+    goto materialize;
+  }
   case LOCATION_KIND_REGISTER:
     break;
   default: {
+  materialize:
     if (!materialize_value(p_compiler, p_dest, *p_location, p_author)) {
       return false;
     }
@@ -948,7 +971,7 @@ static _register* resolve_local(compile_context* p_context, hashed_string* p_ide
 
 static location declare_variable(compiler* p_compiler, const variable_declaration p_declration, ast_node* p_node) {
   if ((p_declration.flags & VARIABLE_DECLARATION_FLAGS_GLOBAL) == 0) {
-    _register local = add_local(p_compiler, p_declration, p_node);
+    _register local = add_local(p_compiler, p_declration, false, p_node);
     return (location){local.index, LOCATION_KIND_REGISTER, IS_REGISTER_VALID(local) ? LOCATION_OK : LOCATION_INVALID};
   }
   global glob = add_global(p_compiler, p_declration, p_node);
@@ -1843,8 +1866,6 @@ bool compile_control_flow_statement(compiler* p_compiler, ast_control_flow_state
 
 static bool compile_return_statement(compiler* p_compiler, ast_return_statement* p_return) {
   // TODO: multiple returns when required by langauge.
-  // TODO: optimize return 1 to accept operands from constants table, and then materialize inplace instead of 2
-  //       instructions, since it is a really common operation (e.g. return false;).
   if (p_return->returned == NULL) {
     return emit_default_return(p_compiler, (ast_node*)p_return);
   }
@@ -1856,11 +1877,30 @@ static bool compile_return_statement(compiler* p_compiler, ast_return_statement*
   if (!compile_expression(p_compiler, p_return->returned, dest, 1, &returned)) {
     return false;
   }
-  if (!materialize_into_if_not_register(p_compiler, &returned.value, dest, (ast_node*)p_return)) {
-    return false;
+  uint8_t e = RETURNED_NULL;
+  chunk* chunk = current_chunk(p_compiler);
+  switch (returned.value.kind) {
+  case LOCATION_KIND_CONSTANT: {
+    value con = chunk->constants.data[returned.value.index];
+    if (IS_VALUE_STRICTLY_BOOL(con)) {
+      e = VALUE_AS_BOOL(con) ? RETURNED_KTRUE : RETURNED_KFALSE;
+      break;
+    }
+    e = RETURNED_CONSTANT;
+    break;
+  }
+  case LOCATION_KIND_GLOBAL:
+    e = RETURNED_GLOBAL;
+    break;
+  case LOCATION_KIND_UPVALUE:
+    e = RETURNED_UPVALUE;
+    break;
+  case LOCATION_KIND_REGISTER:
+    e = RETURNED_REGISTER;
+    break;
   }
 
-  return emit_word(p_compiler, encode_oppA(OP_RETURN_1, false, returned.value.index), (ast_node*)p_return);
+  return emit_word(p_compiler, encode_oppAe(OP_RETURN_1, false, returned.value.index, e), (ast_node*)p_return);
 }
 
 static bool compile_number_expression(compiler* p_compiler,
@@ -1943,7 +1983,8 @@ static bool compile_prefix_unary_expression(compiler* p_compiler,
     return false;
   }
   bool is_constant = false;
-  if (!materialize_into_if_not_common(p_compiler, &is_constant, &rhs.value, p_dest, (ast_node*)p_expression)) {
+  if (!materialize_into_if_not_common(
+          p_compiler, &is_constant, LOCATION_KIND_CONSTANT, &rhs.value, p_dest, (ast_node*)p_expression)) {
     return false;
   }
 
@@ -1960,8 +2001,7 @@ static bool compile_prefix_unary_expression(compiler* p_compiler,
     op_long = OP_NOT_LONG;
     break;
   default:
-    CRASH_MSG(false, "unimplemented prefix operator."); // TODO: in future this shape need to change since ++/-- operate
-                                                        // differently and need lvalue
+    CRASH_MSG(false, "unimplemented prefix operator.");
   }
   if (p_dest.index > aprime_MAX || rhs.value.index > bprime_MAX) {
     if (!emit_word2(p_compiler,
@@ -2099,21 +2139,19 @@ static bool emit_binop(compiler* p_compiler,
                        _register p_result,
                        location p_lhs,
                        location p_rhs,
-                       bool p_is_lhs_constant,
-                       bool p_is_rhs_constant,
+                       bool p_is_lhs_p,
+                       bool p_is_rhs_p,
                        ast_node* p_author) {
   bool is_long = p_result.index > a_MAX || p_lhs.index > b_MAX || p_rhs.index > c_MAX;
   if (is_long) {
-    if (!emit_word2(
-            p_compiler,
-            encode_OPPABCQ(p_long_op, p_is_rhs_constant, p_result.index, p_lhs.index, p_rhs.index, p_is_lhs_constant),
-            p_author)) {
+    if (!emit_word2(p_compiler,
+                    encode_OPPABCQ(p_long_op, p_is_rhs_p, p_result.index, p_lhs.index, p_rhs.index, p_is_lhs_p),
+                    p_author)) {
       report_oom(p_compiler, p_author);
       return false;
     }
-  } else if (!emit_word(p_compiler,
-                        encode_oppabc(p_op, p_is_rhs_constant, p_result.index, p_lhs.index, p_rhs.index),
-                        p_author)) {
+  } else if (!emit_word(
+                 p_compiler, encode_oppabc(p_op, p_is_rhs_p, p_result.index, p_lhs.index, p_rhs.index), p_author)) {
     report_oom(p_compiler, p_author);
     return false;
   }
@@ -2142,13 +2180,18 @@ static bool compile_binary_value_operator(compiler* p_compiler,
     return false;
   }
 
+  const location_kind lhs_common_kind = LOCATION_KIND_CONSTANT;
+  location_kind rhs_common_kind = (p_binexpr->_operator == OP_AS || p_binexpr->_operator == OP_AS_LONG)
+                                      ? LOCATION_KIND_GLOBAL
+                                      : LOCATION_KIND_CONSTANT;
   bool is_long = p_dest.index > a_MAX || lhs.value.index > b_MAX || rhs.value.index > c_MAX;
-  bool is_lhs_constant = false;
-  bool is_rhs_constant = false;
+  bool is_lhs_p = false;
+  bool is_rhs_p = false;
 
   // conditional materialization based on dest opcode to allow for more optimized emission
   if (is_long) {
-    if (!materialize_into_if_not_common(p_compiler, &is_lhs_constant, &lhs.value, p_dest, (ast_node*)p_binexpr)) {
+    if (!materialize_into_if_not_common(
+            p_compiler, &is_lhs_p, lhs_common_kind, &lhs.value, p_dest, (ast_node*)p_binexpr)) {
       return false;
     }
   } else {
@@ -2156,22 +2199,16 @@ static bool compile_binary_value_operator(compiler* p_compiler,
       return false;
     }
   }
-  if (!materialize_into_if_not_common(p_compiler, &is_rhs_constant, &rhs.value, rhs_dest, (ast_node*)p_binexpr)) {
+  if (!materialize_into_if_not_common(
+          p_compiler, &is_rhs_p, rhs_common_kind, &rhs.value, rhs_dest, (ast_node*)p_binexpr)) {
     return false;
   }
 
   bool result = false;
   switch (p_binexpr->_operator) {
   case OPERATOR_BIN_PLUS: {
-    result = emit_binop(p_compiler,
-                        OP_ADD,
-                        OP_ADD_LONG,
-                        p_dest,
-                        lhs.value,
-                        rhs.value,
-                        is_lhs_constant,
-                        is_rhs_constant,
-                        (ast_node*)p_binexpr);
+    result = emit_binop(
+        p_compiler, OP_ADD, OP_ADD_LONG, p_dest, lhs.value, rhs.value, is_lhs_p, is_rhs_p, (ast_node*)p_binexpr);
     break;
   }
   case OPERATOR_BIN_MINUS: {
@@ -2181,8 +2218,8 @@ static bool compile_binary_value_operator(compiler* p_compiler,
                         p_dest,
                         lhs.value,
                         rhs.value,
-                        is_lhs_constant,
-                        is_rhs_constant,
+                        is_lhs_p,
+                        is_rhs_p,
                         (ast_node*)p_binexpr);
 
     break;
@@ -2194,22 +2231,15 @@ static bool compile_binary_value_operator(compiler* p_compiler,
                         p_dest,
                         lhs.value,
                         rhs.value,
-                        is_lhs_constant,
-                        is_rhs_constant,
+                        is_lhs_p,
+                        is_rhs_p,
                         (ast_node*)p_binexpr);
 
     break;
   }
   case OPERATOR_BIN_SLASH: {
-    result = emit_binop(p_compiler,
-                        OP_DIVIDE,
-                        OP_DIVIDE_LONG,
-                        p_dest,
-                        lhs.value,
-                        rhs.value,
-                        is_lhs_constant,
-                        is_rhs_constant,
-                        (ast_node*)p_binexpr);
+    result = emit_binop(
+        p_compiler, OP_DIVIDE, OP_DIVIDE_LONG, p_dest, lhs.value, rhs.value, is_lhs_p, is_rhs_p, (ast_node*)p_binexpr);
 
     break;
   }
@@ -2220,22 +2250,15 @@ static bool compile_binary_value_operator(compiler* p_compiler,
                         p_dest,
                         lhs.value,
                         rhs.value,
-                        is_lhs_constant,
-                        is_rhs_constant,
+                        is_lhs_p,
+                        is_rhs_p,
                         (ast_node*)p_binexpr);
 
     break;
   }
   case OPERATOR_BIN_EQUALS: {
-    result = emit_binop(p_compiler,
-                        OP_EQUALS,
-                        OP_EQUALS_LONG,
-                        p_dest,
-                        lhs.value,
-                        rhs.value,
-                        is_lhs_constant,
-                        is_rhs_constant,
-                        (ast_node*)p_binexpr);
+    result = emit_binop(
+        p_compiler, OP_EQUALS, OP_EQUALS_LONG, p_dest, lhs.value, rhs.value, is_lhs_p, is_rhs_p, (ast_node*)p_binexpr);
 
     break;
   }
@@ -2246,22 +2269,15 @@ static bool compile_binary_value_operator(compiler* p_compiler,
                         p_dest,
                         lhs.value,
                         rhs.value,
-                        is_lhs_constant,
-                        is_rhs_constant,
+                        is_lhs_p,
+                        is_rhs_p,
                         (ast_node*)p_binexpr);
 
     break;
   }
   case OPERATOR_BIN_LESS: {
-    result = emit_binop(p_compiler,
-                        OP_LESS,
-                        OP_LESS_LONG,
-                        p_dest,
-                        lhs.value,
-                        rhs.value,
-                        is_lhs_constant,
-                        is_rhs_constant,
-                        (ast_node*)p_binexpr);
+    result = emit_binop(
+        p_compiler, OP_LESS, OP_LESS_LONG, p_dest, lhs.value, rhs.value, is_lhs_p, is_rhs_p, (ast_node*)p_binexpr);
 
     break;
   }
@@ -2272,8 +2288,8 @@ static bool compile_binary_value_operator(compiler* p_compiler,
                         p_dest,
                         lhs.value,
                         rhs.value,
-                        is_lhs_constant,
-                        is_rhs_constant,
+                        is_lhs_p,
+                        is_rhs_p,
                         (ast_node*)p_binexpr);
 
     break;
@@ -2285,8 +2301,8 @@ static bool compile_binary_value_operator(compiler* p_compiler,
                         p_dest,
                         lhs.value,
                         rhs.value,
-                        is_lhs_constant,
-                        is_rhs_constant,
+                        is_lhs_p,
+                        is_rhs_p,
                         (ast_node*)p_binexpr);
 
     break;
@@ -2298,8 +2314,21 @@ static bool compile_binary_value_operator(compiler* p_compiler,
                         p_dest,
                         lhs.value,
                         rhs.value,
-                        is_lhs_constant,
-                        is_rhs_constant,
+                        is_lhs_p,
+                        is_rhs_p,
+                        (ast_node*)p_binexpr);
+
+    break;
+  }
+  case OPERATOR_BIN_AS: {
+    result = emit_binop(p_compiler,
+                        OP_AS,
+                        OP_AS_LONG, // looks poetic
+                        p_dest,
+                        lhs.value,
+                        rhs.value,
+                        is_lhs_p,
+                        is_rhs_p,
                         (ast_node*)p_binexpr);
 
     break;
@@ -2643,7 +2672,8 @@ static bool compile_compound_assign_expression(compiler* p_compiler,
     return false;
   }
   bool is_rhs_constant = false;
-  if (!materialize_into_if_not_common(p_compiler, &is_rhs_constant, &rhs.value, rhs_reg, author)) {
+  if (!materialize_into_if_not_common(
+          p_compiler, &is_rhs_constant, LOCATION_KIND_CONSTANT, &rhs.value, rhs_reg, author)) {
     return false;
   }
 
@@ -2705,34 +2735,34 @@ static bool compile_for_in_statement(compiler* p_compiler, ast_for_in_statement*
   // the numeric for uses - one increment/test dispatch per iteration).
   variable_declaration counter_decl = {.identifier = ok_create_string_view(" i", OK_STRING_VIEW_CALCULATE_LENGTH, true),
                                        .flags = VARIABLE_DECLARATION_FLAGS_MUTABLE};
-  _register counter = add_local(p_compiler, counter_decl, author);
+  _register counter = add_local(p_compiler, counter_decl, false, author);
   if (!IS_REGISTER_VALID(counter)) {
     goto fail;
   }
   variable_declaration limit_decl = {.identifier =
                                          ok_create_string_view(" limit", OK_STRING_VIEW_CALCULATE_LENGTH, true),
                                      .flags = VARIABLE_DECLARATION_FLAGS_MUTABLE};
-  _register limit = add_local(p_compiler, limit_decl, author);
+  _register limit = add_local(p_compiler, limit_decl, false, author);
   if (!IS_REGISTER_VALID(limit)) {
     goto fail;
   }
   variable_declaration step_decl = {.identifier = ok_create_string_view(" step", OK_STRING_VIEW_CALCULATE_LENGTH, true),
                                     .flags = VARIABLE_DECLARATION_FLAGS_MUTABLE};
-  _register step = add_local(p_compiler, step_decl, author);
+  _register step = add_local(p_compiler, step_decl, false, author);
   if (!IS_REGISTER_VALID(step)) {
     goto fail;
   }
   ASSERT(limit.index == counter.index + 1 && step.index == counter.index + 2);
   variable_declaration arr_decl = {.identifier = ok_create_string_view(" arr", OK_STRING_VIEW_CALCULATE_LENGTH, true),
                                    .flags = VARIABLE_DECLARATION_FLAGS_MUTABLE};
-  _register arr = add_local(p_compiler, arr_decl, author);
+  _register arr = add_local(p_compiler, arr_decl, false, author);
   if (!IS_REGISTER_VALID(arr)) {
     goto fail;
   }
   variable_declaration var_decl = {
       .identifier = ast_identifier_expression_get_value((ast_identifier_expression*)p_for_in->binding->lvalue),
       .flags = variable_declaration_flags_from_modifiers(DECLARATION_NONE, p_for_in->binding->modifiers)};
-  _register var = add_local(p_compiler, var_decl, (ast_node*)p_for_in->binding);
+  _register var = add_local(p_compiler, var_decl, false, (ast_node*)p_for_in->binding);
   if (!IS_REGISTER_VALID(var)) {
     goto fail;
   }
@@ -2928,20 +2958,20 @@ static bool compile_for_numeric_statement(compiler* p_compiler, ast_for_numeric_
   variable_declaration counter_decl = {
       .identifier = ast_identifier_expression_get_value((ast_identifier_expression*)p_for_numeric->binding->lvalue),
       .flags = variable_declaration_flags_from_modifiers(DECLARATION_NONE, p_for_numeric->binding->modifiers)};
-  _register counter = add_local(p_compiler, counter_decl, (ast_node*)p_for_numeric->binding);
+  _register counter = add_local(p_compiler, counter_decl, false, (ast_node*)p_for_numeric->binding);
   if (!IS_REGISTER_VALID(counter)) {
     goto fail;
   }
   variable_declaration limit_decl = {.identifier =
                                          ok_create_string_view(" limit", OK_STRING_VIEW_CALCULATE_LENGTH, true),
                                      .flags = VARIABLE_DECLARATION_FLAGS_MUTABLE};
-  _register limit = add_local(p_compiler, limit_decl, author);
+  _register limit = add_local(p_compiler, limit_decl, false, author);
   if (!IS_REGISTER_VALID(limit)) {
     goto fail;
   }
   variable_declaration step_decl = {.identifier = ok_create_string_view(" step", OK_STRING_VIEW_CALCULATE_LENGTH, true),
                                     .flags = VARIABLE_DECLARATION_FLAGS_MUTABLE};
-  _register step = add_local(p_compiler, step_decl, author);
+  _register step = add_local(p_compiler, step_decl, false, author);
   if (!IS_REGISTER_VALID(step)) {
     goto fail;
   }
@@ -3140,7 +3170,7 @@ static bool compile_function_impl(compiler* p_compiler,
     return false;
   }
   variable_declaration decl = {.identifier = p_name, .flags = DECLARATION_NONE};
-  _register funtion_name = add_local(p_compiler, decl, p_author);
+  _register funtion_name = add_local(p_compiler, decl, false, p_author);
   if (!IS_REGISTER_VALID(funtion_name)) {
     end_scope(p_compiler, p_author);
     end_context(p_compiler);

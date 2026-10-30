@@ -1,6 +1,8 @@
+#include <errno.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "okvm.h"
@@ -109,17 +111,30 @@ interpret_result vm_interpret(vm* p_vm, interpret_specs p_specs) {
   object_closure* closure = create_object_closure(p_specs.function, &s);
   if (closure == NULL) {
     interpret_result res = {.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
+    runtime_error(p_vm, "out of memory: failed to allocate to level function.");
     return res;
+  }
+
+  if (p_specs.top_level_values.count > STACK_SIZE - 2) { // otherwise call handles it
+    if (!register_array_grow(&reg->array, closure->function->registers)) {
+      interpret_result res = {.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
+      runtime_error(p_vm, "out of memory: failed to grow register file.");
+      return res;
+    }
   }
   reg->array.data[reg->top] = OBJECT_AS_VALUE(closure); // call register
 
   // mark_vm roots registers in [0, top): the slot we just wrote is at top, so
   // until call() raises top to frame_top the closure would be unrooted and any
   // allocation inside call() (e.g. register file growth) could sweep it.
-  reg->top += 1;
+  reg->top++;
+  const uint32_t hidden_start = reg->top;
   gc_guard_down(p_vm->alloc->gc);
   if (!call_value(p_vm, p_vm->current_execution_state, reg, 0, 0, 0, 0)) {
     return vm_error(p_vm->current_execution_state);
+  }
+  for (uint16_t i = 0; i < p_specs.top_level_values.count; ++i) {
+    reg->array.data[hidden_start + i] = p_specs.top_level_values.data[i];
   }
   interpret_result interpret_result = run_until(p_vm, 0);
   if (interpret_result.status != RUNTIME_OK) {
@@ -167,6 +182,15 @@ static inline bool is_falsy(value p_value) {
 static inline value resolve_operand(call_frame* p_frame, register_file* p_reg, uint16_t p_index, bool p_is_constant) {
   if (p_is_constant) {
     return p_frame->closure->function->chunk.constants.data[p_index];
+  }
+  return p_reg->array.data[p_frame->registers_base + p_index];
+}
+
+// p_is_global selects between globals store (g[index]) and frame register (r[index])
+static inline value
+resolve_goperand(vm* p_vm, call_frame* p_frame, register_file* p_reg, uint16_t p_index, bool p_is_global) {
+  if (p_is_global) {
+    return p_vm->globals_store->global_values.data[p_index];
   }
   return p_reg->array.data[p_frame->registers_base + p_index];
 }
@@ -257,13 +281,13 @@ perform_add(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest
   } else if (IS_VALUE_OBJECT(lhs)) {
     if (IS_VALUE_STRING(lhs) && IS_VALUE_STRING(rhs)) {
       // string concatenation: both operands must be strings, no implicit
-      // coercion ("a" + 1 stays an error; host-side to_str natives exist for
-      // formatting). build the combined bytes over a raw scratch buffer first:
+      // coercion ("a" + 1 = error)
+      // build the combined bytes over a raw scratch buffer first:
       // it is plain memory, invisible to the gc, so allocations inside the
       // object creation can collect freely. create_object_string copies the
       // view into its own dynamic buffer and the result is published into the
-      // destination register with no allocation in between - the post-
-      // store-append window that killed array NEW does not exist here (no
+      // destination register with no allocation in between. the
+      // post-store-append window that killed array NEW does not exist here (no
       // append_n phase, nothing allocates between creation and publication).
       const object_string* left = VALUE_AS_STRING(p_lhs);
       const object_string* right = VALUE_AS_STRING(p_rhs);
@@ -891,6 +915,288 @@ perform_less_equal(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t
   }
 }
 
+static inline bool as_str_rest(vm* p_vm, ok_string_view p_str, value* p_result) {
+  object_specs specs = {p_vm->alloc, p_vm->objects_store};
+  object_string* str = create_object_string(p_str, &specs);
+  if (str == NULL) {
+    runtime_error(p_vm, "out of memory: failed to allocate string object.");
+    return false;
+  }
+  *p_result = OBJECT_AS_VALUE(str);
+  return true;
+}
+
+static inline bool num_as_str(vm* p_vm, double p_value, value* p_result) {
+  char buff[64];
+  if (snprintf(buff, 64, "%f", p_value) < 0) {
+    runtime_error(p_vm, "failed to convert number to string.");
+    return false;
+  }
+  return as_str_rest(p_vm, ok_create_string_view(buff, OK_STRING_VIEW_CALCULATE_LENGTH, true), p_result);
+}
+
+static inline bool int_as_str(vm* p_vm, int64_t p_value, value* p_result) {
+  char buff[64];
+  if (snprintf(buff, 64, "%li", p_value) < 0) {
+    runtime_error(p_vm, "failed to convert number to string.");
+    return false;
+  }
+  return as_str_rest(p_vm, ok_create_string_view(buff, OK_STRING_VIEW_CALCULATE_LENGTH, true), p_result);
+}
+
+static inline bool as_str(vm* p_vm, value p_value, value* p_result);
+
+static inline bool array_as_str(vm* p_vm, object* p_arr, value* p_result) {
+  object_array* arr = (object_array*)p_arr;
+  char* chars = NULL;
+  size_t len = 0;
+  for (uint32_t i = 0; i < arr->values.count; ++i) {
+    const uint8_t delemlen = i < arr->values.count - 1 ? 2 : 0;
+    value res;
+    if (!as_str(p_vm, arr->values.data[i], &res)) {
+      return false;
+    }
+    string* str = &VALUE_AS_STRING(res)->string;
+    uint32_t reslen = string_get_length(str);
+    if (str->chars != NULL) {
+      gc_guard_up(p_vm->alloc->gc, res);
+      chars = p_vm->alloc->reallocate(p_vm->alloc, chars, len, len + reslen + delemlen);
+      gc_guard_down(p_vm->alloc->gc);
+      if (chars == NULL) {
+        runtime_error(p_vm, "out of memory: failed to convert array to string.");
+        return false;
+      }
+      if (delemlen != 0) {
+        memcpy(chars + len, ", ", delemlen);
+      }
+      memcpy(chars + len + delemlen, str->chars, reslen);
+      len += reslen + delemlen;
+    }
+  }
+  string fstr = asprint(p_vm->alloc, "[%.*s]", len, chars);
+  if (fstr.chars == NULL) {
+    runtime_error(p_vm, "failed to convert array to string.");
+    return false;
+  }
+  object_specs specs = {p_vm->alloc, p_vm->objects_store};
+  object_string* str = create_object_string(ok_create_string_view_from_string(fstr), &specs);
+  if (str == NULL) {
+    runtime_error(p_vm, "out of memory: failed to convert array to string.");
+    return false;
+  }
+  *p_result = OBJECT_AS_VALUE(str);
+  string_deinit(p_vm->alloc, &fstr); // here so obj str is rooted
+  return true;
+}
+
+static inline bool closure_as_str(vm* p_vm, object* p_closure, value* p_result) {
+  object_closure* closure = (object_closure*)p_closure;
+  string str = asprint(p_vm->alloc, "fu %s |%i|", closure->function->name, closure->function->arity);
+  if (str.chars == NULL) {
+    runtime_error(p_vm, "failed to convert function to string.");
+    return false;
+  }
+  return as_str_rest(p_vm, ok_create_string_view_from_string(str), p_result);
+}
+
+static inline bool native_function_as_str(vm* p_vm, object* p_native_function, value* p_result) {
+  object_native_function* nativefu = (object_native_function*)p_native_function;
+  string str = asprint(p_vm->alloc, "native fu %s |%i| (@%p)", nativefu->name, nativefu->arity, nativefu->function);
+  if (str.chars == NULL) {
+    runtime_error(p_vm, "failed to convert native function to string.");
+    return false;
+  }
+  return as_str_rest(p_vm, ok_create_string_view_from_string(str), p_result);
+}
+
+static inline bool native_value_as_str(vm* p_vm, object* p_native_value, value* p_result) {
+  object_native_value* nativev = (object_native_value*)p_native_value;
+  string str = asprint(p_vm->alloc, "native value (@%p) (dtor @%p)", nativev->user_data, nativev->destructor);
+  if (str.chars == NULL) {
+    runtime_error(p_vm, "failed to convert native value to string.");
+    return false;
+  }
+  return as_str_rest(p_vm, ok_create_string_view_from_string(str), p_result);
+}
+
+static inline bool object_as_str(vm* p_vm, object* p_obj, value* p_result) {
+  switch (object_get_type(p_obj)) {
+  case OBJ_STRING: {
+    *p_result = OBJECT_AS_VALUE(p_obj);
+    return true;
+  }
+  case OBJ_ARRAY: {
+    return array_as_str(p_vm, p_obj, p_result);
+  }
+  case OBJ_CLOSURE: {
+    return closure_as_str(p_vm, p_obj, p_result);
+  }
+  case OBJ_NATIVE_FUNCTION: {
+    return native_function_as_str(p_vm, p_obj, p_result);
+  }
+  case OBJ_NATIVE_VALUE: {
+    return native_value_as_str(p_vm, p_obj, p_result);
+  }
+  }
+  runtime_error(p_vm, "failed to convert unknown object to string.");
+  return false;
+}
+
+static inline bool as_str(vm* p_vm, value p_value, value* p_result) {
+  if (IS_VALUE_NUMBER(p_value)) {
+    return num_as_str(p_vm, VALUE_AS_NUMBER(p_value), p_result);
+  }
+
+  const uint64_t tag = VALUE_TAG(p_value);
+  switch (tag) {
+  case TAG_INT_MASK: {
+    return int_as_str(p_vm, VALUE_AS_INT(p_value), p_result);
+  }
+  case TAG_NULL_MASK: {
+    return as_str_rest(p_vm, ok_create_string_view("null", OK_STRING_VIEW_CALCULATE_LENGTH, true), p_result);
+  }
+  case TAG_TRUE_MASK: {
+
+    return as_str_rest(p_vm, ok_create_string_view("true", OK_STRING_VIEW_CALCULATE_LENGTH, true), p_result);
+  }
+  case TAG_FALSE_MASK: {
+    return as_str_rest(p_vm, ok_create_string_view("false", OK_STRING_VIEW_CALCULATE_LENGTH, true), p_result);
+  }
+  case TAG_OBJECT_MASK: {
+    return object_as_str(p_vm, VALUE_AS_OBJECT(p_value), p_result);
+  }
+  }
+  runtime_error(p_vm, "failed to convert unknown value to string.");
+  return false;
+}
+
+static inline bool object_as_num(vm* p_vm, object* p_obj, value* p_result) {
+  switch (object_get_type(p_obj)) {
+  case OBJ_STRING: {
+    char buff[64];
+    string* str = &((object_string*)p_obj)->string;
+    uint32_t len = string_get_length(str);
+    if (len >= sizeof(buff)) {
+      runtime_error(p_vm, "failed to convert string to number: string too long. max is 64.");
+      return false;
+    }
+    memcpy(buff, str->chars, len);
+    buff[len] = '\0';
+
+    errno = 0;
+    char* endptr;
+    const double value = strtod(buff, &endptr);
+    if (endptr == buff) {
+      runtime_error(p_vm, "failed to convert string to number");
+      return false;
+    }
+    if (*endptr != '\0') {
+      runtime_error(p_vm, "failed to convert string to number");
+      return false;
+    }
+    if (errno == ERANGE) {
+      runtime_error(p_vm, "failed to convert string to number: out of range.");
+      return false;
+    }
+    *p_result = NUMBER_AS_VALUE(value);
+    return true;
+  }
+  case OBJ_ARRAY: {
+    runtime_error(p_vm, "array is not convertable to number.");
+    return false;
+  }
+  case OBJ_CLOSURE: {
+    runtime_error(p_vm, "function is not convertable to number.");
+    return false;
+  }
+  case OBJ_NATIVE_FUNCTION: {
+    runtime_error(p_vm, "native function is not convertable to number.");
+    return false;
+  }
+  case OBJ_NATIVE_VALUE: {
+    // scrr idk if we should allow this!?
+    runtime_error(p_vm, "native value is not convertable to number.");
+    return false;
+  }
+  }
+  runtime_error(p_vm, "failed to convert unknown object to string.");
+  return false;
+}
+
+static ok_value as_num(vm* p_vm, ok_value p_value, value* p_result) {
+  if (IS_VALUE_NUMBER(p_value)) {
+    *p_result = p_value;
+    return true;
+  }
+
+  const uint64_t tag = VALUE_TAG(p_value);
+  switch (tag) {
+  case TAG_INT_MASK: {
+    *p_result = NUMBER_AS_VALUE(VALUE_AS_INT(p_value));
+  }
+  case TAG_NULL_MASK: {
+    runtime_error(p_vm, "null is not convertable to number.");
+    return false;
+  }
+  case TAG_TRUE_MASK:
+  case TAG_FALSE_MASK: {
+    runtime_error(p_vm, "boolean is not convertable to number.");
+    return false;
+  }
+  case TAG_OBJECT_MASK: {
+    return object_as_num(p_vm, VALUE_AS_OBJECT(p_value), p_result);
+  }
+  }
+  runtime_error(p_vm, "failed to convert unknown value to number.");
+  return false;
+}
+
+static ok_value as_bool(vm* p_vm, value p_value, value* p_result) {
+  if (IS_VALUE_STRICTLY_BOOL(p_value)) {
+    *p_result = p_value;
+  } else if (IS_VALUE_STRICTLY_NULL(p_value)) {
+    *p_result = BOOL_AS_VALUE(false);
+  }
+  *p_result = BOOL_AS_VALUE(true);
+  return true;
+}
+
+static interpret_result
+perform_as(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
+  const uint32_t base = p_frame->registers_base;
+  interpret_result res;
+  res.status = RUNTIME_ERROR;
+  res.top_level_return = NULL_AS_VALUE();
+
+  if (!IS_VALUE_STRICTLY_RESERVED_1(p_rhs)) {
+    runtime_error(p_vm, "invalid type: expected a type in 'as' conversion.");
+    return res;
+  }
+  value* dest = &p_reg->array.data[base + p_dest];
+
+  switch (VALUE_AS_RESERVED_1(p_rhs)) {
+  case TT_STR: {
+    if (as_str(p_vm, p_lhs, dest)) {
+      res.status = RUNTIME_OK;
+    }
+    break;
+  }
+  case TT_NUM: {
+    if (as_num(p_vm, p_lhs, dest)) {
+      res.status = RUNTIME_OK;
+    }
+    break;
+  }
+  case TT_BOOL: {
+    if (as_bool(p_vm, p_lhs, dest)) {
+      res.status = RUNTIME_OK;
+    }
+    break;
+  }
+  }
+  return res;
+}
+
 static inline void cleanup_frame(execution_state* p_exe, register_file* p_registers, call_frame* p_frame) {
   close_upvalues(p_exe, p_frame->registers_base);
   call_stack_remove(&p_exe->call_stack, p_exe->call_stack.count - 1, p_exe->call_stack.count - 1);
@@ -922,14 +1228,45 @@ return_n_from_frame(register_file* p_registers, call_frame* p_frame, uint16_t p_
 }
 
 static inline uint16_t
-return_1_from_frame(execution_state* p_exe, register_file* p_registers, call_frame* p_frame, uint16_t p_base) {
-  const uint32_t base = p_frame->registers_base + p_base;
+return_1_from_frame(vm* p_vm, execution_state* p_exe, call_frame* p_frame, uint16_t p_index, returned p_returned) {
+  const uint32_t base = p_frame->registers_base + p_index;
+  register_file* registers = &p_exe->registers;
   if (p_frame->return_count < 1) {
-    cleanup_frame(p_exe, p_registers, p_frame);
+    cleanup_frame(p_exe, registers, p_frame);
     return 0;
   }
-  p_registers->array.data[p_frame->return_base] = p_registers->array.data[base];
-  cleanup_frame(p_exe, p_registers, p_frame);
+  switch (p_returned) {
+  case RETURNED_NULL: {
+    registers->array.data[p_frame->return_base] = NULL_AS_VALUE();
+    break;
+  }
+  case RETURNED_KTRUE: {
+    registers->array.data[p_frame->return_base] = BOOL_AS_VALUE(true);
+    break;
+  }
+  case RETURNED_KFALSE: {
+    registers->array.data[p_frame->return_base] = BOOL_AS_VALUE(false);
+    break;
+  }
+  case RETURNED_CONSTANT: {
+    registers->array.data[p_frame->return_base] = p_frame->closure->function->chunk.constants.data[p_index];
+    break;
+  }
+  case RETURNED_GLOBAL: {
+    registers->array.data[p_frame->return_base] = p_vm->globals_store->global_values.data[p_index];
+    break;
+  }
+  case RETURNED_UPVALUE: {
+    registers->array.data[p_frame->return_base] =
+        *object_upvalue_get_value(p_frame->closure->upvalues.data[p_index], registers->array.data);
+    break;
+  }
+  case RETURNED_REGISTER: {
+    registers->array.data[p_frame->return_base] = registers->array.data[base];
+    break;
+  }
+  }
+  cleanup_frame(p_exe, registers, p_frame);
   return 1;
 }
 
@@ -1282,12 +1619,9 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       break;
     }
     case OP_RETURN_1: {
-      const bool p = p_of(instruction);
       const uint16_t A = Alarge_of(instruction);
-      if (p) {
-        REG_AT(A) = NULL_AS_VALUE(); // implicit return: value is null
-      }
-      const uint16_t returned = return_1_from_frame(exe, reg, frame, A);
+      const uint8_t e = elarge_of(instruction);
+      const uint16_t returned = return_1_from_frame(p_vm, exe, frame, A, e);
       if (exe->call_stack.count == p_call_depth) {
         return top_level_return(reg, frame, returned);
       }
@@ -1631,6 +1965,32 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       }
       break;
     }
+    case OP_AS: {
+      const bool p = p_of(instruction);
+      const uint8_t a = a_of(instruction);
+      const uint8_t b = b_of(instruction);
+      const uint8_t c = c_of(instruction);
+      interpret_result res = perform_as(p_vm, reg, frame, a, REG_AT(b), resolve_goperand(p_vm, frame, reg, c, p));
+      if (res.status != RUNTIME_OK) {
+        return res;
+      }
+      break;
+    }
+    case OP_AS_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool p = p_of(instruction);
+      const bool q = Q_of(words);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      interpret_result res =
+          perform_as(p_vm, reg, frame, A, resolve_operand(frame, reg, B, q), resolve_goperand(p_vm, frame, reg, C, p));
+      if (res.status != RUNTIME_OK) {
+        return res;
+      }
+      break;
+    }
+
     case OP_ARRAY_NEW: {
       const uint8_t a = a_of(instruction);
       const uint8_t b = b_of(instruction);
