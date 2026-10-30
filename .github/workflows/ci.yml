@@ -23,11 +23,11 @@ jobs:
       matrix:
         include:
           - name: plain
-            cmake-flags: '-DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++-14'
+            cmake-flags: '-DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=g++-14'
           - name: asan
-            cmake-flags: '-DCMAKE_BUILD_TYPE=Release -DOK_ENABLE_SANITIZERS=ON -DCMAKE_CXX_COMPILER=g++-14'
+            cmake-flags: '-DCMAKE_BUILD_TYPE=Debug -DOK_ENABLE_SANITIZERS=ON -DCMAKE_CXX_COMPILER=g++-14'
           - name: aggressive-asan
-            cmake-flags: '-DCMAKE_BUILD_TYPE=Release -DOK_ENABLE_SANITIZERS=ON -DOK_AGGRESSIVE_GC=ON -DCMAKE_CXX_COMPILER=g++-14'
+            cmake-flags: '-DCMAKE_BUILD_TYPE=Debug -DOK_ENABLE_SANITIZERS=ON -DOK_AGGRESSIVE_GC=ON -DCMAKE_CXX_COMPILER=g++-14'
           - name: coverage
             cmake-flags: '-DCMAKE_BUILD_TYPE=Coverage -DCMAKE_CXX_COMPILER=g++-14'
     steps:
