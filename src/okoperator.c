@@ -28,6 +28,8 @@ operator_type operator_type_from_token_type(const token_type p_token_type, bool 
     return OPERATOR_BIN_LESS;
   case TOKEN_LESS_EQUAL:
     return OPERATOR_BIN_LESS_EQUAL;
+  case TOKEN_AS:
+    return OPERATOR_BIN_AS;
   case TOKEN_LEFT_PAREN:
     return OPERATOR_POS_CALL;
   case TOKEN_LEFT_BRACKET:

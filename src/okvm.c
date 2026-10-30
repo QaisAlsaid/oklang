@@ -985,7 +985,7 @@ static inline bool array_as_str(vm* p_vm, object* p_arr, value* p_result) {
     return false;
   }
   *p_result = OBJECT_AS_VALUE(str);
-  string_deinit(p_vm->alloc, &fstr); // here so obj str is rooted
+  string_deinit(&fstr, p_vm->alloc); // here so obj str is rooted
   return true;
 }
 
@@ -1156,8 +1156,9 @@ static ok_value as_bool(vm* p_vm, value p_value, value* p_result) {
     *p_result = p_value;
   } else if (IS_VALUE_STRICTLY_NULL(p_value)) {
     *p_result = BOOL_AS_VALUE(false);
+  } else {
+    *p_result = BOOL_AS_VALUE(true);
   }
-  *p_result = BOOL_AS_VALUE(true);
   return true;
 }
 

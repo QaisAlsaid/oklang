@@ -249,9 +249,9 @@ ARRAY_DECLARE_DEFAULT(identifiers, string)
 #define bprime_LOFFSET (aprime_LOFFSET + 12u)
 
 #define A_LARGE_MASK UINT32_C(0x00ffff00)
-#define e_LARGE_MASK UINT32_C(0x00000010)
+#define e_LARGE_MASK UINT32_C(0x07000000) // 3 bit width (returned enum is 0..6)
 #define A_LARGE_LOFFSET a_LOFFSET
-#define e_LARGE_LOFFSET b_LOFFSET
+#define e_LARGE_LOFFSET c_LOFFSET
 
 // 2 words
 
@@ -315,7 +315,7 @@ static inline word encode_oppA(const opcode p_op, const bool p_p, const uint16_t
          (((uint32_t)p_A) << A_LARGE_LOFFSET) & A_LARGE_MASK;
 }
 
-static inline word encode_oppAe(const opcode p_op, const bool p_p, const uint16_t p_A, const bool p_e) {
+static inline word encode_oppAe(const opcode p_op, const bool p_p, const uint16_t p_A, const uint8_t p_e) {
   return ((uint32_t)p_op << op_LOFFSET) & op_MASK | (((uint32_t)p_p) << p_LOFFSET) & p_MASK |
          (((uint32_t)p_A) << A_LARGE_LOFFSET) & A_LARGE_MASK | (((uint32_t)p_e) << e_LARGE_LOFFSET) & e_LARGE_MASK;
 }

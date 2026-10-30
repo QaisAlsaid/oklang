@@ -1,0 +1,18 @@
+// conversions between the three core type tags.
+let n = 12;
+print n as str; // expect: 12.000000
+print "34" as num; // expect: 34
+print true as str; // expect: true
+print false as str; // expect: false
+
+// ruby-like truthiness: false and null are the only falsy values.
+print null as bool; // expect: false
+print false as bool; // expect: false
+print 0 as bool; // expect: true
+print "" as bool; // expect: true
+print [1, 2] as bool; // expect: true
+
+// identity conversions.
+print 3 as num; // expect: 3
+print "x" as str; // expect: x
+print true as bool; // expect: true

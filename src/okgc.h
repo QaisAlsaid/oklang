@@ -10,6 +10,7 @@
 #ifdef OK_GC_EXPOSE
 #include "okarray.h"
 ARRAY_DECLARE_DEFAULT(grays, object*)
+#define OK_GC_GUARD_CAPACITY 16
 struct gc {
   size_t allocated_bytes;
   size_t next;
@@ -18,7 +19,8 @@ struct gc {
   object_store* object_store;
   globals_store* globals_store;
   grays grays;
-  value guarded;
+  value guarded[OK_GC_GUARD_CAPACITY];
+  uint32_t guard_count;
   allocators* alloc;
   allocators raw_alloc_wrapper;
   bool is_paused;

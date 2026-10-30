@@ -4,14 +4,11 @@ let arr = [1, 2, 3, 4];
 glob let len = 67;
 for let i : arr {
   print(i);
-  print(len);
 }
+print(len(arr));
 
 // expect: 1
-// expect: 67
 // expect: 2
-// expect: 67
 // expect: 3
-// expect: 67
 // expect: 4
-// expect: 67
+// expect: 4

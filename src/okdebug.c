@@ -51,6 +51,8 @@ static const char* const OPCODE_NAMES[] = {
     "DIVIDE",
     "DIVIDE_LONG",
     "MODULUS",
+    "AS",
+    "AS_LONG",
     "MODULUS_LONG",
     "EQUALS",
     "EQUALS_LONG",
@@ -64,8 +66,6 @@ static const char* const OPCODE_NAMES[] = {
     "GREATER_EQUAL_LONG",
     "LESS_EQUAL",
     "LESS_EQUAL_LONG",
-    "AS",
-    "AS_LONG",
     "PRINT",
     "ARRAY_NEW",
     "ARRAY_NEW_LONG",
@@ -510,15 +510,25 @@ uint32_t debug_disassemble_instruction(disassembler* p_disassembler, uint32_t p_
         printf("r%u", B);
       }
       printf(" %s ", symbol);
+      // OP_AS reuses the p flag for a global operand (type tags), not a constant.
       if (p) {
-        print_constant_inline(chunk, C);
+        if (op == OP_AS_LONG) {
+          print_global_inline(p_disassembler, C);
+        } else {
+          print_constant_inline(chunk, C);
+        }
       } else {
         printf("r%u", C);
       }
     } else {
       printf("r%u = r%u %s ", a, b, symbol);
+      // OP_AS reuses the p flag for a global operand (type tags), not a constant.
       if (p) {
-        print_constant_inline(chunk, c);
+        if (op == OP_AS) {
+          print_global_inline(p_disassembler, c);
+        } else {
+          print_constant_inline(chunk, c);
+        }
       } else {
         printf("r%u", c);
       }

@@ -1,0 +1,3 @@
+// explicit over shady: containers do not silently convert to their length.
+let arr = [1, 2, 3];
+print arr as num; // expect error: array is not convertable to number.

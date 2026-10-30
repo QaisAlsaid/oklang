@@ -1,0 +1,6 @@
+// a local shadowing a type tag is not a type anymore.
+fu shadowed_tag() {
+  let str = "hi";
+  print 1 as str; // expect error: invalid type: expected a type in 'as' conversion.
+}
+shadowed_tag();

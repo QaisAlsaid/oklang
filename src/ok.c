@@ -289,12 +289,17 @@ ok_result ok_run(ok* p_ok, ok_source p_source) {
   interpret_specs interpret_specs;
   interpret_specs.function = compile_result.function;
   interpret_specs.source = &p_ok->source;
+  if (!gc_guard_up(&p_ok->gc, OBJECT_AS_VALUE(compile_result.function))) {
+    return OK_INIT_ERROR;
+  }
   err = false;
   interpret_specs.top_level_values = ok_get_top_level_values(p_ok, &err);
   if (err) {
+    gc_guard_down(&p_ok->gc);
     return OK_INIT_ERROR;
   }
   interpret_result interpret_result = vm_interpret(&p_ok->vm, interpret_specs);
+  gc_guard_down(&p_ok->gc);
   value_array_deinit(&interpret_specs.top_level_values, &p_ok->alloc);
   if (interpret_result.status != RUNTIME_OK) {
     interpret_result_deinit(&interpret_result);

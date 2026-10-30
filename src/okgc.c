@@ -28,13 +28,19 @@ void gc_init(gc* p_gc, object_store* p_heap, allocators* p_alloc) {
   p_gc->allocated_bytes = 0;
   p_gc->next = 1024 * 1024; // 1mb
   grays_init(&p_gc->grays, &p_gc->raw_alloc_wrapper);
-  p_gc->guarded = NULL_AS_VALUE();
+  for (uint32_t i = 0; i < OK_GC_GUARD_CAPACITY; ++i) {
+    p_gc->guarded[i] = NULL_AS_VALUE();
+  }
+  p_gc->guard_count = 0;
   p_gc->is_paused = false;
 }
 
 void gc_deinit(gc* p_gc) {
   grays_deinit(&p_gc->grays, &p_gc->raw_alloc_wrapper);
-  p_gc->guarded = NULL_AS_VALUE();
+  for (uint32_t i = 0; i < OK_GC_GUARD_CAPACITY; ++i) {
+    p_gc->guarded[i] = NULL_AS_VALUE();
+  }
+  p_gc->guard_count = 0;
   p_gc->compiler = NULL;
   p_gc->globals_store = NULL;
   p_gc->object_store = NULL;
@@ -45,16 +51,21 @@ void gc_deinit(gc* p_gc) {
 }
 
 bool gc_guard_up(gc* p_gc, value p_value) {
-  // strict check: raw doubles can alias the non strict null tag bits
-  if (!IS_VALUE_STRICTLY_NULL(p_gc->guarded)) {
+  // LIFO stack: nested pairs compose; overflow is a programming error the
+  // caller must treat as "could not root" (return false), never ignore.
+  if (p_gc->guard_count >= OK_GC_GUARD_CAPACITY) {
     return false;
   }
-  p_gc->guarded = p_value;
+  p_gc->guarded[p_gc->guard_count++] = p_value;
   return true;
 }
 
 void gc_guard_down(gc* p_gc) {
-  p_gc->guarded = NULL_AS_VALUE();
+  // underflow is a no-op rather than releasing someone else's guard
+  if (p_gc->guard_count > 0) {
+    p_gc->guard_count--;
+    p_gc->guarded[p_gc->guard_count] = NULL_AS_VALUE();
+  }
 }
 
 void gc_pause(gc* p_gc) {
@@ -174,8 +185,10 @@ static bool mark(gc* p_gc) {
   if (p_gc->globals_store != NULL && !mark_globals_store(p_gc)) {
     return false;
   }
-  if (!mark_value(p_gc, p_gc->guarded)) {
-    return false;
+  for (uint32_t i = 0; i < p_gc->guard_count; ++i) {
+    if (!mark_value(p_gc, p_gc->guarded[i])) {
+      return false;
+    }
   }
   return true;
 }
@@ -285,8 +298,6 @@ static bool trace_object(gc* p_gc, object* p_object) {
     break;
   }
   case OBJ_ARRAY: {
-    // the whole point of arrays: elements are values, values can be objects.
-    // mark_value_array already exists for chunk constants (okgc.c).
     if (!mark_value_array(p_gc, &((object_array*)p_object)->values)) {
       return false;
     }

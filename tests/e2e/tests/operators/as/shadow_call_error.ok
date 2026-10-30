@@ -1,0 +1,4 @@
+// a shadowed core name can no longer be called: the local value is not callable.
+let len = 67;
+let arr = [4, 5];
+print len(arr); // expect error: invalid call: value is not callable

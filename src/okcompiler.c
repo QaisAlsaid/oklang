@@ -290,7 +290,8 @@ add_local(compiler* p_compiler, const variable_declaration p_declration, bool p_
   // full flag set must be computed before any allocation: the metadata array copies the
   // register at append time inside allocate_local, later changes to the local copy will drift.
   register_flags flags =
-      REGISTER_FLAG_LOCAL | REGISTER_FLAG_UNINITIALIZED |
+      REGISTER_FLAG_LOCAL |
+      (p_initialized ? REGISTER_FLAG_NONE : REGISTER_FLAG_UNINITIALIZED) |
       ((p_declration.flags & VARIABLE_DECLARATION_FLAGS_MUTABLE) != 0 ? REGISTER_FLAG_MUTABLE : REGISTER_FLAG_NONE);
   _register reg = {0, flags, REGISTER_OK};
   allocators* alloc = p_compiler->alloc;
@@ -324,7 +325,7 @@ add_local(compiler* p_compiler, const variable_declaration p_declration, bool p_
       }
     }
     reg.flags |=
-        REGISTER_FLAG_UNINITIALIZED |
+        (p_initialized ? REGISTER_FLAG_NONE : REGISTER_FLAG_UNINITIALIZED) |
         ((p_declration.flags & VARIABLE_DECLARATION_FLAGS_MUTABLE) != 0 ? REGISTER_FLAG_MUTABLE : REGISTER_FLAG_NONE);
 
     if (!uint16_array_append(&scp->registers, reg.index)) {
@@ -497,20 +498,26 @@ compile_result compiler_compile(compiler* p_compiler, compile_specs p_specs) {
   if (!IS_REGISTER_VALID(add_local(p_compiler, decl, true, (ast_node*)p_specs.root))) {
     goto ret;
   }
-  // if (!begin_scope(p_compiler, (ast_node*)p_specs.root)) { // hidden scope
-  //   goto ret;
-  // }
-  // for (uint32_t i = 0; i < p_specs.top_level_declarations.count; ++i) {
-  //   if (!IS_REGISTER_VALID(add_local(p_compiler, p_specs.top_level_declarations.data[i], true, p_specs.root))) {
-  //     goto ret;
-  //   }
-  // }
-  //
+  if (!begin_scope(p_compiler, (ast_node*)p_specs.root)) { // hidden scope
+    goto ret;
+  }
+  for (uint32_t i = 0; i < p_specs.top_level_declarations.count; ++i) {
+    if (!IS_REGISTER_VALID(
+            add_local(p_compiler, p_specs.top_level_declarations.data[i], true, (ast_node*)p_specs.root))) {
+      goto ret;
+    }
+  }
+
+  if (!begin_scope(p_compiler, (ast_node*)p_specs.root)) { // user top-level scope
+    goto ret;
+  }
+
   bool res = compile_root(p_compiler, p_specs.root);
   result.function = current_context(p_compiler)->function.function;
   result.function->registers = current_context(p_compiler)->register_allocator.registers_count;
   res &= emit_default_return(p_compiler, (ast_node*)p_specs.root);
-  // res &= end_scope(p_compiler, (ast_node*)p_specs.root); // hidden scope
+  res &= end_scope(p_compiler, (ast_node*)p_specs.root); // user top-level scope
+  res &= end_scope(p_compiler, (ast_node*)p_specs.root); // hidden scope
   res &= end_scope(p_compiler, (ast_node*)p_specs.root);
   end_context(p_compiler);
   if (p_compiler->had_error == false && res != false) {
@@ -2181,9 +2188,7 @@ static bool compile_binary_value_operator(compiler* p_compiler,
   }
 
   const location_kind lhs_common_kind = LOCATION_KIND_CONSTANT;
-  location_kind rhs_common_kind = (p_binexpr->_operator == OP_AS || p_binexpr->_operator == OP_AS_LONG)
-                                      ? LOCATION_KIND_GLOBAL
-                                      : LOCATION_KIND_CONSTANT;
+  location_kind rhs_common_kind = p_binexpr->_operator == OPERATOR_BIN_AS ? LOCATION_KIND_GLOBAL : LOCATION_KIND_CONSTANT;
   bool is_long = p_dest.index > a_MAX || lhs.value.index > b_MAX || rhs.value.index > c_MAX;
   bool is_lhs_p = false;
   bool is_rhs_p = false;

@@ -1,0 +1,23 @@
+// `as` binds tighter than arithmetic (rust-style: between unary and product),
+// so conversions compose with + without parentheses.
+let i = 3;
+let n = 22;
+print i as str + " " + n as str; // expect: 3.000000 22.000000
+print n as num * 2; // expect: 44
+print 2 + 3 as num; // expect: 5
+
+// shadowing len keeps the ranged-for working (the loop reads the intrinsic).
+fu probe() {
+  let arr = [1, 2, 3];
+  let len = 22;
+  for let v : arr {
+    print v as str + " " + len as str;
+  }
+}
+probe(); // expect: 1.000000 22.000000
+// expect: 2.000000 22.000000
+// expect: 3.000000 22.000000
+
+// a plain let shadows the core name lexically, outside the loop too.
+let len = 67;
+print len; // expect: 67
