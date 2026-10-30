@@ -52,7 +52,7 @@ crow nice food nice!
 sparrow nice food nice!
 owl nice food nice!
 chicken not nice chicken food!
-i fed 4.000000 birds.
+i fed 4 birds.
 ```
 
 ## Status

@@ -930,7 +930,7 @@ static inline bool as_str_rest(vm* p_vm, ok_string_view p_str, value* p_result) 
 
 static inline bool num_as_str(vm* p_vm, double p_value, value* p_result) {
   char buff[64];
-  if (snprintf(buff, 64, "%f", p_value) < 0) {
+  if (snprintf(buff, 64, "%g", p_value) < 0) {
     runtime_error(p_vm, "failed to convert number to string.");
     return false;
   }
