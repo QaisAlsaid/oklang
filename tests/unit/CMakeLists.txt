@@ -1,5 +1,6 @@
 set(tests 
   test_array
+  test_map
   test_table
   test_nan
 )

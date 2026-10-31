@@ -5,6 +5,7 @@
 #include "okchunk.h"
 #include "okfwd.h"
 #include "okindex.h"
+#include "okmap.h"
 #include "okstring.h"
 #include "oktable.h"
 #include "okvalue.h"
@@ -31,7 +32,7 @@ typedef index_wrapper global_id;
 
 ARRAY_DECLARE(global_values, value, uint16_t)
 ARRAY_DECLARE(global_descriptors, global, uint16_t)
-TABLE_DECLARE(globals_table, uint16_t, uint16_t, hashed_string, global_id, hash_t)
+MAP_DECLARE(globals_map, string, global_id, ok_string_view)
 
 #if defined(OK_DEBUG) // TODO debug meta data to get a name from an index
 TABLE_DECLARE(debug_table, uint32_t, uint32_t, uint32_t, hashed_string, hash_t)
@@ -40,7 +41,7 @@ TABLE_DECLARE(debug_table, uint32_t, uint32_t, uint32_t, hashed_string, hash_t)
 struct globals_store {
   global_values global_values;
   global_descriptors global_descriptors;
-  globals_table table;
+  globals_map map;
   allocators* alloc;
 };
 
