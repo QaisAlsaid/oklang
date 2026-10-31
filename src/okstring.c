@@ -196,29 +196,3 @@ ok_cstring_view ok_ok_create_cstring_view_from_string_view(const ok_string_view 
   }
   return ok_create_cstring_view(NULL, 0);
 }
-
-void hashed_string_init(hashed_string* p_hashed_string,
-                        const ok_string_view p_view,
-                        const hash_t p_hash,
-                        allocators* p_alloc) {
-  p_hashed_string->string = create_string_from_string_view(p_view, p_alloc);
-  p_hashed_string->hash = p_hash;
-}
-
-void hashed_string_deinit(hashed_string* p_hashed_string, allocators* p_alloc) {
-  string_deinit(&p_hashed_string->string, p_alloc);
-  p_hashed_string->hash = 0;
-}
-
-hashed_string create_hashed_string(const ok_string_view p_view, hash_t p_hash, allocators* p_alloc) {
-  hashed_string hs;
-  hashed_string_init(&hs, p_view, p_hash, p_alloc);
-  return hs;
-}
-
-hashed_string create_hashed_string_hash(const ok_string_view p_view, allocators* p_alloc) {
-  hashed_string hs;
-  hash_t hash = default_hash_str(p_view);
-  hashed_string_init(&hs, p_view, hash, p_alloc);
-  return hs;
-}

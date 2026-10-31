@@ -31,17 +31,5 @@ string create_string_from_string_view(const ok_string_view p_string_view, alloca
 string create_string_from_cstring_view(ok_cstring_view p_cstring_view, allocators* p_alloc);
 
 typedef uint64_t hash_t;
-typedef struct {
-  string string;
-  hash_t hash;
-} hashed_string;
-
-void hashed_string_init(hashed_string* p_hashed_string,
-                        const ok_string_view p_view,
-                        const hash_t p_hash,
-                        allocators* p_alloc);
-void hashed_string_deinit(hashed_string* p_hashed_string, allocators* p_alloc);
-hashed_string create_hashed_string(const ok_string_view p_string, const hash_t p_hash, allocators* p_alloc);
-hashed_string create_hashed_string_hash(const ok_string_view p_view, allocators* p_alloc);
 
 #endif // OK_SRC_STRING_H

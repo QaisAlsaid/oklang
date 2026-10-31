@@ -10,21 +10,32 @@
 #include "okutils.h"
 #include "okvalue.h"
 
-#define ARE_KEYS_EQUAL(lhs, rhs)                                                                                       \
-  (string_get_length(&lhs.string) == string_get_length(&rhs.string) &&                                                 \
-   strncmp(lhs.string.chars, rhs.string.chars, string_get_length(&lhs.string)) == 0)
-#define GET_HASH(key) (key.hash)
-
 ARRAY_DEFINE_DEFAULT(top_level_declarations, variable_declaration, ARRAY_DEFAULT_TYPE_DEINIT);
 
-TABLE_DEFINE_DEFAULT(scope_registers,
-                     hashed_string,
-                     uint16_t,
-                     hash_t,
-                     ARE_KEYS_EQUAL,
-                     hashed_string_deinit,
-                     ARRAY_DEFAULT_TYPE_DEINIT,
-                     GET_HASH)
+#define SR_KEY_IS_EMPTY(k) ((k).chars == NULL)
+#define SR_KEY_SET_EMPTY(k)                                                                                            \
+  do {                                                                                                                 \
+    (k)->chars = NULL;                                                                                                 \
+    (k)->info = 0;                                                                                                     \
+  } while (0)
+#define SR_PROBE_HASH(p) (default_hash_str(p))
+#define SR_PROBE_MATCHES(p, k)                                                                                         \
+  (ok_string_view_get_length(&(p)) == string_get_length(&(k)) &&                                                       \
+   memcmp((k).chars, (p).chars, ok_string_view_get_length(&(p))) == 0)
+#define SR_KEY_CLONE(p, a) (create_string_from_string_view((p), (a)))
+#define SR_KEY_DEINIT(k, a) (string_deinit((k), (a)))
+
+MAP_DEFINE(scope_registers,
+           string,
+           uint16_t,
+           ok_string_view,
+           SR_KEY_IS_EMPTY,
+           SR_KEY_SET_EMPTY,
+           SR_PROBE_HASH,
+           SR_PROBE_MATCHES,
+           SR_KEY_CLONE,
+           SR_KEY_DEINIT,
+           ARRAY_DEFAULT_TYPE_DEINIT)
 
 static void register_allocator_init(register_allocator* p_regalloc, allocators* p_alloc) {
   p_regalloc->registers_count = 0;
@@ -98,14 +109,14 @@ static void register_allocator_reset_locals(register_allocator* p_regalloc, uint
 }
 
 static void scope_init(scope* p_scope, uint32_t p_checkpoint, allocators* p_alloc) {
-  scope_registers_init(&p_scope->registers_table, p_alloc);
+  scope_registers_init(&p_scope->registers_map, p_alloc);
   uint16_array_init(&p_scope->registers, p_alloc);
   p_scope->registers_checkpoint = p_checkpoint;
   p_scope->captures_any = false;
 }
 
 static void scope_deinit(scope* p_scope, allocators* p_alloc) {
-  scope_registers_deinit(&p_scope->registers_table);
+  scope_registers_deinit(&p_scope->registers_map);
   uint16_array_deinit(&p_scope->registers, p_alloc);
   p_scope->registers_checkpoint = 0;
 }
@@ -243,8 +254,8 @@ static bool end_scope(compiler* p_compiler, ast_node* p_author) {
     status = false;
   }
   register_allocator_reset_locals(&ctx->register_allocator, scp->registers_checkpoint);
-  // scopes_pop only decrements count. the popped scope owns its registers_table
-  // (with hashed_string keys) and registers array and must deinit it or they leak.
+  // scopes_pop only decrements count. the popped scope owns its registers_map
+  // (with owned string keys) and registers array and must deinit it or they leak.
   scope_deinit(scp, p_compiler->alloc);
   ASSERT(scopes_pop(&ctx->scopes));
   return status;
@@ -290,20 +301,15 @@ add_local(compiler* p_compiler, const variable_declaration p_declration, bool p_
   // full flag set must be computed before any allocation: the metadata array copies the
   // register at append time inside allocate_local, later changes to the local copy will drift.
   register_flags flags =
-      REGISTER_FLAG_LOCAL |
-      (p_initialized ? REGISTER_FLAG_NONE : REGISTER_FLAG_UNINITIALIZED) |
+      REGISTER_FLAG_LOCAL | (p_initialized ? REGISTER_FLAG_NONE : REGISTER_FLAG_UNINITIALIZED) |
       ((p_declration.flags & VARIABLE_DECLARATION_FLAGS_MUTABLE) != 0 ? REGISTER_FLAG_MUTABLE : REGISTER_FLAG_NONE);
   _register reg = {0, flags, REGISTER_OK};
   allocators* alloc = p_compiler->alloc;
-  hashed_string hs = create_hashed_string_hash(p_declration.identifier, alloc);
-  if (hs.string.chars == NULL) {
-    report_oom(p_compiler, p_author);
-    reg.errors = REGISTER_ALLOCATION_FAILED;
-    return reg;
-  }
   compile_context* ctx = current_context(p_compiler);
   scope* scp = current_scope(p_compiler);
-  uint16_t* resolved = scope_registers_get(&scp->registers_table, hs);
+  // the probe is the identifier view the AST owns: the lookup itself allocates
+  // nothing, the map copies the key only when the insert path runs.
+  uint16_t* resolved = scope_registers_get(&scp->registers_map, p_declration.identifier);
   if (resolved == NULL) {
     register_allocator_allocate_local(&ctx->register_allocator, &reg);
     if (reg.errors != REGISTER_OK) {
@@ -315,12 +321,10 @@ add_local(compiler* p_compiler, const variable_declaration p_declration, bool p_
             ok_create_string_view("too many local variables in function.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
             ok_create_string_view_from_string(note));
         string_deinit(&note, alloc);
-        hashed_string_deinit(&hs, alloc);
         reg.errors = REGISTER_OVERFLOW;
         return reg;
       } else if (reg.errors == REGISTER_ALLOCATION_FAILED) {
         report_oom(p_compiler, p_author);
-        hashed_string_deinit(&hs, alloc);
         return reg;
       }
     }
@@ -330,13 +334,11 @@ add_local(compiler* p_compiler, const variable_declaration p_declration, bool p_
 
     if (!uint16_array_append(&scp->registers, reg.index)) {
       report_oom(p_compiler, p_author);
-      hashed_string_deinit(&hs, alloc);
       register_allocator_rollback_local(&ctx->register_allocator);
       return reg;
     }
-    if (!scope_registers_set(&scp->registers_table, hs, reg.index)) {
+    if (!scope_registers_set(&scp->registers_map, p_declration.identifier, reg.index)) {
       report_oom(p_compiler, p_author);
-      hashed_string_deinit(&hs, alloc);
       uint16_array_remove(&scp->registers, scp->registers.count - 1, scp->registers.count - 1);
       register_allocator_rollback_local(&ctx->register_allocator);
       return reg;
@@ -348,7 +350,6 @@ add_local(compiler* p_compiler, const variable_declaration p_declration, bool p_
   error_at(p_compiler, p_author, ok_create_string_view_from_string(message));
   string_deinit(&message, alloc);
   string_deinit(&name, alloc);
-  hashed_string_deinit(&hs, alloc);
   reg.errors = REGISTER_REDEFINED_LOCAL;
   return reg;
 }
@@ -954,14 +955,14 @@ static bool define_global(compiler* p_compiler, location p_global, expression_re
   return write_global(p_compiler, (global){p_global.index, GLOBAL_FLAG_NONE, GLOBAL_OK}, p_value, p_author);
 }
 
-static _register* resolve_local(compile_context* p_context, hashed_string* p_identifier, scope** p_owning) {
+static _register* resolve_local(compile_context* p_context, ok_string_view p_identifier, scope** p_owning) {
   uint16_t* sindex = NULL;
   uint32_t depth = p_context->scopes.count;
   while (sindex == NULL && depth != 0) {
     scope* scp = &p_context->scopes.data[--depth];
 
-    // the table value IS the register slot (scope_registers_set stores reg.index directly),
-    sindex = scope_registers_get(&scp->registers_table, *p_identifier);
+    // the map value IS the register slot (scope_registers_set stores reg.index directly),
+    sindex = scope_registers_get(&scp->registers_map, p_identifier);
     // TODO: report that we skipped if we couldn't resolve other local with same name.
     if (sindex != NULL &&
         (p_context->register_allocator.registers.data[*sindex].flags & REGISTER_FLAG_UNINITIALIZED) != 0) {
@@ -1123,7 +1124,7 @@ static upvalue add_upvalue(compiler* p_compiler, compile_context* p_ctx, upvalue
 }
 
 static upvalue
-resolve_upvalue(compiler* p_compiler, uint32_t p_context_index, hashed_string p_identifier, ast_node* p_author) {
+resolve_upvalue(compiler* p_compiler, uint32_t p_context_index, ok_string_view p_identifier, ast_node* p_author) {
   const uint32_t contexts = p_compiler->contexts.count;
   upvalue u = {0, UPVALUE_FLAG_LOCAL, UPVALUE_OK};
   if (contexts < p_context_index + 2) {
@@ -1134,7 +1135,7 @@ resolve_upvalue(compiler* p_compiler, uint32_t p_context_index, hashed_string p_
   compile_context* current = &p_compiler->contexts.data[contexts - p_context_index - 1];
   compile_context* up = &p_compiler->contexts.data[contexts - p_context_index - 2];
   scope* scp;
-  _register* local_reg = resolve_local(up, &p_identifier, &scp);
+  _register* local_reg = resolve_local(up, p_identifier, &scp);
   if (local_reg != NULL) {
     local_reg->flags |= REGISTER_FLAG_CAPTURED;
     u.index = local_reg->index;
@@ -1172,50 +1173,38 @@ static bool store_upvalue(compiler* p_compiler, location p_upvalue, expression_r
 }
 
 static location resolve_variable(compiler* p_compiler, const ok_string_view p_identifier, ast_node* p_author) {
-  allocators* alloc = p_compiler->alloc;
   location invalid = {0, LOCATION_KIND_INVALID, LOCATION_INVALID};
-  hashed_string hs = create_hashed_string_hash(p_identifier, alloc);
-
-  if (hs.string.chars == NULL) {
-    report_oom(p_compiler, p_author);
-    return invalid;
-  }
 
   {
     scope* scp;
-    _register* local = resolve_local(current_context(p_compiler), &hs, &scp);
+    _register* local = resolve_local(current_context(p_compiler), p_identifier, &scp);
 
     if (local != NULL) {
-      hashed_string_deinit(&hs, alloc);
       return (location){local->index, LOCATION_KIND_REGISTER, LOCATION_OK};
     }
   }
 
   {
-    upvalue up = resolve_upvalue(p_compiler, 0, hs, p_author);
+    upvalue up = resolve_upvalue(p_compiler, 0, p_identifier, p_author);
     if (up.error == UPVALUE_OK) {
-      hashed_string_deinit(&hs, alloc);
       return (location){up.index, LOCATION_KIND_UPVALUE, LOCATION_OK};
     }
     if (up.error != UPVALUE_UNDEFINED) {
-      hashed_string_deinit(&hs, alloc);
       return invalid;
     }
   }
 
   {
-    // TODO make globals store accept direct hs
     const global glob = globals_store_get(p_compiler->globals_store, p_identifier);
     if (IS_GLOBAL_VALID(glob)) {
-      hashed_string_deinit(&hs, alloc);
       return (location){glob.index, LOCATION_KIND_GLOBAL, LOCATION_OK};
     }
   }
+  allocators* alloc = p_compiler->alloc;
   string message =
       asprint(alloc, "undefined variable: %.*s", ok_string_view_get_length(&p_identifier), p_identifier.chars);
   error_at(p_compiler, p_author, ok_create_string_view_from_string(message));
   string_deinit(&message, alloc);
-  hashed_string_deinit(&hs, alloc);
   return invalid;
 }
 
@@ -2188,7 +2177,8 @@ static bool compile_binary_value_operator(compiler* p_compiler,
   }
 
   const location_kind lhs_common_kind = LOCATION_KIND_CONSTANT;
-  location_kind rhs_common_kind = p_binexpr->_operator == OPERATOR_BIN_AS ? LOCATION_KIND_GLOBAL : LOCATION_KIND_CONSTANT;
+  location_kind rhs_common_kind =
+      p_binexpr->_operator == OPERATOR_BIN_AS ? LOCATION_KIND_GLOBAL : LOCATION_KIND_CONSTANT;
   bool is_long = p_dest.index > a_MAX || lhs.value.index > b_MAX || rhs.value.index > c_MAX;
   bool is_lhs_p = false;
   bool is_rhs_p = false;
