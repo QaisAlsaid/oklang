@@ -1,0 +1,13 @@
+// the binding is immutable, the container mutates: two names, one map
+let mut a = {:};
+let b = a;
+a["k"] = 1;
+print b["k"]; // expect: 1
+b["j"] = 2;
+print len(a); // expect: 2
+// identity: same map
+print a == b; // expect: true
+
+let other = {:};
+// different maps
+print a == other; // expect: false

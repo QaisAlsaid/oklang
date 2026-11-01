@@ -1,0 +1,7 @@
+for let k, v : {:} {
+  print "never";
+}
+for let k : {:} {
+  print "never";
+}
+print "done"; // expect: done

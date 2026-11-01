@@ -42,6 +42,7 @@ static void sync_state(parser* p_parser);
 static ast_expression* parse_unary_prefix(parser* p_parser, token p_trigger);
 static ast_expression* parse_grouping(parser* p_parser, token p_trigger);
 // static ast_expression* parse_map(parser* p_parser, token p_trigger);
+static ast_expression* parse_map_literal(parser* p_parser, token p_trigger);
 // static ast_expression* parse_array(parser* p_parser, token p_trigger);
 static ast_expression* parse_array_literal(parser* p_parser, token p_trigger);
 static ast_expression* parse_subscript(
@@ -115,7 +116,7 @@ static const parse_rule parse_rules[] = {
     [TOKEN_GREATER] = {NULL, parse_binary_infix, PREC_COMPARISION},
     [TOKEN_LEFT_PAREN] = {parse_grouping, parse_call, PREC_CALL},
     [TOKEN_RIGHT_PAREN] = {NULL, NULL, PREC_NONE},
-    [TOKEN_LEFT_BRACE] = {NULL, NULL, PREC_NONE},
+    [TOKEN_LEFT_BRACE] = {parse_map_literal, NULL, PREC_NONE},
     [TOKEN_RIGHT_BRACE] = {NULL, NULL, PREC_NONE},
     [TOKEN_LEFT_BRACKET] = {parse_array_literal, parse_subscript, PREC_SUBSCRIPT},
     [TOKEN_RIGHT_BRACKET] = {NULL, NULL, PREC_NONE},
@@ -665,6 +666,114 @@ ast_expression* parse_array_literal(parser* p_parser, token p_trigger) {
   ast_specs s = {alloc};
   ast_array_expression_init(array, trigger, elements, &s);
   return (ast_expression*)array;
+}
+
+// `{k: v, ...}` in expression position. statement-position `{` is a block
+// (parse_statement never consults the expression rules for its first token),
+// so the disambiguation is positional and needs no lookahead. `{:}` is the
+// empty map: a leading ':' is unambiguous because no expression starts with
+// one. a trailing comma is allowed, mirroring arrays.
+ast_expression* parse_map_literal(parser* p_parser, token p_trigger) {
+  allocators* alloc = p_parser->alloc;
+  token trigger = p_parser->previous; // '{'
+  ast_expressions_list keys;
+  ast_expressions_list values;
+  ast_expressions_list_init(&keys, alloc);
+  ast_expressions_list_init(&values, alloc);
+
+  if (p_parser->current.type == TOKEN_RIGHT_BRACE) {
+    // `{}` in expression position: the ruled surface has exactly one empty
+    // map literal, `{:}` - a bare `{}` stays the block statement's shape and
+    // is rejected here rather than guessed at.
+    error_at(p_parser,
+             p_parser->current,
+             ok_create_string_view(
+                 "empty '{}' is not an expression - the empty map literal is '{:}'.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    goto fail_lists;
+  }
+
+  if (p_parser->current.type == TOKEN_COLON) {
+    // `{:}` - the load-bearing empty literal (bindings are immutable, so
+    // `let m = null` needs mut for later assignment; `{:}` doesn't).
+    advance(p_parser); // ':' consumed, current = '}' (or an error to report)
+    if (!expect(p_parser, TOKEN_RIGHT_BRACE, ok_create_string_view("expected '}' to complete the empty map.", OK_STRING_VIEW_CALCULATE_LENGTH, true))) {
+      goto fail_lists;
+    }
+  } else {
+    for (;;) {
+      advance(p_parser); // first key token into previous
+      ast_expression* key = parse_expression(p_parser, PREC_NONE);
+      if (key == NULL) {
+        error_at(p_parser,
+                 p_parser->previous,
+                 ok_create_string_view("failed to parse map key.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+        goto fail_lists;
+      }
+      if (!expect(p_parser, TOKEN_COLON, ok_create_string_view("expected ':' after map key.", OK_STRING_VIEW_CALCULATE_LENGTH, true))) {
+        ast_dispatch_deinit((ast_node*)key);
+        alloc->release(alloc, key);
+        goto fail_lists;
+      }
+      advance(p_parser); // first value token into previous
+      ast_expression* value = parse_expression(p_parser, PREC_NONE);
+      if (value == NULL) {
+        error_at(p_parser,
+                 p_parser->previous,
+                 ok_create_string_view("failed to parse map value.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+        ast_dispatch_deinit((ast_node*)key);
+        alloc->release(alloc, key);
+        goto fail_lists;
+      }
+      if (!ast_expressions_list_append(&keys, key)) {
+        // the list did not take ownership
+        ast_dispatch_deinit((ast_node*)key);
+        alloc->release(alloc, key);
+        ast_dispatch_deinit((ast_node*)value);
+        alloc->release(alloc, value);
+        goto fail_lists;
+      }
+      if (!ast_expressions_list_append(&values, value)) {
+        // keys owns its entry, values does not
+        ast_dispatch_deinit((ast_node*)value);
+        alloc->release(alloc, value);
+        goto fail_lists;
+      }
+      if (p_parser->current.type == TOKEN_COMMA) {
+        advance(p_parser); // ',' consumed
+        if (p_parser->current.type == TOKEN_RIGHT_BRACE) {
+          break; // trailing comma
+        }
+        continue;
+      }
+      break;
+    }
+    if (!expect(p_parser, TOKEN_RIGHT_BRACE, ok_create_string_view("expected '}' after map literal.", OK_STRING_VIEW_CALCULATE_LENGTH, true))) {
+      goto fail_lists;
+    }
+  }
+
+  ast_map_expression* map = (ast_map_expression*)alloc->allocate(alloc, sizeof(ast_map_expression));
+  if (map == NULL) {
+    error_at(p_parser,
+             trigger,
+             ok_create_string_view("failed to allocate memory for map node.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    goto fail_lists;
+  }
+  ast_specs s = {alloc};
+  ast_map_expression_init(map, trigger, keys, values, &s);
+  return (ast_expression*)map;
+fail_lists:
+  for (uint32_t i = 0; i < keys.count; ++i) {
+    ast_dispatch_deinit((ast_node*)keys.data[i]);
+    alloc->release(alloc, keys.data[i]);
+  }
+  for (uint32_t i = 0; i < values.count; ++i) {
+    ast_dispatch_deinit((ast_node*)values.data[i]);
+    alloc->release(alloc, values.data[i]);
+  }
+  ast_expressions_list_deinit(&keys, alloc);
+  ast_expressions_list_deinit(&values, alloc);
+  return NULL;
 }
 
 ast_expression* parse_subscript(
@@ -1341,8 +1450,15 @@ ast_while_statement* parse_while_statement(parser* p_parser) {
 
 // called with current == TOKEN_COLON and the loop-variable head already consumed:
 // `for (let (mut)?) IDENT :` the rest is `<iterable> <compound_statement>`.
-static ast_for_in_statement*
-parse_for_in_rest(parser* p_parser, token p_for_tok, token p_name_tok, ast_binding_modifiers_t p_binds) {
+// p_has_value: the two-binding map form `for let k, (mut)? v :` - binding binds
+// keys, value_binding binds values (arrays reject it at runtime).
+static ast_for_in_statement* parse_for_in_rest(parser* p_parser,
+                                                token p_for_tok,
+                                                token p_name_tok,
+                                                ast_binding_modifiers_t p_binds,
+                                                token p_value_name_tok,
+                                                ast_binding_modifiers_t p_value_binds,
+                                                bool p_has_value) {
   allocators* alloc = p_parser->alloc;
   advance(p_parser); // ':' consumed, current = first iterable token
   advance(p_parser); // iterable's first token into previous
@@ -1390,24 +1506,54 @@ parse_for_in_rest(parser* p_parser, token p_for_tok, token p_name_tok, ast_bindi
     alloc->release(alloc, ident);
     goto fail_body;
   }
+  ast_identifier_expression* value_ident = NULL;
+  ast_binding* value_binding = NULL;
+  if (p_has_value) {
+    value_ident = (ast_identifier_expression*)alloc->allocate(alloc, sizeof(ast_identifier_expression));
+    value_binding = (ast_binding*)alloc->allocate(alloc, sizeof(ast_binding));
+    if (value_ident == NULL || value_binding == NULL) {
+      error_at(p_parser,
+               p_for_tok,
+               ok_create_string_view(
+                   "failed to allocate memory for ranged-for binding.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      if (value_ident != NULL) {
+        alloc->release(alloc, value_ident);
+      }
+      if (value_binding != NULL) {
+        alloc->release(alloc, value_binding);
+      }
+      goto fail_binding;
+    }
+  }
   ast_for_in_statement* fin = (ast_for_in_statement*)alloc->allocate(alloc, sizeof(ast_for_in_statement));
   if (fin == NULL) {
     error_at(
         p_parser,
         p_for_tok,
         ok_create_string_view("failed to allocate memory for ranged-for node.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
-    ast_binding_deinit(binding); // frees ident
-    alloc->release(alloc, binding);
-    goto fail_body;
+    if (value_ident != NULL) {
+      ast_identifier_expression_deinit(value_ident);
+      alloc->release(alloc, value_ident);
+    }
+    alloc->release(alloc, value_binding);
+    goto fail_binding;
   }
   ast_specs s = {alloc};
   ast_identifier_expression_init(ident, p_name_tok, &s);
   ast_binding_init(binding, (ast_expression*)ident, p_binds, p_name_tok, &s);
+  if (p_has_value) {
+    ast_identifier_expression_init(value_ident, p_value_name_tok, &s);
+    ast_binding_init(value_binding, (ast_expression*)value_ident, p_value_binds, p_value_name_tok, &s);
+  }
   ast_for_in_statement_init(fin, p_for_tok, &s);
   fin->binding = binding;
+  fin->value_binding = p_has_value ? value_binding : NULL;
   fin->iterable = iterable;
   fin->body = body;
   return fin;
+fail_binding:
+  ast_binding_deinit(binding); // frees ident
+  alloc->release(alloc, binding);
 fail_body:
   ast_dispatch_deinit((ast_node*)body);
   alloc->release(alloc, body);
@@ -1624,11 +1770,38 @@ ast_for_statement* parse_for_statement(parser* p_parser) {
       return NULL;
     }
     const token name_tok = p_parser->current;
-    advance(p_parser); // previous = name, current = ':' | '=' | ';' | ...
+    advance(p_parser); // previous = name, current = ':' | ',' | '=' | ';' | ...
     if (p_parser->current.type == TOKEN_COLON) {
       // the cast is safe: both statements share the ast_statement prefix.
       // the caller dispatches on node_type.
-      return (ast_for_statement*)parse_for_in_rest(p_parser, for_tok, name_tok, binds);
+      return (ast_for_statement*)parse_for_in_rest(p_parser, for_tok, name_tok, binds, name_tok, BINDING_NONE, false);
+    }
+    if (p_parser->current.type == TOKEN_COMMA) {
+      // `for let k, (mut)? v : <iterable>` - the two-binding map form: keys and
+      // values. one `let` governs the pair, each binder takes its own `mut`.
+      advance(p_parser); // ',' consumed, current = 'mut' | identifier
+      const ast_binding_modifiers_t value_binds = parse_binding_modifiers(p_parser, BINDING_MUT);
+      if (value_binds == BINDING_ERROR) {
+        return NULL;
+      }
+      if (p_parser->current.type != TOKEN_IDENTIFIER) {
+        error_at(p_parser,
+                 p_parser->current,
+                 ok_create_string_view(
+                     "expected an identifier for the map for value binding.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+        return NULL;
+      }
+      const token value_tok = p_parser->current;
+      advance(p_parser); // previous = value name, current = ':'
+      if (p_parser->current.type != TOKEN_COLON) {
+        error_at(p_parser,
+                 p_parser->current,
+                 ok_create_string_view(
+                     "expected ':' after the map for bindings.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+        return NULL;
+      }
+      return (ast_for_statement*)parse_for_in_rest(
+          p_parser, for_tok, name_tok, binds, value_tok, value_binds, true);
     }
     // `for let (mut)? IDENT = <expr> ...` or the bare `for let x; ...` C init:
     // parse the head expression once (previous = name, so `x = 0` parses as an

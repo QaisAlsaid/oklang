@@ -1,0 +1,15 @@
+let mut m = {"a": 1, "b": 2, "c": 3};
+remove(m, "b");
+print len(m); // expect: 2
+print get(m, "b"); // expect: null
+print m["a"]; // expect: 1
+print m["c"]; // expect: 3
+
+// absent key: legal no-op (the array form's empty range is legal the same way)
+remove(m, "zz");
+print len(m); // expect: 2
+
+// remove then re-insert: the slot is reusable
+m["b"] = 20;
+print m["b"]; // expect: 20
+print len(m); // expect: 3

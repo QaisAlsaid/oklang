@@ -1,0 +1,6 @@
+let m = {"a": 1};
+let checked = m as map;
+print checked["a"]; // expect: 1
+// objects are truthy, like arrays
+print m as bool; // expect: true
+print {:} as bool; // expect: true

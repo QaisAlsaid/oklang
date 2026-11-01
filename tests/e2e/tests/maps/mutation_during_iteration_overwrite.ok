@@ -1,0 +1,9 @@
+// overwriting values mid-iteration is legal: no size change, no version bump
+let m = {"a": 1, "b": 2, "c": 3};
+for let k, v : m {
+  m[k] = v * 10;
+}
+print m["a"]; // expect: 10
+print m["b"]; // expect: 20
+print m["c"]; // expect: 30
+print len(m); // expect: 3

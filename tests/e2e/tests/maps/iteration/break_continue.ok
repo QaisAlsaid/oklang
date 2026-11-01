@@ -1,0 +1,17 @@
+// order-independent: trip counting, not value tracking (iteration order is
+// unspecified - slot order)
+let m = {"a": 1, "b": 2};
+let mut count = 0;
+for let k, v : m {
+  count = count + 1;
+  if count == 1 { continue; } // skip the rest of the first body only
+  count = count + 10;
+}
+print count; // expect: 12
+
+let mut trips = 0;
+for let k : m {
+  trips = trips + 1;
+  if trips == 1 { break; }
+}
+print trips; // expect: 1

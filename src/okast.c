@@ -31,7 +31,7 @@
   /*X(AST_THIS_EXPRESSION, ast_this_expression)*/                                                                      \
   /*X(AST_SUPER_EXPRESSION, ast_super_expression)*/                                                                    \
   X(AST_ARRAY_EXPRESSION, ast_array_expression)                                                                        \
-  /*X(AST_MAP_EXPRESSION, ast_map_expression)*/                                                                        \
+  X(AST_MAP_EXPRESSION, ast_map_expression)                                                                        \
   X(AST_SUBSCRIPT_EXPRESSION, ast_subscript_expression)                                                                \
   X(AST_FUNCTION_EXPRESSION, ast_function_expression)                                                                  \
   X(AST_EMPTY_STATEMENT, ast_empty_statement)                                                                          \
@@ -807,6 +807,64 @@ string ast_array_expression_asprint(const ast_array_expression* p_array) {
   return ret;
 }
 
+void ast_map_expression_init(ast_map_expression* p_map,
+                             token p_token,
+                             ast_expressions_list p_keys,
+                             ast_expressions_list p_values,
+                             ast_specs* p_specs) {
+  ast_expression_init(&p_map->expression, AST_MAP_EXPRESSION, p_token, p_specs);
+  p_map->keys = p_keys;
+  p_map->values = p_values;
+}
+
+void ast_map_expression_deinit(ast_map_expression* p_map) {
+  ast_expressions_list_deinit(&p_map->keys, p_map->expression.node.alloc);
+  ast_expressions_list_deinit(&p_map->values, p_map->expression.node.alloc);
+  ast_expression_deinit(&p_map->expression);
+}
+
+bool ast_map_expression_print(const ast_map_expression* p_map) {
+  bool status = printf("{") > 0;
+  for (uint32_t i = 0; i < p_map->keys.count; ++i) {
+    status &= ast_dispatch_print((ast_node*)p_map->keys.data[i]);
+    status &= printf(": ") > 0;
+    status &= ast_dispatch_print((ast_node*)p_map->values.data[i]);
+    if (i + 1 < p_map->keys.count) {
+      status &= printf(", ") > 0;
+    }
+  }
+  status &= printf("}") > 0;
+  return status;
+}
+
+string ast_map_expression_asprint(const ast_map_expression* p_map) {
+  allocators* alloc = p_map->expression.node.alloc;
+  string ret = create_static_string("{:}", 3); // empty until entries are folded in
+  if (p_map->keys.count == 0) {
+    return ret;
+  }
+  string_deinit(&ret, alloc);
+  ret = create_static_string("{", 1);
+  for (uint32_t i = 0; i < p_map->keys.count; ++i) {
+    string k = ast_dispatch_asprint((ast_node*)p_map->keys.data[i]);
+    string v = ast_dispatch_asprint((ast_node*)p_map->values.data[i]);
+    string joined = asprint(alloc,
+                            "%s%s%s: %s%s",
+                            ret.chars,
+                            i == 0 ? "" : ", ",
+                            k.chars,
+                            v.chars,
+                            "");
+    string_deinit(&k, alloc);
+    string_deinit(&v, alloc);
+    string_deinit(&ret, alloc);
+    ret = joined;
+  }
+  string closed = asprint(alloc, "%s}", ret.chars);
+  string_deinit(&ret, alloc);
+  return closed;
+}
+
 void ast_subscript_expression_init(ast_subscript_expression* p_subscript,
                                    token p_token,
                                    ast_expression* p_left,
@@ -1105,6 +1163,7 @@ void ast_for_statement_init(ast_for_statement* p_for, token p_token, ast_specs* 
 void ast_for_in_statement_init(ast_for_in_statement* p_for_in, token p_token, ast_specs* p_specs) {
   ast_statement_init(&p_for_in->statement, AST_FOR_IN_STATEMENT, p_token, p_specs);
   p_for_in->binding = NULL;
+  p_for_in->value_binding = NULL;
   p_for_in->iterable = NULL;
   p_for_in->body = NULL;
 }
@@ -1115,6 +1174,11 @@ void ast_for_in_statement_deinit(ast_for_in_statement* p_for_in) {
     ast_binding_deinit(p_for_in->binding);
     alloc->release(alloc, p_for_in->binding);
     p_for_in->binding = NULL;
+  }
+  if (p_for_in->value_binding != NULL) {
+    ast_binding_deinit(p_for_in->value_binding);
+    alloc->release(alloc, p_for_in->value_binding);
+    p_for_in->value_binding = NULL;
   }
   if (p_for_in->iterable != NULL) {
     ast_dispatch_deinit((ast_node*)p_for_in->iterable);

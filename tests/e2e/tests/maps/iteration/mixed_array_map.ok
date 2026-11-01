@@ -1,0 +1,11 @@
+// one compiled shape, runtime dispatch: arrays bind elements, maps bind keys
+let values = [10, 20, 30];
+let keys = {"x": 1, "y": 2};
+let mut total = 0;
+for let v : values {
+  total = total + v;
+}
+for let k : keys {
+  total = total + 1;
+}
+print total; // expect: 62

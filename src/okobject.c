@@ -3,6 +3,117 @@
 
 #include "okobject.h"
 #include "okobject_store.h"
+#include "okutils.h"
+
+// ===================== surface map (value keys and values) =====================
+//
+// the okmap.h core instantiated at ok_value keys/values. hashing rules (docs/drafts/MAPS.md §5):
+//   - numbers (and int-tagged operands, widened to their double form like
+//     perform_equal's int/number comparison): splitmix64 over the normalized
+//     bits. -0.0 folds to +0.0 first (R2) so 0.0 and -0.0 are one key. NaN keys
+//     keep their bits: same-bits NaNs are one key, different NaNs are different
+//     keys - hashing and equality stay in agreement, which is the only hard rule.
+//   - strings: the cached FNV-1a from the string header, so probing never walks
+//     the bytes twice.
+//   - bools: the tag bits themselves.
+//   - the tag is mixed into the final hash so `1`, `true` and `"1"` can never
+//     share a probe path (quality: PROBE_MATCHES is the real authority).
+
+static hash_t splitmix64(hash_t p_x) {
+  p_x += UINT64_C(0x9e3779b97f4a7c15);
+  p_x = (p_x ^ (p_x >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
+  p_x = (p_x ^ (p_x >> 27)) * UINT64_C(0x94d049bb133111eb);
+  return p_x ^ (p_x >> 31);
+}
+
+// the normalized double bits two keys must share to compare equal
+static uint64_t map_key_number_bits(value p_key) {
+  double d;
+  if (IS_VALUE_NUMBER(p_key)) {
+    d = VALUE_AS_NUMBER(p_key);
+  } else {
+    d = (double)VALUE_AS_INT(p_key);
+  }
+  if (d == 0.0) {
+    d = 0.0; // -0.0 -> +0.0 (R2): one key, not two
+  }
+  union pun {
+    uint64_t bits;
+    double d;
+  };
+  union pun val = {.d = d};
+  return val.bits;
+}
+
+hash_t map_value_hash(value p_key) {
+  uint64_t raw;
+  uint64_t tag_mix;
+  if (IS_VALUE_NUMBER(p_key) || IS_VALUE_INT(p_key)) {
+    raw = map_key_number_bits(p_key);
+    tag_mix = 0; // numbers ARE their tag space; mixing 0 keeps splitmix64(bits)
+  } else if (IS_VALUE_STRING(p_key)) {
+    raw = VALUE_AS_STRING(p_key)->hash;
+    tag_mix = TAG_OBJECT_MASK;
+  } else {
+    raw = 0; // bools: the tag bits are the whole identity
+    tag_mix = VALUE_TAG(p_key);
+  }
+  return splitmix64(raw ^ tag_mix);
+}
+
+bool map_value_key_equals(value p_probe, value p_key) {
+  if (IS_VALUE_NUMBER(p_probe) || IS_VALUE_INT(p_probe)) {
+    return (IS_VALUE_NUMBER(p_key) || IS_VALUE_INT(p_key)) &&
+           map_key_number_bits(p_probe) == map_key_number_bits(p_key);
+  }
+  if (IS_VALUE_STRING(p_probe)) {
+    if (!IS_VALUE_STRING(p_key)) {
+      return false;
+    }
+    // the cached-hash fast reject already ran in find_slot (hashes[i] == hash)
+    const object_string* left = VALUE_AS_STRING(p_probe);
+    const object_string* right = VALUE_AS_STRING(p_key);
+    const uint64_t left_length = string_get_length(&left->string);
+    return left_length == string_get_length(&right->string) &&
+           memcmp(left->string.chars, right->string.chars, left_length) == 0;
+  }
+  return p_probe == p_key; // bools (and any future same-tag scalars): raw identity
+}
+
+// number first: a negative subnormal double can alias TAG_INT_MASK, but
+// IS_VALUE_NUMBER already claimed every raw double before this check runs.
+bool map_key_is_legal(value p_key) {
+  return IS_VALUE_NUMBER(p_key) || IS_VALUE_INT(p_key) || IS_VALUE_STRICTLY_BOOL(p_key) ||
+         IS_VALUE_STRING(p_key);
+}
+
+#define VM_KEY_IS_EMPTY(k) IS_VALUE_STRICTLY_NULL(k)
+#define VM_KEY_SET_EMPTY(k) (*(k) = NULL_AS_VALUE())
+#define VM_PROBE_HASH(p) (map_value_hash(p))
+#define VM_PROBE_MATCHES(p, k) (map_value_key_equals((p), (k)))
+#define VM_KEY_CLONE(p, a) (p)                    /* values are copied bit for bit; the gc owns the memory */
+#define VM_NO_DEINIT(k, a) ((void)0)              /* ditto: nothing to release per entry */
+
+MAP_DEFINE(value_map, value, value, value, VM_KEY_IS_EMPTY, VM_KEY_SET_EMPTY, VM_PROBE_HASH, VM_PROBE_MATCHES, VM_KEY_CLONE, VM_NO_DEINIT, VM_NO_DEINIT)
+
+bool object_map_set(object_map* p_map, value p_key, value p_value) {
+  const uint32_t before = p_map->entries.count;
+  if (!value_map_set(&p_map->entries, p_key, p_value)) {
+    return false;
+  }
+  if (p_map->entries.count != before) {
+    p_map->version++; // a size change: active for-ins must fail, not mis-walk
+  }
+  return true;
+}
+
+bool object_map_remove(object_map* p_map, value p_key) {
+  if (!value_map_remove(&p_map->entries, p_key)) {
+    return false;
+  }
+  p_map->version++;
+  return true;
+}
 
 static void object_init(object* p_object, uint32_t p_type) {
   p_object->info = p_type & 0x00ffffff;
@@ -29,9 +140,25 @@ void object_set_marked(object* p_object, bool p_marked) {
   p_object->info = p_marked ? p_object->info | mask : p_object->info & ~mask;
 }
 
+// standard FNV-1a (xor the byte, THEN multiply): the multiply spreads every
+// byte into the full 64 bits. (okutils' fnv1a_hash_str xors byte*prime
+// instead, whose low bits stay confined to a narrow band for short ASCII
+// keys - fine for the dozens of identifiers globals_store hashes, but a
+// 200k-string-key map collapsed to an average probe distance of 377 with it.
+// found via the map_insert bench; globals_store keeps its own hash.)
+static hash_t string_hash_fnv1a(const ok_string_view p_string) {
+  hash_t hash = 14695981039346656037ULL;
+  for (uint64_t i = 0; i < ok_string_view_get_length(&p_string); ++i) {
+    hash ^= (uint8_t)p_string.chars[i];
+    hash *= 1099511628211ULL;
+  }
+  return hash;
+}
+
 static void object_string_init(object_string* p_object_string, const ok_string_view p_string, object_specs* p_specs) {
   object_init(&p_object_string->object, OBJ_STRING);
   p_object_string->string = create_string_from_string_view(p_string, p_specs->alloc);
+  p_object_string->hash = string_hash_fnv1a(p_string);
 }
 
 static void object_string_deinit(object_string* p_object_string, object_specs* p_specs) {
@@ -238,6 +365,29 @@ object_array* create_object_array(object_specs* p_specs) {
   return object_arr;
 }
 
+static void object_map_init(object_map* p_object_map, object_specs* p_specs) {
+  object_init(&p_object_map->object, OBJ_MAP);
+  value_map_init(&p_object_map->entries, p_specs->alloc);
+  p_object_map->version = 0;
+}
+
+static void object_map_deinit(object_map* p_object_map, object_specs* p_specs) {
+  // entry keys and values are gc owned (the instantiation's deinits are no-ops),
+  // this only releases the parallel backing buffers.
+  value_map_deinit(&p_object_map->entries);
+  object_deinit(&p_object_map->object);
+}
+
+object_map* create_object_map(object_specs* p_specs) {
+  object_map* object_m = (object_map*)p_specs->alloc->allocate(p_specs->alloc, sizeof(object_map));
+  if (object_m == NULL) {
+    return NULL;
+  }
+  object_map_init(object_m, p_specs);
+  object_store_append(p_specs->store, (object*)object_m);
+  return object_m;
+}
+
 void object_dispatch_deinit(object* p_object, object_specs* p_specs) {
   switch (object_get_type(p_object)) {
   case OBJ_STRING:
@@ -260,6 +410,9 @@ void object_dispatch_deinit(object* p_object, object_specs* p_specs) {
     break;
   case OBJ_ARRAY:
     object_array_deinit((object_array*)p_object, p_specs);
+    break;
+  case OBJ_MAP:
+    object_map_deinit((object_map*)p_object, p_specs);
     break;
   }
 }
@@ -303,6 +456,14 @@ void object_debug_print(object* p_object) {
   case OBJ_NATIVE_FUNCTION: {
     object_native_function* fu = (object_native_function*)p_object;
     printf("<native function %s a: %d %p>", fu->name.chars, fu->arity, fu->function);
+    break;
+  }
+  case OBJ_ARRAY: {
+    printf("<array %u>", ((object_array*)p_object)->values.count);
+    break;
+  }
+  case OBJ_MAP: {
+    printf("<map %u>", ((object_map*)p_object)->entries.count);
     break;
   }
   }

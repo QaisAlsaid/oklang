@@ -1,0 +1,6 @@
+// R2: -0.0 normalizes to +0.0 - one key, not two
+let m = {0.0: "zero"};
+m[-0.0] = "minus";
+print len(m); // expect: 1
+print m[0.0]; // expect: minus
+print m[-0.0]; // expect: minus

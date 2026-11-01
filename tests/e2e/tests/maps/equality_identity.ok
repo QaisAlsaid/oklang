@@ -1,0 +1,5 @@
+let m = {"a": 1};
+print m == m; // expect: true
+let n = {"a": 1};
+// identity, not content
+print m == n; // expect: false

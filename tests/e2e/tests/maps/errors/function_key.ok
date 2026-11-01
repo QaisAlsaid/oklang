@@ -1,0 +1,2 @@
+let m = {:};
+m[fu() { return 1; }] = 1; // expect error

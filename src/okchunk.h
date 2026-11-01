@@ -195,10 +195,16 @@ typedef enum {
   OP_PRINT,              // w:    (p, A)          -> print r[A]
   OP_ARRAY_NEW,          // w:    (a, b, c)       -> r[a] = c != 0 then Array(r[b]..r[b + c - 1]) otherwise Array()
   OP_ARRAY_NEW_LONG,     // 2w:   (A, B, C)       -> same; ip += w
-  OP_ARRAY_GET,          // w:    (p, a, b, c)    -> r[a] = r[b][p then k[c] otherwise r[c]]
-  OP_ARRAY_GET_LONG,     // 2w:   (p, A, B, C)    -> r[A] = r[B][p then k[C] otherwise r[C]]; ip += w
-  OP_ARRAY_SET,          // w:    (p, a, b, c)    -> r[a][p then k[b] otherwise r[b]] = r[c] (value is a register in narrow)
-  OP_ARRAY_SET_LONG,     // 2w:   (p, q, A, B, C) -> r[A][p then k[B] : r[B]] = (q otherwise k[C] : r[C]); ip += w
+  OP_MAP_NEW,            // w:    (a, b, c)       -> r[a] = c != 0 then Map(r[b], r[b + 1], .. r[b + 2c - 1]) otherwise Map()
+                         //                          c is the pair count: [b, b + 2c) is k0, v0, k1, v1, ...
+  OP_MAP_NEW_LONG,       // 2w:   (A, B, C)       -> same; ip += w
+  OP_INDEX_GET,          // w:    (p, a, b, c)    -> r[a] = r[b][p then k[c] otherwise r[c]]
+  OP_INDEX_GET_LONG,     // 2w:   (p, A, B, C)    -> r[A] = r[B][p then k[C] otherwise r[C]]; ip += w
+                         //                          r[B] array: whole-number index, out of bounds errors.
+                         //                          r[B] map: key lookup, missing key errors
+  OP_INDEX_SET,          // w:    (p, a, b, c)    -> r[a][p then k[b] otherwise r[b]] = r[c] (value is a register in narrow)
+  OP_INDEX_SET_LONG,     // 2w:   (p, q, A, B, C) -> r[A][p then k[B] : r[B]] = (q otherwise k[C] : r[C]); ip += w
+                         //                          r[A] array: bounds checked store. r[A] map: insert or overwrite
   OP_JUMP_IF_ARGC,       // 2w:   (p, A, B)       -> ip += A when (p == 1) == (frame->argc > B); B is the 0-based parameter position
   OP_FOR_PREP,           // 2w:   (A, B)          -> numeric for entry: r[B] is the counter, r[B + 1] the limit, r[B + 2] the step
                          //                          (compiler allocates the three adjacently and asserts it). validates all
@@ -215,6 +221,22 @@ typedef enum {
                          //                          checks (FOR_PREP's normalization holds: the limit/step are nameless, the
                          //                          counter is statically unwritable). p == 0: `let mut` - the counter is gated
                          //                          each trip, the body may reseat it to any value.
+  OP_ITER_PREP,          // 2w:   (p, A, B)       -> for-in entry (arrays and maps, runtime dispatched). r[B] is the
+                         //                          iterable, r[B + 1] the cursor, r[B + 2] the end (arrays: element
+                         //                          count; maps: the version snapshot). arrays: cursor = 0, first bounds
+                         //                          test, empty skips the loop (ip += A like OP_JUMP_IF's forward offset).
+                         //                          maps: snapshot the version, advance the cursor to the first occupied
+                         //                          slot, empty skips. p == 1: the two-binding form (k, v) - arrays error
+                         //                          ("arrays bind one loop variable"), maps write both loop registers.
+                         //                          anything else: "can only iterate over arrays and maps".
+  OP_ITER_GET,           // 2w:   (p, A, B, C)    -> for-in body top: r[C] = current element. arrays: r[C] =
+                         //                          r[B] values[cursor]. maps: r[C] = keys[cursor], and when p == 1 also
+                         //                          r[C + 1] = values[cursor] (the compiler declares k, v adjacent).
+                         //                          (A unused, always 0)
+  OP_ITER_LOOP,          // 2w:   (p, A, B)       -> for-in back edge. arrays: cursor + 1, still < end -> ip -= A.
+                         //                          maps: the version snapshot must match (a size change during iteration
+                         //                          is a hard error, overwrites are fine), advance the cursor to the next
+                         //                          occupied slot, found -> ip -= A. (p unused, always false)
 } opcode;
 
 // clang-format on

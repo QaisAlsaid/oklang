@@ -1,0 +1,7 @@
+// null VALUES are fine; only keys can't be null
+let m = {"a": null};
+print m["a"]; // expect: null
+print len(m); // expect: 1
+print get(m, "a"); // expect: null
+m["b"] = null;
+print len(m); // expect: 2

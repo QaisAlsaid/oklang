@@ -8,6 +8,7 @@
 #include "okchunk.h"
 #include "okfwd.h"
 #include "okindex.h"
+#include "okmap.h"
 #include "okobject_store.h"
 #include "okstring.h"
 #include "okvalue.h"
@@ -21,6 +22,7 @@
 #define IS_VALUE_NATIVE_VALUE(value) value_is_object_type(value, OBJ_NATIVE_VALUE)
 #define IS_VALUE_NATIVE_FUNCTION(value) value_is_object_type(value, OBJ_NATIVE_FUNCTION)
 #define IS_VALUE_ARRAY(value) value_is_object_type(value, OBJ_ARRAY)
+#define IS_VALUE_MAP(value) value_is_object_type(value, OBJ_MAP)
 
 #define VALUE_AS_STRING(value) ((object_string*)VALUE_AS_OBJECT(value))
 #define VALUE_AS_FUNCTION(value) ((object_function*)VALUE_AS_OBJECT(value))
@@ -29,6 +31,7 @@
 #define VALUE_AS_NATIVE_VALUE(value) ((object_native_type*)VALUE_AS_OBJECT(value))
 #define VALUE_AS_NATIVE_FUNCTION(value) ((object_native_function*)VALUE_AS_OBJECT(value))
 #define VALUE_AS_ARRAY(value) ((object_array*)VALUE_AS_OBJECT(value))
+#define VALUE_AS_MAP(value) ((object_map*)VALUE_AS_OBJECT(value))
 
 typedef struct {
   allocators* alloc;
@@ -43,6 +46,7 @@ typedef enum {
   OBJ_NATIVE_VALUE,
   OBJ_NATIVE_FUNCTION,
   OBJ_ARRAY,
+  OBJ_MAP,
 } object_type;
 
 struct object {
@@ -62,6 +66,8 @@ static inline bool value_is_object_type(value p_value, object_type p_type) {
 typedef struct {
   object object;
   string string;
+  hash_t hash; // FNV-1a over the bytes, cached at creation. strings are immutable,
+               // so map keys (and any future hashed user) never re-walk the bytes.
 } object_string;
 
 object_string* create_object_string(const ok_string_view p_string, object_specs* p_specs);
@@ -101,6 +107,11 @@ value* object_upvalue_get_value(object_upvalue* p_upvalue, value* p_frame_window
 object_upvalue* create_object_upvalue(uint32_t p_location, object_specs* p_specs);
 
 ARRAY_DECLARE_DEFAULT(upvalue_array, object_upvalue*)
+
+// the ok_value-keyed instantiation of the okmap core (defined in okobject.c):
+// strict-null key = empty slot, cached hashes, backward-shift deletion.
+MAP_DECLARE(value_map, value, value, value)
+
 typedef struct {
   object object;
   object_function* function;
@@ -137,6 +148,42 @@ typedef struct {
 } object_array;
 
 object_array* create_object_array(object_specs* p_specs);
+
+// the surface map: the same linear-probing core the compiler's tables use
+// (okmap.h), instantiated at ok_value keys AND values. the strict-null key is
+// the empty-slot sentinel, which is exactly why null KEYS are illegal on the
+// surface (the encoding spends them on "empty"). keys are stored as the values
+// they arrived as; probes hash through map_value_hash and compare through
+// map_value_key_equals, both of which must stay in agreement with perform_equal
+// for the types that are legal keys (strings, numbers, bools).
+//
+// version: bumped by every size-changing operation (insert-new, remove;
+// overwrites do NOT bump). the for-in ops snapshot it at loop entry and hard
+// error on a mid-iteration size change - overwriting values while iterating is
+// fine, inserting/removing is not.
+typedef struct {
+  object object;
+  value_map entries;
+  uint32_t version;
+} object_map;
+
+object_map* create_object_map(object_specs* p_specs);
+
+hash_t map_value_hash(value p_key);
+bool map_value_key_equals(value p_probe, value p_key);
+
+// the v1 key whitelist: strings, numbers (int-tagged included) and booleans.
+// null is the empty-slot encoding (never a legal key), arrays/maps/functions
+// are identity-shaped and wait for classes (docs/drafts/MAPS.md §1).
+bool map_key_is_legal(value p_key);
+
+// insert-or-overwrite + version bookkeeping. returns false only on OOM (the
+// okmap core's contract); a size change bumps p_map->version so active
+// iterations can detect it.
+bool object_map_set(object_map* p_map, value p_key, value p_value);
+
+// false = absent (no version change).
+bool object_map_remove(object_map* p_map, value p_key);
 
 void object_dispatch_deinit(object* p_object, object_specs* p_specs);
 void objects_list_deinit(object* p_head, object_specs* p_specs);

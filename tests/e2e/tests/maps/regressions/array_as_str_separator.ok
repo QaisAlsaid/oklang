@@ -1,0 +1,6 @@
+// found while building maps: array_as_str placed ", " before each element
+// except the last, printing "[, 1, 23]" for [1, 2, 3] (v0.1.0, untested then)
+print [1, 2, 3] as str; // expect: [1, 2, 3]
+print [] as str; // expect: []
+print [1] as str; // expect: [1]
+print ["a", "b"] as str; // expect: [a, b]

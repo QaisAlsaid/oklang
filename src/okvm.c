@@ -948,12 +948,87 @@ static inline bool int_as_str(vm* p_vm, int64_t p_value, value* p_result) {
 
 static inline bool as_str(vm* p_vm, value p_value, value* p_result);
 
+// `{k: v, ...}` in slot order (iteration order is unspecified v1 printing follows it).
+// string keys print unquoted, same display form array elements use.
+// the empty map prints `{:}`, its literal. the key's bytes are copied
+// into the scratch buffer before the value converts: each as_str allocates (collects),
+// and an unrooted intermediate would be swept otherwise.
+static inline bool map_as_str(vm* p_vm, object* p_obj, value* p_result) {
+  object_map* map = (object_map*)p_obj;
+  char* chars = NULL;
+  size_t len = 0;
+  for (uint32_t i = 0; i < map->entries.capacity; ++i) {
+    if (IS_VALUE_STRICTLY_NULL(map->entries.keys[i])) {
+      continue;
+    }
+    const uint8_t dellen = len == 0 ? 0 : 2;
+    value kres;
+    if (!as_str(p_vm, map->entries.keys[i], &kres)) {
+      return false;
+    }
+    string* kstr = &VALUE_AS_STRING(kres)->string;
+    const uint32_t klen = (uint32_t)string_get_length(kstr);
+    if (kstr->chars != NULL) {
+      gc_guard_up(p_vm->alloc->gc, kres);
+      chars = p_vm->alloc->reallocate(p_vm->alloc, chars, len, len + dellen + klen + 2);
+      gc_guard_down(p_vm->alloc->gc);
+      if (chars == NULL) {
+        runtime_error(p_vm, "out of memory: failed to convert map to string.");
+        return false;
+      }
+      if (dellen != 0) {
+        memcpy(chars + len, ", ", dellen);
+      }
+      memcpy(chars + len + dellen, kstr->chars, klen);
+      memcpy(chars + len + dellen + klen, ": ", 2);
+      len += dellen + klen + 2;
+    }
+    value vres;
+    if (!as_str(p_vm, map->entries.values[i], &vres)) {
+      return false;
+    }
+    string* vstr = &VALUE_AS_STRING(vres)->string;
+    const uint32_t vlen = (uint32_t)string_get_length(vstr);
+    if (vstr->chars != NULL) {
+      gc_guard_up(p_vm->alloc->gc, vres);
+      chars = p_vm->alloc->reallocate(p_vm->alloc, chars, len, len + vlen);
+      gc_guard_down(p_vm->alloc->gc);
+      if (chars == NULL) {
+        runtime_error(p_vm, "out of memory: failed to convert map to string.");
+        return false;
+      }
+      memcpy(chars + len, vstr->chars, vlen);
+      len += vlen;
+    }
+  }
+  string fstr = len == 0 ? asprint(p_vm->alloc, "{:}") : asprint(p_vm->alloc, "{%.*s}", len, chars);
+  if (chars != NULL) {
+    p_vm->alloc->release(p_vm->alloc, chars);
+  }
+  if (fstr.chars == NULL) {
+    runtime_error(p_vm, "out of memory: failed to convert map to string.");
+    return false;
+  }
+  object_specs specs = {p_vm->alloc, p_vm->objects_store};
+  object_string* str = create_object_string(ok_create_string_view_from_string(fstr), &specs);
+  if (str == NULL) {
+    runtime_error(p_vm, "out of memory: failed to convert map to string.");
+    return false;
+  }
+  *p_result = OBJECT_AS_VALUE(str);
+  string_deinit(&fstr, p_vm->alloc); // here so obj str is rooted
+  return true;
+}
+
 static inline bool array_as_str(vm* p_vm, object* p_arr, value* p_result) {
   object_array* arr = (object_array*)p_arr;
   char* chars = NULL;
   size_t len = 0;
   for (uint32_t i = 0; i < arr->values.count; ++i) {
-    const uint8_t delemlen = i < arr->values.count - 1 ? 2 : 0;
+    // ", " after each element except the last. (the original placed it before
+    // each element except the last, printing "[, 1, 23]" for [1, 2, 3]
+    // no e2e test ever converted a multi-element array, so it survived v0.1.0.)
+    const uint8_t delemlen = i + 1 < arr->values.count ? 2 : 0;
     value res;
     if (!as_str(p_vm, arr->values.data[i], &res)) {
       return false;
@@ -968,14 +1043,18 @@ static inline bool array_as_str(vm* p_vm, object* p_arr, value* p_result) {
         runtime_error(p_vm, "out of memory: failed to convert array to string.");
         return false;
       }
+      memcpy(chars + len, str->chars, reslen);
       if (delemlen != 0) {
-        memcpy(chars + len, ", ", delemlen);
+        memcpy(chars + len + reslen, ", ", delemlen);
       }
-      memcpy(chars + len + delemlen, str->chars, reslen);
       len += reslen + delemlen;
     }
   }
   string fstr = asprint(p_vm->alloc, "[%.*s]", len, chars);
+  if (chars != NULL) {
+    p_vm->alloc->release(p_vm->alloc,
+                         chars); // release only after asprint copied: it could be NULL for an all-empty array
+  }
   if (fstr.chars == NULL) {
     runtime_error(p_vm, "failed to convert array to string.");
     return false;
@@ -1003,7 +1082,13 @@ static inline bool closure_as_str(vm* p_vm, object* p_closure, value* p_result) 
 
 static inline bool native_function_as_str(vm* p_vm, object* p_native_function, value* p_result) {
   object_native_function* nativefu = (object_native_function*)p_native_function;
-  string str = asprint(p_vm->alloc, "native fu %s |%i| (@%p)", nativefu->name, nativefu->arity, nativefu->function);
+  char arity[16];
+  if (nativefu->arity == OK_NATIVE_ARITY_ANY) {
+    snprintf(arity, sizeof(arity), "any");
+  } else {
+    snprintf(arity, sizeof(arity), "%u", nativefu->arity);
+  }
+  string str = asprint(p_vm->alloc, "native fu %s |%s| (@%p)", nativefu->name, arity, nativefu->function);
   if (str.chars == NULL) {
     runtime_error(p_vm, "failed to convert native function to string.");
     return false;
@@ -1029,6 +1114,9 @@ static inline bool object_as_str(vm* p_vm, object* p_obj, value* p_result) {
   }
   case OBJ_ARRAY: {
     return array_as_str(p_vm, p_obj, p_result);
+  }
+  case OBJ_MAP: {
+    return map_as_str(p_vm, p_obj, p_result);
   }
   case OBJ_CLOSURE: {
     return closure_as_str(p_vm, p_obj, p_result);
@@ -1105,6 +1193,10 @@ static inline bool object_as_num(vm* p_vm, object* p_obj, value* p_result) {
   }
   case OBJ_ARRAY: {
     runtime_error(p_vm, "array is not convertable to number.");
+    return false;
+  }
+  case OBJ_MAP: {
+    runtime_error(p_vm, "map is not convertable to number.");
     return false;
   }
   case OBJ_CLOSURE: {
@@ -1193,6 +1285,17 @@ perform_as(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest,
   case TT_BOOL: {
     if (as_bool(p_vm, p_lhs, dest)) {
       res.status = RUNTIME_OK;
+    }
+    break;
+  }
+  case TT_MAP: {
+    // a checked identity, not a conversion: nothing sensibly converts to a map.
+    // this is the doc's type check (`m as map`), the bridge to 0.5.0's real types.
+    if (IS_VALUE_MAP(p_lhs)) {
+      *dest = p_lhs;
+      res.status = RUNTIME_OK;
+    } else {
+      runtime_error(p_vm, "value is not a map.");
     }
     break;
   }
@@ -1298,7 +1401,7 @@ static inline interpret_result top_level_return(register_file* p_registers, call
   return result;
 }
 
-// array index resolution shared by OP_ARRAY_GET / OP_ARRAY_SET
+// array index resolution shared by OP_INDEX_GET / OP_INDEX_SET
 static bool resolve_array_index(vm* p_vm, value p_index, uint32_t p_count, uint32_t* p_out) {
   if (IS_VALUE_NUMBER(p_index)) {
     const double d = VALUE_AS_NUMBER(p_index);
@@ -1341,10 +1444,64 @@ static bool for_operand_as_number(vm* p_vm, value p_value, const char* p_which, 
 
 static object_array* resolve_array_base(vm* p_vm, value p_base) {
   if (!value_is_object_type(p_base, OBJ_ARRAY)) {
-    runtime_error(p_vm, "invalid operand for '[]': expected an array.");
+    runtime_error(p_vm, "invalid operand for '[]': expected an array or a map.");
     return NULL;
   }
   return VALUE_AS_ARRAY(p_base);
+}
+
+// ---- map index paths (shared by OP_INDEX_GET / OP_INDEX_SET) ----
+
+// the key gate every map write/read runs: null is the empty-slot encoding, and
+// only strings, numbers (int-tagged included) and booleans hash (docs/drafts/MAPS.md §1).
+static bool map_key_check(vm* p_vm, value p_key) {
+  if (IS_VALUE_STRICTLY_NULL(p_key)) {
+    runtime_error(p_vm, "map key cannot be null.");
+    return false;
+  }
+  if (!map_key_is_legal(p_key)) {
+    runtime_error(p_vm, "invalid map key: only strings, numbers and booleans can be keys.");
+    return false;
+  }
+  return true;
+}
+
+// R1: the strict read - a missing key is a hard error, get() is the lax path.
+// read-only and allocation-free (probes never allocate).
+static bool map_read(vm* p_vm, value p_map_value, value p_key, value* p_out) {
+  if (!map_key_check(p_vm, p_key)) {
+    return false;
+  }
+  value* slot = value_map_get(&VALUE_AS_MAP(p_map_value)->entries, p_key);
+  if (slot == NULL) {
+    runtime_error(p_vm, "map key not found.");
+    return false;
+  }
+  *p_out = *slot;
+  return true;
+}
+
+// insert-or-overwrite. the map lives in a register (rooted); key/value operands
+// are registers or constants (rooted via the frame / the function's constant
+// array), so a grow-triggered collection mid-set is safe: the tracer walks the
+// still-attached old arrays, and the new arrays are plain invisible memory.
+static bool map_write(vm* p_vm, value p_map_value, value p_key, value p_value) {
+  if (!map_key_check(p_vm, p_key)) {
+    return false;
+  }
+  if (!object_map_set(VALUE_AS_MAP(p_map_value), p_key, p_value)) {
+    runtime_error(p_vm, "out of memory: failed to grow map.");
+    return false;
+  }
+  return true;
+}
+
+// the error return every opcode handler uses after runtime_error reported
+static interpret_result interpret_result_error(void) {
+  interpret_result result;
+  result.status = RUNTIME_ERROR;
+  result.top_level_return = NULL_AS_VALUE();
+  return result;
 }
 
 interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
@@ -2048,71 +2205,149 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       result.top_level_return = NULL_AS_VALUE();
       return result;
     }
-    case OP_ARRAY_GET: {
+    case OP_MAP_NEW: {
+      const uint8_t a = a_of(instruction);
+      const uint8_t b = b_of(instruction);
+      const uint8_t c = c_of(instruction);
+      // pairs are live frame registers ([0, top) rooted). like ARRAY_NEW, the
+      // map is linked in the store yet unreachable until it lands in r[a], and
+      // every insert may grow through the gc-aware allocator (collects): guard
+      // the whole fill. duplicate keys in a literal: the later insert
+      // overwrites, len counts the unique keys.
+      object_specs s = {p_vm->alloc, p_vm->objects_store};
+      object_map* map = create_object_map(&s);
+      if (map == NULL) {
+        goto oom_map_new;
+      }
+      gc_guard_up(p_vm->alloc->gc, OBJECT_AS_VALUE(map));
+      bool filled = true;
+      for (uint32_t i = 0; i < c && filled; ++i) {
+        filled = map_write(p_vm, OBJECT_AS_VALUE(map), REG_AT(b + 2 * i), REG_AT(b + 2 * i + 1));
+      }
+      gc_guard_down(p_vm->alloc->gc);
+      if (!filled) {
+        return interpret_result_error(); // map_write already reported
+      }
+      REG_AT(a) = OBJECT_AS_VALUE(map);
+      break;
+    oom_map_new:
+      runtime_error(p_vm, "out of memory: failed to allocate map.");
+      return interpret_result_error();
+    }
+    case OP_MAP_NEW_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      object_specs s = {p_vm->alloc, p_vm->objects_store};
+      object_map* map = create_object_map(&s);
+      if (map == NULL) {
+        goto oom_map_new_long;
+      }
+      gc_guard_up(p_vm->alloc->gc, OBJECT_AS_VALUE(map));
+      bool filled = true;
+      for (uint32_t i = 0; i < C && filled; ++i) {
+        filled = map_write(p_vm, OBJECT_AS_VALUE(map), REG_AT(B + 2 * i), REG_AT(B + 2 * i + 1));
+      }
+      gc_guard_down(p_vm->alloc->gc);
+      if (!filled) {
+        return interpret_result_error(); // map_write already reported
+      }
+      REG_AT(A) = OBJECT_AS_VALUE(map);
+      break;
+    oom_map_new_long:
+      runtime_error(p_vm, "out of memory: failed to allocate map.");
+      return interpret_result_error();
+    }
+    case OP_INDEX_GET: {
       const bool p = p_of(instruction);
       const uint8_t a = a_of(instruction);
       const uint8_t b = b_of(instruction);
       const uint8_t c = c_of(instruction);
-      const object_array* arr = resolve_array_base(p_vm, REG_AT(b));
+      const value base = REG_AT(b);
+      const value key = resolve_operand(frame, reg, c, p);
+      if (value_is_object_type(base, OBJ_MAP)) {
+        value read;
+        if (!map_read(p_vm, base, key, &read)) {
+          return interpret_result_error();
+        }
+        REG_AT(a) = read;
+        break;
+      }
+      const object_array* arr = resolve_array_base(p_vm, base);
       uint32_t index = 0;
-      if (arr == NULL || !resolve_array_index(p_vm, resolve_operand(frame, reg, c, p), arr->values.count, &index)) {
-        interpret_result result;
-        result.status = RUNTIME_ERROR;
-        result.top_level_return = NULL_AS_VALUE();
-        return result;
+      if (arr == NULL || !resolve_array_index(p_vm, key, arr->values.count, &index)) {
+        return interpret_result_error();
       }
       REG_AT(a) = arr->values.data[index];
       break;
     }
-    case OP_ARRAY_GET_LONG: {
+    case OP_INDEX_GET_LONG: {
       const word2 words = JOIN_WORD(instruction);
       const bool p = p_of(words);
       const uint16_t A = A_of(words);
       const uint16_t B = B_of(words);
       const uint16_t C = C_of(words);
-      const object_array* arr = resolve_array_base(p_vm, REG_AT(B));
+      const value base = REG_AT(B);
+      const value key = resolve_operand(frame, reg, C, p);
+      if (value_is_object_type(base, OBJ_MAP)) {
+        value read;
+        if (!map_read(p_vm, base, key, &read)) {
+          return interpret_result_error();
+        }
+        REG_AT(A) = read;
+        break;
+      }
+      const object_array* arr = resolve_array_base(p_vm, base);
       uint32_t index = 0;
-      if (arr == NULL || !resolve_array_index(p_vm, resolve_operand(frame, reg, C, p), arr->values.count, &index)) {
-        interpret_result result;
-        result.status = RUNTIME_ERROR;
-        result.top_level_return = NULL_AS_VALUE();
-        return result;
+      if (arr == NULL || !resolve_array_index(p_vm, key, arr->values.count, &index)) {
+        return interpret_result_error();
       }
       REG_AT(A) = arr->values.data[index];
       break;
     }
-    case OP_ARRAY_SET: {
+    case OP_INDEX_SET: {
       const bool p = p_of(instruction);
       const uint8_t a = a_of(instruction);
       const uint8_t b = b_of(instruction);
       const uint8_t c = c_of(instruction);
-      const object_array* arr = resolve_array_base(p_vm, REG_AT(a));
-      uint32_t index = 0;
-      if (arr == NULL || !resolve_array_index(p_vm, resolve_operand(frame, reg, b, p), arr->values.count, &index)) {
-        interpret_result result;
-        result.status = RUNTIME_ERROR;
-        result.top_level_return = NULL_AS_VALUE();
-        return result;
+      const value base = REG_AT(a);
+      const value key = resolve_operand(frame, reg, b, p);
+      if (value_is_object_type(base, OBJ_MAP)) {
+        // narrow SET has no room for a value-const flag (p is spent on the key):
+        // the compiler materializes constant values, c is always a register here.
+        if (!map_write(p_vm, base, key, REG_AT(c))) {
+          return interpret_result_error();
+        }
+        break;
       }
-      // narrow SET has no room for a value-const flag (p is spent on the index):
-      // the compiler materializes constant values, c is always a register here.
+      const object_array* arr = resolve_array_base(p_vm, base);
+      uint32_t index = 0;
+      if (arr == NULL || !resolve_array_index(p_vm, key, arr->values.count, &index)) {
+        return interpret_result_error();
+      }
       ((object_array*)arr)->values.data[index] = REG_AT(c);
       break;
     }
-    case OP_ARRAY_SET_LONG: {
+    case OP_INDEX_SET_LONG: {
       const word2 words = JOIN_WORD(instruction);
       const bool p = p_of(words);
       const bool q = Q_of(words);
       const uint16_t A = A_of(words);
       const uint16_t B = B_of(words);
       const uint16_t C = C_of(words);
-      const object_array* arr = resolve_array_base(p_vm, REG_AT(A));
+      const value base = REG_AT(A);
+      const value key = resolve_operand(frame, reg, B, p);
+      if (value_is_object_type(base, OBJ_MAP)) {
+        if (!map_write(p_vm, base, key, resolve_operand(frame, reg, C, q))) {
+          return interpret_result_error();
+        }
+        break;
+      }
+      const object_array* arr = resolve_array_base(p_vm, base);
       uint32_t index = 0;
-      if (arr == NULL || !resolve_array_index(p_vm, resolve_operand(frame, reg, B, p), arr->values.count, &index)) {
-        interpret_result result;
-        result.status = RUNTIME_ERROR;
-        result.top_level_return = NULL_AS_VALUE();
-        return result;
+      if (arr == NULL || !resolve_array_index(p_vm, key, arr->values.count, &index)) {
+        return interpret_result_error();
       }
       ((object_array*)arr)->values.data[index] = resolve_operand(frame, reg, C, q);
       break;
@@ -2165,10 +2400,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
         counter = VALUE_AS_NUMBER(REG_AT(B));
       } else if (!for_operand_as_number(p_vm, REG_AT(B), "numeric for counter", &counter)) {
         // mut counter: the body may reseat it to any value, keep the gate.
-        interpret_result result;
-        result.status = RUNTIME_ERROR;
-        result.top_level_return = NULL_AS_VALUE();
-        return result;
+        return interpret_result_error();
       }
       // only the counter is reachable by name
       const double limit = VALUE_AS_NUMBER(REG_AT(B + 1));
@@ -2177,6 +2409,98 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       REG_AT(B) = NUMBER_AS_VALUE(counter);
       const bool in_range = step > 0.0 ? counter < limit : counter > limit;
       if (in_range) {
+        ip -= A;
+      }
+      break;
+    }
+    case OP_ITER_PREP: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool p = p_of(words);     // p == 1: the (k, v) two-binding form
+      const uint16_t A = A_of(words); // forward offset to the loop exit
+      const uint16_t B = B_of(words); // state: iterable, cursor at B + 1, end at B + 2
+      const value iterable = REG_AT(B);
+      if (value_is_object_type(iterable, OBJ_ARRAY)) {
+        if (p) {
+          runtime_error(p_vm, "array iteration binds one loop variable.");
+          return interpret_result_error();
+        }
+        // cursor/end are written here and by ITER_LOOP only, always as plain
+        // numbers: the back edge reads them raw with no tag gate.
+        const uint32_t count = VALUE_AS_ARRAY(iterable)->values.count;
+        REG_AT(B + 1) = NUMBER_AS_VALUE(0);
+        REG_AT(B + 2) = NUMBER_AS_VALUE((double)count);
+        if (count == 0) {
+          ip += A;
+        }
+        break;
+      }
+      if (value_is_object_type(iterable, OBJ_MAP)) {
+        // snapshot the version for the back edge's size-change check, then
+        // park the cursor on the first occupied slot.
+        object_map* map = VALUE_AS_MAP(iterable);
+        REG_AT(B + 2) = NUMBER_AS_VALUE((double)map->version);
+        uint32_t slot = 0;
+        while (slot < map->entries.capacity && IS_VALUE_STRICTLY_NULL(map->entries.keys[slot])) {
+          slot++;
+        }
+        REG_AT(B + 1) = NUMBER_AS_VALUE((double)slot);
+        if (slot >= map->entries.capacity) {
+          ip += A;
+        }
+        break;
+      }
+      runtime_error(p_vm, "can only iterate over arrays and maps.");
+      return interpret_result_error();
+    }
+    case OP_ITER_GET: {
+      const bool p = p_of(instruction); // p == 1: also write the value register
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t B = B_of(words); // state base
+      const uint16_t C = C_of(words); // the binding: k, and v at C + 1 when p
+      const value iterable = REG_AT(B);
+      // cursor: written only by PREP/LOOP as a plain number, read raw
+      const uint32_t cursor = (uint32_t)VALUE_AS_NUMBER(REG_AT(B + 1));
+      if (value_is_object_type(iterable, OBJ_ARRAY)) {
+        REG_AT(C) = VALUE_AS_ARRAY(iterable)->values.data[cursor];
+      } else {
+        // a map: PREP validated the type, cursor is parked on an occupied slot
+        object_map* map = VALUE_AS_MAP(iterable);
+        REG_AT(C) = map->entries.keys[cursor];
+        if (p) {
+          REG_AT(C + 1) = map->entries.values[cursor];
+        }
+      }
+      break;
+    }
+    case OP_ITER_LOOP: {
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t A = A_of(words); // backward offset to the body top
+      const uint16_t B = B_of(words); // state base
+      const value iterable = REG_AT(B);
+      if (value_is_object_type(iterable, OBJ_ARRAY)) {
+        // the frozen end makes pushes during the body invisible to this trip
+        // (lua-style): the loop runs to the entry-time element count.
+        const double cursor = VALUE_AS_NUMBER(REG_AT(B + 1)) + 1.0;
+        REG_AT(B + 1) = NUMBER_AS_VALUE(cursor);
+        if (cursor < VALUE_AS_NUMBER(REG_AT(B + 2))) {
+          ip -= A;
+        }
+        break;
+      }
+      // a map: PREP validated the type. a size change since the snapshot is a
+      // hard error (the slot walk would mis-walk: backward shifts move entries
+      // under the cursor, grows swap the arrays entirely). value overwrites do
+      // not bump the version and stay legal mid-iteration.
+      object_map* map = VALUE_AS_MAP(iterable);
+      if ((double)map->version != VALUE_AS_NUMBER(REG_AT(B + 2))) {
+        runtime_error(p_vm, "map changed size during iteration.");
+        return interpret_result_error();
+      }
+      uint32_t slot = (uint32_t)VALUE_AS_NUMBER(REG_AT(B + 1));
+      for (++slot; slot < map->entries.capacity && IS_VALUE_STRICTLY_NULL(map->entries.keys[slot]); ++slot) {
+      }
+      REG_AT(B + 1) = NUMBER_AS_VALUE((double)slot);
+      if (slot < map->entries.capacity) {
         ip -= A;
       }
       break;
@@ -2338,7 +2662,7 @@ static inline bool call_native(vm* p_vm,
                                uint32_t p_callee,
                                uint16_t p_argc,
                                uint32_t p_retc) {
-  if (p_argc != p_native->arity) {
+  if (p_native->arity != OK_NATIVE_ARITY_ANY && p_argc != p_native->arity) {
     runtime_error(p_vm,
                   "invalid call to native '%s': expected %d arguments, got: %d.",
                   p_native->name.chars,

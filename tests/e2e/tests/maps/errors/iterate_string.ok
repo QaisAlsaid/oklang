@@ -1,0 +1,3 @@
+for let k : "abc" {
+  print k;
+} // expect error

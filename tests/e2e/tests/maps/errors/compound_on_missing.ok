@@ -1,0 +1,3 @@
+// R1: the read errors first - compound assign on a missing key never inserts
+let mut m = {"a": 1};
+m["zz"] += 1; // expect error

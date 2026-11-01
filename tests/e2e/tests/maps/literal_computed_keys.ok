@@ -1,0 +1,12 @@
+// keys are expressions, evaluated left to right with their values
+let k = "dyn";
+let m = {k: 1, k + "2": 2};
+print m["dyn"]; // expect: 1
+print m["dyn2"]; // expect: 2
+
+fu key(i) {
+  return "k" + i as str;
+}
+let m2 = {key(1): 10, key(2): 20};
+print m2["k1"]; // expect: 10
+print m2["k2"]; // expect: 20

@@ -1,0 +1,3 @@
+for let k : 5 {
+  print k;
+} // expect error

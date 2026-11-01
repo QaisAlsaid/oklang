@@ -1,0 +1,11 @@
+// iteration order is unspecified: assert through sums, not print order
+let m = {"a": 1, "b": 2};
+let mut sum = 0;
+for let mut k, mut v : m {
+  k = k + "!";
+  v = v * 100;
+  sum = sum + v;
+}
+print sum; // expect: 300
+// the binding is a copy: the map is untouched
+print m["a"] + m["b"]; // expect: 3

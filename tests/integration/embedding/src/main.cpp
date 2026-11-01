@@ -522,6 +522,150 @@ int main() {
   assert(ok_array_len(squares) == 18);                           // script push -> host len
   assert(ok_value_as_number(ok_array_get(squares, 17)) == 7);
 
+  // ---- maps: the string_bag shape, table edition ----
+  // host values are invisible to the collector until they land somewhere
+  // traced (the contract: ok_root / a traced native / registers / a global).
+  // so: build the map empty + rooted, then fill it one set at a time - each
+  // key string is created immediately before its own guarded set, and every
+  // stored key stays reachable through the rooted map's tracer afterwards.
+  ok_value host_map = ok_map_new(vm, nullptr, 0);
+  assert(ok_value_is_map(host_map));
+  assert(ok_map_len(host_map) == 0);
+  const uint32_t host_map_root = ok_root(vm, host_map);
+  assert(host_map_root != OK_ROOT_INVALID);
+
+  // 300 entries on purpose: the parallel arrays must grow repeatedly mid-fill,
+  // which collects under the aggressive build on every single set.
+  for (uint32_t i = 0; i < 300; ++i) {
+    char buffer[32];
+    std::snprintf(buffer, sizeof(buffer), "key %u", i);
+    const ok_value key = ok_value_string(vm, ok_create_string_view(buffer, OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    assert(ok_map_set(vm, host_map, key, ok_value_number((double)(i * 3))));
+  }
+  assert(ok_map_len(host_map) == 300);
+  assert(ok_map_len(ok_value_number(42)) == 0);
+  assert(!ok_value_is_map(ok_value_number(42)));
+
+  // probe keys are held across further allocations (each ok_value_string
+  // collects): an unrooted host value would dangle, and a root taken AFTER
+  // later allocations would root a swept pointer - so each key is rooted the
+  // moment it exists. (found the hard way: a swept "key 0" probed through
+  // recycled memory and matched "key 8" - 24.0 instead of 0.)
+  uint32_t key_roots[4];
+  const ok_value key0 = ok_value_string(vm, ok_create_string_view("key 0", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+  key_roots[0] = ok_root(vm, key0);
+  const ok_value key299 = ok_value_string(vm, ok_create_string_view("key 299", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+  key_roots[1] = ok_root(vm, key299);
+  const ok_value key7 = ok_value_string(vm, ok_create_string_view("key 7", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+  key_roots[2] = ok_root(vm, key7);
+  const ok_value key8 = ok_value_string(vm, ok_create_string_view("key 8", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+  key_roots[3] = ok_root(vm, key8);
+  for (uint32_t i = 0; i < 4; ++i) {
+    assert(key_roots[i] != OK_ROOT_INVALID);
+  }
+
+  ok_value fetched = ok_value_null();
+  assert(ok_map_get(host_map, key0, &fetched));
+  assert(ok_value_as_number(fetched) == 0);
+  assert(ok_map_get(host_map, key299, &fetched));
+  assert(ok_value_as_number(fetched) == 897);
+  assert(!ok_map_get(host_map,
+                     ok_value_string(vm, ok_create_string_view("absent", OK_STRING_VIEW_CALCULATE_LENGTH, true)),
+                     &fetched));
+  assert(!ok_map_get(host_map, ok_value_null(), &fetched)); // null key rejected
+  assert(!ok_map_get(ok_value_number(42), key0, &fetched));
+
+  // stored nulls are values, not absence: get reports found
+  const ok_value null_key = ok_value_string(vm, ok_create_string_view("null slot", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+  assert(ok_map_set(vm, host_map, null_key, ok_value_null()));
+  assert(ok_map_get(host_map, null_key, &fetched));
+  assert(ok_value_is_null(fetched));
+  assert(ok_map_len(host_map) == 301);
+  assert(ok_map_remove(host_map, null_key));
+  assert(!ok_map_remove(host_map, null_key)); // absent remove: no-op, reported
+  assert(ok_map_len(host_map) == 300);
+
+  // illegal keys are rejected without storing
+  assert(!ok_map_set(vm, host_map, ok_value_null(), ok_value_number(1)));
+  ok_value bad_key_items[] = {ok_value_number(1)};
+  const ok_value bad_key = ok_array_new(vm, bad_key_items, 1);
+  assert(!ok_map_set(vm, host_map, bad_key, ok_value_number(1)));
+  assert(ok_map_len(host_map) == 300);
+
+  // ok_map_new's flat pair list with number keys (no rooting needed for
+  // numbers): duplicate keys, the later pair wins, like the literal
+  ok_value dupe_pairs[] = {
+      ok_value_number(1),
+      ok_value_number(10),
+      ok_value_number(2),
+      ok_value_number(20),
+      ok_value_number(1),
+      ok_value_number(30),
+  };
+  ok_value dupes = ok_map_new(vm, dupe_pairs, 3);
+  assert(ok_value_is_map(dupes));
+  assert(ok_map_len(dupes) == 2);
+  assert(ok_map_get(dupes, ok_value_number(1), &fetched));
+  assert(ok_value_as_number(fetched) == 30);
+  assert(ok_map_get(dupes, ok_value_number(2), &fetched));
+  assert(ok_value_as_number(fetched) == 20);
+  // and the constructor rejects an illegal flat list outright
+  ok_value illegal_pairs[] = {
+      ok_value_number(1),
+      ok_value_number(1),
+      ok_value_null(),
+      ok_value_number(2),
+  };
+  assert(ok_value_is_null(ok_map_new(vm, illegal_pairs, 2)));
+
+  // host -> script: the script reads the host-built map and builds one for us
+  assert(
+      ok_global_define(vm, ok_create_string_view("host_map", OK_STRING_VIEW_CALCULATE_LENGTH, true), host_map, false));
+
+  const char* map_code = R"(
+    if host_map["key 7"] != 21 {
+      print "bad: host->script map read";
+    }
+    if len(host_map) != 300 {
+      print "bad: script sees host map len";
+    }
+    host_map["key 7"] = 7000;
+    remove(host_map, "key 8");
+
+    glob let script_map = {"a": 1, "b": 2};
+  )";
+
+  ok_source map_source = {
+      .from = OK_FROM_FILE,
+      .code = map_code,
+      .path = "map",
+  };
+
+  result = ok_run(vm, map_source);
+  assert(result == OK);
+
+  // script -> host: read the script's writes back out
+  assert(ok_map_get(host_map, key7, &fetched));
+  assert(ok_value_as_number(fetched) == 7000); // script write
+  assert(ok_map_len(host_map) == 299);         // script remove
+  assert(!ok_map_get(host_map, key8, &fetched));
+
+  ok_value script_map = ok_value_null();
+  assert(ok_global_get(vm, ok_create_string_view("script_map", OK_STRING_VIEW_CALCULATE_LENGTH, true), &script_map));
+  assert(ok_value_is_map(script_map));
+  assert(ok_map_len(script_map) == 2);
+  assert(ok_map_set(vm, script_map, ok_value_string(vm, ok_create_string_view("c", OK_STRING_VIEW_CALCULATE_LENGTH, true)),
+                    ok_value_number(3)));
+  assert(ok_map_len(script_map) == 3); // host write -> script's map
+  assert(ok_map_remove(script_map,
+                       ok_value_string(vm, ok_create_string_view("a", OK_STRING_VIEW_CALCULATE_LENGTH, true))));
+  assert(ok_map_len(script_map) == 2);
+
+  for (uint32_t i = 0; i < 4; ++i) {
+    assert(ok_unroot(vm, key_roots[i]));
+  }
+  assert(ok_unroot(vm, host_map_root));
+
   std::vector<std::string> printed_lines;
   ok_set_print(
       vm,

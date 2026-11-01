@@ -1,0 +1,4 @@
+let m = {"a": 1, "b": 2};
+for let k, v : m {
+  m["c"] = 3; // expect error: map changed size during iteration.
+}
