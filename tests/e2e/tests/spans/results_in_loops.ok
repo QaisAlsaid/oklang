@@ -1,0 +1,29 @@
+// span calls inside loop bodies, fresh bindings each trip. split(n)'s two
+// halves always sum back to n, so the trip prints n itself.
+fu split(n) {
+  let half = n / 2;
+  return half, n - half;
+}
+
+let mut n = 10;
+while n > 0 {
+  let (a, b) = split(n);
+  print a + b; // expect: 10
+                // expect: 9
+                // expect: 8
+                // expect: 7
+                // expect: 6
+                // expect: 5
+                // expect: 4
+                // expect: 3
+                // expect: 2
+                // expect: 1
+  n = n - 1;
+}
+
+for let i : [1, 2, 3] {
+  let (lo, hi) = split(i * 10);
+  print lo; // expect: 5
+            // expect: 10
+            // expect: 15
+}

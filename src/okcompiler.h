@@ -120,8 +120,8 @@ ARRAY_DECLARE_DEFAULT(registers, _register)
 ARRAY_DECLARE_DEFAULT(upvalues, upvalue)
 
 typedef struct {
-  scope_registers registers_map;   // indices into the scope's registers
-  uint16_array registers;          // indices into the function's registers
+  scope_registers registers_map; // indices into the scope's registers
+  uint16_array registers;        // indices into the function's registers
   uint32_t registers_checkpoint;
   bool captures_any;
 } scope;
@@ -164,6 +164,12 @@ typedef struct {
   loop_stack loop_stack;
   compile_function function;
   register_allocator register_allocator;
+  // for inference: the agreed result width of the function being compiled.
+  // 0 = no explicit return seen yet, 1 = single (the classic path);
+  // n >= 2 = every return path agreed on n. first_return_author points at the
+  // first return's AST node for the mismatch error's "at line N" half.
+  uint16_t return_span;
+  ast_node* first_return_author;
 } compile_context;
 
 ARRAY_DECLARE_DEFAULT(compile_contexts, compile_context)

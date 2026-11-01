@@ -1,0 +1,6 @@
+// the span form needs at least one binding
+fu f() {
+  return 1;
+}
+
+let () = f(); // expect error: at least one binding

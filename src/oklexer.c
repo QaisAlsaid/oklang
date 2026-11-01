@@ -327,6 +327,11 @@ start:
   case ',':
     return create_token(p_lexer, TOKEN_COMMA);
   case '.':
+    if (peek(p_lexer) == '.' && peek1(p_lexer) == '.') {
+      advance(p_lexer);
+      advance(p_lexer);
+      return create_token(p_lexer, TOKEN_ELLIPSIS);
+    }
     return create_token(p_lexer, TOKEN_DOT);
   case '?':
     return create_token(p_lexer, TOKEN_QUESTION);

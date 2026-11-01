@@ -1,0 +1,6 @@
+// a span call cannot feed an operator: expression position wants one value
+fu pair(a, b) {
+  return a, b;
+}
+
+print pair(1, 2) + 1; // expect error: it returns 2 values, 1 were requested

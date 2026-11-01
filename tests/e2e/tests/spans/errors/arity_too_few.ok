@@ -1,0 +1,7 @@
+// R6: no adjust-to-receiver — 2 results into 1 binding is an error
+fu pair(a, b) {
+  return a, b;
+}
+
+let (only) = pair(1, 2);
+print only; // expect error: it returns 2 values, 1 were requested

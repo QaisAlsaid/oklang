@@ -152,6 +152,8 @@ static void compile_context_init(compile_context* p_context,
   loop_stack_init(&p_context->loop_stack, p_alloc);
   p_context->function.function = p_obj_function;
   p_context->function.type = p_type;
+  p_context->return_span = 0;
+  p_context->first_return_author = NULL;
 }
 
 static void compile_context_deinit(compile_context* p_context, allocators* p_alloc) {
@@ -223,6 +225,25 @@ static inline bool emit_word2(compiler* p_compiler, word2 p_words, ast_node* p_a
 
 static bool emit_default_return(compiler* p_compiler, ast_node* p_author) {
   return emit_word(p_compiler, encode_oppAe(OP_RETURN_1, true, 0, RETURNED_NULL), p_author);
+}
+
+// the fall off the end return of a span function: null-fill the whole result window
+// then hand it back with one OP_RETURN.
+// the span-width generalization of emit_default_return's single null.
+// consistent with the single-result doctrine (falling off the end yields null, never an error)
+static bool emit_default_span_return(compiler* p_compiler, uint32_t p_count, ast_node* p_author) {
+  if (!emit_word2(p_compiler, encode_OPPABCQ(OP_LOAD_NULL, false, 0, p_count, 0, 0), p_author)) {
+    report_oom(p_compiler, p_author);
+    return false;
+  }
+  if (p_count > bprime_MAX) {
+    if (!emit_word2(p_compiler, encode_OPPABCQ(OP_RETURN_LONG, false, 0, p_count, 0, 0), p_author)) {
+      report_oom(p_compiler, p_author);
+      return false;
+    }
+    return true;
+  }
+  return emit_word(p_compiler, encode_oppabprime(OP_RETURN, false, 0, p_count), p_author);
 }
 
 static bool begin_scope(compiler* p_compiler, ast_node* p_author) {
@@ -363,6 +384,7 @@ static bool compile_expression(compiler* p_compiler,
                                expression_result* p_out);
 
 static bool compile_let_declration(compiler* p_compiler, ast_let_declaration* p_let);
+static bool compile_let_declaration_span(compiler* p_compiler, ast_let_declaration* p_let);
 static bool compile_function_declaration(compiler* p_compiler, ast_function_declaration* p_fu);
 
 static bool compile_expression_statement(compiler* p_compiler, ast_expression_statement* p_expression_statement);
@@ -693,6 +715,19 @@ static bool compile_expression(compiler* p_compiler,
     result = compile_function_expression(
         p_compiler, (ast_function_expression*)p_expression, p_dest, p_requested_count, p_out);
     break;
+  case AST_SPREAD_EXPRESSION:
+    // a spread reached expression compilation through a generic list (array
+    // literal, map pairs, a non-last call position): the only legal home is a
+    // call's LAST argument, which compile_call_expression peels off before this.
+    error_at_noted(
+        p_compiler,
+        (ast_node*)p_expression,
+        ok_create_string_view(
+            "spread ('...') is only allowed as the last argument of a call.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+        ok_create_string_view("array and map literals have no spread form (yet); build them with push or a loop.",
+                              OK_STRING_VIEW_CALCULATE_LENGTH,
+                              true));
+    return false;
   case AST_ARRAY_EXPRESSION:
     result =
         compile_array_expression(p_compiler, (ast_array_expression*)p_expression, p_dest, p_requested_count, p_out);
@@ -1017,6 +1052,9 @@ static variable_declaration_flags_t variable_declaration_flags_from_modifiers(as
 }
 
 static bool compile_let_declration(compiler* p_compiler, ast_let_declaration* p_let) {
+  if (p_let->span_bindings.count > 0) {
+    return compile_let_declaration_span(p_compiler, p_let);
+  }
   ok_string_view name = ast_identifier_expression_get_value((ast_identifier_expression*)p_let->binding->lvalue);
   variable_declaration vardecl = {
       .identifier = name,
@@ -1035,6 +1073,53 @@ static bool compile_let_declration(compiler* p_compiler, ast_let_declaration* p_
     return false;
   }
   return define_variable(p_compiler, variable, value, (ast_node*)p_let);
+}
+
+// `let (x, y) = f();` the window at register binding.
+// binding[0] is declared first so the call window starts at its register
+// (the invariant every call already rides: dest is the allocation top, args land right above it).
+// the call requests exactly n results. then bindings 1..n-1 are declared
+// at the registers those results already occupy. add_local's truncates and appends
+// then grows over the dead arg temps. zero MOVEs: the window is the bindings,
+// the same trick the for-in hidden state plays, only this time user visible.
+static bool compile_let_declaration_span(compiler* p_compiler, ast_let_declaration* p_let) {
+  const uint32_t n = p_let->span_bindings.count;
+  if (p_let->value == NULL || p_let->value->node.node_type != AST_CALL_EXPRESSION) {
+    error_at(p_compiler,
+             (ast_node*)p_let,
+             ok_create_string_view(
+                 "a destructuring let needs a call on the right side.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return false;
+  }
+  // binding[0]: its register anchors the call window.
+  variable_declaration decl0 = {
+      .identifier =
+          ast_identifier_expression_get_value((ast_identifier_expression*)p_let->span_bindings.data[0]->lvalue),
+      .flags = variable_declaration_flags_from_modifiers(DECLARATION_NONE, p_let->span_bindings.data[0]->modifiers)};
+  _register window = add_local(p_compiler, decl0, true, (ast_node*)p_let->span_bindings.data[0]);
+  if (!IS_REGISTER_VALID(window)) {
+    return false;
+  }
+  // the call, requesting exactly n results.
+  // (call() compares against the callee's inferred span. strictness check lives there).
+  expression_result value;
+  if (!compile_call_expression(p_compiler, (ast_call_expression*)p_let->value, window, n, &value)) {
+    return false;
+  }
+  // bindings 1..n-1 name the result registers the call just wrote.
+  // the adjacency is structural (locals grow up, the window grows down from the same top). asserted.
+  for (uint32_t i = 1; i < n; ++i) {
+    variable_declaration decl = {
+        .identifier =
+            ast_identifier_expression_get_value((ast_identifier_expression*)p_let->span_bindings.data[i]->lvalue),
+        .flags = variable_declaration_flags_from_modifiers(DECLARATION_NONE, p_let->span_bindings.data[i]->modifiers)};
+    _register slot = add_local(p_compiler, decl, true, (ast_node*)p_let->span_bindings.data[i]);
+    if (!IS_REGISTER_VALID(slot)) {
+      return false;
+    }
+    ASSERT_MSG(slot.index == window.index + i, "span binding left the result window.");
+  }
+  return true;
 }
 
 static bool compile_function_declaration(compiler* p_compiler, ast_function_declaration* p_fu) {
@@ -1879,43 +1964,122 @@ bool compile_control_flow_statement(compiler* p_compiler, ast_control_flow_state
   return true;
 }
 
+// record this return path's span width against the function's agreed width
+// (inferenc, every path must agree, checked at compile).
+// a bare `return;` counts as one null, matching the runtime's RETURNED_NULL.
+static bool record_return_span(compiler* p_compiler, ast_return_statement* p_return, uint32_t p_count) {
+  compile_context* ctx = current_context(p_compiler);
+  if (p_count > UINT16_MAX) {
+    error_at_noted(p_compiler,
+                   (ast_node*)p_return,
+                   ok_create_string_view("too many return values.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                   ok_create_string_view("limit is: 65535.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return false;
+  }
+  if (ctx->return_span == 0) {
+    ctx->return_span = (uint16_t)p_count;
+    ctx->first_return_author = (ast_node*)p_return;
+    return true;
+  }
+  if (ctx->return_span != p_count) {
+    allocators* alloc = p_compiler->alloc;
+    string message = asprint(alloc,
+                             "return span mismatch: this path returns %u values, the return at line %u returns %u.",
+                             p_count,
+                             ctx->first_return_author != NULL ? ctx->first_return_author->token.line_info.line : 0,
+                             ctx->return_span);
+    error_at_noted(p_compiler,
+                   (ast_node*)p_return,
+                   ok_create_string_view_from_string(message),
+                   ok_create_string_view("every return path of a function must agree on how many values it returns.",
+                                         OK_STRING_VIEW_CALCULATE_LENGTH,
+                                         true));
+    string_deinit(&message, alloc);
+    return false;
+  }
+  return true;
+}
+
 static bool compile_return_statement(compiler* p_compiler, ast_return_statement* p_return) {
-  // TODO: multiple returns when required by langauge.
-  if (p_return->returned == NULL) {
+  const uint32_t count = p_return->returned.count;
+  if (!record_return_span(p_compiler, p_return, count == 0 ? 1 : count)) {
+    return false;
+  }
+  if (count == 0) {
     return emit_default_return(p_compiler, (ast_node*)p_return);
   }
-  expression_result returned;
-  _register dest; // TODO: cant we do this in place or this a tailcall thingy?
-  if (!register_allocator_allocate_temp(&current_context(p_compiler)->register_allocator, &dest)) {
-    return false;
-  }
-  if (!compile_expression(p_compiler, p_return->returned, dest, 1, &returned)) {
-    return false;
-  }
-  uint8_t e = RETURNED_NULL;
-  chunk* chunk = current_chunk(p_compiler);
-  switch (returned.value.kind) {
-  case LOCATION_KIND_CONSTANT: {
-    value con = chunk->constants.data[returned.value.index];
-    if (IS_VALUE_STRICTLY_BOOL(con)) {
-      e = VALUE_AS_BOOL(con) ? RETURNED_KTRUE : RETURNED_KFALSE;
+  if (count == 1) {
+    // the classic single-result fast path: RETURN_1 with its constant/global/
+    // upvalue/register operand encodings. bytecode-identical to pre-spans.
+    expression_result returned;
+    _register dest;
+    if (!register_allocator_allocate_temp(&current_context(p_compiler)->register_allocator, &dest)) {
+      return false;
+    }
+    if (!compile_expression(p_compiler, p_return->returned.data[0], dest, 1, &returned)) {
+      return false;
+    }
+    uint8_t e = RETURNED_NULL;
+    chunk* chunk = current_chunk(p_compiler);
+    switch (returned.value.kind) {
+    case LOCATION_KIND_CONSTANT: {
+      value con = chunk->constants.data[returned.value.index];
+      if (IS_VALUE_STRICTLY_BOOL(con)) {
+        e = VALUE_AS_BOOL(con) ? RETURNED_KTRUE : RETURNED_KFALSE;
+        break;
+      }
+      e = RETURNED_CONSTANT;
       break;
     }
-    e = RETURNED_CONSTANT;
-    break;
-  }
-  case LOCATION_KIND_GLOBAL:
-    e = RETURNED_GLOBAL;
-    break;
-  case LOCATION_KIND_UPVALUE:
-    e = RETURNED_UPVALUE;
-    break;
-  case LOCATION_KIND_REGISTER:
-    e = RETURNED_REGISTER;
-    break;
-  }
+    case LOCATION_KIND_GLOBAL:
+      e = RETURNED_GLOBAL;
+      break;
+    case LOCATION_KIND_UPVALUE:
+      e = RETURNED_UPVALUE;
+      break;
+    case LOCATION_KIND_REGISTER:
+      e = RETURNED_REGISTER;
+      break;
+    }
 
-  return emit_word(p_compiler, encode_oppAe(OP_RETURN_1, false, returned.value.index, e), (ast_node*)p_return);
+    return emit_word(p_compiler, encode_oppAe(OP_RETURN_1, false, returned.value.index, e), (ast_node*)p_return);
+  }
+  // the span path (n >= 2): each expression lands in its own consecutive temp
+  // (the args discipline: allocate, compile, the wrapper's checkpoint keeps it),
+  // then one OP_RETURN (base, n) hands the whole window back. the results sit
+  // at the callee's own registers, so return_n_from_frame's copy is a
+  // self-copy when they start at 0, zero moves for the common shape.
+  register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
+  _register first = {0, REGISTER_FLAG_NONE, REGISTER_OK};
+  for (uint32_t i = 0; i < count; ++i) {
+    _register slot;
+    if (!register_allocator_allocate_temp(regalloc, &slot)) {
+      report_oom(p_compiler, (ast_node*)p_return);
+      return false;
+    }
+    if (i == 0) {
+      first = slot;
+    }
+    expression_result result;
+    if (!compile_expression(p_compiler, p_return->returned.data[i], slot, 1, &result)) {
+      return false;
+    }
+    if (!materialize_into(p_compiler, &result.value, slot, (ast_node*)p_return)) {
+      return false;
+    }
+  }
+  if (first.index > aprime_MAX || count > bprime_MAX) {
+    if (!emit_word2(p_compiler, encode_OPPABCQ(OP_RETURN_LONG, false, first.index, count, 0, 0), (ast_node*)p_return)) {
+      report_oom(p_compiler, (ast_node*)p_return);
+      return false;
+    }
+    return true;
+  }
+  if (!emit_word(p_compiler, encode_oppabprime(OP_RETURN, false, first.index, count), (ast_node*)p_return)) {
+    report_oom(p_compiler, (ast_node*)p_return);
+    return false;
+  }
+  return true;
 }
 
 static bool compile_number_expression(compiler* p_compiler,
@@ -2475,8 +2639,13 @@ bool compile_call_expression(compiler* p_compiler,
                              _register p_dest,
                              uint32_t p_requested_count,
                              expression_result* p_out) {
-  CRASH_MSG(p_requested_count <= 1, "unimplemented multi-result.");
-
+  // p_requested_count is the result-span request (the SPANS hook):
+  //   0 = statement position - discard (c = 1: the VM's retc-0 lane, no arity
+  //       check, the old code wrote the one result into the devnull instead).
+  //   1 = expression position - the classic strict single (c = 2, bytecode-
+  //       identical to pre-spans). call() checks it against the proto's results.
+  //   n >= 2 = destructuring position - the binding count (the destructuring
+  //       let is the only caller that passes n; call() checks it).
   allocators* alloc = p_compiler->alloc;
   register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
   expression_result callable;
@@ -2492,25 +2661,101 @@ bool compile_call_expression(compiler* p_compiler,
   args.index = 0;
   args.flags = REGISTER_FLAG_NONE;
   args.errors = REGISTER_OK;
-  if (!compile_expressions_list(p_compiler, &p_call->arguments, A_MAX, &args, (ast_node*)p_call)) {
-    return false;
-  }
-  const uint32_t argc = p_call->arguments.count;
-  bool is_long = p_dest.index > a_MAX || (argc > 0 && args.index > a_MAX) || argc > b_MAX;
-  if (is_long) {
-    if (!emit_word2(p_compiler, encode_OPPABCQ(OP_CALL_LONG, false, p_dest.index, argc, 2, 0), (ast_node*)p_call)) {
-      report_oom(p_compiler, (ast_node*)p_call);
+  // a trailing `args...` switches the emission to CALL_SPREAD.
+  // the fixed arguments stage as before, the spread expression stages its array one
+  // slot past them, and the op expands the elements at runtime. a spread in any
+  // non-last position reaches compile_expression's spread case and errors
+  // precisely. only the last element takes this lane.
+  const bool has_spread = p_call->arguments.count > 0 &&
+                          p_call->arguments.data[p_call->arguments.count - 1]->node.node_type == AST_SPREAD_EXPRESSION;
+  const uint32_t fixed_count = has_spread ? p_call->arguments.count - 1 : p_call->arguments.count;
+  if (!has_spread) {
+    if (!compile_expressions_list(p_compiler, &p_call->arguments, A_MAX, &args, (ast_node*)p_call)) {
       return false;
     }
   } else {
-    if (!emit_word(p_compiler, encode_oppabc(OP_CALL, false, p_dest.index, argc, 2), (ast_node*)p_call)) {
+    register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
+    for (uint32_t i = 0; i < fixed_count; ++i) {
+      _register argreg;
+      if (!register_allocator_allocate_temp(regalloc, &argreg)) {
+        report_oom(p_compiler, (ast_node*)p_call);
+        return false;
+      }
+      expression_result result;
+      if (!compile_expression(p_compiler, p_call->arguments.data[i], argreg, 1, &result)) {
+        return false;
+      }
+      if (!materialize_into(p_compiler, &result.value, argreg, (ast_node*)p_call)) {
+        return false;
+      }
+      if (i == 0) {
+        args = argreg;
+      }
+    }
+    // the spread's array lands one slot past the fixed args: exactly where
+    // CALL_SPREAD's (a + b + 1) reads it.
+    _register spread_reg;
+    if (!register_allocator_allocate_temp(regalloc, &spread_reg)) {
       report_oom(p_compiler, (ast_node*)p_call);
       return false;
+    }
+    ast_expression* inner = ((ast_spread_expression*)p_call->arguments.data[p_call->arguments.count - 1])->inner;
+    expression_result spread_result;
+    if (!compile_expression(p_compiler, inner, spread_reg, 1, &spread_result)) {
+      return false;
+    }
+    if (!materialize_into(p_compiler, &spread_result.value, spread_reg, (ast_node*)p_call)) {
+      return false;
+    }
+  }
+  const uint32_t argc = p_call->arguments.count;
+  if (p_requested_count + 1 > c_MAX) {
+    string note = asprint(alloc, "limit is: %d.", c_MAX - 1);
+    error_at_noted(
+        p_compiler,
+        (ast_node*)p_call,
+        ok_create_string_view("too many values requested from one call.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+        ok_create_string_view_from_string(note));
+    string_deinit(&note, alloc);
+    return false;
+  }
+  const uint32_t retc = p_requested_count + 1; // c == 0 stays the VM's dynamic sentinel
+  if (has_spread) {
+    // CALL_SPREAD (a, b, c): a = the callable, b = the fixed count, c = retc + 1.
+    bool spread_is_long =
+        p_dest.index > a_MAX || (fixed_count > 0 && args.index > a_MAX) || fixed_count > b_MAX || retc > c_MAX;
+    if (spread_is_long) {
+      if (!emit_word2(p_compiler,
+                      encode_OPPABCQ(OP_CALL_SPREAD_LONG, false, p_dest.index, fixed_count, retc, 0),
+                      (ast_node*)p_call)) {
+        report_oom(p_compiler, (ast_node*)p_call);
+        return false;
+      }
+    } else {
+      if (!emit_word(
+              p_compiler, encode_oppabc(OP_CALL_SPREAD, false, p_dest.index, fixed_count, retc), (ast_node*)p_call)) {
+        report_oom(p_compiler, (ast_node*)p_call);
+        return false;
+      }
+    }
+  } else {
+    bool is_long = p_dest.index > a_MAX || (argc > 0 && args.index > a_MAX) || argc > b_MAX;
+    if (is_long) {
+      if (!emit_word2(
+              p_compiler, encode_OPPABCQ(OP_CALL_LONG, false, p_dest.index, argc, retc, 0), (ast_node*)p_call)) {
+        report_oom(p_compiler, (ast_node*)p_call);
+        return false;
+      }
+    } else {
+      if (!emit_word(p_compiler, encode_oppabc(OP_CALL, false, p_dest.index, argc, retc), (ast_node*)p_call)) {
+        report_oom(p_compiler, (ast_node*)p_call);
+        return false;
+      }
     }
   }
   p_out->value = (location){p_dest.index, LOCATION_KIND_REGISTER, LOCATION_OK};
   p_out->lvalue = (lvalue){LVALUE_INVALID};
-  p_out->count = 1;
+  p_out->count = p_requested_count;
   p_out->type = EXPRESSION_VALUE;
   return true;
 }
@@ -3224,15 +3469,23 @@ static bool compile_function_impl(compiler* p_compiler,
   // evaluation, c++ style. fresh mutable defaults per call, earlier params in
   // scope. functions without defaults emit nothing at all.
   {
-    uint16_t ndefaults = 0;
-    for (uint32_t i = 0; i < p_params.count; ++i) {
+    // the defaulted range: [first defaulted param, count), minus the varargs
+    // parameter when one trails the defaults (`fu f(a, b = 2, c...)`
+    // the defaults are "trailing" among the REAL params, the varargs owns the
+    // remainder after them, needs no guard, and call()'s floor drops it
+    // separately through arity/ndefaults/has_varargs).
+    const bool last_is_varargs = p_params.count > 0 && p_params.data[p_params.count - 1]->is_varargs;
+    const uint32_t defaults_end = p_params.count - (last_is_varargs ? 1u : 0u);
+    uint32_t defaults_begin = defaults_end;
+    for (uint32_t i = 0; i < defaults_end; ++i) {
       if (p_params.data[i]->default_value != NULL) {
-        ndefaults = (uint16_t)(p_params.count - i); // defaults are trailing, parser enforced
+        defaults_begin = i; // defaults are trailing among the real params, parser enforced
         break;
       }
     }
+    const uint16_t ndefaults = (uint16_t)(defaults_end - defaults_begin);
     current_context(p_compiler)->function.function->ndefaults = ndefaults;
-    for (uint32_t i = p_params.count - ndefaults; i < p_params.count; ++i) {
+    for (uint32_t i = defaults_begin; i < defaults_end; ++i) {
       ast_binding* binding = p_params.data[i];
       uint32_t guard;
       if (!emit_incomplete_jump_if_argc(p_compiler, true, (uint16_t)i, &guard, (ast_node*)binding)) {
@@ -3259,16 +3512,44 @@ static bool compile_function_impl(compiler* p_compiler,
       }
     }
   }
+  // the varargs prologue: the last parameter is `rest...`
+  // one OP_VA_PACK materializes the trailing arguments into a fresh array at the
+  // parameter's own register, before any body code (so the incoming window is
+  // consumed before locals can clobber it). emitted after the defaults ladder:
+  // the ladder fills defaulted fixed params below the window, order-free.
+  if (p_params.count > 0 && p_params.data[p_params.count - 1]->is_varargs) {
+    current_context(p_compiler)->function.function->has_varargs = true;
+    const uint16_t va_reg = param_locations[p_params.count - 1].index;
+    if (va_reg > aprime_MAX) {
+      // the wide form: VA_PACK's operands are 12-bit (like MOVE), param counts
+      // are capped at 255 so this never fires today, but the check is cheap.
+      end_scope(p_compiler, p_author);
+      end_context(p_compiler);
+      return false;
+    }
+    if (!emit_word(p_compiler, encode_oppabprime(OP_VA_PACK, false, va_reg, va_reg), p_author)) {
+      end_scope(p_compiler, p_author);
+      end_context(p_compiler);
+      return false;
+    }
+  }
   if (!compile_statement(p_compiler, p_body)) {
     end_scope(p_compiler, p_author);
     end_context(p_compiler);
     return false;
   }
 
-  if (!emit_default_return(p_compiler, (ast_node*)p_body)) {
-    end_scope(p_compiler, p_author);
-    end_context(p_compiler);
-    return false;
+  // the fall off the end safety net. the single-result net keeps its exact
+  // pre-spans position (before the scope close, bytecode-identical for every
+  // existing function). the span net emits after end_scope's CLOSE_UPVALUES:
+  // its null-fill covers [0, n) and a captured local living there must close
+  // over its real value first, not the padding.
+  if (current_context(p_compiler)->return_span < 2) {
+    if (!emit_default_return(p_compiler, (ast_node*)p_body)) {
+      end_scope(p_compiler, p_author);
+      end_context(p_compiler);
+      return false;
+    }
   }
 
   if (!end_scope(p_compiler, p_author)) {
@@ -3276,9 +3557,20 @@ static bool compile_function_impl(compiler* p_compiler,
     return false;
   }
 
+  if (current_context(p_compiler)->return_span >= 2) {
+    if (!emit_default_span_return(p_compiler, current_context(p_compiler)->return_span, (ast_node*)p_body)) {
+      end_context(p_compiler);
+      return false;
+    }
+  }
+
   compile_context* function_ctx = current_context(p_compiler);
   object_function* proto = function_ctx->function.function;
   proto->registers = function_ctx->register_allocator.registers_count; // frame size for the vm
+  // the inferred result width. 0 explicit returns (or only single ones)
+  // means the fall-off null path decides: 1. a span function that falls
+  // off the end null-pads to its agreed width (emit at the close, below).
+  proto->results = function_ctx->return_span > 0 ? function_ctx->return_span : 1;
   gc_guard_up(alloc->gc, OBJECT_AS_VALUE(proto));
 
   if (function_ctx->upvalues.count > 0 &&

@@ -48,7 +48,8 @@ typedef enum {
   AST_MAP_EXPRESSION,
   AST_SUBSCRIPT_EXPRESSION,
   AST_FUNCTION_EXPRESSION,
-  AST_RANGE_EXPRESSION_END = AST_FUNCTION_EXPRESSION,
+  AST_SPREAD_EXPRESSION,
+  AST_RANGE_EXPRESSION_END = AST_SPREAD_EXPRESSION,
 
   AST_RANGE_STATEMENT_BEGIN,
   AST_RANGE_PURE_STATEMENT_BEGIN,
@@ -133,6 +134,8 @@ typedef struct {
   ast_expression* lvalue;
   ast_expression* default_value; // parameter default (NULL = required) (functions only)
   ast_binding_modifiers modifiers;
+  bool is_varargs; // `fu f(a, rest...)`: the last parameter, packs the trailing
+                   // arguments into a fresh array. set by the parser.
 } ast_binding;
 
 void ast_binding_init(ast_binding* p_binding,
@@ -411,6 +414,23 @@ bool ast_call_expression_print(const ast_call_expression* p_call);
 string ast_call_expression_asprint(const ast_call_expression* p_call);
 
 typedef struct {
+  ast_expression expression;
+  // `args...` in a call's argument list: the inner expression must
+  // evaluate to an array; CALL_SPREAD stages its elements into the argument
+  // window at runtime. legal only as the last argument of a call.
+  // the other positions reject it at compile with an error.
+  ast_expression* inner;
+} ast_spread_expression;
+
+void ast_spread_expression_init(ast_spread_expression* p_spread,
+                                const token p_token,
+                                ast_expression* p_inner,
+                                ast_specs* p_specs);
+void ast_spread_expression_deinit(ast_spread_expression* p_spread);
+bool ast_spread_expression_print(const ast_spread_expression* p_spread);
+string ast_spread_expression_asprint(const ast_spread_expression* p_spread);
+
+typedef struct {
   ast_statement statement;
 } ast_empty_statement;
 
@@ -548,11 +568,14 @@ string ast_control_flow_statement_asprint(const ast_control_flow_statement* p_co
 
 typedef struct {
   ast_statement statement;
-  ast_expression* returned;
+  // a return yields a span of expressions: 0 = bare `return;` (one null at
+  // runtime), 1 = the classic single form (bytecode-identical path), n >= 2 =
+  // the multi-result form (SPANS R2: arity by inference, every path must agree).
+  ast_expressions_list returned;
 } ast_return_statement;
 
 void ast_return_statement_init(ast_return_statement* p_return,
-                               ast_expression* p_returned,
+                               ast_expressions_list p_returned,
                                token p_token,
                                ast_specs* p_specs);
 void ast_return_statement_deinit(ast_return_statement* p_return);
@@ -561,8 +584,11 @@ string ast_return_statement_asprint(const ast_return_statement* p_return);
 
 typedef struct {
   ast_declaration declaration;
-  ast_binding* binding;
+  ast_binding* binding; // the single-binder form (`let x = v;`), NULL in the span form
   ast_expression* value;
+  // the destructuring form `let (x, y) = f();`
+  // empty list = the single form above. the bindings take the call's result window slot by slot.
+  ast_bindings_list span_bindings;
 } ast_let_declaration;
 
 void ast_let_declaration_init(ast_let_declaration* p_let,
@@ -571,6 +597,13 @@ void ast_let_declaration_init(ast_let_declaration* p_let,
                               ast_declaration_modifiers_t p_modifiers,
                               const token p_token,
                               ast_specs* p_specs);
+// the destructuring form: `let (x, y) = f();`
+void ast_let_declaration_init_span(ast_let_declaration* p_let,
+                                   ast_bindings_list p_bindings,
+                                   ast_expression* p_value,
+                                   ast_declaration_modifiers_t p_modifiers,
+                                   const token p_token,
+                                   ast_specs* p_specs);
 void ast_let_declaration_deinit(ast_let_declaration* p_let);
 bool ast_let_declaration_print(const ast_let_declaration* p_let);
 string ast_let_declaration_asprint(const ast_let_declaration* p_let);

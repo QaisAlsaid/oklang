@@ -247,6 +247,27 @@ int main() {
 
     let applied = host_apply(double_it, 21);
     if applied != 42 { print "bad: apply"; }
+
+    // SPANS: a two-result script function, destructured on the script side
+    glob fu minmax(a, b) {
+      if a < b { return a, b; }
+      return b, a;
+    }
+
+    let (lo, hi) = minmax(3, 9);
+    if lo != 3 { print "bad: lo"; }
+    if hi != 9 { print "bad: hi"; }
+
+    glob fu sum_all(nums...) {
+      let mut total = 0;
+      for let n : nums {
+        total = total + n;
+      }
+      return total;
+    }
+
+    if sum_all(1, 2, 3, 4) != 10 { print "bad: sum_all"; }
+    if sum_all([1, 2, 3]...) != 6 { print "bad: spread"; }
   )";
 
   ok_source source = {
@@ -276,6 +297,44 @@ int main() {
 
   assert(ok_value_is_number(multiply_result));
   assert(ok_value_as_number(multiply_result) == 42);
+
+  // ok_call on a multi-result script function takes the first result
+  // (the dynamic lane). no arity error, single-result callees unchanged.
+  ok_value minmax = ok_value_null();
+
+  assert(ok_global_get(vm, ok_create_string_view("minmax", OK_STRING_VIEW_CALCULATE_LENGTH, true), &minmax));
+
+  ok_value minmax_args[] = {
+      ok_value_number(3),
+      ok_value_number(9),
+  };
+
+  ok_value minmax_result = ok_value_null();
+
+  assert(ok_call(vm, minmax, 2, minmax_args, &minmax_result));
+
+  assert(ok_value_is_number(minmax_result));
+  assert(ok_value_as_number(minmax_result) == 3); // the first of (3, 9)
+
+  // ok_call on a varargs function. argument count is the host's
+  // choice, the pack is the callee's business.
+  ok_value sum_all = ok_value_null();
+
+  assert(ok_global_get(vm, ok_create_string_view("sum_all", OK_STRING_VIEW_CALCULATE_LENGTH, true), &sum_all));
+
+  ok_value sum_args[] = {
+      ok_value_number(1),
+      ok_value_number(2),
+      ok_value_number(3),
+      ok_value_number(4),
+  };
+
+  ok_value sum_result = ok_value_null();
+
+  assert(ok_call(vm, sum_all, 4, sum_args, &sum_result));
+
+  assert(ok_value_is_number(sum_result));
+  assert(ok_value_as_number(sum_result) == 10);
 
   ok_value host_add = ok_value_null();
 
@@ -569,14 +628,14 @@ int main() {
   assert(ok_value_as_number(fetched) == 0);
   assert(ok_map_get(host_map, key299, &fetched));
   assert(ok_value_as_number(fetched) == 897);
-  assert(!ok_map_get(host_map,
-                     ok_value_string(vm, ok_create_string_view("absent", OK_STRING_VIEW_CALCULATE_LENGTH, true)),
-                     &fetched));
+  assert(!ok_map_get(
+      host_map, ok_value_string(vm, ok_create_string_view("absent", OK_STRING_VIEW_CALCULATE_LENGTH, true)), &fetched));
   assert(!ok_map_get(host_map, ok_value_null(), &fetched)); // null key rejected
   assert(!ok_map_get(ok_value_number(42), key0, &fetched));
 
   // stored nulls are values, not absence: get reports found
-  const ok_value null_key = ok_value_string(vm, ok_create_string_view("null slot", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+  const ok_value null_key =
+      ok_value_string(vm, ok_create_string_view("null slot", OK_STRING_VIEW_CALCULATE_LENGTH, true));
   assert(ok_map_set(vm, host_map, null_key, ok_value_null()));
   assert(ok_map_get(host_map, null_key, &fetched));
   assert(ok_value_is_null(fetched));
@@ -654,7 +713,9 @@ int main() {
   assert(ok_global_get(vm, ok_create_string_view("script_map", OK_STRING_VIEW_CALCULATE_LENGTH, true), &script_map));
   assert(ok_value_is_map(script_map));
   assert(ok_map_len(script_map) == 2);
-  assert(ok_map_set(vm, script_map, ok_value_string(vm, ok_create_string_view("c", OK_STRING_VIEW_CALCULATE_LENGTH, true)),
+  assert(ok_map_set(vm,
+                    script_map,
+                    ok_value_string(vm, ok_create_string_view("c", OK_STRING_VIEW_CALCULATE_LENGTH, true)),
                     ok_value_number(3)));
   assert(ok_map_len(script_map) == 3); // host write -> script's map
   assert(ok_map_remove(script_map,

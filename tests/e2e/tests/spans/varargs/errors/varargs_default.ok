@@ -1,0 +1,5 @@
+// a varargs parameter cannot have a default — it always defaults to []
+fu f(rest... = [1]) {
+  return rest;
+}
+print f(); // expect error: cannot have a default

@@ -1,0 +1,6 @@
+// the floor: fixed parameters are still required
+fu f(a, b, rest...) {
+  return a;
+}
+
+print f(1); // expect error: expected at least 2 arguments

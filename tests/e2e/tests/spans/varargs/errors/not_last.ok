@@ -1,0 +1,5 @@
+// the varargs parameter must be the last one
+fu f(rest..., a) {
+  return a;
+}
+print f(1, 2); // expect error: must be the last

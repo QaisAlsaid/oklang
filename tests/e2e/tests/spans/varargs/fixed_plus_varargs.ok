@@ -1,0 +1,12 @@
+// fixed parameters first, the remainder is the pack
+fu labeled(tag, values...) {
+  let mut out = tag + ":";
+  for let v : values {
+    out = out + " " + (v as str);
+  }
+  return out;
+}
+
+print labeled("nums", 1, 2, 3); // expect: nums: 1 2 3
+print labeled("none"); // expect: none:
+print labeled("x", 42); // expect: x: 42

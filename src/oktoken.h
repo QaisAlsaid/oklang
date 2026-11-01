@@ -35,7 +35,8 @@
   X(TOKEN_COMMA, ",")                                                                                                  \
   X(TOKEN_COLON, ":")                                                                                                  \
   X(TOKEN_SEMICOLON, ";")                                                                                              \
-  X(TOKEN_DOT, ".")                                                                                                    \
+  X(TOKEN_DOT, ".")                                                                                                     \
+  X(TOKEN_ELLIPSIS, "...")                                                                                                    \
   X(TOKEN_QUESTION, "?")                                                                                               \
   X(TOKEN_BANG, "!")                                                                                                   \
   X(TOKEN_BANG_EQUAL, "!=")                                                                                            \
@@ -116,6 +117,7 @@ typedef enum {
   TOKEN_COLON,
   TOKEN_SEMICOLON,
   TOKEN_DOT,
+  TOKEN_ELLIPSIS,
   TOKEN_QUESTION,
   TOKEN_BANG,
   TOKEN_BANG_EQUAL,

@@ -1,0 +1,6 @@
+// a destructuring binding cannot carry a default
+fu pair(a, b) {
+  return a, b;
+}
+
+let (a = 1) = pair(1, 2); // expect error: cannot have a default

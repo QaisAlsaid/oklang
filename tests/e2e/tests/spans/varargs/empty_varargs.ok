@@ -1,0 +1,8 @@
+// zero trailing arguments: the pack is an empty array, len 0, iteration no-op
+fu count(rest...) {
+  return len(rest);
+}
+
+print count(); // expect: 0
+print count(1); // expect: 1
+print count(1, 2, 3, 4, 5); // expect: 5

@@ -86,6 +86,13 @@ typedef struct {
   uint16_t arity;
   uint16_t ndefaults; // trailing defaulted params: floor = arity - ndefaults
   uint16_t registers;
+  uint16_t results; // the function's result span width (SPANS R2, inferred by the compiler).
+                     // 1 for every single-result function (the default); n >= 2 when every
+                     // return path agrees on n. call() compares the caller's requested retc
+                     // against this — the strictness doctrine (R6) lives there.
+  bool has_varargs;  // the last parameter is `rest...` (SPANS R3): argc has no ceiling, the
+                     // floor drops it, and the runtime frame widens past `registers` to cover
+                     // the staged arguments. set by the compiler at the prologue.
   upvalue_descriptor_array upvalues;
 } object_function;
 

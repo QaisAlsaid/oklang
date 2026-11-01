@@ -34,6 +34,7 @@
   X(AST_MAP_EXPRESSION, ast_map_expression)                                                                        \
   X(AST_SUBSCRIPT_EXPRESSION, ast_subscript_expression)                                                                \
   X(AST_FUNCTION_EXPRESSION, ast_function_expression)                                                                  \
+  X(AST_SPREAD_EXPRESSION, ast_spread_expression)                                                                      \
   X(AST_EMPTY_STATEMENT, ast_empty_statement)                                                                          \
   X(AST_EXPRESSION_STATEMENT, ast_expression_statement)                                                                \
   X(AST_PRINT_STATEMENT, ast_print_statement)                                                                          \
@@ -130,6 +131,7 @@ void ast_binding_init(ast_binding* p_binding,
   p_binding->lvalue = p_lvalue;
   p_binding->default_value = NULL; // set by the parser when a parameter has "= <expr>"
   p_binding->modifiers = p_modifiers;
+  p_binding->is_varargs = false; // set by the parser on `rest...` parameters
 }
 
 void ast_binding_deinit(ast_binding* p_binding) {
@@ -745,6 +747,38 @@ void ast_call_expression_init(ast_call_expression* p_call,
   p_call->arguments = p_args;
 }
 
+void ast_spread_expression_init(ast_spread_expression* p_spread,
+                                const token p_token,
+                                ast_expression* p_inner,
+                                ast_specs* p_specs) {
+  ast_expression_init(&p_spread->expression, AST_SPREAD_EXPRESSION, p_token, p_specs);
+  p_spread->inner = p_inner;
+}
+
+void ast_spread_expression_deinit(ast_spread_expression* p_spread) {
+  allocators* alloc = p_spread->expression.node.alloc;
+  if (p_spread->inner != NULL) {
+    ast_dispatch_deinit((ast_node*)p_spread->inner);
+    alloc->release(alloc, p_spread->inner);
+    p_spread->inner = NULL;
+  }
+  ast_expression_deinit(&p_spread->expression);
+}
+
+bool ast_spread_expression_print(const ast_spread_expression* p_spread) {
+  bool res = ast_dispatch_print((ast_node*)p_spread->inner);
+  res &= printf("...") > 0;
+  return res;
+}
+
+string ast_spread_expression_asprint(const ast_spread_expression* p_spread) {
+  allocators* alloc = p_spread->expression.node.alloc;
+  string inner = ast_dispatch_asprint((ast_node*)p_spread->inner);
+  string res = asprint(alloc, "%s...", inner.chars);
+  string_deinit(&inner, alloc);
+  return res;
+}
+
 void ast_call_expression_deinit(ast_call_expression* p_call) {
   ast_expressions_list_deinit(&p_call->arguments, p_call->expression.node.alloc);
   ast_dispatch_deinit((ast_node*)p_call->callable);
@@ -1347,7 +1381,7 @@ string ast_control_flow_statement_asprint(const ast_control_flow_statement* p_co
 }
 
 void ast_return_statement_init(ast_return_statement* p_return,
-                               ast_expression* p_returned,
+                               ast_expressions_list p_returned,
                                token p_token,
                                ast_specs* p_specs) {
   ast_statement_init(&p_return->statement, AST_RETURN_STATEMENT, p_token, p_specs);
@@ -1355,32 +1389,37 @@ void ast_return_statement_init(ast_return_statement* p_return,
 }
 
 void ast_return_statement_deinit(ast_return_statement* p_return) {
-  if (p_return->returned != NULL) {
-    allocators* alloc = p_return->statement.node.alloc;
-    ast_dispatch_deinit((ast_node*)p_return->returned);
-    alloc->release(alloc, p_return->returned);
-    p_return->returned = NULL;
-  }
+  allocators* alloc = p_return->statement.node.alloc;
+  ast_expressions_list_deinit(&p_return->returned, alloc);
   ast_statement_deinit(&p_return->statement);
 }
 
 bool ast_return_statement_print(const ast_return_statement* p_return) {
   bool res = printf("return ") > 0;
-  if (p_return->returned != NULL) {
-    res &= ast_dispatch_print((ast_node*)p_return->returned);
+  for (uint32_t i = 0; i < p_return->returned.count; ++i) {
+    res &= ast_dispatch_print((ast_node*)p_return->returned.data[i]);
+    if (i + 1 < p_return->returned.count) {
+      res &= printf(", ") > 0;
+    }
   }
   return res;
 }
 
 string ast_return_statement_asprint(const ast_return_statement* p_return) {
-  if (p_return->returned != NULL) {
-    allocators* alloc = p_return->statement.node.alloc;
-    string returned_str = ast_dispatch_asprint((ast_node*)p_return->returned);
-    string res = asprint(alloc, "return %s", returned_str.chars);
-    string_deinit(&returned_str, alloc);
-    return res;
+  allocators* alloc = p_return->statement.node.alloc;
+  if (p_return->returned.count == 0) {
+    return create_static_string("return", STRING_CALCULATE_LENGTH);
   }
-  return create_static_string("return", STRING_CALCULATE_LENGTH);
+  string res = create_static_string("return ", STRING_CALCULATE_LENGTH);
+  for (uint32_t i = 0; i < p_return->returned.count; ++i) {
+    string part = ast_dispatch_asprint((ast_node*)p_return->returned.data[i]);
+    string joined =
+        asprint(alloc, "%s%s%s", res.chars, part.chars, i + 1 < p_return->returned.count ? ", " : "");
+    string_deinit(&part, alloc);
+    string_deinit(&res, alloc); // no-op for the leading static string
+    res = joined;
+  }
+  return res;
 }
 
 void ast_let_declaration_init(ast_let_declaration* p_let,
@@ -1392,14 +1431,37 @@ void ast_let_declaration_init(ast_let_declaration* p_let,
   ast_declaration_init(&p_let->declaration, AST_LET_DECLARATION, p_token, p_modifiers, p_specs);
   p_let->binding = p_binding;
   p_let->value = p_value;
+  ast_bindings_list_init(&p_let->span_bindings, p_specs->p_alloc);
+}
+
+// the destructuring form: bindings come pre-parsed (paren list), the value
+// must be a call expression (the compiler checks that, not the parser).
+void ast_let_declaration_init_span(ast_let_declaration* p_let,
+                                   ast_bindings_list p_bindings,
+                                   ast_expression* p_value,
+                                   ast_declaration_modifiers_t p_modifiers,
+                                   const token p_token,
+                                   ast_specs* p_specs) {
+  ast_declaration_init(&p_let->declaration, AST_LET_DECLARATION, p_token, p_modifiers, p_specs);
+  p_let->binding = NULL;
+  p_let->value = p_value;
+  p_let->span_bindings = p_bindings;
 }
 
 void ast_let_declaration_deinit(ast_let_declaration* p_let) {
   allocators* alloc = p_let->declaration.statement.node.alloc;
-  ast_dispatch_deinit((ast_node*)p_let->binding);
-  ast_dispatch_deinit((ast_node*)p_let->value);
-  alloc->release(alloc, p_let->binding);
-  alloc->release(alloc, p_let->value);
+  // binding is NULL in the span form (the span_bindings own the binders)
+  if (p_let->binding != NULL) {
+    ast_dispatch_deinit((ast_node*)p_let->binding);
+    alloc->release(alloc, p_let->binding);
+    p_let->binding = NULL;
+  }
+  if (p_let->value != NULL) {
+    ast_dispatch_deinit((ast_node*)p_let->value);
+    alloc->release(alloc, p_let->value);
+    p_let->value = NULL;
+  }
+  ast_bindings_list_deinit(&p_let->span_bindings, alloc);
   ast_declaration_deinit(&p_let->declaration);
 }
 
@@ -1407,7 +1469,18 @@ bool ast_let_declaration_print(const ast_let_declaration* p_let) {
   bool fail = ast_declaration_print(&p_let->declaration);
   fail &= printf("let ");
   fail &= printf(" ");
-  fail &= ast_binding_print(p_let->binding);
+  if (p_let->span_bindings.count > 0) {
+    fail &= printf("(") > 0;
+    for (uint32_t i = 0; i < p_let->span_bindings.count; ++i) {
+      fail &= ast_binding_print(p_let->span_bindings.data[i]);
+      if (i + 1 < p_let->span_bindings.count) {
+        fail &= printf(", ") > 0;
+      }
+    }
+    fail &= printf(")") > 0;
+  } else {
+    fail &= ast_binding_print(p_let->binding);
+  }
   fail &= printf(" ");
   return fail & ast_dispatch_print((ast_node*)p_let->value);
 }
@@ -1415,15 +1488,32 @@ bool ast_let_declaration_print(const ast_let_declaration* p_let) {
 string ast_let_declaration_asprint(const ast_let_declaration* p_let) {
   allocators* alloc = p_let->declaration.statement.node.alloc;
   string decl_str = ast_declaration_asprint(&p_let->declaration);
-  string binding_str = ast_binding_asprint(p_let->binding);
+  // the span form renders its binding list parenthesized: `let (x, y) = f()`
+  string bindings_str = create_static_string("(", 1);
+  if (p_let->span_bindings.count > 0) {
+    for (uint32_t i = 0; i < p_let->span_bindings.count; ++i) {
+      string part = ast_binding_asprint(p_let->span_bindings.data[i]);
+      string joined = asprint(alloc,
+                              "%s%s%s",
+                              bindings_str.chars,
+                              part.chars,
+                              i + 1 < p_let->span_bindings.count ? ", " : ")");
+      string_deinit(&part, alloc);
+      string_deinit(&bindings_str, alloc); // no-op for the leading static string
+      bindings_str = joined;
+    }
+  } else {
+    string_deinit(&bindings_str, alloc);
+    bindings_str = ast_binding_asprint(p_let->binding);
+  }
   string value_str = ast_dispatch_asprint((ast_node*)p_let->value);
-  const bool fail = decl_str.chars == NULL || binding_str.chars == NULL || value_str.chars == NULL;
+  const bool fail = decl_str.chars == NULL || bindings_str.chars == NULL || value_str.chars == NULL;
   string ret = create_static_string("", 0);
   if (!fail) {
-    ret = asprint(alloc, "%s %s %s", decl_str.chars, binding_str.chars, value_str.chars);
+    ret = asprint(alloc, "%s %s %s", decl_str.chars, bindings_str.chars, value_str.chars);
   }
   string_deinit(&decl_str, alloc);
-  string_deinit(&binding_str, alloc);
+  string_deinit(&bindings_str, alloc);
   string_deinit(&value_str, alloc);
   return ret;
 }

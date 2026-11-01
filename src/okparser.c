@@ -13,6 +13,9 @@ static ast_expression* parse_expression(parser* p_parser, precedence p_precedenc
 static ast_statement* parse_statement(parser* p_parser);
 static ast_statement* try_parse_declaration(parser* p_parser);
 static ast_let_declaration* parse_let_declaration(parser* p_parser, ast_declaration_modifiers_t p_modifiers);
+static ast_let_declaration* parse_let_declaration_span(parser* p_parser,
+                                                       ast_declaration_modifiers_t p_modifiers,
+                                                       ast_binding_modifiers_t p_binding_mods);
 static ast_function_declaration* parse_function_declaration(parser* p_parser, ast_declaration_modifiers_t p_modifiers);
 static ast_empty_statement* parse_empty_statement(parser* p_parser);
 static ast_expression_statement* parse_expression_statement(parser* p_parser);
@@ -25,8 +28,11 @@ static ast_for_statement* parse_for_statement(parser* p_parser);
 static ast_control_flow_statement* parse_control_flow_statement(parser* p_parser);
 static ast_return_statement* parse_return_statement(parser* p_parser);
 
-static ast_bindings_list
-parse_bindings_list(parser* p_parser, ast_binding_modifiers_t p_allowed_binds, token_type p_delim, token_type p_end);
+static ast_bindings_list parse_bindings_list(parser* p_parser,
+                                             ast_binding_modifiers_t p_allowed_binds,
+                                             token_type p_delim,
+                                             token_type p_end,
+                                             bool p_allow_varargs);
 static ast_expressions_list parse_expressions_list(parser* p_parser, token_type p_delim, token_type p_end);
 
 static void error_at(parser* p_parser, token p_token, const ok_string_view p_message);
@@ -461,7 +467,7 @@ static ast_expression* parse_function(parser* p_parser, token p_trigger) {
     return NULL;
   }
   advance(p_parser);
-  ast_bindings_list params = parse_bindings_list(p_parser, BINDING_MUT, TOKEN_COMMA, TOKEN_RIGHT_PAREN);
+  ast_bindings_list params = parse_bindings_list(p_parser, BINDING_MUT, TOKEN_COMMA, TOKEN_RIGHT_PAREN, true);
   if (params.capacity == 1 && params.count == 0) {
     error_at(p_parser,
              p_parser->previous,
@@ -687,8 +693,9 @@ ast_expression* parse_map_literal(parser* p_parser, token p_trigger) {
     // is rejected here rather than guessed at.
     error_at(p_parser,
              p_parser->current,
-             ok_create_string_view(
-                 "empty '{}' is not an expression - the empty map literal is '{:}'.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+             ok_create_string_view("empty '{}' is not an expression - the empty map literal is '{:}'.",
+                                   OK_STRING_VIEW_CALCULATE_LENGTH,
+                                   true));
     goto fail_lists;
   }
 
@@ -696,7 +703,10 @@ ast_expression* parse_map_literal(parser* p_parser, token p_trigger) {
     // `{:}` - the load-bearing empty literal (bindings are immutable, so
     // `let m = null` needs mut for later assignment; `{:}` doesn't).
     advance(p_parser); // ':' consumed, current = '}' (or an error to report)
-    if (!expect(p_parser, TOKEN_RIGHT_BRACE, ok_create_string_view("expected '}' to complete the empty map.", OK_STRING_VIEW_CALCULATE_LENGTH, true))) {
+    if (!expect(
+            p_parser,
+            TOKEN_RIGHT_BRACE,
+            ok_create_string_view("expected '}' to complete the empty map.", OK_STRING_VIEW_CALCULATE_LENGTH, true))) {
       goto fail_lists;
     }
   } else {
@@ -709,7 +719,9 @@ ast_expression* parse_map_literal(parser* p_parser, token p_trigger) {
                  ok_create_string_view("failed to parse map key.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
         goto fail_lists;
       }
-      if (!expect(p_parser, TOKEN_COLON, ok_create_string_view("expected ':' after map key.", OK_STRING_VIEW_CALCULATE_LENGTH, true))) {
+      if (!expect(p_parser,
+                  TOKEN_COLON,
+                  ok_create_string_view("expected ':' after map key.", OK_STRING_VIEW_CALCULATE_LENGTH, true))) {
         ast_dispatch_deinit((ast_node*)key);
         alloc->release(alloc, key);
         goto fail_lists;
@@ -747,7 +759,9 @@ ast_expression* parse_map_literal(parser* p_parser, token p_trigger) {
       }
       break;
     }
-    if (!expect(p_parser, TOKEN_RIGHT_BRACE, ok_create_string_view("expected '}' after map literal.", OK_STRING_VIEW_CALCULATE_LENGTH, true))) {
+    if (!expect(p_parser,
+                TOKEN_RIGHT_BRACE,
+                ok_create_string_view("expected '}' after map literal.", OK_STRING_VIEW_CALCULATE_LENGTH, true))) {
       goto fail_lists;
     }
   }
@@ -1038,6 +1052,13 @@ ast_let_declaration* parse_let_declaration(parser* p_parser, ast_declaration_mod
   if (binding_mods == BINDING_ERROR) {
     return NULL;
   }
+  // the destructuring form: `let (x, y) = f();`
+  // the paren after the binding modifiers is unambiguous. `let` is a statement keyword, no
+  // expression form starts here. the binding list takes the same per-binder
+  // modifiers as any binding (`let (mut x, y) = f();`).
+  if (p_parser->current.type == TOKEN_LEFT_PAREN) {
+    return parse_let_declaration_span(p_parser, p_declaration_modifiers, binding_mods);
+  }
   ast_binding* binding = (ast_binding*)alloc->allocate(alloc, sizeof(ast_binding));
   if (binding == NULL) {
     error_at(
@@ -1119,6 +1140,95 @@ free:
   return NULL;
 }
 
+// `let (x, y) = f();` the destructuring let. the '(' is already
+// current on entry. per-binder modifiers ride the shared binding-list parser.
+// defaults are rejected (a let binding never has one), and the value must be
+// a call (the compiler enforces that with an error).
+ast_let_declaration* parse_let_declaration_span(parser* p_parser,
+                                                ast_declaration_modifiers_t p_declaration_modifiers,
+                                                ast_binding_modifiers_t p_binding_mods) {
+  allocators* alloc = p_parser->alloc;
+  const token let_tok = p_parser->previous;
+  if (p_declaration_modifiers != DECLARATION_NONE) {
+    string mods_str = ast_declaration_modifiers_asprint(p_declaration_modifiers, alloc);
+    string message = asprint(alloc, "illegal declaration modifier(s): [%s] on a destructuring let.", mods_str.chars);
+    error_at_noted(p_parser,
+                   let_tok,
+                   ok_create_string_view_from_string(message),
+                   ok_create_string_view("the span bindings are locals only.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    string_deinit(&message, alloc);
+    string_deinit(&mods_str, alloc);
+    return NULL;
+  }
+  (void)p_binding_mods; // per-binder modifiers are parsed inside the list itself
+  advance(p_parser);    // consume '('
+  ast_bindings_list bindings = parse_bindings_list(p_parser, BINDING_MUT, TOKEN_COMMA, TOKEN_RIGHT_PAREN, false);
+  if (bindings.capacity == 1 && bindings.count == 0) {
+    error_at(p_parser,
+             p_parser->previous,
+             ok_create_string_view(
+                 "failed to parse the destructuring binding list.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL;
+  }
+  if (bindings.count == 0) {
+    error_at(p_parser,
+             p_parser->previous,
+             ok_create_string_view(
+                 "a destructuring let needs at least one binding.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    goto free_bindings;
+  }
+  for (uint32_t i = 0; i < bindings.count; ++i) {
+    if (bindings.data[i]->default_value != NULL) {
+      error_at(p_parser,
+               p_parser->previous,
+               ok_create_string_view(
+                   "a destructuring let binding cannot have a default.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      goto free_bindings;
+    }
+  }
+  advance(p_parser); // consume ')'
+  if (p_parser->current.type != TOKEN_ASSIGN) {
+    error_at(p_parser,
+             p_parser->current,
+             ok_create_string_view(
+                 "expected '=' after the destructuring binding list.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    goto free_bindings;
+  }
+  advance(p_parser); // consume '='
+  advance(p_parser); // first value token into previous (parse_expression starts there)
+  ast_expression* value = parse_expression(p_parser, PREC_NONE);
+  if (value == NULL) {
+    error_at(p_parser,
+             p_parser->previous,
+             ok_create_string_view("failed to parse the span call.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    goto free_bindings;
+  }
+  if (p_parser->current.type != TOKEN_SEMICOLON) {
+    error_at(p_parser,
+             p_parser->current,
+             ok_create_string_view("expected ';' after let declaration.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    ast_dispatch_deinit((ast_node*)value);
+    alloc->release(alloc, value);
+    goto free_bindings;
+  }
+  advance(p_parser); // consume ';'
+  ast_let_declaration* let = (ast_let_declaration*)alloc->allocate(alloc, sizeof(ast_let_declaration));
+  if (let == NULL) {
+    error_at(p_parser,
+             let_tok,
+             ok_create_string_view("failed to allocate memory for let node.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    ast_dispatch_deinit((ast_node*)value);
+    alloc->release(alloc, value);
+    goto free_bindings;
+  }
+  ast_specs s = {alloc};
+  ast_let_declaration_init_span(let, bindings, value, p_declaration_modifiers, let_tok, &s);
+  return let;
+free_bindings:
+  ast_bindings_list_deinit(&bindings, alloc);
+  return NULL;
+}
+
 ast_function_declaration* parse_function_declaration(parser* p_parser,
                                                      ast_declaration_modifiers_t p_declaration_modifiers) {
   allocators* alloc = p_parser->alloc;
@@ -1178,13 +1288,14 @@ ast_function_declaration* parse_function_declaration(parser* p_parser,
     goto free_bind;
   }
   advance(p_parser);
-  ast_bindings_list params = parse_bindings_list(p_parser, BINDING_MUT, TOKEN_COMMA, TOKEN_RIGHT_PAREN);
+  ast_bindings_list params = parse_bindings_list(p_parser, BINDING_MUT, TOKEN_COMMA, TOKEN_RIGHT_PAREN, true);
   if (params.capacity == 1 && params.count == 0) {
     error_at(p_parser,
              p_parser->previous,
              ok_create_string_view("failed to parse function parameters.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
     goto free_bind;
   }
+
   advance(p_parser);
   advance(p_parser);
   ast_statement* body = parse_statement(p_parser);
@@ -1453,12 +1564,12 @@ ast_while_statement* parse_while_statement(parser* p_parser) {
 // p_has_value: the two-binding map form `for let k, (mut)? v :` - binding binds
 // keys, value_binding binds values (arrays reject it at runtime).
 static ast_for_in_statement* parse_for_in_rest(parser* p_parser,
-                                                token p_for_tok,
-                                                token p_name_tok,
-                                                ast_binding_modifiers_t p_binds,
-                                                token p_value_name_tok,
-                                                ast_binding_modifiers_t p_value_binds,
-                                                bool p_has_value) {
+                                               token p_for_tok,
+                                               token p_name_tok,
+                                               ast_binding_modifiers_t p_binds,
+                                               token p_value_name_tok,
+                                               ast_binding_modifiers_t p_value_binds,
+                                               bool p_has_value) {
   allocators* alloc = p_parser->alloc;
   advance(p_parser); // ':' consumed, current = first iterable token
   advance(p_parser); // iterable's first token into previous
@@ -1794,14 +1905,13 @@ ast_for_statement* parse_for_statement(parser* p_parser) {
       const token value_tok = p_parser->current;
       advance(p_parser); // previous = value name, current = ':'
       if (p_parser->current.type != TOKEN_COLON) {
-        error_at(p_parser,
-                 p_parser->current,
-                 ok_create_string_view(
-                     "expected ':' after the map for bindings.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+        error_at(
+            p_parser,
+            p_parser->current,
+            ok_create_string_view("expected ':' after the map for bindings.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
         return NULL;
       }
-      return (ast_for_statement*)parse_for_in_rest(
-          p_parser, for_tok, name_tok, binds, value_tok, value_binds, true);
+      return (ast_for_statement*)parse_for_in_rest(p_parser, for_tok, name_tok, binds, value_tok, value_binds, true);
     }
     // `for let (mut)? IDENT = <expr> ...` or the bare `for let x; ...` C init:
     // parse the head expression once (previous = name, so `x = 0` parses as an
@@ -1932,12 +2042,31 @@ static ast_return_statement* parse_return_statement(parser* p_parser) {
   allocators* alloc = p_parser->alloc;
 
   token return_tok = p_parser->previous;
-  ast_expression* returned = NULL;
+  ast_expressions_list returned;
+  ast_expressions_list_init(&returned, alloc);
   if (p_parser->current.type != TOKEN_SEMICOLON) {
-    advance(p_parser);
-    returned = parse_expression(p_parser, PREC_NONE);
-    if (returned == NULL) {
-      return NULL;
+    // the span form: `return a, b, c;` a comma list of expressions under one
+    // return (the count is the path's result arity, inferred).
+    // convention: parse_expression starts at previous, so each element costs
+    // one advance into its first token, after a comma that is two (comma, then
+    // the token). the same shape parse_expressions_list rides.
+    advance(p_parser); // first element's first token into previous
+    while (true) {
+      ast_expression* expr = parse_expression(p_parser, PREC_NONE);
+      if (expr == NULL) {
+        goto free;
+      }
+      if (!ast_expressions_list_append(&returned, expr)) {
+        ast_dispatch_deinit((ast_node*)expr);
+        alloc->release(alloc, expr);
+        goto free;
+      }
+      if (p_parser->current.type == TOKEN_COMMA) {
+        advance(p_parser); // consume ','
+        advance(p_parser); // next element's first token into previous
+        continue;
+      }
+      break;
     }
   }
   if (p_parser->current.type != TOKEN_SEMICOLON) {
@@ -1956,19 +2085,20 @@ static ast_return_statement* parse_return_statement(parser* p_parser) {
   ast_return_statement_init(ret, returned, return_tok, &s);
   return ret;
 free:
-  if (returned != NULL) {
-    ast_dispatch_deinit((ast_node*)returned);
-    alloc->release(alloc, returned);
-  }
+  ast_expressions_list_deinit(&returned, alloc);
   return NULL;
 }
 
-ast_bindings_list
-parse_bindings_list(parser* p_parser, ast_binding_modifiers_t p_allowed_binds, token_type p_delim, token_type p_end) {
+ast_bindings_list parse_bindings_list(parser* p_parser,
+                                      ast_binding_modifiers_t p_allowed_binds,
+                                      token_type p_delim,
+                                      token_type p_end,
+                                      bool p_allow_varargs) {
   allocators* alloc = p_parser->alloc;
   ast_bindings_list list;
   ast_bindings_list_init(&list, alloc);
   bool seen_default = false; // defaults must be trailing: there are no keyword arguments
+  bool seen_varargs = false; // at most one, and it must be the last
   while (p_parser->current.type != p_end && p_parser->current.type != TOKEN_EOF) {
     ast_binding_modifiers_t binds = parse_binding_modifiers(p_parser, p_allowed_binds);
     token tok = p_parser->previous;
@@ -2006,6 +2136,29 @@ parse_bindings_list(parser* p_parser, ast_binding_modifiers_t p_allowed_binds, t
       alloc->release(alloc, ident);
       goto free_bind_list;
     }
+    // `rest...`: the varargs marker, parsed after the name so the
+    // identifier's parse anchor is untouched. only function parameters allow
+    // it (p_allow_varargs). anywhere else it is a syntax error.
+    bool is_varargs = false;
+    if (p_parser->current.type == TOKEN_ELLIPSIS) {
+      if (!p_allow_varargs) {
+        error_at(
+            p_parser,
+            p_parser->current,
+            ok_create_string_view("'...' is not allowed in this binding list.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+        goto free_bind_list;
+      }
+      advance(p_parser); // consume '...'
+      is_varargs = true;
+      if (seen_varargs) {
+        error_at(
+            p_parser,
+            p_parser->previous,
+            ok_create_string_view("only one varargs parameter is allowed.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+        goto free_bind_list;
+      }
+      seen_varargs = true;
+    }
     ast_expression* default_value = NULL;
     if (p_parser->current.type == TOKEN_ASSIGN) {
       advance(p_parser); // consume '='
@@ -2020,7 +2173,10 @@ parse_bindings_list(parser* p_parser, ast_binding_modifiers_t p_allowed_binds, t
         goto free_bind_list;
       }
     }
-    if (default_value == NULL && seen_default) {
+    // the defaults-trailing rule has one exempt: the varargs parameter. it is
+    // last by construction and never requires an argument, so it may follow
+    // defaulted params (`fu f(a, b = 2, c...)`).
+    if (default_value == NULL && seen_default && !is_varargs) {
       error_at_noted(
           p_parser,
           p_parser->previous,
@@ -2034,6 +2190,27 @@ parse_bindings_list(parser* p_parser, ast_binding_modifiers_t p_allowed_binds, t
     if (default_value != NULL) {
       seen_default = true;
     }
+    if (is_varargs && default_value != NULL) {
+      error_at_noted(
+          p_parser,
+          p_parser->previous,
+          ok_create_string_view("a varargs parameter cannot have a default.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+          ok_create_string_view("it always defaults to an empty array. every argument past the fixed ones is its.",
+                                OK_STRING_VIEW_CALCULATE_LENGTH,
+                                true));
+      ast_dispatch_deinit((ast_node*)ident);
+      alloc->release(alloc, ident);
+      goto free_bind_list;
+    }
+    if (is_varargs && p_parser->current.type != p_end) {
+      error_at(
+          p_parser,
+          p_parser->current,
+          ok_create_string_view("a varargs parameter must be the last one.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      ast_dispatch_deinit((ast_node*)ident);
+      alloc->release(alloc, ident);
+      goto free_bind_list;
+    }
     ast_binding* binding = (ast_binding*)alloc->allocate(alloc, sizeof(ast_binding));
     if (binding == NULL) {
       error_at(p_parser,
@@ -2045,6 +2222,7 @@ parse_bindings_list(parser* p_parser, ast_binding_modifiers_t p_allowed_binds, t
     ast_specs s = {alloc};
     ast_binding_init(binding, ident, binds, tok, &s);
     binding->default_value = default_value;
+    binding->is_varargs = is_varargs;
     if (!ast_bindings_list_append(&list, binding)) {
       goto free_bind_list;
     }
@@ -2092,6 +2270,25 @@ ast_expressions_list parse_expressions_list(parser* p_parser, token_type p_delim
                ok_create_string_view(
                    "failed to parse expression in expressions list.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
       goto free_expr_list;
+    }
+    // `args...`: the spread marker wraps the element. parsed in any
+    // expressions list, rejected at compile anywhere but a call's last
+    // argument. the parser stays permissive, and the errors stay precise.
+    if (p_parser->current.type == TOKEN_ELLIPSIS) {
+      advance(p_parser); // consume '...'
+      ast_spread_expression* spread = (ast_spread_expression*)alloc->allocate(alloc, sizeof(ast_spread_expression));
+      if (spread == NULL) {
+        ast_dispatch_deinit((ast_node*)expr);
+        alloc->release(alloc, expr);
+        error_at(
+            p_parser,
+            p_parser->previous,
+            ok_create_string_view("failed to allocate memory for spread node.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+        goto free_expr_list;
+      }
+      ast_specs s = {alloc};
+      ast_spread_expression_init(spread, p_parser->previous, expr, &s);
+      expr = (ast_expression*)spread;
     }
     if (!ast_expressions_list_append(&list, expr)) {
       goto free_expr_list;

@@ -1,0 +1,13 @@
+// the canonical shape: two results, destructured in one let
+fu minmax(a, b) {
+  if a < b { return a, b; }
+  return b, a;
+}
+
+let (lo, hi) = minmax(3, 9);
+print lo; // expect: 3
+print hi; // expect: 9
+
+let (lo2, hi2) = minmax(9, 3);
+print lo2; // expect: 3
+print hi2; // expect: 9

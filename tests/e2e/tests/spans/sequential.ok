@@ -1,0 +1,15 @@
+// two span lets in one scope: the second window starts right after the
+// first bindings, adjacency re-derived per let
+fu pair(a, b) {
+  return a, b;
+}
+
+let (a, b) = pair(1, 2);
+let plain = a + b;
+let (c, d) = pair(10, 20);
+print a; // expect: 1
+print b; // expect: 2
+print plain; // expect: 3
+print c; // expect: 10
+print d; // expect: 20
+print c + d; // expect: 30

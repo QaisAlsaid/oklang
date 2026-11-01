@@ -48,6 +48,9 @@ double ok_value_as_number(ok_value p_value);
 ok_cstring_view ok_value_as_string(ok_value p_value);
 
 /* calls */
+
+// calls a script closure or native and yields only one result.
+// multi-result (span) script functions are legal callees: ok_call exposes only the first result
 bool ok_call(ok* p_ok, ok_value p_callee, uint8_t p_argc, const ok_value* p_argv, ok_value* p_result);
 
 /* globals */

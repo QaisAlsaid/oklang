@@ -1,0 +1,17 @@
+// three results round-tripping through one window, both paths agreeing on 3
+fu rotate3(a, b, c) {
+  if a > b { return a, b, c; }
+  return c, a, b;
+}
+
+let (x, y, z) = rotate3(1, 2, 3);
+print x + y + z; // expect: 6
+print x; // expect: 3
+print y; // expect: 1
+print z; // expect: 2
+
+// a > b takes the first path: identity order
+let (p, q, r) = rotate3(5, 1, 9);
+print p; // expect: 5
+print q; // expect: 1
+print r; // expect: 9

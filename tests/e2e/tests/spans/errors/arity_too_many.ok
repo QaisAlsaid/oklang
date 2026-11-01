@@ -1,0 +1,7 @@
+// R6, the other direction: 1 result destructured into 2 bindings
+fu one() {
+  return 1;
+}
+
+let (a, b) = one();
+print a; // expect error: it returns 1 values, 2 were requested

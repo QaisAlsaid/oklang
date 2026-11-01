@@ -1,0 +1,15 @@
+// null is a legal result value, not a missing one
+fu find(arr, want) {
+  for let v : arr {
+    if v == want { return v, true; }
+  }
+  return null, false;
+}
+
+let (found, ok) = find([1, 2, 3], 2);
+print found; // expect: 2
+print ok; // expect: true
+
+let (missing, no) = find([1, 2, 3], 9);
+print missing; // expect: null
+print no; // expect: false

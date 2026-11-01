@@ -1,0 +1,23 @@
+// the R3+defaults interaction: fixed, defaulted, then the pack
+fu f(a, b = 2, c...) {
+  print a;
+  print b;
+  print len(c);
+}
+
+f(1); // expect: 1
+      // expect: 2
+      // expect: 0
+f(1, 9); // expect: 1
+         // expect: 9
+         // expect: 0
+f(1, 9, 5, 6, 7); // expect: 1
+                  // expect: 9
+                  // expect: 3
+
+fu g(a = 10, rest...) {
+  print a + len(rest);
+}
+g(); // expect: 10
+g(1); // expect: 1
+g(1, 2, 3); // expect: 3

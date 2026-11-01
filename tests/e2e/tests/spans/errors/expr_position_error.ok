@@ -1,0 +1,7 @@
+// a multi-result call in single-expression position errors (R4/R6):
+// print takes exactly one value, always
+fu pair(a, b) {
+  return a, b;
+}
+
+print pair(1, 2); // expect error: it returns 2 values, 1 were requested

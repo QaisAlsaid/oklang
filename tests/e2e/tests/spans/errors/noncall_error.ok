@@ -1,0 +1,2 @@
+// the span expression must be a call: no tuple literals
+let (a, b) = 1; // expect error: a destructuring let needs a call

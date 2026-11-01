@@ -1,0 +1,6 @@
+// glob spans need per-global stores from the window: deferred
+fu pair(a, b) {
+  return a, b;
+}
+
+glob let (a, b) = pair(1, 2); // expect error: illegal declaration modifier

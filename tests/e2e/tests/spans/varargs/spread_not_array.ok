@@ -1,0 +1,6 @@
+// spreading a non-array is a runtime error
+fu f(rest...) {
+  return len(rest);
+}
+
+print f(42...); // expect error: can only spread an array

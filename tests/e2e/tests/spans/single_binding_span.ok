@@ -1,0 +1,7 @@
+// one binding under parens: a 1-span destructure, no special case
+fu one() {
+  return 42;
+}
+
+let (x) = one();
+print x; // expect: 42

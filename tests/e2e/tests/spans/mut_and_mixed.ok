@@ -1,0 +1,16 @@
+// per-binder modifiers: mut rides the binding list like anywhere else
+fu pair(a, b) {
+  return a, b;
+}
+
+let (mut a, b) = pair(1, 2);
+a = a + b;
+print a; // expect: 3
+print b; // expect: 2
+
+// the immutable one refuses assignment
+fu pair2(a, b) {
+  return a, b;
+}
+let (p, q) = pair2(3, 4);
+print p + q; // expect: 7

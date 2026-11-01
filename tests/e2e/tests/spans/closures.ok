@@ -1,0 +1,16 @@
+// span-bound locals are ordinary locals: capturable, shared-slot semantics
+fu pair(a, b) {
+  return a, b;
+}
+
+fu make() {
+  let (mut x, y) = pair(10, 20);
+  let get_x = fu() { return x; };
+  let get_y = fu() { return y; };
+  x = x + 1;
+  print get_y(); // expect: 20
+  return get_x;
+}
+
+let getter = make();
+print getter(); // expect: 11

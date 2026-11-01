@@ -1,0 +1,6 @@
+// a spread must be the LAST argument of a call
+fu f(a, b) {
+  return a + b;
+}
+let args = [1];
+print f(args..., 2); // expect error: only allowed as the last argument of a call

@@ -1,0 +1,13 @@
+// the canonical varargs shape
+fu sum_all(nums...) {
+  let mut total = 0;
+  for let n : nums {
+    total = total + n;
+  }
+  return total;
+}
+
+print sum_all(1, 2, 3, 4); // expect: 10
+print sum_all(); // expect: 0
+print sum_all(7); // expect: 7
+print sum_all(1, 1, 1, 1, 1, 1, 1, 1, 1, 1); // expect: 10

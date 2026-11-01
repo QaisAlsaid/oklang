@@ -1,0 +1,14 @@
+// a span call in statement position discards: legal, no arity complaint
+fu pair(a, b) {
+  return a, b;
+}
+
+pair(1, 2);
+print "after"; // expect: after
+
+fu noisy(a, b) {
+  print a + b;
+  return a, b;
+}
+noisy(3, 4); // expect: 7
+print "done"; // expect: done

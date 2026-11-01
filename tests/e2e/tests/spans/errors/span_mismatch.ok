@@ -1,0 +1,6 @@
+// R2: every return path must agree on the width
+fu bad(a) {
+  if a { return 1, 2; }
+  return 1;
+}
+print bad(true); // expect error: return span mismatch

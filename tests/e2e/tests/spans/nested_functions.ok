@@ -1,0 +1,18 @@
+// a span function whose results feed a closure that itself returns a span:
+// the inner call is destructured first, then returned explicitly
+fu pair(a, b) {
+  return a, b;
+}
+
+fu outer(a, b) {
+  let (x, y) = pair(a, b);
+  let inner = fu() {
+    return y, x;
+  };
+  let (p, q) = inner();
+  return p, q;
+}
+
+let (p, q) = outer(1, 2);
+print p; // expect: 2
+print q; // expect: 1

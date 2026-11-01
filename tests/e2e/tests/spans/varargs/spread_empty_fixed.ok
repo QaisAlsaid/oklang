@@ -1,0 +1,11 @@
+// edge: spread of the empty array into a varargs function
+fu count(rest...) {
+  return len(rest);
+}
+
+print count([]...); // expect: 0
+
+fu two(a, b) {
+  return a * b;
+}
+print two([3, 4]...); // expect: 12

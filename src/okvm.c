@@ -22,6 +22,13 @@
 #define STACK_SIZE 256
 
 static void runtime_error(vm* p_vm, const char* p_fmt, ...);
+static bool call_spread(vm* p_vm,
+                        execution_state* p_exe,
+                        register_file* p_reg,
+                        uint32_t p_base,
+                        uint16_t p_callee,
+                        uint16_t p_fixed,
+                        uint32_t p_retc);
 static bool call_value(vm* p_vm,
                        execution_state* p_exe,
                        register_file* p_reg,
@@ -153,12 +160,15 @@ interpret_result vm_call(vm* p_vm, value p_callee, uint32_t p_argc) {
 
   // p_callee is already at an index relative p_base (compare OP_CALL: frame base +
   // register index). passing base here double based the callee slot: with a
-  // non-empty call stack (i.e. a native calling back into the vm) (e.g. dorg3's
-  // array_foreach -> ok_call(closure) mid-frame) while base > 0 and call_value read
+  // non-empty call stack (i.e. a native calling back into the vm). while base > 0 and call_value read
   // data[base + base], which is a garbage register, instead of the closure staged at
   // data[base]. every tested ok_call until now ran from C on an empty call stack
   // (base == 0), where 0 + 0 was accidentally correct. a regression test was written for this very case.
-  if (!call_value(p_vm, exe, reg, base, 0, p_argc, 1)) {
+  //
+  // ok_call requests the dynamic lane. take everything, expose the
+  // first ("first of span") instead of tripping the arity check.
+  // single-result callees are byte-for-byte the old behavior.
+  if (!call_value(p_vm, exe, reg, base, 0, p_argc, RETURN_COUNT_DYNAMIC)) {
     return vm_error(exe);
   }
   if (exe->call_stack.count == call_depth) {
@@ -2494,6 +2504,61 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       }
       break;
     }
+    case OP_VA_PACK: {
+      const uint16_t ap = aprime_of(instruction);
+      const uint16_t bp = bprime_of(instruction);
+      // the trailing-argument window: [bp, argc] (bp is the varargs parameter's
+      // own register, i.e. the first trailing argument). fewer arguments than
+      // that means the fixed/defaulted params swallowed everything: an empty
+      // pack. the source slots are live frame registers ([0, top) rooted). the
+      // array being built is store-linked yet unreachable until it lands in
+      // r[ap]. guard through the append, exactly like OP_ARRAY_NEW.
+      const uint32_t count = (uint32_t)frame->argc >= bp ? (uint32_t)frame->argc - bp + 1u : 0u;
+      object_specs s = {p_vm->alloc, p_vm->objects_store};
+      object_array* arr = create_object_array(&s);
+      if (arr == NULL) {
+        runtime_error(p_vm, "out of memory: failed to allocate the varargs array.");
+        return interpret_result_error();
+      }
+      gc_guard_up(p_vm->alloc->gc, OBJECT_AS_VALUE(arr));
+      const bool appended = count == 0 || value_array_append_n(&arr->values, &REG_AT(bp), count);
+      gc_guard_down(p_vm->alloc->gc);
+      if (!appended) {
+        runtime_error(p_vm, "out of memory: failed to allocate the varargs array.");
+        return interpret_result_error();
+      }
+      REG_AT(ap) = OBJECT_AS_VALUE(arr);
+      break;
+    }
+    case OP_CALL_SPREAD: {
+      const uint8_t a = a_of(instruction);
+      const uint8_t b = b_of(instruction);
+      const uint8_t c = c_of(instruction);
+      frame->ip = ip;
+      if (!call_spread(p_vm, exe, reg, frame->registers_base, a, b, c == 0 ? RETURN_COUNT_DYNAMIC : (uint32_t)c - 1u)) {
+        return interpret_result_error();
+      }
+      exe = p_vm->current_execution_state;
+      reg = &exe->registers;
+      frame = &exe->call_stack.data[exe->call_stack.count - 1];
+      ip = frame->ip;
+      break;
+    }
+    case OP_CALL_SPREAD_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      frame->ip = ip;
+      if (!call_spread(p_vm, exe, reg, frame->registers_base, A, B, C == 0 ? RETURN_COUNT_DYNAMIC : (uint32_t)C - 1u)) {
+        return interpret_result_error();
+      }
+      exe = p_vm->current_execution_state;
+      reg = &exe->registers;
+      frame = &exe->call_stack.data[exe->call_stack.count - 1];
+      ip = frame->ip;
+      break;
+    }
     case OP_PRINT: {
       const bool p = p_of(instruction);
       const value printed = resolve_operand(frame, reg, Alarge_of(instruction), p);
@@ -2578,7 +2643,21 @@ static inline bool call(vm* p_vm,
                         uint16_t p_argc,
                         uint32_t p_retc) {
   const object_function* fu = p_closure->function;
-  if (p_argc < (uint32_t)(fu->arity - fu->ndefaults) || p_argc > fu->arity) {
+  // varargs: `fu f(a, rest...)` the varargs parameter never
+  // requires an argument (it defaults to an empty array), so the floor drops
+  // it. and there is no ceiling: the trailing arguments are the rest's, as
+  // many as the caller staged. non-varargs functions keep the exact old two-sided check.
+  if (fu->has_varargs) {
+    const uint32_t floor = (uint32_t)(fu->arity - fu->ndefaults) - 1u;
+    if (p_argc < floor) {
+      runtime_error(p_vm,
+                    "invalid call to '%s': expected at least %u arguments, got: %d.",
+                    fu->name->string.chars,
+                    floor,
+                    p_argc);
+      return false;
+    }
+  } else if (p_argc < (uint32_t)(fu->arity - fu->ndefaults) || p_argc > fu->arity) {
     if (fu->ndefaults == 0) {
       runtime_error(
           p_vm, "invalid call to '%s': expected %d arguments, got: %d.", fu->name->string.chars, fu->arity, p_argc);
@@ -2597,7 +2676,36 @@ static inline bool call(vm* p_vm,
     }
     return false;
   }
-  const uint32_t frame_top = p_callee + p_closure->function->registers;
+  // no adjust to receiver: a caller that requested a specific
+  // count must get exactly the function's inferred result span. destructuring
+  // 2 results into 1 binding, or reading a 2-result call in single-expression
+  // position, errors here. no lua-style silent take-first or padding. the
+  // retc == 0 lane is the discard (statement calls, the top-level entry):
+  // no check, the results are dropped. the dynamic lane (ok_call) takes all.
+  if (p_retc != RETURN_COUNT_DYNAMIC && p_retc >= 1 && p_retc != (uint32_t)fu->results) {
+    runtime_error(p_vm,
+                  "invalid call to '%s': it returns %u values, %u were requested here.",
+                  fu->name->string.chars,
+                  fu->results,
+                  p_retc);
+    return false;
+  }
+  // a varargs frame is as tall as its arguments. the trailing
+  // arguments live at [callee + arity, callee + argc], past the compile-time
+  // register count. the body's locals overlap them by design: VA_PACK reads
+  // the window before any local is written (locals are defined before use,
+  // the uninit discipline), and mark_vm roots [0, top) either way.
+  uint32_t frame_top = p_callee + p_closure->function->registers;
+  if (p_closure->function->has_varargs && (uint32_t)p_argc + 1u > frame_top) {
+    frame_top = p_callee + p_argc + 1u;
+  }
+  if (frame_top > UINT16_MAX + 1u) {
+    // the register file is 16-bit-addressable: a varargs call can stage more
+    // arguments than the file has slots. hard error, not a clamp. a clamp
+    // would silently truncate the window VA_PACK reads.
+    runtime_error(p_vm, "invalid call to '%s': too many arguments.", fu->name->string.chars);
+    return false;
+  }
   if (frame_top > p_reg->array.capacity) {
     // grow with headroom so we do not realloc on every nested call
     const uint32_t target = frame_top + (frame_top >> 1u);
@@ -2710,6 +2818,63 @@ static inline bool call_native(vm* p_vm,
   reg->array.data[p_callee] = result;
   gc_guard_down(p_vm->alloc->gc);
   return true;
+}
+
+// stage the spread array's elements into the argument window, then make the
+// call. r[base + callee] is the callable, [base + callee + 1,
+// base + callee + fixed] the pre-staged fixed arguments, r[base + callee +
+// fixed + 1] the array to spread. the elements land at [array_at, array_at +
+// len). overwriting the array's own slot as they go. the object stays alive
+// through the C-side pointer under a gc guard while the copy runs.
+static bool call_spread(vm* p_vm,
+                        execution_state* p_exe,
+                        register_file* p_reg,
+                        uint32_t p_base,
+                        uint16_t p_callee,
+                        uint16_t p_fixed,
+                        uint32_t p_retc) {
+  const uint32_t array_at = p_base + p_callee + p_fixed + 1u;
+  const value spread = p_reg->array.data[array_at];
+  if (!IS_VALUE_ARRAY(spread)) {
+    runtime_error(p_vm, "can only spread an array.");
+    return false;
+  }
+  object_array* arr = VALUE_AS_ARRAY(spread);
+  const uint32_t len = arr->values.count;
+  const uint32_t need = array_at + len;
+  if (need > UINT16_MAX + 1u || (uint32_t)p_fixed + len > UINT16_MAX) {
+    // the register file is 16-bit-addressable and argc is 16-bit: this is the
+    // boundary, before any slot is written.
+    runtime_error(p_vm, "too many arguments to spread.");
+    return false;
+  }
+  if (need > p_reg->array.capacity) {
+    // same contract as call()'s growth: fresh slots must read as null.
+    const uint32_t target = need + (need >> 1u);
+    const uint32_t new_capacity = target > UINT16_MAX + 1u ? UINT16_MAX + 1u : target;
+    const uint32_t initialized_uptill = p_reg->array.capacity;
+    if (!register_array_grow(&p_reg->array, new_capacity)) {
+      runtime_error(p_vm, "out of memory: failed to grow register file.");
+      return false;
+    }
+    for (uint32_t i = initialized_uptill; i < new_capacity; ++i) {
+      p_reg->array.data[i] = NULL_AS_VALUE();
+    }
+  }
+  // root the element window before anything allocates: the copied elements sit
+  // at [array_at, need), possibly above the caller's top, and call() itself
+  // allocates (register file growth) before raising top to cover them. every
+  // slot we just raised top over holds either a copied element or an old
+  // frame's dead-but-valid value. both walk fine under mark_vm.
+  if (p_reg->top < need) {
+    p_reg->top = need;
+  }
+  gc_guard_up(p_vm->alloc->gc, spread);
+  for (uint32_t i = 0; i < len; ++i) {
+    p_reg->array.data[array_at + i] = arr->values.data[i];
+  }
+  gc_guard_down(p_vm->alloc->gc);
+  return call_value(p_vm, p_exe, p_reg, p_base, p_callee, (uint16_t)(p_fixed + len), p_retc);
 }
 
 static bool call_value(vm* p_vm,

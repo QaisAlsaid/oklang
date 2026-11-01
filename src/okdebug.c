@@ -81,8 +81,11 @@ static const char* const OPCODE_NAMES[] = {
     "ITER_PREP",
     "ITER_GET",
     "ITER_LOOP",
+    "VA_PACK",
+    "CALL_SPREAD",
+    "CALL_SPREAD_LONG",
 };
-typedef char opcode_names_in_sync[(sizeof(OPCODE_NAMES) / sizeof(OPCODE_NAMES[0]) == (size_t)OP_ITER_LOOP + 1) ? 1 : -1];
+typedef char opcode_names_in_sync[(sizeof(OPCODE_NAMES) / sizeof(OPCODE_NAMES[0]) == (size_t)OP_CALL_SPREAD_LONG + 1) ? 1 : -1];
 
 static const char* binop_symbol(const opcode p_op) {
   switch (p_op) {
@@ -180,6 +183,7 @@ static bool op_is_two_words(opcode p_op) {
   case OP_INDEX_GET_LONG:
   case OP_INDEX_SET_LONG:
   case OP_JUMP_IF_ARGC:
+  case OP_CALL_SPREAD_LONG:
   case OP_FOR_PREP:
   case OP_FOR_LOOP:
   case OP_ITER_PREP:
@@ -350,6 +354,25 @@ uint32_t debug_disassemble_instruction(disassembler* p_disassembler, uint32_t p_
     break;
   case OP_CALL_LONG:
     printf("r%u = call r%u, argc %u%s, ret ", A, A, B, p ? " (varargs)" : "");
+    if (C == 0) {
+      printf("all");
+    } else {
+      printf("%u", C - 1);
+    }
+    break;
+  case OP_VA_PACK:
+    printf("r%u = pack r%u ... r[argc]", ap, bp);
+    break;
+  case OP_CALL_SPREAD:
+    printf("r%u = call r%u, fixed %u + spread r%u..., ret ", a, a, b, a + b + 1);
+    if (c == 0) {
+      printf("all");
+    } else {
+      printf("%u", c - 1);
+    }
+    break;
+  case OP_CALL_SPREAD_LONG:
+    printf("r%u = call r%u, fixed %u + spread r%u..., ret ", A, A, B, A + B + 1);
     if (C == 0) {
       printf("all");
     } else {

@@ -1,0 +1,12 @@
+// span bindings shadow outer locals like any let
+fu pair(a, b) {
+  return a, b;
+}
+
+let x = 100;
+let y = 200;
+{
+  let (x, y) = pair(1, 2);
+  print x + y; // expect: 3
+}
+print x + y; // expect: 300

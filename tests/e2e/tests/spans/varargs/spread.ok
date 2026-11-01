@@ -1,0 +1,28 @@
+// the spread: an array's elements become the trailing arguments
+fu sum_all(nums...) {
+  let mut total = 0;
+  for let n : nums {
+    total = total + n;
+  }
+  return total;
+}
+
+print sum_all([1, 2, 3, 4]...); // expect: 10
+print sum_all([]...); // expect: 0
+
+let args = [10, 20, 30];
+print sum_all(args...); // expect: 60
+
+// mixed: fixed arguments then the spread
+print sum_all(1, args...); // expect: 61
+print sum_all(1, 2, [3, 4]...); // expect: 10
+
+// spread into a fixed-arity function: the count must match
+fu add(a, b) {
+  return a + b;
+}
+print add([30, 12]...); // expect: 42
+
+// a computed spread source: the inner expression is any array-valued expr
+let pairs = [[1, 2], [3, 4]];
+print sum_all(pairs[0]...); // expect: 3

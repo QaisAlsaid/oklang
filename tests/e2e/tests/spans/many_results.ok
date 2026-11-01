@@ -1,0 +1,8 @@
+// eight results through one window
+fu eight() {
+  return 1, 2, 3, 4, 5, 6, 7, 8;
+}
+
+let (a, b, c, d, e, f, g, h) = eight();
+print a + h; // expect: 9
+print b + c + d + e + f + g; // expect: 27

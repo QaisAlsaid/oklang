@@ -1,0 +1,6 @@
+// two varargs parameters: the first one already violates "must be last"
+// (the "only one varargs" guard is defense-in-depth behind it)
+fu f(a..., b...) {
+  return a;
+}
+print f(1); // expect error: must be the last

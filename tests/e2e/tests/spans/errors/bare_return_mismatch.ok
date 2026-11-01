@@ -1,0 +1,6 @@
+// a bare `return;` yields one null: it cannot serve a 2-wide function
+fu bad(a) {
+  if a { return 1, 2; }
+  return;
+}
+print bad(true); // expect error: return span mismatch

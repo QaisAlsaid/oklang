@@ -1,0 +1,4 @@
+// map literals have no spread form either
+let args = ["k"];
+let m = {[args...]: 1};
+print len(m); // expect error: only allowed as the last argument of a call

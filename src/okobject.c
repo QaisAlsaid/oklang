@@ -185,6 +185,8 @@ static void object_function_init(object_function* p_object_function,
   p_object_function->arity = p_arity;
   p_object_function->ndefaults = 0; // compiler sets this when the function is complete
   p_object_function->registers = 0; // compiler sets this when the function is complete
+  p_object_function->results = 1;   // compiler raises this when every return path agrees on n
+  p_object_function->has_varargs = false; // compiler sets this when the last parameter is `rest...`
   upvalue_descriptor_array_init(&p_object_function->upvalues, p_specs->alloc);
   chunk_init(&p_object_function->chunk, p_specs->alloc);
 }

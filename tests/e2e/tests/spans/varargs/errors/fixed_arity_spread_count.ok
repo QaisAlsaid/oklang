@@ -1,0 +1,5 @@
+// spreading the wrong count into a fixed-arity function is an arity error
+fu add(a, b) {
+  return a + b;
+}
+print add([1, 2, 3]...); // expect error: expected 2 arguments

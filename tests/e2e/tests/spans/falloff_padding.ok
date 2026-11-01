@@ -1,0 +1,13 @@
+// falling off the end of a span function null-pads to the agreed width,
+// the span-wide shape of the single-result fall-off doctrine
+fu maybe_pair(flag) {
+  if flag { return 1, 2; }
+}
+
+let (a, b) = maybe_pair(true);
+print a; // expect: 1
+print b; // expect: 2
+
+let (c, d) = maybe_pair(false);
+print c; // expect: null
+print d; // expect: null

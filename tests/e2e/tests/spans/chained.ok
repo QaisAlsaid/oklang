@@ -1,0 +1,18 @@
+// destructured results feeding the next call's arguments
+fu pair(a, b) {
+  return a, b;
+}
+
+fu add(a, b) {
+  return a + b;
+}
+
+let (x, y) = pair(3, 4);
+print add(x, y); // expect: 7
+
+// a span call nested in another call's arguments is still expression position
+// for the inner one (it returns 1)
+fu wrap(n) {
+  return n * 2;
+}
+print wrap(add(x, y)); // expect: 14

@@ -237,6 +237,17 @@ typedef enum {
                          //                          maps: the version snapshot must match (a size change during iteration
                          //                          is a hard error, overwrites are fine), advance the cursor to the next
                          //                          occupied slot, found -> ip -= A. (p unused, always false)
+  OP_VA_PACK,            // w:    (a', b')        -> r[a'] = Array(r[b'] ... r[frame->argc]); the varargs prologue.
+                         //                          b' is the varargs parameter's register (the first
+                         //                          trailing argument); the count is argc - b' + 1 when argc >= b',
+                         //                          else 0 (the fixed/defaulted params swallowed everything).
+                         //                          reads before writing: a' == b' is the normal self-packing shape.
+  OP_CALL_SPREAD,        // w:    (a, b, c)       -> r[a] stays the callable, r[a + 1] ... r[a + b] the fixed args;
+                         //                          r[a + b + 1] must be an array: its elements stage at
+                         //                          [a + b + 1, a + b + len] (overwriting the array slot as they go,
+                         //                          the object stays alive through the C-side reference), then CALL
+                         //                          with argc = b + len and retc = c - 1 (c == 0 => dynamic), like OP_CALL.
+  OP_CALL_SPREAD_LONG,   // 2w:   (A, B, C)       -> same; ip += w
 } opcode;
 
 // clang-format on

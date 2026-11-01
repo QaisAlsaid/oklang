@@ -1,0 +1,28 @@
+// varargs + spread under allocation pressure: the pack allocates on every
+// call, the widened frame roots the trailing arguments, and the spread copies
+// elements through a guard. maps and arrays as trailing arguments force the
+// collector to walk them mid-window.
+fu collect(tag, rest...) {
+  let out = [tag];
+  for let v : rest {
+    push(out, v);
+  }
+  return out;
+}
+
+fu churn(n) {
+  let mut acc = 0;
+  let mut i = 0;
+  while i < n {
+    let m = {"i": i, "sq": i * i};
+    let arr = [i, i + 1, i + 2];
+    let packed = collect(i, m, arr, m["sq"], [i]);
+    acc = acc + len(packed) + packed[1]["sq"];
+    let spread_back = collect(0, packed...);
+    acc = acc + len(spread_back);
+    i = i + 1;
+  }
+  return acc;
+}
+
+print churn(50); // expect: 40975

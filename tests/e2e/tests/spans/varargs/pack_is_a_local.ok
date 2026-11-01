@@ -1,0 +1,13 @@
+// the packed array is an ordinary local: indexable, mutable, capturable
+fu stats(nums...) {
+  print len(nums); // expect: 3
+  print nums[0]; // expect: 5
+  print nums[2]; // expect: 7
+  nums[0] = 100;
+  print nums[0]; // expect: 100
+
+  let capture = fu() { return len(nums); };
+  return capture();
+}
+
+print stats(5, 6, 7); // expect: 3

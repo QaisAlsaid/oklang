@@ -1,0 +1,7 @@
+// array literals have no spread form (yet)
+fu f(rest...) {
+  return rest;
+}
+let args = [1, 2];
+let combined = [0, args...];
+print len(combined); // expect error: only allowed as the last argument of a call
