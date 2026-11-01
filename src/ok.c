@@ -246,8 +246,6 @@ static bool ok_define_temporary_types(ok* p_ok) {
       p_ok, ok_create_string_view(" num", OK_STRING_VIEW_CALCULATE_LENGTH, true), RESERVED_1_AS_VALUE(TT_NUM), false);
   status &= ok_global_define(
       p_ok, ok_create_string_view(" bool", OK_STRING_VIEW_CALCULATE_LENGTH, true), RESERVED_1_AS_VALUE(TT_BOOL), false);
-  status &= ok_global_define(
-      p_ok, ok_create_string_view(" map", OK_STRING_VIEW_CALCULATE_LENGTH, true), RESERVED_1_AS_VALUE(TT_MAP), false);
   return status;
 }
 
@@ -261,8 +259,7 @@ static top_level_declarations ok_get_top_level_declarations(ok* p_ok, bool* p_er
                                       {ok_create_string_view("get", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
                                       {ok_create_string_view("str", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
                                       {ok_create_string_view("num", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
-                                      {ok_create_string_view("bool", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
-                                      {ok_create_string_view("map", OK_STRING_VIEW_CALCULATE_LENGTH, true)}};
+                                      {ok_create_string_view("bool", OK_STRING_VIEW_CALCULATE_LENGTH, true)}};
 
   *p_error = !top_level_declarations_append_n(&decls, raw_decls, sizeof(raw_decls) / sizeof(variable_declaration));
   return decls;
@@ -276,8 +273,7 @@ static value_array ok_get_top_level_values(ok* p_ok, bool* p_error) {
                                  ok_create_string_view(" get", OK_STRING_VIEW_CALCULATE_LENGTH, true),
                                  ok_create_string_view(" str", OK_STRING_VIEW_CALCULATE_LENGTH, true),
                                  ok_create_string_view(" num", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-                                 ok_create_string_view(" bool", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-                                 ok_create_string_view(" map", OK_STRING_VIEW_CALCULATE_LENGTH, true)};
+                                 ok_create_string_view(" bool", OK_STRING_VIEW_CALCULATE_LENGTH, true)};
 
   value_array vals;
   value_array_init(&vals, &p_ok->alloc);

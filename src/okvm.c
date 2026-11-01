@@ -1288,17 +1288,6 @@ perform_as(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest,
     }
     break;
   }
-  case TT_MAP: {
-    // a checked identity, not a conversion: nothing sensibly converts to a map.
-    // this is the doc's type check (`m as map`), the bridge to 0.5.0's real types.
-    if (IS_VALUE_MAP(p_lhs)) {
-      *dest = p_lhs;
-      res.status = RUNTIME_OK;
-    } else {
-      runtime_error(p_vm, "value is not a map.");
-    }
-    break;
-  }
   }
   return res;
 }
