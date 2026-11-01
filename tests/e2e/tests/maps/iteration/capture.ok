@@ -1,0 +1,16 @@
+// the loop bindings are real locals with shared-slot semantics: a closure
+// captures the slot, every iteration reseats it
+// single entry: the slot's final value is deterministic regardless of order
+let m = {"only": 42};
+let mut fns = [];
+for let k, v : m {
+  push(fns, fu() {
+    return v;
+  });
+  push(fns, fu() {
+    return k;
+  });
+}
+// shared-slot semantics: every closure sees the value its slot last held
+print fns[0](); // expect: 42
+print fns[1](); // expect: only

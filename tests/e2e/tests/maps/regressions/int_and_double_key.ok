@@ -1,0 +1,6 @@
+// 1 and 1.0 are one key (hash and equality agree, mirroring 1 == 1.0)
+let m = {1: "int"};
+print m[1.0]; // expect: int
+m[1.0] = "double";
+print len(m); // expect: 1
+print m[1]; // expect: double

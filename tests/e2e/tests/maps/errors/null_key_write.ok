@@ -1,0 +1,2 @@
+let mut m = {:};
+m[null] = 1; // expect error

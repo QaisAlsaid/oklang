@@ -334,6 +334,24 @@ ARRAY_DECLARE_DEFAULT(ast_expressions_list, ast_expression*)
 
 typedef struct {
   ast_expression expression;
+  ast_expressions_list keys; /* keys[i] pairs with values[i]. storage is
+                              * parallel, evaluation is left to right per entry
+                              * (key, value, key, value). codegen walks entries */
+
+  ast_expressions_list values;
+} ast_map_expression;
+
+void ast_map_expression_init(ast_map_expression* p_map,
+                             token p_token,
+                             ast_expressions_list p_keys,
+                             ast_expressions_list p_values,
+                             ast_specs* p_specs);
+void ast_map_expression_deinit(ast_map_expression* p_map);
+bool ast_map_expression_print(const ast_map_expression* p_map);
+string ast_map_expression_asprint(const ast_map_expression* p_map);
+
+typedef struct {
+  ast_expression expression;
   ast_expressions_list elements;
 } ast_array_expression;
 
@@ -484,8 +502,10 @@ string ast_for_statement_asprint(const ast_for_statement* p_for);
 
 typedef struct {
   ast_statement statement;
-  ast_binding* binding;     // the loop variable (name + mutability)
-  ast_expression* iterable; // evaluated once at loop entry
+  ast_binding* binding;       // the loop variable (name + mutability)
+  ast_binding* value_binding; // nullable: the map two-binding form (`for let k, v : m`).
+                              // when set, binding binds keys and this binds values.
+  ast_expression* iterable;   // evaluated once at loop entry
   ast_statement* body;
 } ast_for_in_statement;
 
@@ -496,10 +516,10 @@ string ast_for_in_statement_asprint(const ast_for_in_statement* p_for_in);
 
 typedef struct {
   ast_statement statement;
-  ast_binding* binding;     // the loop counter (name + mutability)
-  ast_expression* start;    // evaluated once at loop entry
-  ast_expression* limit;    // evaluated once at loop entry, frozen for the whole trip
-  ast_expression* step;     // nullable, defaults to 1; zero step is a runtime error
+  ast_binding* binding;  // the loop counter (name + mutability)
+  ast_expression* start; // evaluated once at loop entry
+  ast_expression* limit; // evaluated once at loop entry, frozen for the whole trip
+  ast_expression* step;  // nullable, defaults to 1; zero step is a runtime error
   ast_statement* body;
 } ast_for_numeric_statement;
 

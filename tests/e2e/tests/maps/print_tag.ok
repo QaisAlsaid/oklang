@@ -1,0 +1,3 @@
+// print routes through the CLI's per-type tags (ok.h contract): counts, not contents
+print {:}; // expect: <map 0>
+print {"a": 1}; // expect: <map 1>

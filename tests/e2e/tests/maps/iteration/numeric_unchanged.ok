@@ -1,0 +1,9 @@
+// the numeric for keeps its own fused pair; both loop kinds interoperate
+let m = {"a": 1};
+let mut total = 0;
+for let i = 0 : 3 {
+  for let k, v : m {
+    total = total + v;
+  }
+}
+print total; // expect: 3

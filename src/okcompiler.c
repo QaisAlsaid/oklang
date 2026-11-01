@@ -10,21 +10,32 @@
 #include "okutils.h"
 #include "okvalue.h"
 
-#define ARE_KEYS_EQUAL(lhs, rhs)                                                                                       \
-  (string_get_length(&lhs.string) == string_get_length(&rhs.string) &&                                                 \
-   strncmp(lhs.string.chars, rhs.string.chars, string_get_length(&lhs.string)) == 0)
-#define GET_HASH(key) (key.hash)
-
 ARRAY_DEFINE_DEFAULT(top_level_declarations, variable_declaration, ARRAY_DEFAULT_TYPE_DEINIT);
 
-TABLE_DEFINE_DEFAULT(scope_registers,
-                     hashed_string,
-                     uint16_t,
-                     hash_t,
-                     ARE_KEYS_EQUAL,
-                     hashed_string_deinit,
-                     ARRAY_DEFAULT_TYPE_DEINIT,
-                     GET_HASH)
+#define SR_KEY_IS_EMPTY(k) ((k).chars == NULL)
+#define SR_KEY_SET_EMPTY(k)                                                                                            \
+  do {                                                                                                                 \
+    (k)->chars = NULL;                                                                                                 \
+    (k)->info = 0;                                                                                                     \
+  } while (0)
+#define SR_PROBE_HASH(p) (default_hash_str(p))
+#define SR_PROBE_MATCHES(p, k)                                                                                         \
+  (ok_string_view_get_length(&(p)) == string_get_length(&(k)) &&                                                       \
+   memcmp((k).chars, (p).chars, ok_string_view_get_length(&(p))) == 0)
+#define SR_KEY_CLONE(p, a) (create_string_from_string_view((p), (a)))
+#define SR_KEY_DEINIT(k, a) (string_deinit((k), (a)))
+
+MAP_DEFINE(scope_registers,
+           string,
+           uint16_t,
+           ok_string_view,
+           SR_KEY_IS_EMPTY,
+           SR_KEY_SET_EMPTY,
+           SR_PROBE_HASH,
+           SR_PROBE_MATCHES,
+           SR_KEY_CLONE,
+           SR_KEY_DEINIT,
+           ARRAY_DEFAULT_TYPE_DEINIT)
 
 static void register_allocator_init(register_allocator* p_regalloc, allocators* p_alloc) {
   p_regalloc->registers_count = 0;
@@ -98,14 +109,14 @@ static void register_allocator_reset_locals(register_allocator* p_regalloc, uint
 }
 
 static void scope_init(scope* p_scope, uint32_t p_checkpoint, allocators* p_alloc) {
-  scope_registers_init(&p_scope->registers_table, p_alloc);
+  scope_registers_init(&p_scope->registers_map, p_alloc);
   uint16_array_init(&p_scope->registers, p_alloc);
   p_scope->registers_checkpoint = p_checkpoint;
   p_scope->captures_any = false;
 }
 
 static void scope_deinit(scope* p_scope, allocators* p_alloc) {
-  scope_registers_deinit(&p_scope->registers_table);
+  scope_registers_deinit(&p_scope->registers_map);
   uint16_array_deinit(&p_scope->registers, p_alloc);
   p_scope->registers_checkpoint = 0;
 }
@@ -243,8 +254,8 @@ static bool end_scope(compiler* p_compiler, ast_node* p_author) {
     status = false;
   }
   register_allocator_reset_locals(&ctx->register_allocator, scp->registers_checkpoint);
-  // scopes_pop only decrements count. the popped scope owns its registers_table
-  // (with hashed_string keys) and registers array and must deinit it or they leak.
+  // scopes_pop only decrements count. the popped scope owns its registers_map
+  // (with owned string keys) and registers array and must deinit it or they leak.
   scope_deinit(scp, p_compiler->alloc);
   ASSERT(scopes_pop(&ctx->scopes));
   return status;
@@ -290,20 +301,15 @@ add_local(compiler* p_compiler, const variable_declaration p_declration, bool p_
   // full flag set must be computed before any allocation: the metadata array copies the
   // register at append time inside allocate_local, later changes to the local copy will drift.
   register_flags flags =
-      REGISTER_FLAG_LOCAL |
-      (p_initialized ? REGISTER_FLAG_NONE : REGISTER_FLAG_UNINITIALIZED) |
+      REGISTER_FLAG_LOCAL | (p_initialized ? REGISTER_FLAG_NONE : REGISTER_FLAG_UNINITIALIZED) |
       ((p_declration.flags & VARIABLE_DECLARATION_FLAGS_MUTABLE) != 0 ? REGISTER_FLAG_MUTABLE : REGISTER_FLAG_NONE);
   _register reg = {0, flags, REGISTER_OK};
   allocators* alloc = p_compiler->alloc;
-  hashed_string hs = create_hashed_string_hash(p_declration.identifier, alloc);
-  if (hs.string.chars == NULL) {
-    report_oom(p_compiler, p_author);
-    reg.errors = REGISTER_ALLOCATION_FAILED;
-    return reg;
-  }
   compile_context* ctx = current_context(p_compiler);
   scope* scp = current_scope(p_compiler);
-  uint16_t* resolved = scope_registers_get(&scp->registers_table, hs);
+  // the probe is the identifier view the AST owns: the lookup itself allocates
+  // nothing, the map copies the key only when the insert path runs.
+  uint16_t* resolved = scope_registers_get(&scp->registers_map, p_declration.identifier);
   if (resolved == NULL) {
     register_allocator_allocate_local(&ctx->register_allocator, &reg);
     if (reg.errors != REGISTER_OK) {
@@ -315,12 +321,10 @@ add_local(compiler* p_compiler, const variable_declaration p_declration, bool p_
             ok_create_string_view("too many local variables in function.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
             ok_create_string_view_from_string(note));
         string_deinit(&note, alloc);
-        hashed_string_deinit(&hs, alloc);
         reg.errors = REGISTER_OVERFLOW;
         return reg;
       } else if (reg.errors == REGISTER_ALLOCATION_FAILED) {
         report_oom(p_compiler, p_author);
-        hashed_string_deinit(&hs, alloc);
         return reg;
       }
     }
@@ -330,13 +334,11 @@ add_local(compiler* p_compiler, const variable_declaration p_declration, bool p_
 
     if (!uint16_array_append(&scp->registers, reg.index)) {
       report_oom(p_compiler, p_author);
-      hashed_string_deinit(&hs, alloc);
       register_allocator_rollback_local(&ctx->register_allocator);
       return reg;
     }
-    if (!scope_registers_set(&scp->registers_table, hs, reg.index)) {
+    if (!scope_registers_set(&scp->registers_map, p_declration.identifier, reg.index)) {
       report_oom(p_compiler, p_author);
-      hashed_string_deinit(&hs, alloc);
       uint16_array_remove(&scp->registers, scp->registers.count - 1, scp->registers.count - 1);
       register_allocator_rollback_local(&ctx->register_allocator);
       return reg;
@@ -348,7 +350,6 @@ add_local(compiler* p_compiler, const variable_declaration p_declration, bool p_
   error_at(p_compiler, p_author, ok_create_string_view_from_string(message));
   string_deinit(&message, alloc);
   string_deinit(&name, alloc);
-  hashed_string_deinit(&hs, alloc);
   reg.errors = REGISTER_REDEFINED_LOCAL;
   return reg;
 }
@@ -441,6 +442,11 @@ static bool compile_array_expression(compiler* p_compiler,
                                      _register p_dest,
                                      uint32_t p_requested_count,
                                      expression_result* p_out);
+static bool compile_map_expression(compiler* p_compiler,
+                                   ast_map_expression* p_map,
+                                   _register p_dest,
+                                   uint32_t p_requested_count,
+                                   expression_result* p_out);
 static bool compile_subscript_expression(compiler* p_compiler,
                                          ast_subscript_expression* p_subscript,
                                          _register p_dest,
@@ -690,6 +696,9 @@ static bool compile_expression(compiler* p_compiler,
   case AST_ARRAY_EXPRESSION:
     result =
         compile_array_expression(p_compiler, (ast_array_expression*)p_expression, p_dest, p_requested_count, p_out);
+    break;
+  case AST_MAP_EXPRESSION:
+    result = compile_map_expression(p_compiler, (ast_map_expression*)p_expression, p_dest, p_requested_count, p_out);
     break;
   case AST_SUBSCRIPT_EXPRESSION:
     result = compile_subscript_expression(
@@ -954,14 +963,14 @@ static bool define_global(compiler* p_compiler, location p_global, expression_re
   return write_global(p_compiler, (global){p_global.index, GLOBAL_FLAG_NONE, GLOBAL_OK}, p_value, p_author);
 }
 
-static _register* resolve_local(compile_context* p_context, hashed_string* p_identifier, scope** p_owning) {
+static _register* resolve_local(compile_context* p_context, ok_string_view p_identifier, scope** p_owning) {
   uint16_t* sindex = NULL;
   uint32_t depth = p_context->scopes.count;
   while (sindex == NULL && depth != 0) {
     scope* scp = &p_context->scopes.data[--depth];
 
-    // the table value IS the register slot (scope_registers_set stores reg.index directly),
-    sindex = scope_registers_get(&scp->registers_table, *p_identifier);
+    // the map value IS the register slot (scope_registers_set stores reg.index directly),
+    sindex = scope_registers_get(&scp->registers_map, p_identifier);
     // TODO: report that we skipped if we couldn't resolve other local with same name.
     if (sindex != NULL &&
         (p_context->register_allocator.registers.data[*sindex].flags & REGISTER_FLAG_UNINITIALIZED) != 0) {
@@ -1123,7 +1132,7 @@ static upvalue add_upvalue(compiler* p_compiler, compile_context* p_ctx, upvalue
 }
 
 static upvalue
-resolve_upvalue(compiler* p_compiler, uint32_t p_context_index, hashed_string p_identifier, ast_node* p_author) {
+resolve_upvalue(compiler* p_compiler, uint32_t p_context_index, ok_string_view p_identifier, ast_node* p_author) {
   const uint32_t contexts = p_compiler->contexts.count;
   upvalue u = {0, UPVALUE_FLAG_LOCAL, UPVALUE_OK};
   if (contexts < p_context_index + 2) {
@@ -1134,7 +1143,7 @@ resolve_upvalue(compiler* p_compiler, uint32_t p_context_index, hashed_string p_
   compile_context* current = &p_compiler->contexts.data[contexts - p_context_index - 1];
   compile_context* up = &p_compiler->contexts.data[contexts - p_context_index - 2];
   scope* scp;
-  _register* local_reg = resolve_local(up, &p_identifier, &scp);
+  _register* local_reg = resolve_local(up, p_identifier, &scp);
   if (local_reg != NULL) {
     local_reg->flags |= REGISTER_FLAG_CAPTURED;
     u.index = local_reg->index;
@@ -1172,50 +1181,38 @@ static bool store_upvalue(compiler* p_compiler, location p_upvalue, expression_r
 }
 
 static location resolve_variable(compiler* p_compiler, const ok_string_view p_identifier, ast_node* p_author) {
-  allocators* alloc = p_compiler->alloc;
   location invalid = {0, LOCATION_KIND_INVALID, LOCATION_INVALID};
-  hashed_string hs = create_hashed_string_hash(p_identifier, alloc);
-
-  if (hs.string.chars == NULL) {
-    report_oom(p_compiler, p_author);
-    return invalid;
-  }
 
   {
     scope* scp;
-    _register* local = resolve_local(current_context(p_compiler), &hs, &scp);
+    _register* local = resolve_local(current_context(p_compiler), p_identifier, &scp);
 
     if (local != NULL) {
-      hashed_string_deinit(&hs, alloc);
       return (location){local->index, LOCATION_KIND_REGISTER, LOCATION_OK};
     }
   }
 
   {
-    upvalue up = resolve_upvalue(p_compiler, 0, hs, p_author);
+    upvalue up = resolve_upvalue(p_compiler, 0, p_identifier, p_author);
     if (up.error == UPVALUE_OK) {
-      hashed_string_deinit(&hs, alloc);
       return (location){up.index, LOCATION_KIND_UPVALUE, LOCATION_OK};
     }
     if (up.error != UPVALUE_UNDEFINED) {
-      hashed_string_deinit(&hs, alloc);
       return invalid;
     }
   }
 
   {
-    // TODO make globals store accept direct hs
     const global glob = globals_store_get(p_compiler->globals_store, p_identifier);
     if (IS_GLOBAL_VALID(glob)) {
-      hashed_string_deinit(&hs, alloc);
       return (location){glob.index, LOCATION_KIND_GLOBAL, LOCATION_OK};
     }
   }
+  allocators* alloc = p_compiler->alloc;
   string message =
       asprint(alloc, "undefined variable: %.*s", ok_string_view_get_length(&p_identifier), p_identifier.chars);
   error_at(p_compiler, p_author, ok_create_string_view_from_string(message));
   string_deinit(&message, alloc);
-  hashed_string_deinit(&hs, alloc);
   return invalid;
 }
 
@@ -1252,6 +1249,17 @@ static bool expression_is_inert(const ast_expression* p_expression) {
     const ast_array_expression* array = (const ast_array_expression*)p_expression;
     for (uint32_t i = 0; i < array->elements.count; ++i) {
       if (!expression_is_inert(array->elements.data[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
+  case AST_MAP_EXPRESSION: {
+    // a literal allocates but never reseats a local (the gc is non-moving);
+    // only its entries' expressions can write
+    const ast_map_expression* map = (const ast_map_expression*)p_expression;
+    for (uint32_t i = 0; i < map->keys.count; ++i) {
+      if (!expression_is_inert(map->keys.data[i]) || !expression_is_inert(map->values.data[i])) {
         return false;
       }
     }
@@ -1384,7 +1392,7 @@ static bool store_lvalue(compiler* p_compiler, lvalue p_lvalue, expression_resul
     const uint16_t index_operand = p_lvalue.subscript.index.index;
     if (!is_value_constant && base_index <= a_MAX && index_operand <= b_MAX && value.index <= c_MAX) {
       if (!emit_word(p_compiler,
-                     encode_oppabc(OP_ARRAY_SET, is_index_constant, base_index, index_operand, value.index),
+                     encode_oppabc(OP_INDEX_SET, is_index_constant, base_index, index_operand, value.index),
                      p_author)) {
         report_oom(p_compiler, p_author);
         return false;
@@ -1394,7 +1402,7 @@ static bool store_lvalue(compiler* p_compiler, lvalue p_lvalue, expression_resul
     if (!emit_word2(
             p_compiler,
             encode_OPPABCQ(
-                OP_ARRAY_SET_LONG, is_index_constant, base_index, index_operand, value.index, is_value_constant),
+                OP_INDEX_SET_LONG, is_index_constant, base_index, index_operand, value.index, is_value_constant),
             p_author)) {
       report_oom(p_compiler, p_author);
       return false;
@@ -2188,7 +2196,8 @@ static bool compile_binary_value_operator(compiler* p_compiler,
   }
 
   const location_kind lhs_common_kind = LOCATION_KIND_CONSTANT;
-  location_kind rhs_common_kind = p_binexpr->_operator == OPERATOR_BIN_AS ? LOCATION_KIND_GLOBAL : LOCATION_KIND_CONSTANT;
+  location_kind rhs_common_kind =
+      p_binexpr->_operator == OPERATOR_BIN_AS ? LOCATION_KIND_GLOBAL : LOCATION_KIND_CONSTANT;
   bool is_long = p_dest.index > a_MAX || lhs.value.index > b_MAX || rhs.value.index > c_MAX;
   bool is_lhs_p = false;
   bool is_rhs_p = false;
@@ -2506,15 +2515,16 @@ bool compile_call_expression(compiler* p_compiler,
   return true;
 }
 
-// r[p_dest] = r[p_base][p_index]. base is always a register (resolve_lvalue
-// materializes it), index may be a constant (GET carries a const-index flag).
+// r[p_dest] = r[p_base][p_index]. the INDEX ops dispatch array/map at
+// runtime. base is always a register (resolve_lvalue materializes it),
+// index may be a constant (GET carries a const-index flag).
 static bool
-emit_array_get(compiler* p_compiler, _register p_dest, location p_base, location p_index, ast_node* p_author) {
+emit_index_get(compiler* p_compiler, _register p_dest, location p_base, location p_index, ast_node* p_author) {
   const bool is_index_constant = p_index.kind == LOCATION_KIND_CONSTANT;
   if (p_dest.index > a_MAX || p_base.index > b_MAX || p_index.index > c_MAX) {
     if (!emit_word2(
             p_compiler,
-            encode_OPPABCQ(OP_ARRAY_GET_LONG, is_index_constant, p_dest.index, p_base.index, p_index.index, false),
+            encode_OPPABCQ(OP_INDEX_GET_LONG, is_index_constant, p_dest.index, p_base.index, p_index.index, false),
             p_author)) {
       report_oom(p_compiler, p_author);
       return false;
@@ -2522,7 +2532,7 @@ emit_array_get(compiler* p_compiler, _register p_dest, location p_base, location
     return true;
   }
   if (!emit_word(p_compiler,
-                 encode_oppabc(OP_ARRAY_GET, is_index_constant, p_dest.index, p_base.index, p_index.index),
+                 encode_oppabc(OP_INDEX_GET, is_index_constant, p_dest.index, p_base.index, p_index.index),
                  p_author)) {
     report_oom(p_compiler, p_author);
     return false;
@@ -2537,8 +2547,8 @@ static bool compile_array_expression(compiler* p_compiler,
                                      expression_result* p_out) {
   (void)p_requested_count;
   ast_node* author = (ast_node*)p_array;
-  // elements compile into consecutive temps at the start (compile_expressions_list
-  // allocates them one by one), so they end up exactly at [start .. start + count).
+  // elements compile into consecutive temps at the start (compile_expressions_list allocates them one by one),
+  // so they end up exactly at [start .. start + count).
   // NEW's (dest, src, count) operands are independent: the array lands directly in
   // p_dest. a local slot, a temp, or the devnull, with no move.
   _register elements_start = {0, REGISTER_FLAG_NONE, REGISTER_OK};
@@ -2563,6 +2573,75 @@ static bool compile_array_expression(compiler* p_compiler,
   return true;
 }
 
+// `{k0: v0, k1: v1}` entries compile into consecutive temps in evaluation
+// order (k0, v0, k1, v1: left to right per entry, like every other list), so
+// they end up exactly at [start .. start + 2 * count).
+// MAP_NEW's (dest, src, pair count) operands are independent, mirroring ARRAY_NEW.
+static bool compile_map_expression(compiler* p_compiler,
+                                   ast_map_expression* p_map,
+                                   _register p_dest,
+                                   uint32_t p_requested_count,
+                                   expression_result* p_out) {
+  (void)p_requested_count;
+  ast_node* author = (ast_node*)p_map;
+  register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
+  const uint32_t count = p_map->keys.count;
+  if (count > C_MAX) {
+    string note = asprint(p_compiler->alloc, "limit is: %d pairs.", C_MAX);
+    error_at_noted(p_compiler,
+                   author,
+                   ok_create_string_view("too many map entries.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                   ok_create_string_view_from_string(note));
+    string_deinit(&note, p_compiler->alloc);
+    return false;
+  }
+  _register start = {0, REGISTER_FLAG_NONE, REGISTER_OK};
+  for (uint32_t i = 0; i < count; ++i) {
+    _register key_reg;
+    if (!register_allocator_allocate_temp(regalloc, &key_reg)) {
+      report_oom(p_compiler, author);
+      return false;
+    }
+    if (i == 0) {
+      start = key_reg;
+    }
+    expression_result key_result;
+    if (!compile_expression(p_compiler, p_map->keys.data[i], key_reg, 1, &key_result)) {
+      return false;
+    }
+    if (!materialize_into(p_compiler, &key_result.value, key_reg, author)) {
+      return false;
+    }
+    _register value_reg;
+    if (!register_allocator_allocate_temp(regalloc, &value_reg)) {
+      report_oom(p_compiler, author);
+      return false;
+    }
+    expression_result value_result;
+    if (!compile_expression(p_compiler, p_map->values.data[i], value_reg, 1, &value_result)) {
+      return false;
+    }
+    if (!materialize_into(p_compiler, &value_result.value, value_reg, author)) {
+      return false;
+    }
+  }
+  const uint16_t src = count > 0 ? (uint16_t)start.index : (uint16_t)p_dest.index; // unused when count == 0
+  if (p_dest.index > a_MAX || src > b_MAX || count > c_MAX) {
+    if (!emit_word2(p_compiler, encode_OPPABCQ(OP_MAP_NEW_LONG, false, p_dest.index, src, count, false), author)) {
+      report_oom(p_compiler, author);
+      return false;
+    }
+  } else if (!emit_word(p_compiler, encode_oppabc(OP_MAP_NEW, false, p_dest.index, src, (uint8_t)count), author)) {
+    report_oom(p_compiler, author);
+    return false;
+  }
+  p_out->type = EXPRESSION_VALUE;
+  p_out->value = (location){p_dest.index, LOCATION_KIND_REGISTER, LOCATION_OK};
+  p_out->lvalue = (lvalue){LVALUE_INVALID};
+  p_out->count = 1;
+  return true;
+}
+
 static bool compile_subscript_expression(compiler* p_compiler,
                                          ast_subscript_expression* p_subscript,
                                          _register p_dest,
@@ -2577,7 +2656,7 @@ static bool compile_subscript_expression(compiler* p_compiler,
   if (lv.kind == LVALUE_INVALID) {
     return false;
   }
-  if (!emit_array_get(p_compiler, p_dest, lv.subscript.base, lv.subscript.index, (ast_node*)p_subscript)) {
+  if (!emit_index_get(p_compiler, p_dest, lv.subscript.base, lv.subscript.index, (ast_node*)p_subscript)) {
     return false;
   }
   p_out->type = EXPRESSION_VALUE | EXPRESSION_SUBSCRIPT;
@@ -2660,7 +2739,7 @@ static bool compile_compound_assign_expression(compiler* p_compiler,
       if (!materialize_value(p_compiler, cur, lv.variable, author)) {
         return false;
       }
-    } else if (!emit_array_get(p_compiler, cur, lv.subscript.base, lv.subscript.index, author)) {
+    } else if (!emit_index_get(p_compiler, cur, lv.subscript.base, lv.subscript.index, author)) {
       return false;
     }
     cur_loc = (location){cur.index, LOCATION_KIND_REGISTER, LOCATION_OK};
@@ -2709,6 +2788,12 @@ static bool compile_compound_assign_expression(compiler* p_compiler,
   return true;
 }
 
+// `for let k (, v)? : <iterable> <statement>` the ranged loop, runtime
+// polymorphic over arrays (elements / one binding) and maps (keys, or keys and values with the two-binding form).
+// the ITER op trio carries the whole loop: PREP validates the iterable and parks the cursor, GET writes the binding(s)
+// at the body top, LOOP advances at the bottom. one fused dispatch per trip,
+// the same shape the numeric for's FOR pair has. hidden state is
+// [iter, cur, end]: locals, not temps, nameless by the leading space, adjacency asserted.
 static bool compile_for_in_statement(compiler* p_compiler, ast_for_in_statement* p_for_in) {
   allocators* alloc = p_compiler->alloc;
   compile_context* ctx = current_context(p_compiler);
@@ -2731,179 +2816,95 @@ static bool compile_for_in_statement(compiler* p_compiler, ast_for_in_statement*
 #define CTX ctx->loop_stack.data[ctx->loop_stack.count - 1]
   CTX.scope_depth = ctx->scopes.count - 1;
 
-  // hidden state must be locals, not temps: every body statement resets temps to
-  // local_top, which sits below any temp allocated here. the registers would be
-  // handed out to the body's own expressions and clobbered. the leading space makes
-  // the names untypeable, and this loop's dedicated scope makes nesting safe.
-  // the counter, limit and step are declared adjacently because the FOR ops read
-  // the limit at counter + 1 and the step at counter + 2 (the same fused back edge
-  // the numeric for uses - one increment/test dispatch per iteration).
-  variable_declaration counter_decl = {.identifier = ok_create_string_view(" i", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-                                       .flags = VARIABLE_DECLARATION_FLAGS_MUTABLE};
-  _register counter = add_local(p_compiler, counter_decl, false, author);
-  if (!IS_REGISTER_VALID(counter)) {
-    goto fail;
-  }
-  variable_declaration limit_decl = {.identifier =
-                                         ok_create_string_view(" limit", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-                                     .flags = VARIABLE_DECLARATION_FLAGS_MUTABLE};
-  _register limit = add_local(p_compiler, limit_decl, false, author);
-  if (!IS_REGISTER_VALID(limit)) {
-    goto fail;
-  }
-  variable_declaration step_decl = {.identifier = ok_create_string_view(" step", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+  // the ITER ops read the cursor at B + 1 and the end at B + 2: the three
+  // hidden declarations must stay adjacent (asserted below).
+  variable_declaration iter_decl = {.identifier = ok_create_string_view(" iter", OK_STRING_VIEW_CALCULATE_LENGTH, true),
                                     .flags = VARIABLE_DECLARATION_FLAGS_MUTABLE};
-  _register step = add_local(p_compiler, step_decl, false, author);
-  if (!IS_REGISTER_VALID(step)) {
+  _register iter = add_local(p_compiler, iter_decl, false, author);
+  if (!IS_REGISTER_VALID(iter)) {
     goto fail;
   }
-  ASSERT(limit.index == counter.index + 1 && step.index == counter.index + 2);
-  variable_declaration arr_decl = {.identifier = ok_create_string_view(" arr", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+  variable_declaration cur_decl = {.identifier = ok_create_string_view(" cur", OK_STRING_VIEW_CALCULATE_LENGTH, true),
                                    .flags = VARIABLE_DECLARATION_FLAGS_MUTABLE};
-  _register arr = add_local(p_compiler, arr_decl, false, author);
-  if (!IS_REGISTER_VALID(arr)) {
+  _register cur = add_local(p_compiler, cur_decl, false, author);
+  if (!IS_REGISTER_VALID(cur)) {
     goto fail;
   }
-  variable_declaration var_decl = {
+  variable_declaration end_decl = {.identifier = ok_create_string_view(" end", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                                   .flags = VARIABLE_DECLARATION_FLAGS_MUTABLE};
+  _register end = add_local(p_compiler, end_decl, false, author);
+  if (!IS_REGISTER_VALID(end)) {
+    goto fail;
+  }
+  ASSERT(cur.index == iter.index + 1 && end.index == iter.index + 2);
+
+  // the two-binding map form: `for let k, v : m`. k and v must stay adjacent
+  // too - ITER_GET writes the value register at C + 1. arrays reject the form
+  // at runtime (PREP), the compiler cannot know the iterable's type.
+  const bool binds_value = p_for_in->value_binding != NULL;
+  variable_declaration key_decl = {
       .identifier = ast_identifier_expression_get_value((ast_identifier_expression*)p_for_in->binding->lvalue),
       .flags = variable_declaration_flags_from_modifiers(DECLARATION_NONE, p_for_in->binding->modifiers)};
-  _register var = add_local(p_compiler, var_decl, false, (ast_node*)p_for_in->binding);
-  if (!IS_REGISTER_VALID(var)) {
+  _register key = add_local(p_compiler, key_decl, false, (ast_node*)p_for_in->binding);
+  if (!IS_REGISTER_VALID(key)) {
     goto fail;
   }
-  // the loop variable is defined by the first GET: clear the uninit flag so body
-  // resolution finds it (resolve_local skips uninitialized locals for shadowing).
-  regalloc->registers.data[var.index].flags &= ~REGISTER_FLAG_UNINITIALIZED;
+  _register value = {0, REGISTER_FLAG_NONE, REGISTER_OK};
+  if (binds_value) {
+    variable_declaration value_decl = {
+        .identifier = ast_identifier_expression_get_value((ast_identifier_expression*)p_for_in->value_binding->lvalue),
+        .flags = variable_declaration_flags_from_modifiers(DECLARATION_NONE, p_for_in->value_binding->modifiers)};
+    value = add_local(p_compiler, value_decl, false, (ast_node*)p_for_in->value_binding);
+    if (!IS_REGISTER_VALID(value)) {
+      goto fail;
+    }
+    ASSERT(value.index == key.index + 1);
+  }
+  // the loop variables are defined by the first ITER_GET: clear the uninit
+  // flags so body resolution finds them (resolve_local skips uninitialized locals for shadowing).
+  regalloc->registers.data[key.index].flags &= ~REGISTER_FLAG_UNINITIALIZED;
+  if (binds_value) {
+    regalloc->registers.data[value.index].flags &= ~REGISTER_FLAG_UNINITIALIZED;
+  }
 
-  // arr = <iterable> (evaluated exactly once, at loop entry)
+  // iter = <iterable> (evaluated exactly once, at loop entry)
   {
     expression_result iterable;
-    if (!compile_expression(p_compiler, p_for_in->iterable, arr, 1, &iterable)) {
+    if (!compile_expression(p_compiler, p_for_in->iterable, iter, 1, &iterable)) {
       goto fail;
     }
-    if (!materialize_into(p_compiler, &iterable.value, arr, author)) {
-      goto fail;
-    }
-  }
-
-  {
-    const global len_global = globals_store_get(p_compiler->globals_store,
-                                                ok_create_string_view(" len", OK_STRING_VIEW_CALCULATE_LENGTH, true));
-    if (!IS_GLOBAL_VALID(len_global)) {
-      error_at_noted(p_compiler,
-                     author,
-                     ok_create_string_view("undefined variable: len.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-                     ok_create_string_view("ranged for needs the 'len' builtin. ok_create registers it.",
-                                           OK_STRING_VIEW_CALCULATE_LENGTH,
-                                           true));
-      goto fail;
-    }
-    _register t_len;
-    if (!register_allocator_allocate_temp(regalloc, &t_len)) {
-      report_oom(p_compiler, author);
-      goto fail;
-    }
-    if (t_len.index > aprime_MAX || len_global.index > bprime_MAX) {
-      if (!emit_word2(
-              p_compiler, encode_OPPABCQ(OP_LOAD_GLOBAL_LONG, false, t_len.index, len_global.index, 0, 0), author)) {
-        report_oom(p_compiler, author);
-        goto fail;
-      }
-    } else if (!emit_word(
-                   p_compiler, encode_oppabprime(OP_LOAD_GLOBAL, false, t_len.index, len_global.index), author)) {
-      report_oom(p_compiler, author);
-      goto fail;
-    }
-    // stage the call window: callable at t_len, argument at t_len + 1
-    _register t_arg;
-    if (!register_allocator_allocate_temp(regalloc, &t_arg)) {
-      report_oom(p_compiler, author);
-      goto fail;
-    }
-    if (!materialize_value(p_compiler, t_arg, (location){arr.index, LOCATION_KIND_REGISTER, LOCATION_OK}, author)) {
-      goto fail;
-    }
-    if (t_len.index > a_MAX || t_arg.index > a_MAX) {
-      if (!emit_word2(p_compiler, encode_OPPABCQ(OP_CALL_LONG, false, t_len.index, 1, 2, 0), author)) {
-        report_oom(p_compiler, author);
-        goto fail;
-      }
-    } else if (!emit_word(p_compiler, encode_oppabc(OP_CALL, false, t_len.index, 1, 2), author)) {
-      report_oom(p_compiler, author);
-      goto fail;
-    }
-    // t_len now holds the count: move it into the hidden limit local
-    if (!materialize_value(p_compiler, limit, (location){t_len.index, LOCATION_KIND_REGISTER, LOCATION_OK}, author)) {
+    if (!materialize_into(p_compiler, &iterable.value, iter, author)) {
       goto fail;
     }
   }
 
-  // counter = 0, step = 1: constants feeding the fused FOR pair
-  {
-    constant zero = add_constant(p_compiler, NUMBER_AS_VALUE(0), author);
-    if (!IS_CONSTANT_VALID(zero)) {
-      goto fail;
-    }
-    if (counter.index > aprime_MAX || zero.index > bprime_MAX) {
-      if (!emit_word2(
-              p_compiler, encode_OPPABCQ(OP_LOAD_CONSTANT_LONG, false, counter.index, zero.index, 0, 0), author)) {
-        report_oom(p_compiler, author);
-        goto fail;
-      }
-    } else if (!emit_word(p_compiler, encode_oppabprime(OP_LOAD_CONSTANT, false, counter.index, zero.index), author)) {
-      report_oom(p_compiler, author);
-      goto fail;
-    }
-  }
-  {
-    constant one = add_constant(p_compiler, NUMBER_AS_VALUE(1), author);
-    if (!IS_CONSTANT_VALID(one)) {
-      goto fail;
-    }
-    if (step.index > aprime_MAX || one.index > bprime_MAX) {
-      if (!emit_word2(p_compiler, encode_OPPABCQ(OP_LOAD_CONSTANT_LONG, false, step.index, one.index, 0, 0), author)) {
-        report_oom(p_compiler, author);
-        goto fail;
-      }
-    } else if (!emit_word(p_compiler, encode_oppabprime(OP_LOAD_CONSTANT, false, step.index, one.index), author)) {
-      report_oom(p_compiler, author);
-      goto fail;
-    }
-  }
-
-  // entry: FOR_PREP runs the first bounds test (0 < len) and skips the whole
-  // loop for empty iterables. per iteration from here on: one ARRAY_GET at the
-  // body top, one FOR_LOOP at the bottom - the counter machinery is the same
-  // fused back edge as the numeric for.
+  // entry: PREP validates the iterable (array or map), inits cursor/end and
+  // runs the first emptiness test (skips the whole loop for empty iterables).
+  // per iteration from here on: one ITER_GET at the body top, one ITER_LOOP at
+  // the bottom. the len builtin is no longer a compile-time dependency of the
+  // loop: PREP reads the element count (or maps the slot walk) itself.
   uint32_t prep;
-  if (!emit_incomplete_for_jump(p_compiler, OP_FOR_PREP, false, counter, &prep, author)) {
+  if (!emit_incomplete_for_jump(p_compiler, OP_ITER_PREP, binds_value, iter, &prep, author)) {
     goto fail;
   }
 
   const uint32_t body_start = chunk->code.count;
 
-  // var = arr[i] (fresh each iteration through the same slot; the body may
-  // capture it. same shared-slot semantics as the C style for today)
-  if (!emit_array_get(p_compiler,
-                      var,
-                      (location){arr.index, LOCATION_KIND_REGISTER, LOCATION_OK},
-                      (location){counter.index, LOCATION_KIND_REGISTER, LOCATION_OK},
-                      author)) {
+  // k (and v) = the current entry (fresh each iteration through the same slots).
+  // (the body may capture them. same shared-slot semantics as arrays).
+  if (!emit_word2(p_compiler, encode_OPPABCQ(OP_ITER_GET, binds_value, 0, iter.index, key.index, 0), author)) {
+    report_oom(p_compiler, author);
     goto fail;
   }
 
-  CTX.continue_forward = true; // continue jumps to the increment, like C for update
+  CTX.continue_forward = true; // continue jumps to the advance, like C for update
   if (!compile_statement(p_compiler, p_for_in->body)) {
     goto fail;
   }
 
-  // the back edge's p flag: the for-in counter is a nameless hidden local,
-  // unwritable by construction - the raw-read fast path always applies.
-  const bool counter_immutable = true;
-
   CTX.continue_target = chunk->code.count;
   uint32_t back_edge;
-  if (!emit_incomplete_for_jump(p_compiler, OP_FOR_LOOP, counter_immutable, counter, &back_edge, author)) {
+  if (!emit_incomplete_for_jump(p_compiler, OP_ITER_LOOP, false, iter, &back_edge, author)) {
     goto fail;
   }
   if (!patch_jump_if(p_compiler, true, back_edge, body_start, author)) {

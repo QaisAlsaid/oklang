@@ -1,0 +1,14 @@
+let m = {"a": 1, "b": 2};
+print m["a"]; // expect: 1
+print m["b"]; // expect: 2
+print len(m); // expect: 2
+
+let nums = {1: "one", 2: "two"};
+print nums[1]; // expect: one
+print nums[2]; // expect: two
+
+let mixed = {"s": 1, 2.5: true, false: "no"};
+print mixed["s"]; // expect: 1
+print mixed[2.5]; // expect: true
+print mixed[false]; // expect: no
+print len(mixed); // expect: 3

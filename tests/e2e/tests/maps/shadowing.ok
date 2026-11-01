@@ -1,0 +1,21 @@
+// the surface builtins are ordinary (shadowable) names; the hidden
+// intrinsics the compiled paths read (" len", " get", ...) are unreachable
+fu shadowed() {
+  let len = 1;
+  let get = 2;
+  let remove = 3;
+  print len; // expect: 1
+  print get; // expect: 2
+  print remove; // expect: 3
+}
+shadowed();
+
+let m = {"a": 1, "b": 2};
+let mut total = 0;
+for let k : m {
+  total = total + 1;
+}
+print total; // expect: 2
+print get(m, "a"); // expect: 1
+remove(m, "a");
+print len(m); // expect: 1

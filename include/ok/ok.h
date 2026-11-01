@@ -56,6 +56,12 @@ bool ok_global_get(ok* p_ok, ok_string_view p_name, ok_value* p_value);
 
 /* native */
 typedef ok_value (*ok_native_fn)(ok* p_ok, uint8_t p_argc, const ok_value* p_argv);
+
+// register with this arity to accept any argument count and validate inside
+// the callback (used by the polymorphic core builtins: 'remove' takes 3
+// arguments for arrays, 2 for maps; 'get' takes 2 or 3 for maps).
+#define OK_NATIVE_ARITY_ANY UINT8_MAX
+
 bool ok_global_define_native_function(ok* p_ok, ok_string_view p_name, uint8_t p_arity, ok_native_fn p_cb);
 
 bool ok_native_error(ok* p_ok, ok_string_view p_message);
@@ -96,6 +102,31 @@ bool ok_array_set(ok_value p_value, uint32_t p_index, ok_value p_new_value);
 // duration of the call. keeping either alive afterwards is the host's job
 // throught either (ok_root, a traced native value, registers, or a global).
 bool ok_array_push(ok* p_ok, ok_value p_array, ok_value p_value);
+
+/* maps */
+
+// builds a new map from p_pair_count (key, value) pairs laid out flat {k0, v0, k1, v1, ...}.
+// p_pairs may be NULL when p_pair_count is 0.
+// duplicate keys: the later pair wins, same as the literal.
+// returns a null value on allocation failure or an illegal key (null / unhashable).
+ok_value ok_map_new(ok* p_ok, const ok_value* p_pairs, uint32_t p_pair_count);
+
+bool ok_value_is_map(ok_value p_value);
+
+// 0 for anything that is not a map.
+uint32_t ok_map_len(ok_value p_value);
+
+// read-only, allocation-free. false = not a map, illegal key, or absent.
+// the stored value (even a stored null) lands in *p_out only on success (true).
+bool ok_map_get(ok_value p_map, ok_value p_key, ok_value* p_out);
+
+// insert or overwrite. the map, key and value are guarded against the
+// collector for the duration of the call (the set may grow).
+bool ok_map_set(ok* p_ok, ok_value p_map, ok_value p_key, ok_value p_value);
+
+// removes the key. false = not a map, illegal key, or absent
+// (no store happens either way). never allocates.
+bool ok_map_remove(ok_value p_map, ok_value p_key);
 
 /* output */
 

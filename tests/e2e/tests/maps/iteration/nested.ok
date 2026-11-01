@@ -1,0 +1,18 @@
+let outer = {"a": 1, "b": 2};
+let mut pairs = 0;
+for let k1, v1 : outer {
+  for let k2, v2 : outer {
+    pairs = pairs + 1;
+  }
+}
+print pairs; // expect: 4
+
+// nested iteration over the same map is legal: two cursors, no mutation
+let mut total = 0;
+for let k, v : outer {
+  for let k2, v2 : outer {
+    total = total + v2;
+  }
+}
+// each inner sweep sums 1 + 2 = 3, two outer trips
+print total; // expect: 6

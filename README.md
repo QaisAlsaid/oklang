@@ -58,7 +58,7 @@ i fed 4 birds.
 
 ## Status
 
-OKLang is in very early development, currently sitting at **v0.1.0 (Credence)**.
+OKLang is in very early development, currently sitting at **v0.2.0 (Etymos)**.
 
 The language is a bytecode compiler and a register-based VM.
 

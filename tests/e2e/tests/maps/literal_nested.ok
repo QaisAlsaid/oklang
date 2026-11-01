@@ -1,0 +1,4 @@
+let m = {"inner": {"x": [1, 2, 3]}, "n": 5};
+print m["inner"]["x"][1]; // expect: 2
+print m["n"]; // expect: 5
+print len(m["inner"]["x"]); // expect: 3

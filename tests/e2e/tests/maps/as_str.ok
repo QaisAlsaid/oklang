@@ -1,0 +1,3 @@
+print {"only": 1} as str; // expect: {only: 1}
+print {:} as str; // expect: {:}
+print {"k": [1, 2]} as str; // expect: {k: [1, 2]}

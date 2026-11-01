@@ -33,14 +33,60 @@ struct ok {
 
 static ok_value native_len(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
   (void)p_argc;
-  if (!IS_VALUE_ARRAY(p_argv[0])) {
+  if (IS_VALUE_ARRAY(p_argv[0])) {
+    // f64, never an int, numbers are the only public numeric type
+    return NUMBER_AS_VALUE((double)VALUE_AS_ARRAY(p_argv[0])->values.count);
+  }
+  if (IS_VALUE_MAP(p_argv[0])) {
+    return NUMBER_AS_VALUE((double)VALUE_AS_MAP(p_argv[0])->entries.count);
+  }
+  ok_native_error(p_ok,
+                  ok_create_string_view(
+                      "invalid argument: 'len' expects an array or a map.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+  return NULL_AS_VALUE();
+}
+
+// get(m, k) / get(m, k, default)
+// absent yields null (or the given default), where [] hard-errors.
+// the key rules are the map's: null and unhashable keys error, only absence is lax.
+static ok_value native_get(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  if (p_argc < 1) {
     ok_native_error(
         p_ok,
-        ok_create_string_view("invalid argument: 'len' expects an array.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+        ok_create_string_view("invalid call to 'get': expected 2 arguments (map, key) or 3 (map, key, default).",
+                              OK_STRING_VIEW_CALCULATE_LENGTH,
+                              true));
     return NULL_AS_VALUE();
   }
-  // f64, never an int, numbers are the only public numeric type
-  return NUMBER_AS_VALUE((double)VALUE_AS_ARRAY(p_argv[0])->values.count);
+  if (!IS_VALUE_MAP(p_argv[0])) {
+    ok_native_error(
+        p_ok, ok_create_string_view("invalid argument: 'get' expects a map.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  if (p_argc != 2 && p_argc != 3) {
+    ok_native_error(
+        p_ok,
+        ok_create_string_view("invalid call to 'get': expected 2 arguments (map, key) or 3 (map, key, default).",
+                              OK_STRING_VIEW_CALCULATE_LENGTH,
+                              true));
+    return NULL_AS_VALUE();
+  }
+  if (IS_VALUE_STRICTLY_NULL(p_argv[1])) {
+    ok_native_error(p_ok, ok_create_string_view("map key cannot be null.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  if (!map_key_is_legal(p_argv[1])) {
+    ok_native_error(p_ok,
+                    ok_create_string_view("invalid map key: only strings, numbers and booleans can be keys.",
+                                          OK_STRING_VIEW_CALCULATE_LENGTH,
+                                          true));
+    return NULL_AS_VALUE();
+  }
+  value* slot = value_map_get(&VALUE_AS_MAP(p_argv[0])->entries, p_argv[1]);
+  if (slot != NULL) {
+    return *slot;
+  }
+  return p_argc == 3 ? p_argv[2] : NULL_AS_VALUE();
 }
 
 static ok_value native_push(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
@@ -80,15 +126,51 @@ static ok_value native_pop(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
   return popped;
 }
 
-// remove(a, [m, n)): in place removal of the half open range [m, n). the language
-// surface is half open, the underlying OK_ARRAY remove is
-// inclusive end, so translation happen here.
+// remove: arrays take the half open range remove(a, m, n); maps take the key remove(m, k).
+// removing an absent map key is a legal no-op (the array form's empty range is legal for the same reason).
 static ok_value native_remove(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
-  (void)p_argc;
-  if (!IS_VALUE_ARRAY(p_argv[0])) {
+  if (p_argc < 1) {
+    ok_native_error(p_ok,
+                    ok_create_string_view("invalid argument: 'remove' expects an array or a map.",
+                                          OK_STRING_VIEW_CALCULATE_LENGTH,
+                                          true));
+    return NULL_AS_VALUE();
+  }
+  if (IS_VALUE_MAP(p_argv[0])) {
+    if (p_argc != 2) {
+      ok_native_error(p_ok,
+                      ok_create_string_view("invalid call to 'remove' on a map: expected 2 arguments (map, key).",
+                                            OK_STRING_VIEW_CALCULATE_LENGTH,
+                                            true));
+      return NULL_AS_VALUE();
+    }
+    if (IS_VALUE_STRICTLY_NULL(p_argv[1])) {
+      ok_native_error(p_ok, ok_create_string_view("map key cannot be null.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      return NULL_AS_VALUE();
+    }
+    if (!map_key_is_legal(p_argv[1])) {
+      ok_native_error(p_ok,
+                      ok_create_string_view("invalid map key: only strings, numbers and booleans can be keys.",
+                                            OK_STRING_VIEW_CALCULATE_LENGTH,
+                                            true));
+      return NULL_AS_VALUE();
+    }
+    object_map_remove(VALUE_AS_MAP(p_argv[0]), p_argv[1]); // absent = no-op
+    return NULL_AS_VALUE();
+  }
+  if (p_argc != 3) {
     ok_native_error(
         p_ok,
-        ok_create_string_view("invalid argument: 'remove' expects an array.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+        ok_create_string_view("invalid call to 'remove' on an array: expected 3 arguments (array, start, end).",
+                              OK_STRING_VIEW_CALCULATE_LENGTH,
+                              true));
+    return NULL_AS_VALUE();
+  }
+  if (!IS_VALUE_ARRAY(p_argv[0])) {
+    ok_native_error(p_ok,
+                    ok_create_string_view("invalid argument: 'remove' expects an array or a map.",
+                                          OK_STRING_VIEW_CALCULATE_LENGTH,
+                                          true));
     return NULL_AS_VALUE();
   }
   uint32_t range[2] = {0, 0};
@@ -145,8 +227,14 @@ static bool ok_define_core_natives(ok* p_ok) {
       p_ok, ok_create_string_view(" push", OK_STRING_VIEW_CALCULATE_LENGTH, true), 2, native_push);
   status &= ok_global_define_native_function(
       p_ok, ok_create_string_view(" pop", OK_STRING_VIEW_CALCULATE_LENGTH, true), 1, native_pop);
+  // ' remove' and ' get' validate argc themselves.
+  // remove is 3 for arrays / 2 for maps, get is 2 or 3
+  status &= ok_global_define_native_function(p_ok,
+                                             ok_create_string_view(" remove", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                                             OK_NATIVE_ARITY_ANY,
+                                             native_remove);
   status &= ok_global_define_native_function(
-      p_ok, ok_create_string_view(" remove", OK_STRING_VIEW_CALCULATE_LENGTH, true), 3, native_remove);
+      p_ok, ok_create_string_view(" get", OK_STRING_VIEW_CALCULATE_LENGTH, true), OK_NATIVE_ARITY_ANY, native_get);
   return status;
 }
 
@@ -158,6 +246,8 @@ static bool ok_define_temporary_types(ok* p_ok) {
       p_ok, ok_create_string_view(" num", OK_STRING_VIEW_CALCULATE_LENGTH, true), RESERVED_1_AS_VALUE(TT_NUM), false);
   status &= ok_global_define(
       p_ok, ok_create_string_view(" bool", OK_STRING_VIEW_CALCULATE_LENGTH, true), RESERVED_1_AS_VALUE(TT_BOOL), false);
+  status &= ok_global_define(
+      p_ok, ok_create_string_view(" map", OK_STRING_VIEW_CALCULATE_LENGTH, true), RESERVED_1_AS_VALUE(TT_MAP), false);
   return status;
 }
 
@@ -168,9 +258,11 @@ static top_level_declarations ok_get_top_level_declarations(ok* p_ok, bool* p_er
                                       {ok_create_string_view("push", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
                                       {ok_create_string_view("pop", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
                                       {ok_create_string_view("remove", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
+                                      {ok_create_string_view("get", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
                                       {ok_create_string_view("str", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
                                       {ok_create_string_view("num", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
-                                      {ok_create_string_view("bool", OK_STRING_VIEW_CALCULATE_LENGTH, true)}};
+                                      {ok_create_string_view("bool", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
+                                      {ok_create_string_view("map", OK_STRING_VIEW_CALCULATE_LENGTH, true)}};
 
   *p_error = !top_level_declarations_append_n(&decls, raw_decls, sizeof(raw_decls) / sizeof(variable_declaration));
   return decls;
@@ -181,9 +273,11 @@ static value_array ok_get_top_level_values(ok* p_ok, bool* p_error) {
                                  ok_create_string_view(" push", OK_STRING_VIEW_CALCULATE_LENGTH, true),
                                  ok_create_string_view(" pop", OK_STRING_VIEW_CALCULATE_LENGTH, true),
                                  ok_create_string_view(" remove", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                                 ok_create_string_view(" get", OK_STRING_VIEW_CALCULATE_LENGTH, true),
                                  ok_create_string_view(" str", OK_STRING_VIEW_CALCULATE_LENGTH, true),
                                  ok_create_string_view(" num", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-                                 ok_create_string_view(" bool", OK_STRING_VIEW_CALCULATE_LENGTH, true)};
+                                 ok_create_string_view(" bool", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                                 ok_create_string_view(" map", OK_STRING_VIEW_CALCULATE_LENGTH, true)};
 
   value_array vals;
   value_array_init(&vals, &p_ok->alloc);
@@ -543,13 +637,103 @@ bool ok_array_push(ok* p_ok, ok_value p_array, ok_value p_value) {
   if (!IS_VALUE_ARRAY(p_array)) {
     return false;
   }
-  // unlike the ' push' core native (whose arguments are rooted through the
-  // caller's register window), a host-held array and value are invisible to
-  // the collector: both need the guard while the append may grow (collect).
+  // unlike the ' push' core native (whose arguments are rooted through the caller's register window),
+  // a host-held array and value are invisible to the collector,
+  // thus both need the guard while the append may grow (collect).
   gc_guard_up(&p_ok->gc, p_array);
   gc_guard_up(&p_ok->gc, p_value);
   const bool appended = value_array_append(&VALUE_AS_ARRAY(p_array)->values, p_value);
   gc_guard_down(&p_ok->gc);
   gc_guard_down(&p_ok->gc);
   return appended;
+}
+
+/* maps */
+
+// builds a new map from p_pair_count (key, value) pairs laid out flat {k0, v0, k1, v1, ...}.
+// p_pairs may be NULL when p_pair_count is 0.
+// duplicate keys: the later pair wins, same as the literal.
+// returns a null value on allocation failure or an illegal key (null / unhashable).
+ok_value ok_map_new(ok* p_ok, const ok_value* p_pairs, uint32_t p_pair_count) {
+  object_specs s = {.alloc = &p_ok->alloc, .store = &p_ok->objects_store};
+  object_map* map = create_object_map(&s);
+  if (map == NULL) {
+    return NULL_AS_VALUE();
+  }
+  // the constructor guard pattern, mirroring ok_array_new: the map is linked
+  // in the store yet unreachable, and every set may rehash (grow) under the
+  // collector. so it stays rooted across the whole fill and each pair across
+  // its own set. guard depth peaks at 3 (capacity 16).
+  gc_guard_up(&p_ok->gc, OBJECT_AS_VALUE(map));
+  for (uint32_t i = 0; i < p_pair_count; ++i) {
+    const ok_value key = p_pairs[2 * i];
+    const ok_value val = p_pairs[2 * i + 1];
+    if (IS_VALUE_STRICTLY_NULL(key) || !map_key_is_legal(key)) {
+      gc_guard_down(&p_ok->gc);
+      return NULL_AS_VALUE(); // null return: only strings, numbers, bools are valid keys
+    }
+    gc_guard_up(&p_ok->gc, key);
+    gc_guard_up(&p_ok->gc, val);
+    const bool set = object_map_set(map, key, val);
+    gc_guard_down(&p_ok->gc);
+    gc_guard_down(&p_ok->gc);
+    if (!set) {
+      gc_guard_down(&p_ok->gc);
+      return NULL_AS_VALUE();
+    }
+  }
+  gc_guard_down(&p_ok->gc);
+  return OBJECT_AS_VALUE(map);
+}
+
+bool ok_value_is_map(ok_value p_value) {
+  return IS_VALUE_MAP(p_value);
+}
+
+uint32_t ok_map_len(ok_value p_value) {
+  if (!IS_VALUE_MAP(p_value)) {
+    return 0;
+  }
+  return VALUE_AS_MAP(p_value)->entries.count;
+}
+
+// read only and allocation free (probes never allocate).
+// return false when type is not a map, or illegal key, or absent.
+// the stored value (even a stored null) lands in *p_out only on success (true).
+bool ok_map_get(ok_value p_map, ok_value p_key, ok_value* p_out) {
+  if (!IS_VALUE_MAP(p_map) || IS_VALUE_STRICTLY_NULL(p_key) || !map_key_is_legal(p_key)) {
+    return false;
+  }
+  value* slot = value_map_get(&VALUE_AS_MAP(p_map)->entries, p_key);
+  if (slot == NULL) {
+    return false;
+  }
+  *p_out = *slot;
+  return true;
+}
+
+// insert or overwrite. unlike the ' get'/' remove' core natives
+// (whose arguments are rooted through the caller's register window),
+// a host-held map, key and value are invisible to the collector
+// thus all three need the guard while the set may grow (collect).
+bool ok_map_set(ok* p_ok, ok_value p_map, ok_value p_key, ok_value p_value) {
+  if (!IS_VALUE_MAP(p_map) || IS_VALUE_STRICTLY_NULL(p_key) || !map_key_is_legal(p_key)) {
+    return false;
+  }
+  gc_guard_up(&p_ok->gc, p_map);
+  gc_guard_up(&p_ok->gc, p_key);
+  gc_guard_up(&p_ok->gc, p_value);
+  const bool set = object_map_set(VALUE_AS_MAP(p_map), p_key, p_value);
+  gc_guard_down(&p_ok->gc);
+  gc_guard_down(&p_ok->gc);
+  gc_guard_down(&p_ok->gc);
+  return set;
+}
+
+// backward-shift removal, no allocation. false = not a map, illegal key, or absent (in which case nothing changed).
+bool ok_map_remove(ok_value p_map, ok_value p_key) {
+  if (!IS_VALUE_MAP(p_map) || IS_VALUE_STRICTLY_NULL(p_key) || !map_key_is_legal(p_key)) {
+    return false;
+  }
+  return object_map_remove(VALUE_AS_MAP(p_map), p_key);
 }

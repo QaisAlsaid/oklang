@@ -1,0 +1,17 @@
+// iteration order is unspecified (slot order): tests count and sum, never order
+let m = {"a": 1, "b": 2, "c": 3};
+let mut total = 0;
+let mut count = 0;
+for let k, v : m {
+  total = total + v;
+  count = count + 1;
+}
+print total; // expect: 6
+print count; // expect: 3
+
+// keys-only form
+let mut sum_keys = 0;
+for let k : m {
+  sum_keys = sum_keys + m[k];
+}
+print sum_keys; // expect: 6

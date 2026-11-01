@@ -1,0 +1,2 @@
+let m = {:};
+m[[1, 2]] = 1; // expect error

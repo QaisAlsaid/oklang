@@ -364,6 +364,22 @@ static bool trace_object(gc* p_gc, object* p_object) {
     }
     break;
   }
+  case OBJ_MAP: {
+    // walk OCCUPIED slots only, marking key AND value (both are gc refs -
+    // strings are heap objects). empty slots hold the strict-null key
+    // sentinel, and their value slots are stale garbage from backward-shift
+    // moves and overwrites: marking those could resurrect a swept object's
+    // dangling pointer. the keys array is the occupancy authority.
+    object_map* map = (object_map*)p_object;
+    for (uint32_t i = 0; i < map->entries.capacity; ++i) {
+      if (!IS_VALUE_STRICTLY_NULL(map->entries.keys[i])) {
+        if (!mark_value(p_gc, map->entries.keys[i]) || !mark_value(p_gc, map->entries.values[i])) {
+          return false;
+        }
+      }
+    }
+    break;
+  }
   }
   return true;
 }

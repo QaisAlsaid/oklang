@@ -1,0 +1,13 @@
+let m = {"a": 1};
+print get(m, "a"); // expect: 1
+print get(m, "zz"); // expect: null
+print get(m, "zz", 99); // expect: 99
+// default only on absence
+print get(m, "a", 99); // expect: 1
+
+// the config-shaped "absent = use default" case, served explicitly (R1)
+let config = {:};
+print get(config, "port", 8080); // expect: 8080
+config["port"] = 9090;
+config["port"] = 9090;
+print get(config, "port", 8080); // expect: 9090

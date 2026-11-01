@@ -69,15 +69,20 @@ static const char* const OPCODE_NAMES[] = {
     "PRINT",
     "ARRAY_NEW",
     "ARRAY_NEW_LONG",
-    "ARRAY_GET",
-    "ARRAY_GET_LONG",
-    "ARRAY_SET",
-    "ARRAY_SET_LONG",
+    "MAP_NEW",
+    "MAP_NEW_LONG",
+    "INDEX_GET",
+    "INDEX_GET_LONG",
+    "INDEX_SET",
+    "INDEX_SET_LONG",
     "JUMP_IF_ARGC",
     "FOR_PREP",
     "FOR_LOOP",
+    "ITER_PREP",
+    "ITER_GET",
+    "ITER_LOOP",
 };
-typedef char opcode_names_in_sync[(sizeof(OPCODE_NAMES) / sizeof(OPCODE_NAMES[0]) == (size_t)OP_FOR_LOOP + 1) ? 1 : -1];
+typedef char opcode_names_in_sync[(sizeof(OPCODE_NAMES) / sizeof(OPCODE_NAMES[0]) == (size_t)OP_ITER_LOOP + 1) ? 1 : -1];
 
 static const char* binop_symbol(const opcode p_op) {
   switch (p_op) {
@@ -171,11 +176,15 @@ static bool op_is_two_words(opcode p_op) {
   case OP_LESS_EQUAL_LONG:
   case OP_AS_LONG:
   case OP_ARRAY_NEW_LONG:
-  case OP_ARRAY_GET_LONG:
-  case OP_ARRAY_SET_LONG:
+  case OP_MAP_NEW_LONG:
+  case OP_INDEX_GET_LONG:
+  case OP_INDEX_SET_LONG:
   case OP_JUMP_IF_ARGC:
   case OP_FOR_PREP:
   case OP_FOR_LOOP:
+  case OP_ITER_PREP:
+  case OP_ITER_GET:
+  case OP_ITER_LOOP:
     return true;
   default:
     return false;
@@ -442,7 +451,21 @@ uint32_t debug_disassemble_instruction(disassembler* p_disassembler, uint32_t p_
       printf("r%u = [r%u..r%u]", A, B, B + C - 1);
     }
     break;
-  case OP_ARRAY_GET:
+  case OP_MAP_NEW:
+    if (c == 0) {
+      printf("r%u = {:}", a);
+    } else {
+      printf("r%u = {r%u..r%u} (x%u pairs)", a, b, b + 2 * c - 1, c);
+    }
+    break;
+  case OP_MAP_NEW_LONG:
+    if (C == 0) {
+      printf("r%u = {:}", A);
+    } else {
+      printf("r%u = {r%u..r%u} (x%u pairs)", A, B, B + 2 * C - 1, C);
+    }
+    break;
+  case OP_INDEX_GET:
     printf("r%u = r%u[", a, b);
     if (p) {
       print_constant_inline(chunk, c);
@@ -451,7 +474,7 @@ uint32_t debug_disassemble_instruction(disassembler* p_disassembler, uint32_t p_
     }
     printf("]");
     break;
-  case OP_ARRAY_GET_LONG:
+  case OP_INDEX_GET_LONG:
     printf("r%u = r%u[", A, B);
     if (p) {
       print_constant_inline(chunk, C);
@@ -460,7 +483,7 @@ uint32_t debug_disassemble_instruction(disassembler* p_disassembler, uint32_t p_
     }
     printf("]");
     break;
-  case OP_ARRAY_SET:
+  case OP_INDEX_SET:
     printf("r%u[", a);
     if (p) {
       print_constant_inline(chunk, b);
@@ -469,7 +492,7 @@ uint32_t debug_disassemble_instruction(disassembler* p_disassembler, uint32_t p_
     }
     printf("] = r%u", c);
     break;
-  case OP_ARRAY_SET_LONG:
+  case OP_INDEX_SET_LONG:
     printf("r%u[", A);
     if (p) {
       print_constant_inline(chunk, B);
@@ -491,6 +514,18 @@ uint32_t debug_disassemble_instruction(disassembler* p_disassembler, uint32_t p_
     break;
   case OP_FOR_LOOP:
     printf("i=r%u += r%u, -> %04u (back)%s", B, B + 2, p_offset + 2 - A, p ? " imm" : "");
+    break;
+  case OP_ITER_PREP:
+    printf("it=r%u cur=r%u end=r%u, empty -> %04u%s", B, B + 1, B + 2, p_offset + 2 + A, p ? " (k, v)" : "");
+    break;
+  case OP_ITER_GET:
+    printf("r%u = cur it", C);
+    if (p) {
+      printf(", r%u = cur val", C + 1);
+    }
+    break;
+  case OP_ITER_LOOP:
+    printf("cur advance, -> %04u (back)", p_offset + 2 - A);
     break;
   case OP_PRINT:
     printf("print r%u", Al);

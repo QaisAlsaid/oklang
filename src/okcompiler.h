@@ -7,6 +7,7 @@
 #include "okfwd.h"
 #include "okglobals_store.h"
 #include "okindex.h"
+#include "okmap.h"
 #include "okobject.h"
 #include "okobject_store.h"
 
@@ -114,12 +115,12 @@ typedef struct {
 } variable_declaration;
 
 ARRAY_DECLARE_DEFAULT(uint16_array, uint16_t)
-TABLE_DECLARE_DEFAULT(scope_registers, hashed_string, uint16_t /* index to the scope's registers array */, hash_t)
+MAP_DECLARE(scope_registers, string, uint16_t /* index to the scope's registers array */, ok_string_view)
 ARRAY_DECLARE_DEFAULT(registers, _register)
 ARRAY_DECLARE_DEFAULT(upvalues, upvalue)
 
 typedef struct {
-  scope_registers registers_table; // indices into the scope's registers
+  scope_registers registers_map;   // indices into the scope's registers
   uint16_array registers;          // indices into the function's registers
   uint32_t registers_checkpoint;
   bool captures_any;

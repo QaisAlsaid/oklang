@@ -1,0 +1,1 @@
+let m = {null: 1}; // expect error

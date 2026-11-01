@@ -1,0 +1,2 @@
+let m = {:};
+print get(m); // expect error

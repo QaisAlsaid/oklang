@@ -1,0 +1,2 @@
+let m = {"a": 1};
+print m["zz"]; // expect error

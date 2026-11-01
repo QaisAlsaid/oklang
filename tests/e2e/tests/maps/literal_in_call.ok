@@ -1,0 +1,9 @@
+fu first_value(m) {
+  return m["only"];
+}
+print first_value({"only": 42}); // expect: 42
+
+fu make() {
+  return {"built": "inside"};
+}
+print make()["built"]; // expect: inside

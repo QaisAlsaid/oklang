@@ -1,0 +1,26 @@
+// rehash mid-fill under collection: 300 inserts force grows; aggressive gc
+// (the CI gate variant) collects on every allocation
+let mut m = {:};
+for let i = 0 : 300 {
+  m["key" + i as str] = i * 2;
+}
+print len(m); // expect: 300
+print m["key0"]; // expect: 0
+print m["key299"]; // expect: 598
+
+for let i = 0 : 150 {
+  remove(m, "key" + i as str);
+}
+print len(m); // expect: 150
+print get(m, "key0"); // expect: null
+print m["key150"]; // expect: 300
+
+let mut nest = {:};
+for let i = 0 : 50 {
+  nest["arr" + i as str] = [i, i + 1, i + 2];
+}
+let mut total = 0;
+for let k, v : nest {
+  total = total + v[0] + v[1] + v[2];
+}
+print total; // expect: 3825

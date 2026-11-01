@@ -1,0 +1,2 @@
+let m = {"a": 1};
+print m[0]; // expect error (0 is not a key here)

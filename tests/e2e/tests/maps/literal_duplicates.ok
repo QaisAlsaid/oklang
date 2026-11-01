@@ -1,0 +1,4 @@
+// duplicate keys in a literal: the later insert overwrites, len counts unique
+let m = {"a": 1, "b": 2, "a": 3};
+print len(m); // expect: 2
+print m["a"]; // expect: 3
