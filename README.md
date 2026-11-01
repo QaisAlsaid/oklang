@@ -6,7 +6,7 @@
 ![C99](https://img.shields.io/badge/Language-C99-748D9C?style=for-the-badge&logo=c&color=8196A4)
 ![Coverage](https://img.shields.io/codecov/c/github/QaisAlsaid/oklang?style=for-the-badge&color=206680)
 ![Release](https://img.shields.io/github/v/release/QaisAlsaid/oklang?style=for-the-badge&include_prereleases&color=BD5F42)
-![Codename](https://img.shields.io/badge/Codename-Credence-748D9C?style=for-the-badge&color=8196A4)
+![Codename](https://img.shields.io/badge/Codename-Etymos-748D9C?style=for-the-badge&color=8196A4)
 ![License](https://img.shields.io/github/license/QaisAlsaid/oklang?style=for-the-badge&color=A31F34)
 
 </p>
