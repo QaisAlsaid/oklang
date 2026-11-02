@@ -1,0 +1,15 @@
+class A { let v = 1; pub fu get() { return v; } }
+class B { let v = 2; pub fu get() { return v; } }
+
+let registry = { "one": A, "two": B };
+let k = registry["one"];
+print(k().get()); // expect: 1
+print(registry["two"]().get()); // expect: 2
+print(A == A); // expect: true
+print(A == B); // expect: false
+print(A); // expect: <class A>
+
+fu make(klass) { return klass(); }
+print(make(B).get()); // expect: 2
+
+print(A == registry["one"]); // expect: true

@@ -1,0 +1,6 @@
+fu make_class() {
+  class Inner { let t = 1; pub fu get() { return t; } }
+  return Inner;
+}
+let C1 = make_class();
+let C2 = make_class(); // expect error: only be defined once

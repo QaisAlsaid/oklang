@@ -1,0 +1,10 @@
+fu make_class(tag) {
+  class Inner {
+    let t;
+    fu init() { this.t = tag; }
+    pub fu get() { return t; }
+  }
+  return Inner();
+}
+let a = make_class("x");
+print(a.get()); // expect: x

@@ -23,6 +23,9 @@
 #define IS_VALUE_NATIVE_FUNCTION(value) value_is_object_type(value, OBJ_NATIVE_FUNCTION)
 #define IS_VALUE_ARRAY(value) value_is_object_type(value, OBJ_ARRAY)
 #define IS_VALUE_MAP(value) value_is_object_type(value, OBJ_MAP)
+#define IS_VALUE_CLASS(value) value_is_object_type(value, OBJ_CLASS)
+#define IS_VALUE_INSTANCE(value) value_is_object_type(value, OBJ_INSTANCE)
+#define IS_VALUE_BOUND_METHOD(value) value_is_object_type(value, OBJ_BOUND_METHOD)
 
 #define VALUE_AS_STRING(value) ((object_string*)VALUE_AS_OBJECT(value))
 #define VALUE_AS_FUNCTION(value) ((object_function*)VALUE_AS_OBJECT(value))
@@ -32,6 +35,9 @@
 #define VALUE_AS_NATIVE_FUNCTION(value) ((object_native_function*)VALUE_AS_OBJECT(value))
 #define VALUE_AS_ARRAY(value) ((object_array*)VALUE_AS_OBJECT(value))
 #define VALUE_AS_MAP(value) ((object_map*)VALUE_AS_OBJECT(value))
+#define VALUE_AS_CLASS(value) ((object_class*)VALUE_AS_OBJECT(value))
+#define VALUE_AS_INSTANCE(value) ((object_instance*)VALUE_AS_OBJECT(value))
+#define VALUE_AS_BOUND_METHOD(value) ((object_bound_method*)VALUE_AS_OBJECT(value))
 // the defer tag's payload is an object_closure*, but it is not an object-tagged value.
 // unwrap through the payload directly (the tag check is IS_VALUE_STRICTLY_DEFER, never IS_VALUE_CLOSURE).
 #define VALUE_AS_DEFER(value) ((object_closure*)(uintptr_t)(VALUE_PAYLOAD(value)))
@@ -50,6 +56,9 @@ typedef enum {
   OBJ_NATIVE_FUNCTION,
   OBJ_ARRAY,
   OBJ_MAP,
+  OBJ_CLASS,
+  OBJ_INSTANCE,
+  OBJ_BOUND_METHOD,
 } object_type;
 
 struct object {
@@ -96,6 +105,15 @@ typedef struct {
                     // floor drops it, and the runtime frame widens past `registers` to cover
                     // the staged arguments. set by the compiler at the prologue.
   upvalue_descriptor_array upvalues;
+  // the class whose definition freeze-patched this proto's chunk (NULL until
+  // then). a second freeze by a different class means the same body defined
+  // twice - the in-place patching cannot express that, so it is refused.
+  struct object_class* patched_by;
+  // set by the compiler when the body contains a super(...) initializer call
+  // (bare or spelled). the class-definition check reads it: an init override
+  // whose chain has an init must call super. this is the only compile-time
+  // half of that rule - the chain itself is a runtime truth.
+  bool calls_super_init;
 } object_function;
 
 object_function* create_object_function(object_string* p_name, uint16_t p_arity, object_specs* p_specs);
@@ -125,6 +143,10 @@ typedef struct {
   object object;
   object_function* function;
   upvalue_array upvalues;
+  // the class whose body lexically produced this closure: methods get it at
+  // definition time, lambdas inherit the creating frame's owner at runtime.
+  // privacy checks and super resolution read it. NULL outside class bodies.
+  struct object_class* owner;
 } object_closure;
 
 object_closure* create_object_closure(object_function* p_function, object_specs* p_specs);
@@ -191,6 +213,119 @@ bool object_map_set(object_map* p_map, value p_key, value p_value);
 
 // false = absent (no version change).
 bool object_map_remove(object_map* p_map, value p_key);
+
+// one method table entry. the table is FROZEN when the class definition
+// completes: entries never move, get replaced, or die afterwards, which is
+// what makes raw method_entry pointers inside inline caches sound.
+typedef struct object_class object_class;
+
+typedef struct method_entry {
+  object_closure* closure; // script method. NULL for a native entry
+  ok_native_fn native;     // native method (receiver staged as argv[0])
+  object_string* name;     // the method name (native diagnostics reuse it)
+  uint16_t arity;          // declared arity (natives count the receiver)
+  object_class* owner;     // the class whose body declared it (privacy + super)
+  uint8_t is_native;
+  uint8_t pub;
+} method_entry;
+
+// name-keyed method table: object_string* keys, content-compared probes
+// (constants are not interned across chunks), cached hashes.
+MAP_DECLARE(method_map, object_string*, method_entry, const object_string*)
+
+// one flat-layout field: its absolute slot in the instance array + mutability.
+typedef struct {
+  uint16_t slot;
+  uint8_t mut;
+} field_entry;
+
+MAP_DECLARE(field_map, object_string*, field_entry, const object_string*)
+
+ARRAY_DECLARE_DEFAULT(object_string_array, object_string*)
+ARRAY_DECLARE_DEFAULT(uint8_array, uint8_t)
+ARRAY_DECLARE_DEFAULT(object_closure_array, object_closure*)
+
+struct object_class {
+  object object;
+  object_string* name;
+  struct object_class* parent; // NULL only for the Object singleton
+  uint16_t nfields;            // total layout width: parent's fields + own
+  uint16_t nown;               // own field declarations (diagnostics)
+  object_string_array own_names; // own field names, declaration order
+  uint8_array own_muts;        // parallel mut flags
+  object_closure_array own_inits; // parallel initializer thunks (NULL = none)
+  field_map fields;            // flat name -> slot, built at freeze
+  method_map methods;          // name -> entry, frozen at definition end
+  method_map statics;          // static methods: name -> entry. the receiver is
+                               // the class value itself, never an instance
+  object_string_array own_static_names; // own static fields, declaration order
+  uint8_array own_static_muts; // parallel mut flags
+  value_array static_values;   // own statics' storage: one slot each, never
+                               // copied down the chain (shared by lookup)
+  field_map static_fields;     // own statics only: name -> {slot, mut}
+  bool frozen;
+};
+
+object_class* create_object_class(object_string* p_name, object_class* p_parent, object_specs* p_specs);
+
+// definition-time: append one own field. false = OOM or a redeclaration
+// (p_previous_owner names the ancestor that already declared it).
+bool object_class_add_field(object_class* p_class,
+                            const object_string* p_name,
+                            bool p_mut,
+                            object_closure* p_init_thunk,
+                            const object_string** p_previous_owner);
+
+// definition end: build the flat field map over the parent chain and freeze
+// both tables. false = OOM. after this, add_field/define_method are refused.
+bool object_class_freeze(object_class* p_class);
+
+// flat-layout lookup used by the freeze patch pass and runtime guards.
+const field_entry* object_class_find_field(const object_class* p_class, const object_string* p_name);
+
+// method lookup walking the parent chain. NULL = not found.
+const method_entry* object_class_find_method(const object_class* p_class, const object_string* p_name);
+
+// is p_class p_maybe_ancestor or one of its descendants.
+bool object_class_is_a(const object_class* p_class, const object_class* p_maybe_ancestor);
+
+// definition-time: append one own static field with its (already evaluated)
+// value. false = OOM or a redeclaration anywhere in the chain (statics are
+// never shadowed: one name, one slot, the defining class owns it). the
+// previous owner names the ancestor that already declared it.
+bool object_class_add_static_field(object_class* p_class,
+                                    const object_string* p_name,
+                                    bool p_mut,
+                                    value p_value,
+                                    const object_string** p_previous_owner);
+
+// static field lookup walking the parent chain. NULL = not found; p_owner
+// (when given) receives the defining class whose storage holds the slot.
+const field_entry* object_class_find_static(const object_class* p_class,
+                                             const object_string* p_name,
+                                             const object_class** p_owner);
+
+// static method lookup walking the parent chain. NULL = not found.
+const method_entry* object_class_find_static_method(const object_class* p_class, const object_string* p_name);
+
+typedef struct {
+  object object;
+  object_class* klass; // the dispatch key, doubles as the type tag
+  value fields[];      // inline, one allocation, nfields wide
+} object_instance;
+
+object_instance* create_object_instance(object_class* p_class, object_specs* p_specs);
+
+// `obj.method` as a value: the receiver plus the found entry. calling it
+// stages the receiver at the call window base and dispatches the entry - the
+// slow lane next to INVOKE's fused fast lane, never instead of it.
+typedef struct {
+  object object;
+  value receiver;
+  const method_entry* entry; // points into the class's frozen method table
+} object_bound_method;
+
+object_bound_method* create_object_bound_method(value p_receiver, const method_entry* p_entry, object_specs* p_specs);
 
 void object_dispatch_deinit(object* p_object, object_specs* p_specs);
 void objects_list_deinit(object* p_head, object_specs* p_specs);

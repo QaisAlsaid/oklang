@@ -12,11 +12,16 @@ static ast_root* parse_root(parser* p_parser);
 static ast_expression* parse_expression(parser* p_parser, precedence p_precedence);
 static ast_statement* parse_statement(parser* p_parser);
 static ast_statement* try_parse_declaration(parser* p_parser);
-static ast_let_declaration* parse_let_declaration(parser* p_parser, ast_declaration_modifiers_t p_modifiers);
+static ast_let_declaration* parse_let_declaration(parser* p_parser,
+                                                ast_declaration_modifiers_t p_modifiers,
+                                                bool p_in_class_body);
 static ast_let_declaration* parse_let_declaration_span(parser* p_parser,
                                                        ast_declaration_modifiers_t p_modifiers,
                                                        ast_binding_modifiers_t p_binding_mods);
-static ast_function_declaration* parse_function_declaration(parser* p_parser, ast_declaration_modifiers_t p_modifiers);
+static ast_function_declaration* parse_function_declaration(parser* p_parser,
+                                                             ast_declaration_modifiers_t p_modifiers,
+                                                             bool p_in_class_body);
+static ast_class_declaration* parse_class_declaration(parser* p_parser, ast_declaration_modifiers_t p_modifiers);
 static ast_empty_statement* parse_empty_statement(parser* p_parser);
 static ast_expression_statement* parse_expression_statement(parser* p_parser);
 static ast_eof_statement* parse_eof_statement(parser* p_parser);
@@ -59,6 +64,10 @@ static ast_expression* parse_subscript(
 static ast_expression* parse_compound_assign_expression(
     parser* p_parser, ast_expression* p_left, precedence p_precedence, bool is_right_associative, token p_trigger);
 static ast_expression* parse_identifier(parser* p_parser, token p_trigger);
+static ast_expression* parse_access(
+    parser* p_parser, ast_expression* p_left, precedence p_precedence, bool is_right_associative, token p_trigger);
+static ast_expression* parse_this(parser* p_parser, token p_trigger);
+static ast_expression* parse_super(parser* p_parser, token p_trigger);
 static ast_expression* parse_string(parser* p_parser, token p_trigger);
 static ast_expression* parse_number(parser* p_parser, token p_trigger);
 static ast_expression* parse_boolean(parser* p_parser, token p_trigger);
@@ -148,9 +157,10 @@ static const parse_rule parse_rules[] = {
     [TOKEN_AND] = {NULL, parse_binary_infix, PREC_AND},
     [TOKEN_OR] = {NULL, parse_binary_infix, PREC_OR},
     [TOKEN_CLASS] = {NULL, NULL, PREC_NONE},
-    [TOKEN_SUPER] = {NULL, NULL, PREC_NONE},
-    [TOKEN_INHERITS] = {NULL, NULL, PREC_NONE},
-    [TOKEN_THIS] = {NULL, NULL, PREC_NONE},
+    [TOKEN_STATIC] = {NULL, NULL, PREC_NONE},
+    [TOKEN_SUPER] = {parse_super, NULL, PREC_NONE},
+    [TOKEN_DOT] = {NULL, parse_access, PREC_CALL},
+    [TOKEN_THIS] = {parse_this, NULL, PREC_NONE},
     [TOKEN_NULL] = {parse_null, NULL, PREC_NONE},
     [TOKEN_TRUE] = {parse_boolean, NULL, PREC_NONE},
     [TOKEN_FALSE] = {parse_boolean, NULL, PREC_NONE},
@@ -928,6 +938,10 @@ static ast_declaration_modifiers_t parse_declaration_modifier(token p_token) {
     return DECLARATION_GLOB;
   case TOKEN_EXPORT:
     return DECLARATION_EXPORT;
+  case TOKEN_PUB:
+    return DECLARATION_PUB;
+  case TOKEN_STATIC:
+    return DECLARATION_STATIC;
   default:
     return DECLARATION_NONE;
   }
@@ -972,7 +986,7 @@ ast_statement* try_parse_declaration(parser* p_parser) {
   }
   switch (p_parser->previous.type) {
   case TOKEN_LET: {
-    statement = (ast_statement*)parse_let_declaration(p_parser, mods);
+    statement = (ast_statement*)parse_let_declaration(p_parser, mods, false);
     break;
   }
   case TOKEN_FU: {
@@ -980,11 +994,12 @@ ast_statement* try_parse_declaration(parser* p_parser) {
         p_parser->current.type != TOKEN_IDENTIFIER) {
       goto _default;
     }
-    statement = (ast_statement*)parse_function_declaration(p_parser, mods);
+    statement = (ast_statement*)parse_function_declaration(p_parser, mods, false);
     break;
   }
   case TOKEN_CLASS: {
-    assert(0);
+    statement = (ast_statement*)parse_class_declaration(p_parser, mods);
+    break;
   }
   default:
   _default: {
@@ -1043,10 +1058,15 @@ static ast_binding_modifiers_t parse_binding_modifiers(parser* p_parser, ast_bin
   return modifiers;
 }
 
-ast_let_declaration* parse_let_declaration(parser* p_parser, ast_declaration_modifiers_t p_declaration_modifiers) {
+ast_let_declaration* parse_let_declaration(parser* p_parser,
+                                          ast_declaration_modifiers_t p_declaration_modifiers,
+                                          bool p_in_class_body) {
   allocators* alloc = p_parser->alloc;
   const token let_tok = p_parser->previous;
-  const ast_declaration_modifiers_t let_allowed_decl_mods = DECLARATION_GLOB | DECLARATION_EXPORT;
+  // static is a class-member modifier: fields only exist in class bodies.
+  // pub is never allowed on a let - fields are not the surface, methods are.
+  const ast_declaration_modifiers_t let_allowed_decl_mods =
+      DECLARATION_GLOB | DECLARATION_EXPORT | (p_in_class_body ? DECLARATION_STATIC : 0);
   if ((p_declaration_modifiers & ~let_allowed_decl_mods) != 0) {
     string mods_str = ast_declaration_modifiers_asprint(p_declaration_modifiers, alloc);
     string message = asprint(alloc,
@@ -1244,10 +1264,12 @@ free_bindings:
 }
 
 ast_function_declaration* parse_function_declaration(parser* p_parser,
-                                                     ast_declaration_modifiers_t p_declaration_modifiers) {
+                                                     ast_declaration_modifiers_t p_declaration_modifiers,
+                                                     bool p_in_class_body) {
   allocators* alloc = p_parser->alloc;
   token fu_tok = p_parser->previous;
-  const ast_declaration_modifiers_t fu_allowed_decl_mods = DECLARATION_GLOB | DECLARATION_EXPORT;
+  const ast_declaration_modifiers_t fu_allowed_decl_mods =
+      DECLARATION_GLOB | DECLARATION_EXPORT | (p_in_class_body ? (DECLARATION_PUB | DECLARATION_STATIC) : 0);
   if ((p_declaration_modifiers & ~fu_allowed_decl_mods) != 0) {
     string mods_str = ast_declaration_modifiers_asprint(p_declaration_modifiers, alloc);
     string message = asprint(alloc,
@@ -1273,6 +1295,94 @@ ast_function_declaration* parse_function_declaration(parser* p_parser,
              p_parser->previous,
              ok_create_string_view("expected an identifier as function name.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
     return NULL;
+  }
+  token name_tok = p_parser->previous;
+  if (p_in_class_body && name_tok.length == 8 && memcmp(name_tok.start, "operator", 8) == 0) {
+    // a method literally named "operator" is an operator declaration: the
+    // name spans the operator keyword plus its spelling. `operator +`,
+    // `operator ==`, `operator ()`, `operator []`, `operator []=`, and
+    // `operator Target` (a conversion, the target spelled as an identifier).
+    // the call operator is `fu operator ()(args)`: the empty parens are the
+    // spelling, the following parameter list belongs to the method.
+    token end = p_parser->current;
+    switch (end.type) {
+    case TOKEN_LEFT_PAREN:
+      advance(p_parser);
+      if (!expect(p_parser, TOKEN_RIGHT_PAREN, ok_create_string_view("expected ')' after 'operator ('.",
+                                                        OK_STRING_VIEW_CALCULATE_LENGTH, true))) {
+        return NULL;
+      }
+      end = p_parser->previous;
+      break;
+    case TOKEN_LEFT_BRACKET:
+      advance(p_parser);
+      if (p_parser->current.type == TOKEN_ASSIGN) {
+        advance(p_parser);
+      }
+      if (!expect(p_parser, TOKEN_RIGHT_BRACKET, ok_create_string_view("expected ']' after 'operator ['.",
+                                                         OK_STRING_VIEW_CALCULATE_LENGTH, true))) {
+        return NULL;
+      }
+      end = p_parser->previous;
+      break;
+    case TOKEN_IDENTIFIER: {
+      // conversion: one target identifier. builtin targets (str, num, bool)
+      // and class names both parse here; validity is the compiler's call.
+      token target = p_parser->current;
+      if (target.length == 8 && memcmp(target.start, "operator", 8) == 0) {
+        error_at(p_parser, target, ok_create_string_view("'operator' cannot follow 'operator'.",
+                                                          OK_STRING_VIEW_CALCULATE_LENGTH, true));
+        return NULL;
+      }
+      advance(p_parser);
+      end = p_parser->previous;
+      break;
+    }
+    default:
+      switch (end.type) {
+      case TOKEN_PLUS:
+      case TOKEN_MINUS:
+      case TOKEN_ASTERISK:
+      case TOKEN_SLASH:
+      case TOKEN_MODULO:
+      case TOKEN_CARET:
+      case TOKEN_AMPERSAND:
+      case TOKEN_BAR:
+      case TOKEN_TILED:
+      case TOKEN_SHIFT_LEFT:
+      case TOKEN_SHIFT_RIGHT:
+      case TOKEN_BANG:
+      case TOKEN_BANG_EQUAL:
+      case TOKEN_EQUAL:
+      case TOKEN_LESS:
+      case TOKEN_LESS_EQUAL:
+      case TOKEN_GREATER:
+      case TOKEN_GREATER_EQUAL:
+      case TOKEN_PLUS_EQUAL:
+      case TOKEN_MINUS_EQUAL:
+      case TOKEN_ASTERISK_EQUAL:
+      case TOKEN_SLASH_EQUAL:
+      case TOKEN_MODULO_EQUAL:
+      case TOKEN_CARET_EQUAL:
+      case TOKEN_AMPERSAND_EQUAL:
+      case TOKEN_BAR_EQUAL:
+      case TOKEN_TILED_EQUAL:
+      case TOKEN_SHIFT_LEFT_EQUAL:
+      case TOKEN_SHIFT_RIGHT_EQUAL:
+        advance(p_parser);
+        end = p_parser->previous;
+        break;
+      default:
+        error_at(p_parser,
+                 end,
+                 ok_create_string_view("expected an operator symbol after 'operator'.",
+                                       OK_STRING_VIEW_CALCULATE_LENGTH, true));
+        return NULL;
+      }
+      break;
+    }
+    name_tok.length = (uint32_t)((end.start + end.length) - name_tok.start);
+    p_parser->previous = name_tok;
   }
   ast_identifier_expression* ident =
       (ast_identifier_expression*)alloc->allocate(alloc, sizeof(ast_identifier_expression));
@@ -1338,6 +1448,171 @@ free_bind:
 free_ident:
   ast_identifier_expression_deinit(ident);
   alloc->release(alloc, ident);
+  return NULL;
+}
+
+// `.` member access: left.name. in call position the compiler fuses this
+// into OP_INVOKE; standing alone it is a field read (visible) or a bound
+// method.
+ast_expression* parse_access(
+    parser* p_parser, ast_expression* p_left, precedence p_precedence, bool is_right_associative, token p_trigger) {
+  (void)p_precedence;
+  (void)is_right_associative;
+  allocators* alloc = p_parser->alloc;
+  advance(p_parser); // the '.'
+  if (p_parser->previous.type != TOKEN_IDENTIFIER) {
+    error_at(p_parser,
+             p_parser->previous,
+             ok_create_string_view("expected a member name after '.'.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    goto fail;
+  }
+  ast_access_expression* access = (ast_access_expression*)alloc->allocate(alloc, sizeof(ast_access_expression));
+  if (access == NULL) {
+    error_at(p_parser,
+             p_trigger,
+             ok_create_string_view("failed to allocate memory for access node.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    goto fail;
+  }
+  ast_specs s = {alloc};
+  ast_access_expression_init(access, p_trigger, p_left, p_parser->previous, &s);
+  return (ast_expression*)access;
+fail:
+  ast_dispatch_deinit((ast_node*)p_left);
+  alloc->release(alloc, p_left);
+  return NULL;
+}
+
+ast_expression* parse_this(parser* p_parser, token p_trigger) {
+  allocators* alloc = p_parser->alloc;
+  ast_this_expression* this_expr = (ast_this_expression*)alloc->allocate(alloc, sizeof(ast_this_expression));
+  if (this_expr == NULL) {
+    error_at(p_parser,
+             p_trigger,
+             ok_create_string_view("failed to allocate memory for this node.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL;
+  }
+  ast_specs s = {alloc};
+  ast_this_expression_init(this_expr, p_trigger, &s);
+  return (ast_expression*)this_expr;
+}
+
+ast_expression* parse_super(parser* p_parser, token p_trigger) {
+  allocators* alloc = p_parser->alloc;
+  ast_super_expression* super_expr = (ast_super_expression*)alloc->allocate(alloc, sizeof(ast_super_expression));
+  if (super_expr == NULL) {
+    error_at(p_parser,
+             p_trigger,
+             ok_create_string_view("failed to allocate memory for super node.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL;
+  }
+  ast_specs s = {alloc};
+  ast_super_expression_init(super_expr, p_trigger, &s);
+  return (ast_expression*)super_expr;
+}
+
+// `class Name : Parent { members }`. members are let fields and fu methods
+// (pub composes on methods); anything else is a parse error.
+ast_class_declaration* parse_class_declaration(parser* p_parser, ast_declaration_modifiers_t p_modifiers) {
+  allocators* alloc = p_parser->alloc;
+  token class_tok = p_parser->previous;
+  const ast_declaration_modifiers_t class_allowed_decl_mods = DECLARATION_GLOB | DECLARATION_EXPORT;
+  if ((p_modifiers & ~class_allowed_decl_mods) != 0) {
+    string mods_str = ast_declaration_modifiers_asprint(p_modifiers, alloc);
+    string message = asprint(alloc, "illegal declaration modifier(s): [%s] in class declaration.", mods_str.chars);
+    string allowed_str = ast_declaration_modifiers_asprint(class_allowed_decl_mods, alloc);
+    string note = asprint(alloc, "allowed are: [%s]", allowed_str.chars);
+    error_at_noted(
+        p_parser, class_tok, ok_create_string_view_from_string(message), ok_create_string_view_from_string(note));
+    string_deinit(&message, alloc);
+    string_deinit(&mods_str, alloc);
+    string_deinit(&note, alloc);
+    string_deinit(&allowed_str, alloc);
+    return NULL;
+  }
+  if (p_parser->current.type != TOKEN_IDENTIFIER) {
+    error_at(p_parser,
+             p_parser->current,
+             ok_create_string_view("expected a class name.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL;
+  }
+  advance(p_parser);
+  token name_tok = p_parser->previous;
+  ast_expression* parent = NULL;
+  if (p_parser->current.type == TOKEN_COLON) {
+    advance(p_parser); // the ':'
+    advance(p_parser); // the parent's first token, staged for parse_expression
+    parent = parse_expression(p_parser, PREC_NONE);
+    if (parent == NULL) {
+      return NULL;
+    }
+  }
+  if (!expect(p_parser, TOKEN_LEFT_BRACE,
+               ok_create_string_view("expected '{' to open the class body.", OK_STRING_VIEW_CALCULATE_LENGTH, true))) {
+    goto free_parent;
+  }
+  ast_statements_list members;
+  ast_statements_list_init(&members, alloc);
+  while (p_parser->current.type != TOKEN_RIGHT_BRACE && p_parser->current.type != TOKEN_EOF) {
+    if (!advance(p_parser)) {
+      goto free_members;
+    }
+    ast_declaration_modifiers_t mods = try_parse_declaration_modifiers(p_parser);
+    if (mods == DECLARATION_ERROR) {
+      goto free_members;
+    }
+    ast_statement* member = NULL;
+    switch (p_parser->previous.type) {
+    case TOKEN_LET: {
+      member = (ast_statement*)parse_let_declaration(p_parser, mods, true);
+      break;
+    }
+    case TOKEN_FU: {
+      member = (ast_statement*)parse_function_declaration(p_parser, mods, true);
+      break;
+    }
+    default:
+      error_at(p_parser,
+               p_parser->previous,
+               ok_create_string_view("class bodies take 'let' fields and 'fu' methods.",
+                                     OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      goto free_members;
+    }
+    if (member == NULL) {
+      goto free_members;
+    }
+    if (!ast_statements_list_append(&members, member)) {
+      ast_dispatch_deinit((ast_node*)member);
+      alloc->release(alloc, member);
+      goto free_members;
+    }
+  }
+  if (!expect(p_parser, TOKEN_RIGHT_BRACE,
+               ok_create_string_view("expected '}' to close the class body.", OK_STRING_VIEW_CALCULATE_LENGTH, true))) {
+    goto free_members;
+  }
+  {
+    ast_class_declaration* klass =
+        (ast_class_declaration*)alloc->allocate(alloc, sizeof(ast_class_declaration));
+    if (klass == NULL) {
+      error_at(p_parser,
+               class_tok,
+               ok_create_string_view("failed to allocate memory for class node.",
+                                     OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      goto free_members;
+    }
+    ast_specs s = {alloc};
+    ast_class_declaration_init(klass, name_tok, parent, members, p_modifiers, class_tok, &s);
+    return klass;
+  }
+free_members:
+  // the list deinit dispatches on every element: no manual walk (it would
+  // free each member twice).
+  ast_statements_list_deinit(&members, alloc);
+free_parent:
+  if (parent != NULL) {
+    ast_dispatch_deinit((ast_node*)parent);
+    alloc->release(alloc, parent);
+  }
   return NULL;
 }
 

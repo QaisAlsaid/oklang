@@ -150,8 +150,10 @@ typedef enum {
   DECLARATION_ERROR = 1,
   DECLARATION_GLOB = 1 << 1,
   DECLARATION_EXPORT = 1 << 2,
+  DECLARATION_PUB = 1 << 3,
+  DECLARATION_STATIC = 1 << 4,
 } ast_declaration_modifiers;
-#define DECLARATION_COUNT 3
+#define DECLARATION_COUNT 5
 
 typedef uint8_t ast_declaration_modifiers_t;
 string ast_declaration_modifiers_asprint(ast_declaration_modifiers_t p_modifiers, allocators* p_alloc);
@@ -363,6 +365,43 @@ void ast_array_expression_init(ast_array_expression* p_array,
 void ast_array_expression_deinit(ast_array_expression* p_array);
 bool ast_array_expression_print(const ast_array_expression* p_array);
 string ast_array_expression_asprint(const ast_array_expression* p_array);
+
+typedef struct {
+  ast_expression expression;
+} ast_this_expression;
+
+void ast_this_expression_init(ast_this_expression* p_this, const token p_token, ast_specs* p_specs);
+void ast_this_expression_deinit(ast_this_expression* p_this);
+bool ast_this_expression_print(const ast_this_expression* p_this);
+string ast_this_expression_asprint(const ast_this_expression* p_this);
+
+typedef struct {
+  ast_expression expression;
+} ast_super_expression;
+
+void ast_super_expression_init(ast_super_expression* p_super, const token p_token, ast_specs* p_specs);
+void ast_super_expression_deinit(ast_super_expression* p_super);
+bool ast_super_expression_print(const ast_super_expression* p_super);
+string ast_super_expression_asprint(const ast_super_expression* p_super);
+
+// `left.name` member access. on instances this is a field read (when visible
+// from the calling hierarchy) or a bound method; the compiler fuses an access
+// in call position into OP_INVOKE. `left` may be an ast_super_expression:
+// `super.name(...)` compiles to OP_SUPER_INVOKE.
+typedef struct {
+  ast_expression expression;
+  ast_expression* left;
+  token name;
+} ast_access_expression;
+
+void ast_access_expression_init(ast_access_expression* p_access,
+                                const token p_token,
+                                ast_expression* p_left,
+                                const token p_name,
+                                ast_specs* p_specs);
+void ast_access_expression_deinit(ast_access_expression* p_access);
+bool ast_access_expression_print(const ast_access_expression* p_access);
+string ast_access_expression_asprint(const ast_access_expression* p_access);
 
 typedef struct {
   ast_expression expression;
@@ -680,6 +719,28 @@ void ast_function_declaration_init(ast_function_declaration* p_fu,
 void ast_function_declaration_deinit(ast_function_declaration* p_fu);
 bool ast_function_declaration_print(const ast_function_declaration* p_fu);
 string ast_function_declaration_asprint(const ast_function_declaration* p_fu);
+
+// `class Name : Parent { members }`. members are let declarations (fields,
+// the binding's value is the per-instance initializer) and function
+// declarations (methods; DECLARATION_PUB marks `pub fu`). the parent is an
+// arbitrary expression evaluated at definition time (null = Object).
+typedef struct {
+  ast_declaration declaration;
+  token name;
+  ast_expression* parent; // nullable: no `: Parent` clause
+  ast_statements_list members;
+} ast_class_declaration;
+
+void ast_class_declaration_init(ast_class_declaration* p_class,
+                                const token p_name,
+                                ast_expression* p_parent,
+                                ast_statements_list p_members,
+                                ast_declaration_modifiers_t p_modifiers,
+                                const token p_token,
+                                ast_specs* p_specs);
+void ast_class_declaration_deinit(ast_class_declaration* p_class);
+bool ast_class_declaration_print(const ast_class_declaration* p_class);
+string ast_class_declaration_asprint(const ast_class_declaration* p_class);
 
 bool ast_dispatch_print(ast_node* p_node);
 string ast_dispatch_asprint(ast_node* p_node);

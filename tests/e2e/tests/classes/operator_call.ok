@@ -1,0 +1,18 @@
+class Pool {
+  static let mut created = 0;
+  pub static fu operator ()(tag) {
+    Pool.created = Pool.created + 1;
+    return tag;
+  }
+  pub static fu count() { return created; }
+}
+print(Pool("a")); // expect: a
+print(Pool("b")); // expect: b
+print(Pool.count()); // expect: 2
+
+class Plain {
+  let v;
+  fu init(v) { this.v = v; }
+  pub fu get() { return v; }
+}
+print(Plain(7).get()); // expect: 7

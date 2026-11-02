@@ -1,0 +1,16 @@
+class A {
+  fu secret() { return 1; }
+  pub fu open() { return 2; }
+  pub fu via_secret() { return this.secret() + 10; }
+  pub fu uses_this() { return this.secret() + 100; }
+}
+class B : A {
+  pub fu child_secret() { return this.secret() + 1000; }
+}
+let a = A();
+print(a.open()); // expect: 2
+print(a.via_secret()); // expect: 11
+let b = B();
+print(b.child_secret()); // expect: 1001
+print(b.secret()); // expect error: is private
+print(b.uses_this()); // expect: 101

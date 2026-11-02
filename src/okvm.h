@@ -127,6 +127,16 @@ typedef struct {
 
 struct vm {
   execution_state* current_execution_state;
+  // the two singletons every hierarchy funnels into: Object (the root, the
+  // default parent) and Class (the class of every class value - there is
+  // exactly one metaclass, no tower). created at vm_init, traced via mark_vm.
+  struct object_class* object_singleton;
+  struct object_class* class_singleton;
+  // the cached spelling of the static call operator, so constructing through
+  // a class value never allocates its lookup name. rooted like the singletons.
+  object_string* static_call_name;
+  // the cached spelling of the initializer method, for the construction path.
+  object_string* init_method_name;
   // the source table: one entry per ok_run, chunks carry the index. reports read per-frame.
   vm_sources sources;
   bool retain_source;
@@ -165,6 +175,9 @@ typedef struct {
 } interpret_specs;
 
 void vm_init(vm* p_vm, vm_specs p_specs);
+// create Object/Class and the cached lookup names. call exactly once, after
+// the gc watches the vm (see the comment on the implementation).
+bool vm_init_singletons(vm* p_vm);
 void vm_deinit(vm* p_vm);
 interpret_result vm_interpret(vm* p_vm, interpret_specs p_specs);
 interpret_result vm_call(vm* p_vm, value p_callee, uint32_t p_argc);

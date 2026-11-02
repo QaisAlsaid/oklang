@@ -1,0 +1,29 @@
+class Animal {
+  let name;
+  let legs = 4;
+  fu init(name) { this.name = name; }
+  pub fu describe() { return name + " has " + legs as str + " legs"; }
+  pub fu kind() { return "animal"; }
+}
+
+class Dog : Animal {
+  let breed = "unknown";
+  fu init(name, breed) {
+    super(name);
+    this.breed = breed;
+  }
+  pub fu describe() { return super.describe() + ", a " + breed; }
+}
+
+class Puppy : Dog {
+  fu init(name) {
+    super(name, "puppy");
+  }
+  pub fu kind() { return "puppy " + super.kind(); }
+}
+
+let d = Dog("rex", "lab");
+print(d.describe()); // expect: rex has 4 legs, a lab
+let p = Puppy("bit");
+print(p.describe()); // expect: bit has 4 legs, a puppy
+print(p.kind()); // expect: puppy animal

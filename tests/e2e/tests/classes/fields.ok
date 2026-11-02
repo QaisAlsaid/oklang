@@ -1,0 +1,24 @@
+class Point {
+  let mut x;
+  let mut y;
+  let label = "p";
+
+  fu init(x, y) {
+    this.x = x;
+    this.y = y;
+  }
+
+  pub fu sum() { return x + y; }
+  pub fu shift(dx) {
+    x += dx;
+    y += dx;
+    return this.sum();
+  }
+  pub fu tagged() { return label + " " + x as str; }
+}
+
+let p = Point(2, 3);
+print(p.sum()); // expect: 5
+print(p.shift(4)); // expect: 13
+print(p.tagged()); // expect: p 6
+print(p.x + p.y); // expect error: not visible

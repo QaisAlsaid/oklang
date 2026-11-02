@@ -1,0 +1,3 @@
+class A { fu init(n) { } }
+class B : A { fu init(n) { } }
+let b = B(1); // expect error: without calling super

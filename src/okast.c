@@ -27,9 +27,9 @@
   X(AST_CONDITIONAL_EXPRESSION, ast_conditional_expression)                                                            \
   X(AST_BOOLEAN_EXPRESSION, ast_boolean_expression)                                                                    \
   X(AST_NULL_EXPRESSION, ast_null_expression)                                                                          \
-  /*X(AST_ACCESS_EXPRESSION, ast_access_expression)*/                                                                  \
-  /*X(AST_THIS_EXPRESSION, ast_this_expression)*/                                                                      \
-  /*X(AST_SUPER_EXPRESSION, ast_super_expression)*/                                                                    \
+  X(AST_ACCESS_EXPRESSION, ast_access_expression)                                                                        \
+  X(AST_THIS_EXPRESSION, ast_this_expression)                                                                            \
+  X(AST_SUPER_EXPRESSION, ast_super_expression)                                                                    \
   X(AST_ARRAY_EXPRESSION, ast_array_expression)                                                                        \
   X(AST_MAP_EXPRESSION, ast_map_expression)                                                                            \
   X(AST_SUBSCRIPT_EXPRESSION, ast_subscript_expression)                                                                \
@@ -52,7 +52,7 @@
   X(AST_EOF_STATEMENT, ast_eof_statement)                                                                              \
   X(AST_LET_DECLARATION, ast_let_declaration)                                                                          \
   X(AST_FUNCTION_DECLARATION, ast_function_declaration)                                                                \
-  /*X(AST_CLASS_DECLARATION, ast_class_declaration)*/
+  X(AST_CLASS_DECLARATION, ast_class_declaration)
 
 void ast_node_init(ast_node* p_node, ast_node_type p_type, token p_token, ast_specs* p_specs) {
   p_node->node_type = p_type;
@@ -170,6 +170,12 @@ string ast_binding_asprint(const ast_binding* p_binding) {
 
 // doesn't preserve order.
 string ast_declaration_modifiers_asprint(ast_declaration_modifiers_t p_modifiers, allocators* p_alloc) {
+  if ((p_modifiers & DECLARATION_PUB) != 0) {
+    return create_static_string("pub ", 4);
+  }
+  if ((p_modifiers & DECLARATION_STATIC) != 0) {
+    return create_static_string("static ", 7);
+  }
   return (p_modifiers & DECLARATION_NONE) != 0 ? create_static_string("", 0)
                                                : asprint(p_alloc,
                                                          "%s%s",
@@ -411,6 +417,70 @@ bool ast_null_expression_print(const ast_null_expression* p_null) {
 
 string ast_null_expression_asprint(const ast_null_expression* p_null) {
   return asprint(p_null->expression.node.alloc, "null");
+}
+
+void ast_this_expression_init(ast_this_expression* p_this, const token p_token, ast_specs* p_specs) {
+  ast_expression_init(&p_this->expression, AST_THIS_EXPRESSION, p_token, p_specs);
+}
+
+void ast_this_expression_deinit(ast_this_expression* p_this) {
+  ast_expression_deinit(&p_this->expression);
+}
+
+bool ast_this_expression_print(const ast_this_expression* p_this) {
+  return printf("this") > 0;
+}
+
+string ast_this_expression_asprint(const ast_this_expression* p_this) {
+  return asprint(p_this->expression.node.alloc, "this");
+}
+
+void ast_super_expression_init(ast_super_expression* p_super, const token p_token, ast_specs* p_specs) {
+  ast_expression_init(&p_super->expression, AST_SUPER_EXPRESSION, p_token, p_specs);
+}
+
+void ast_super_expression_deinit(ast_super_expression* p_super) {
+  ast_expression_deinit(&p_super->expression);
+}
+
+bool ast_super_expression_print(const ast_super_expression* p_super) {
+  return printf("super") > 0;
+}
+
+string ast_super_expression_asprint(const ast_super_expression* p_super) {
+  return asprint(p_super->expression.node.alloc, "super");
+}
+
+void ast_access_expression_init(ast_access_expression* p_access,
+                                const token p_token,
+                                ast_expression* p_left,
+                                const token p_name,
+                                ast_specs* p_specs) {
+  ast_expression_init(&p_access->expression, AST_ACCESS_EXPRESSION, p_token, p_specs);
+  p_access->left = p_left;
+  p_access->name = p_name;
+}
+
+void ast_access_expression_deinit(ast_access_expression* p_access) {
+  allocators* alloc = p_access->expression.node.alloc;
+  ast_dispatch_deinit((ast_node*)p_access->left);
+  alloc->release(alloc, p_access->left);
+  p_access->left = NULL;
+  ast_expression_deinit(&p_access->expression);
+}
+
+bool ast_access_expression_print(const ast_access_expression* p_access) {
+  bool status = ast_dispatch_print((ast_node*)p_access->left);
+  status &= printf(".%.*s", p_access->name.length, p_access->name.start) > 0;
+  return status;
+}
+
+string ast_access_expression_asprint(const ast_access_expression* p_access) {
+  allocators* alloc = p_access->expression.node.alloc;
+  string left_str = ast_dispatch_asprint((ast_node*)p_access->left);
+  string ret = asprint(alloc, "%s.%.*s", left_str.chars, p_access->name.length, p_access->name.start);
+  string_deinit(&left_str, alloc);
+  return ret;
 }
 
 void ast_prefix_unary_expression_init(ast_prefix_unary_expression* p_prefix,
@@ -1693,6 +1763,61 @@ string ast_function_declaration_asprint(const ast_function_declaration* p_fu) {
   string_deinit(&binding_str, alloc);
   string_deinit(&params_str, alloc);
   string_deinit(&body_str, alloc);
+  return ret;
+}
+
+void ast_class_declaration_init(ast_class_declaration* p_class,
+                                const token p_name,
+                                ast_expression* p_parent,
+                                ast_statements_list p_members,
+                                ast_declaration_modifiers_t p_modifiers,
+                                const token p_token,
+                                ast_specs* p_specs) {
+  ast_declaration_init(&p_class->declaration, AST_CLASS_DECLARATION, p_token, p_modifiers, p_specs);
+  p_class->name = p_name;
+  p_class->parent = p_parent;
+  p_class->members = p_members;
+}
+
+void ast_class_declaration_deinit(ast_class_declaration* p_class) {
+  allocators* alloc = p_class->declaration.statement.node.alloc;
+  if (p_class->parent != NULL) {
+    ast_dispatch_deinit((ast_node*)p_class->parent);
+    alloc->release(alloc, p_class->parent);
+    p_class->parent = NULL;
+  }
+  // the members list owns its elements (the array deinit dispatches on each):
+  // a manual walk here would free every member twice.
+  ast_statements_list_deinit(&p_class->members, alloc);
+  ast_declaration_deinit(&p_class->declaration);
+}
+
+bool ast_class_declaration_print(const ast_class_declaration* p_class) {
+  bool status = ast_declaration_print(&p_class->declaration);
+  status &= printf("class %.*s", p_class->name.length, p_class->name.start) > 0;
+  if (p_class->parent != NULL) {
+    status &= printf(" : ") > 0;
+    status &= ast_dispatch_print((ast_node*)p_class->parent);
+  }
+  status &= printf(" { ") > 0;
+  for (uint32_t i = 0; i < p_class->members.count; ++i) {
+    status &= ast_dispatch_print((ast_node*)p_class->members.data[i]);
+    status &= printf(" ") > 0;
+  }
+  status &= printf("}") > 0;
+  return status;
+}
+
+string ast_class_declaration_asprint(const ast_class_declaration* p_class) {
+  allocators* alloc = p_class->declaration.statement.node.alloc;
+  string ret = asprint(alloc, "class %.*s", p_class->name.length, p_class->name.start);
+  if (p_class->parent != NULL) {
+    string parent_str = ast_dispatch_asprint((ast_node*)p_class->parent);
+    string with_parent = asprint(alloc, "%s : %s", ret.chars, parent_str.chars);
+    string_deinit(&ret, alloc);
+    string_deinit(&parent_str, alloc);
+    ret = with_parent;
+  }
   return ret;
 }
 

@@ -1,0 +1,12 @@
+class Box {
+  let mut n = 10;
+  pub fu adder() {
+    return fu(x) { n = n + x; return n; };
+  }
+  pub fu get() { return n; }
+}
+let b = Box();
+let add = b.adder();
+print(add(5)); // expect: 15
+print(add(5)); // expect: 20
+print(b.get()); // expect: 20

@@ -1,0 +1,8 @@
+class Handler {
+  let mut action = null;
+  pub fu set_action(f) { this.action = f; }
+  pub fu run(x) { return this.action(x); }
+}
+let h = Handler();
+h.set_action(fu(x) { return x * 2; });
+print(h.run(21)); // expect: 42

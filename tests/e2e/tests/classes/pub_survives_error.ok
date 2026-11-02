@@ -1,0 +1,3 @@
+class A { pub fu open() { return 1; } }
+class B : A { fu open() { return 2; } }
+print(B().open()); // expect error: must be pub

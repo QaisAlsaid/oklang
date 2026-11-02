@@ -1,0 +1,3 @@
+class A { pub fu m(a) { return a; } }
+class B : A { pub fu m(a, b) { return a; } }
+print(B().m(1)); // expect error: different signature

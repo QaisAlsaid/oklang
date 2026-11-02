@@ -1,0 +1,5 @@
+class A {
+  static let s = 1;
+  static fu hidden() { return s; }
+}
+print(A.s); // expect error: not visible

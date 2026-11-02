@@ -115,6 +115,10 @@ void vm_init(vm* p_vm, vm_specs p_specs) {
   p_vm->ok = p_specs.ok;
   p_vm->print_cb = NULL;
   p_vm->print_ctx = NULL;
+  p_vm->object_singleton = NULL;
+  p_vm->class_singleton = NULL;
+  p_vm->static_call_name = NULL;
+  p_vm->init_method_name = NULL;
   // TODO: temp
   p_vm->current_execution_state = p_vm->alloc->allocate(p_vm->alloc, sizeof(execution_state));
   p_vm->current_execution_state->open_upvalues = NULL;
@@ -163,6 +167,50 @@ void vm_deinit(vm* p_vm) {
   handler_stack_deinit(&p_vm->current_execution_state->handlers, p_vm->alloc);
   string_deinit(&p_vm->current_execution_state->native_error_message, p_vm->alloc);
   p_vm->alloc->release(p_vm->alloc, p_vm->current_execution_state);
+}
+
+// the hierarchy singletons, created only after the gc watches the vm (their
+// only root is mark_vm). in-flight pieces ride the guard stack across the
+// allocations that could collect mid-sequence: aggressive mode collects on
+// every allocation, and an unrooted, unassigned object is exactly what a
+// collect would sweep.
+bool vm_init_singletons(vm* p_vm) {
+  object_specs specs = {p_vm->alloc, p_vm->objects_store};
+  gc* gc = p_vm->alloc->gc;
+  object_string* object_name =
+      create_object_string(ok_create_string_view("Object", OK_STRING_VIEW_CALCULATE_LENGTH, true), &specs);
+  if (object_name == NULL) {
+    return false;
+  }
+  gc_guard_up(gc, OBJECT_AS_VALUE(object_name));
+  p_vm->object_singleton = create_object_class(object_name, NULL, &specs);
+  if (p_vm->object_singleton == NULL) {
+    gc_guard_down(gc);
+    return false;
+  }
+  // the root is born complete: no fields, no methods, frozen empty.
+  object_class_freeze(p_vm->object_singleton);
+  object_string* class_name =
+      create_object_string(ok_create_string_view("Class", OK_STRING_VIEW_CALCULATE_LENGTH, true), &specs);
+  if (class_name == NULL) {
+    gc_guard_down(gc);
+    return false;
+  }
+  gc_guard_up(gc, OBJECT_AS_VALUE(class_name));
+  p_vm->class_singleton = create_object_class(class_name, p_vm->object_singleton, &specs);
+  if (p_vm->class_singleton == NULL) {
+    gc_guard_down(gc);
+    gc_guard_down(gc);
+    return false;
+  }
+  object_class_freeze(p_vm->class_singleton);
+  p_vm->static_call_name =
+      create_object_string(ok_create_string_view("operator ()", OK_STRING_VIEW_CALCULATE_LENGTH, true), &specs);
+  p_vm->init_method_name =
+      create_object_string(ok_create_string_view("init", OK_STRING_VIEW_CALCULATE_LENGTH, true), &specs);
+  gc_guard_down(gc);
+  gc_guard_down(gc);
+  return p_vm->static_call_name != NULL && p_vm->init_method_name != NULL;
 }
 
 bool vm_native_error(vm* p_vm, ok_string_view p_message) {
@@ -427,257 +475,130 @@ perform_negate(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_d
   return res;
 }
 
+// the numeric union: doubles and the int48 lane, one comparison point. the
+// int48 payload converts to double exactly (2^48 < 2^53), so mixed compares
+// through f64 lose nothing.
+static inline bool value_is_numeric(value p_v) {
+  return IS_VALUE_NUMBER(p_v) || IS_VALUE_STRICTLY_INT(p_v);
+}
+
+// strictly-int first: raw doubles can alias the int tag (the _STRICT
+// doctrine - the tag check alone is not a discriminator), and a double that
+// aliases must take the VALUE_AS_NUMBER read.
+static inline double value_as_f64(value p_v) {
+  return IS_VALUE_STRICTLY_INT(p_v) ? (double)VALUE_AS_INT(p_v) : VALUE_AS_NUMBER(p_v);
+}
+
 static interpret_result
 perform_add(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
   const uint32_t base = p_frame->registers_base;
   value lhs = p_lhs;
-  value rhs = p_rhs;
-  if (IS_VALUE_NUMBER(lhs)) {
-    if (IS_VALUE_NUMBER(rhs)) {
-      lhs = NUMBER_AS_VALUE(VALUE_AS_NUMBER(lhs) + VALUE_AS_NUMBER(rhs));
-    } else if (IS_VALUE_INT(rhs)) {
-      lhs = NUMBER_AS_VALUE(VALUE_AS_NUMBER(lhs) + VALUE_AS_INT(rhs));
-    } else if (IS_VALUE_OBJECT(rhs)) {
-      goto invalid;
-      // TODO
-      // not sure if we should allow this for objects or they have to be strictly lhs.
-      // TBD after we add classes.
+  // the number lane first: the common case, and nothing below it can ever
+  // intercept it (the builtin classes are sealed).
+  if (value_is_numeric(lhs) && value_is_numeric(p_rhs)) {
+    if (IS_VALUE_STRICTLY_INT(lhs) && IS_VALUE_STRICTLY_INT(p_rhs)) {
+      lhs = INT_AS_VALUE(VALUE_AS_INT(lhs) + VALUE_AS_INT(p_rhs));
     } else {
-      goto invalid;
+      lhs = NUMBER_AS_VALUE(value_as_f64(lhs) + value_as_f64(p_rhs));
     }
-  } else if (IS_VALUE_INT(lhs)) {
-    if (IS_VALUE_INT(rhs)) {
-      lhs = INT_AS_VALUE(VALUE_AS_INT(lhs) + VALUE_AS_INT(rhs));
-    } else if (IS_VALUE_NUMBER(rhs)) {
-      lhs = NUMBER_AS_VALUE(VALUE_AS_INT(lhs) + VALUE_AS_NUMBER(rhs));
-    } else if (IS_VALUE_OBJECT(rhs)) {
-      goto invalid;
-      // TODO
-      // not sure if we should allow this for objects or they have to be strictly lhs.
-      // TBD after we add classes.
-    } else {
-      goto invalid;
-    }
-  } else if (IS_VALUE_OBJECT(lhs)) {
-    if (IS_VALUE_STRING(lhs) && IS_VALUE_STRING(rhs)) {
-      // string concatenation: both operands must be strings, no implicit
-      // coercion ("a" + 1 = error)
-      // build the combined bytes over a raw scratch buffer first:
-      // it is plain memory, invisible to the gc, so allocations inside the
-      // object creation can collect freely. create_object_string copies the
-      // view into its own dynamic buffer and the result is published into the
-      // destination register with no allocation in between. the
-      // post-store-append window that killed array NEW does not exist here (no
-      // append_n phase, nothing allocates between creation and publication).
-      const object_string* left = VALUE_AS_STRING(p_lhs);
-      const object_string* right = VALUE_AS_STRING(p_rhs);
-      const uint64_t left_length = string_get_length(&left->string);
-      const uint64_t right_length = string_get_length(&right->string);
-      char* scratch = (char*)p_vm->alloc->allocate(p_vm->alloc, left_length + right_length);
-      if (scratch == NULL) {
-        runtime_oom(p_vm, "out of memory: failed to concatenate strings.");
-        interpret_result res;
-        res.status = RUNTIME_ERROR;
-        res.top_level_return = NULL_AS_VALUE();
-        return res;
-      }
-      memcpy(scratch, left->string.chars, left_length);
-      memcpy(scratch + left_length, right->string.chars, right_length);
-      object_specs specs = {p_vm->alloc, p_vm->objects_store};
-      object_string* concatenated =
-          create_object_string(ok_create_string_view(scratch, left_length + right_length, false), &specs);
-      p_vm->alloc->release(p_vm->alloc, scratch);
-      if (concatenated == NULL) {
-        runtime_oom(p_vm, "out of memory: failed to concatenate strings.");
-        interpret_result res;
-        res.status = RUNTIME_ERROR;
-        res.top_level_return = NULL_AS_VALUE();
-        return res;
-      }
-      lhs = OBJECT_AS_VALUE(concatenated);
-    } else {
-      goto invalid;
-    }
-  } else {
-  invalid: {
-    runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '+'.");
-    interpret_result res;
-    res.status = RUNTIME_ERROR;
-    res.top_level_return = NULL_AS_VALUE();
-    return res;
+    p_reg->array.data[base + p_dest] = lhs;
+    return (interpret_result){.status = RUNTIME_OK, .top_level_return = NULL_AS_VALUE()};
   }
+  switch (VALUE_TAG(lhs)) {
+  case TAG_OBJECT_MASK: {
+    // string concatenation: both operands must be strings, no implicit
+    // coercion ("a" + 1 = error). build the combined bytes over a raw scratch
+    // buffer first: it is plain memory, invisible to the gc, so allocations
+    // inside the object creation can collect freely.
+    if (!IS_VALUE_STRING(lhs) || !IS_VALUE_STRING(p_rhs)) {
+      break;
+    }
+    const object_string* left = VALUE_AS_STRING(lhs);
+    const object_string* right = VALUE_AS_STRING(p_rhs);
+    const uint64_t left_length = string_get_length(&left->string);
+    const uint64_t right_length = string_get_length(&right->string);
+    char* scratch = (char*)p_vm->alloc->allocate(p_vm->alloc, left_length + right_length);
+    if (scratch == NULL) {
+      runtime_oom(p_vm, "out of memory: failed to concatenate strings.");
+      return (interpret_result){.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
+    }
+    memcpy(scratch, left->string.chars, left_length);
+    memcpy(scratch + left_length, right->string.chars, right_length);
+    object_specs specs = {p_vm->alloc, p_vm->objects_store};
+    object_string* concatenated =
+        create_object_string(ok_create_string_view(scratch, left_length + right_length, false), &specs);
+    p_vm->alloc->release(p_vm->alloc, scratch);
+    if (concatenated == NULL) {
+      runtime_oom(p_vm, "out of memory: failed to concatenate strings.");
+      return (interpret_result){.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
+    }
+    p_reg->array.data[base + p_dest] = OBJECT_AS_VALUE(concatenated);
+    return (interpret_result){.status = RUNTIME_OK, .top_level_return = NULL_AS_VALUE()};
   }
-  p_reg->array.data[base + p_dest] = lhs;
-  interpret_result res;
-  res.status = RUNTIME_OK;
-  return res;
+  default:
+    break;
+  }
+  runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '+'.");
+  return (interpret_result){.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
 }
 
 static interpret_result
 perform_subtract(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
   const uint32_t base = p_frame->registers_base;
   value lhs = p_lhs;
-  value rhs = p_rhs;
-  if (IS_VALUE_NUMBER(lhs)) {
-    if (IS_VALUE_NUMBER(rhs)) {
-      lhs = NUMBER_AS_VALUE(VALUE_AS_NUMBER(lhs) - VALUE_AS_NUMBER(rhs));
-    } else if (IS_VALUE_INT(rhs)) {
-      lhs = NUMBER_AS_VALUE(VALUE_AS_NUMBER(lhs) - VALUE_AS_INT(rhs));
-    } else if (IS_VALUE_OBJECT(rhs)) {
-      goto invalid;
-      // TODO
-      // not sure if we should allow this for objects or they have to be strictly lhs.
-      // TBD after we add classes.
+  if (value_is_numeric(lhs) && value_is_numeric(p_rhs)) {
+    if (IS_VALUE_STRICTLY_INT(lhs) && IS_VALUE_STRICTLY_INT(p_rhs)) {
+      lhs = INT_AS_VALUE(VALUE_AS_INT(lhs) - VALUE_AS_INT(p_rhs));
     } else {
-      goto invalid;
+      lhs = NUMBER_AS_VALUE(value_as_f64(lhs) - value_as_f64(p_rhs));
     }
-  } else if (IS_VALUE_INT(lhs)) {
-    if (IS_VALUE_INT(rhs)) {
-      lhs = INT_AS_VALUE(VALUE_AS_INT(lhs) - VALUE_AS_INT(rhs));
-    } else if (IS_VALUE_NUMBER(rhs)) {
-      lhs = NUMBER_AS_VALUE(VALUE_AS_INT(lhs) - VALUE_AS_NUMBER(rhs));
-    } else if (IS_VALUE_OBJECT(rhs)) {
-      goto invalid;
-      // TODO
-      // not sure if we should allow this for objects or they have to be strictly lhs.
-      // TBD after we add classes.
-    } else {
-      goto invalid;
-    }
-  } else if (IS_VALUE_OBJECT(lhs)) {
-    goto invalid;
-    // TODO
-  } else {
-  invalid: {
-    runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '-'.");
-    interpret_result res;
-    res.status = RUNTIME_ERROR;
-    res.top_level_return = NULL_AS_VALUE();
-    return res;
+    p_reg->array.data[base + p_dest] = lhs;
+    return (interpret_result){.status = RUNTIME_OK, .top_level_return = NULL_AS_VALUE()};
   }
-  }
-  p_reg->array.data[base + p_dest] = lhs;
-  interpret_result res;
-  res.status = RUNTIME_OK;
-  return res;
+  runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '-'.");
+  return (interpret_result){.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
 }
 
 static interpret_result
 perform_multiply(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
   const uint32_t base = p_frame->registers_base;
   value lhs = p_lhs;
-  value rhs = p_rhs;
-  if (IS_VALUE_NUMBER(lhs)) {
-    if (IS_VALUE_NUMBER(rhs)) {
-      lhs = NUMBER_AS_VALUE(VALUE_AS_NUMBER(lhs) * VALUE_AS_NUMBER(rhs));
-    } else if (IS_VALUE_INT(rhs)) {
-      lhs = NUMBER_AS_VALUE(VALUE_AS_NUMBER(lhs) * VALUE_AS_INT(rhs));
-    } else if (IS_VALUE_OBJECT(rhs)) {
-      goto invalid;
-      // TODO
-      // not sure if we should allow this for objects or they have to be strictly lhs.
-      // TBD after we add classes.
+  if (value_is_numeric(lhs) && value_is_numeric(p_rhs)) {
+    if (IS_VALUE_STRICTLY_INT(lhs) && IS_VALUE_STRICTLY_INT(p_rhs)) {
+      lhs = INT_AS_VALUE(VALUE_AS_INT(lhs) * VALUE_AS_INT(p_rhs));
     } else {
-      goto invalid;
+      lhs = NUMBER_AS_VALUE(value_as_f64(lhs) * value_as_f64(p_rhs));
     }
-  } else if (IS_VALUE_INT(lhs)) {
-    if (IS_VALUE_INT(rhs)) {
-      lhs = INT_AS_VALUE(VALUE_AS_INT(lhs) * VALUE_AS_INT(rhs));
-    } else if (IS_VALUE_NUMBER(rhs)) {
-      lhs = NUMBER_AS_VALUE(VALUE_AS_INT(lhs) * VALUE_AS_NUMBER(rhs));
-    } else if (IS_VALUE_OBJECT(rhs)) {
-      goto invalid;
-      // TODO
-      // not sure if we should allow this for objects or they have to be strictly lhs.
-      // TBD after we add classes.
-    } else {
-      goto invalid;
-    }
-  } else if (IS_VALUE_OBJECT(lhs)) {
-    goto invalid;
-    // TODO
-  } else {
-  invalid: {
-    runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '*'.");
-    interpret_result res;
-    res.status = RUNTIME_ERROR;
-    res.top_level_return = NULL_AS_VALUE();
-    return res;
+    p_reg->array.data[base + p_dest] = lhs;
+    return (interpret_result){.status = RUNTIME_OK, .top_level_return = NULL_AS_VALUE()};
   }
-  }
-  p_reg->array.data[base + p_dest] = lhs;
-  interpret_result res;
-  res.status = RUNTIME_OK;
-  return res;
+  runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '*'.");
+  return (interpret_result){.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
 }
 
 static interpret_result
 perform_divide(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
   const uint32_t base = p_frame->registers_base;
   value lhs = p_lhs;
-  value rhs = p_rhs;
-  if (IS_VALUE_NUMBER(lhs)) {
-    if (IS_VALUE_NUMBER(rhs)) {
-      if (VALUE_AS_NUMBER(rhs) == 0.0f) {
-        goto division_by_zero;
+  if (value_is_numeric(lhs) && value_is_numeric(p_rhs)) {
+    if (IS_VALUE_STRICTLY_INT(lhs) && IS_VALUE_STRICTLY_INT(p_rhs)) {
+      if (VALUE_AS_INT(p_rhs) == 0) {
+        runtime_error(p_vm, OK_EK_VALUE, "division by zero.");
+        return (interpret_result){.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
       }
-      lhs = NUMBER_AS_VALUE(VALUE_AS_NUMBER(lhs) / VALUE_AS_NUMBER(rhs));
-    } else if (IS_VALUE_INT(rhs)) {
-      if (VALUE_AS_INT(rhs) == 0) {
-        goto division_by_zero;
-      }
-      lhs = NUMBER_AS_VALUE(VALUE_AS_NUMBER(lhs) / VALUE_AS_INT(rhs));
-    } else if (IS_VALUE_OBJECT(rhs)) {
-      goto invalid;
-      // TODO
-      // not sure if we should allow this for objects or they have to be strictly lhs.
-      // TBD after we add classes.
+      lhs = INT_AS_VALUE(VALUE_AS_INT(lhs) / VALUE_AS_INT(p_rhs));
     } else {
-      goto invalid;
-    }
-  } else if (IS_VALUE_INT(lhs)) {
-    if (IS_VALUE_INT(rhs)) {
-      if (VALUE_AS_INT(rhs) == 0) {
-        goto division_by_zero;
+      if (value_as_f64(p_rhs) == 0.0) {
+        runtime_error(p_vm, OK_EK_VALUE, "division by zero.");
+        return (interpret_result){.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
       }
-      lhs = INT_AS_VALUE(VALUE_AS_INT(lhs) / VALUE_AS_INT(rhs));
-    } else if (IS_VALUE_NUMBER(rhs)) {
-      if (VALUE_AS_NUMBER(rhs) == 0.0f) {
-        goto division_by_zero;
-      }
-      lhs = NUMBER_AS_VALUE(VALUE_AS_INT(lhs) / VALUE_AS_NUMBER(rhs));
-    } else if (IS_VALUE_OBJECT(rhs)) {
-      goto invalid;
-      // TODO
-      // not sure if we should allow this for objects or they have to be strictly lhs.
-      // TBD after we add classes.
-    } else {
-      goto invalid;
+      lhs = NUMBER_AS_VALUE(value_as_f64(lhs) / value_as_f64(p_rhs));
     }
-  } else if (IS_VALUE_OBJECT(lhs)) {
-    // TODO
-  } else {
-  invalid: {
-    runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '/'.");
-    interpret_result res;
-    res.status = RUNTIME_ERROR;
-    res.top_level_return = NULL_AS_VALUE();
-    return res;
-  }
-  }
-  {
     p_reg->array.data[base + p_dest] = lhs;
-    interpret_result res;
-    res.status = RUNTIME_OK;
-    return res;
+    return (interpret_result){.status = RUNTIME_OK, .top_level_return = NULL_AS_VALUE()};
   }
-division_by_zero: {
-  runtime_error(p_vm, OK_EK_VALUE, "division by zero.");
-  interpret_result res;
-  res.status = RUNTIME_ERROR;
-  res.top_level_return = NULL_AS_VALUE();
-  return res;
-}
+  runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '/'.");
+  return (interpret_result){.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
 }
 
 static double floor_mod(double p_lhs, double p_rhs) {
@@ -692,408 +613,111 @@ static interpret_result
 perform_modulo(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
   const uint32_t base = p_frame->registers_base;
   value lhs = p_lhs;
-  value rhs = p_rhs;
-  if (IS_VALUE_NUMBER(lhs)) {
-    if (IS_VALUE_NUMBER(rhs)) {
-      if (VALUE_AS_NUMBER(rhs) == 0.0f) {
-        goto modulo_by_zero;
+  if (value_is_numeric(lhs) && value_is_numeric(p_rhs)) {
+    if (IS_VALUE_STRICTLY_INT(lhs) && IS_VALUE_STRICTLY_INT(p_rhs)) {
+      if (VALUE_AS_INT(p_rhs) == 0) {
+        runtime_error(p_vm, OK_EK_VALUE, "modulo by zero.");
+        return (interpret_result){.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
       }
-      lhs = NUMBER_AS_VALUE(floor_mod(VALUE_AS_NUMBER(lhs), VALUE_AS_NUMBER(rhs)));
-    } else if (IS_VALUE_INT(rhs)) {
-      if (VALUE_AS_INT(rhs) == 0) {
-        goto modulo_by_zero;
-      }
-      lhs = NUMBER_AS_VALUE(floor_mod(VALUE_AS_NUMBER(lhs), (double)VALUE_AS_INT(rhs)));
-    } else if (IS_VALUE_OBJECT(rhs)) {
-      goto invalid;
-      // TODO
-      // not sure if we should allow this for objects or they have to be strictly lhs.
-      // TBD after we add classes.
-    } else {
-      goto invalid;
-    }
-  } else if (IS_VALUE_INT(lhs)) {
-    if (IS_VALUE_INT(rhs)) {
-      if (VALUE_AS_INT(rhs) == 0) {
-        goto modulo_by_zero;
-      }
-      int64_t remainder = VALUE_AS_INT(lhs) % VALUE_AS_INT(rhs);
-      if (remainder != 0 && ((remainder < 0) != (VALUE_AS_INT(rhs) < 0))) {
-        remainder += VALUE_AS_INT(rhs); // |remainder| < |rhs|: cannot leave the int48 domain
+      int64_t remainder = VALUE_AS_INT(lhs) % VALUE_AS_INT(p_rhs);
+      if (remainder != 0 && ((remainder < 0) != (VALUE_AS_INT(p_rhs) < 0))) {
+        remainder += VALUE_AS_INT(p_rhs); // |remainder| < |rhs|: cannot leave the int48 domain
       }
       lhs = INT_AS_VALUE(remainder);
-    } else if (IS_VALUE_NUMBER(rhs)) {
-      if (VALUE_AS_NUMBER(rhs) == 0.0f) {
-        goto modulo_by_zero;
-      }
-      lhs = NUMBER_AS_VALUE(floor_mod((double)VALUE_AS_INT(lhs), VALUE_AS_NUMBER(rhs)));
-    } else if (IS_VALUE_OBJECT(rhs)) {
-      goto invalid;
-      // TODO
-      // not sure if we should allow this for objects or they have to be strictly lhs.
-      // TBD after we add classes.
     } else {
-      goto invalid;
+      if (value_as_f64(p_rhs) == 0.0) {
+        runtime_error(p_vm, OK_EK_VALUE, "modulo by zero.");
+        return (interpret_result){.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
+      }
+      lhs = NUMBER_AS_VALUE(floor_mod(value_as_f64(lhs), value_as_f64(p_rhs)));
     }
-  } else if (IS_VALUE_OBJECT(lhs)) {
-    goto invalid;
-    // TODO
-  } else {
-  invalid: {
-    runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '%%'.");
-    interpret_result res;
-    res.status = RUNTIME_ERROR;
-    res.top_level_return = NULL_AS_VALUE();
-    return res;
-  }
-  }
-  {
     p_reg->array.data[base + p_dest] = lhs;
-    interpret_result res;
-    res.status = RUNTIME_OK;
-    return res;
+    return (interpret_result){.status = RUNTIME_OK, .top_level_return = NULL_AS_VALUE()};
   }
-modulo_by_zero: {
-  runtime_error(p_vm, OK_EK_VALUE, "modulo by zero.");
-  interpret_result res;
-  res.status = RUNTIME_ERROR;
-  res.top_level_return = NULL_AS_VALUE();
-  return res;
-}
+  runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '%%'.");
+  return (interpret_result){.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
 }
 
 static interpret_result
 perform_equal(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
   const uint32_t base = p_frame->registers_base;
   value lhs = p_lhs;
-  value rhs = p_rhs;
-  if (IS_VALUE_NUMBER(lhs)) {
-    if (IS_VALUE_NUMBER(rhs)) {
-      lhs = BOOL_AS_VALUE(VALUE_AS_NUMBER(lhs) == VALUE_AS_NUMBER(rhs));
-    } else if (IS_VALUE_INT(rhs)) {
-      lhs = BOOL_AS_VALUE(VALUE_AS_NUMBER(lhs) == VALUE_AS_INT(rhs));
-    } else if (IS_VALUE_OBJECT(rhs)) {
-      // TODO
-      // not sure if we should allow this for objects or they have to be strictly lhs.
-      // TBD after we add classes.
-    } else {
-      goto invalid;
-    }
-  } else if (IS_VALUE_INT(lhs)) {
-    if (IS_VALUE_INT(rhs)) {
-      lhs = BOOL_AS_VALUE(VALUE_AS_INT(lhs) == VALUE_AS_INT(rhs));
-    } else if (IS_VALUE_NUMBER(rhs)) {
-      lhs = BOOL_AS_VALUE(VALUE_AS_INT(lhs) == VALUE_AS_NUMBER(rhs));
-    } else if (IS_VALUE_OBJECT(rhs)) {
-      // TODO
-      // not sure if we should allow this for objects or they have to be strictly lhs.
-      // TBD after we add classes.
-    } else {
-      goto invalid;
-    }
-  } else if (IS_VALUE_OBJECT(lhs)) {
-    if (IS_VALUE_STRING(lhs) && IS_VALUE_STRING(rhs)) {
-      // value equality: equal content, not common prefix. strncmp with only
-      // the lhs length made "ab" == "abc" true.
-      const object_string* left = VALUE_AS_STRING(p_lhs);
+  if (value_is_numeric(lhs) && value_is_numeric(p_rhs)) {
+    p_reg->array.data[base + p_dest] = BOOL_AS_VALUE(value_as_f64(lhs) == value_as_f64(p_rhs));
+    return (interpret_result){.status = RUNTIME_OK, .top_level_return = NULL_AS_VALUE()};
+  }
+  switch (VALUE_TAG(lhs)) {
+  case TAG_OBJECT_MASK: {
+    // value equality for strings: equal content, not common prefix.
+    if (IS_VALUE_STRING(lhs) && IS_VALUE_STRING(p_rhs)) {
+      const object_string* left = VALUE_AS_STRING(lhs);
       const object_string* right = VALUE_AS_STRING(p_rhs);
       const uint64_t left_length = string_get_length(&left->string);
-      lhs = BOOL_AS_VALUE(left_length == string_get_length(&right->string) &&
-                          memcmp(left->string.chars, right->string.chars, left_length) == 0);
-    } else {
-      goto invalid;
-      // TODO others
+      p_reg->array.data[base + p_dest] =
+          BOOL_AS_VALUE(left_length == string_get_length(&right->string) &&
+                        memcmp(left->string.chars, right->string.chars, left_length) == 0);
+      return (interpret_result){.status = RUNTIME_OK, .top_level_return = NULL_AS_VALUE()};
     }
-  } else {
-  invalid:
-    // mixed type equality intentionally falls back to a raw identity check
-    // (null/bool vs anything): turning this into a type error is a semantic
-    // decision deferred to when we design the error model.
-    lhs = BOOL_AS_VALUE(lhs == rhs);
+    break;
   }
-  {
-    p_reg->array.data[base + p_dest] = lhs;
-    interpret_result res;
-    res.status = RUNTIME_OK;
-    return res;
+  default:
+    break;
   }
+  // mixed type equality intentionally falls back to a raw identity check
+  // (null/bool vs anything): turning this into a type error is a semantic
+  // decision deferred to when we design the error model.
+  p_reg->array.data[base + p_dest] = BOOL_AS_VALUE(lhs == p_rhs);
+  return (interpret_result){.status = RUNTIME_OK, .top_level_return = NULL_AS_VALUE()};
 }
 
 static interpret_result
 perform_not_equal(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
   const uint32_t base = p_frame->registers_base;
   value lhs = p_lhs;
-  value rhs = p_rhs;
-  if (IS_VALUE_NUMBER(lhs)) {
-    if (IS_VALUE_NUMBER(rhs)) {
-      lhs = BOOL_AS_VALUE(VALUE_AS_NUMBER(lhs) != VALUE_AS_NUMBER(rhs));
-    } else if (IS_VALUE_INT(rhs)) {
-      lhs = BOOL_AS_VALUE(VALUE_AS_NUMBER(lhs) != VALUE_AS_INT(rhs));
-    } else if (IS_VALUE_OBJECT(rhs)) {
-      // TODO
-      // not sure if we should allow this for objects or they have to be strictly lhs.
-      // TBD after we add classes.
-    } else {
-      goto invalid;
-    }
-  } else if (IS_VALUE_INT(lhs)) {
-    if (IS_VALUE_INT(rhs)) {
-      lhs = BOOL_AS_VALUE(VALUE_AS_INT(lhs) != VALUE_AS_INT(rhs));
-    } else if (IS_VALUE_NUMBER(rhs)) {
-      lhs = BOOL_AS_VALUE(VALUE_AS_INT(lhs) != VALUE_AS_NUMBER(rhs));
-    } else if (IS_VALUE_OBJECT(rhs)) {
-      // TODO
-      // not sure if we should allow this for objects or they have to be strictly lhs.
-      // TBD after we add classes.
-    } else {
-      goto invalid;
-    }
-  } else if (IS_VALUE_OBJECT(lhs)) {
-    if (IS_VALUE_STRING(lhs) && IS_VALUE_STRING(rhs)) {
-      // value equality, same length+memcmp shape as perform_equal
-      const object_string* left = VALUE_AS_STRING(p_lhs);
+  if (value_is_numeric(lhs) && value_is_numeric(p_rhs)) {
+    p_reg->array.data[base + p_dest] = BOOL_AS_VALUE(value_as_f64(lhs) != value_as_f64(p_rhs));
+    return (interpret_result){.status = RUNTIME_OK, .top_level_return = NULL_AS_VALUE()};
+  }
+  switch (VALUE_TAG(lhs)) {
+  case TAG_OBJECT_MASK: {
+    // value equality for strings, negated - same length+memcmp shape.
+    if (IS_VALUE_STRING(lhs) && IS_VALUE_STRING(p_rhs)) {
+      const object_string* left = VALUE_AS_STRING(lhs);
       const object_string* right = VALUE_AS_STRING(p_rhs);
       const uint64_t left_length = string_get_length(&left->string);
-      lhs = BOOL_AS_VALUE(!(left_length == string_get_length(&right->string) &&
-                            memcmp(left->string.chars, right->string.chars, left_length) == 0));
-    } else {
-      goto invalid;
-      // TODO others
+      p_reg->array.data[base + p_dest] =
+          BOOL_AS_VALUE(!(left_length == string_get_length(&right->string) &&
+                          memcmp(left->string.chars, right->string.chars, left_length) == 0));
+      return (interpret_result){.status = RUNTIME_OK, .top_level_return = NULL_AS_VALUE()};
     }
-  } else {
-  invalid:
-    // mixed type equality intentionally falls back to a raw identity check
-    // (null/bool vs anything): turning this into a type error is a semantic
-    // decision deferred to when we design the error model.
-    lhs = BOOL_AS_VALUE(lhs != rhs);
+    break;
   }
-  {
-    p_reg->array.data[base + p_dest] = lhs;
-    interpret_result res;
-    res.status = RUNTIME_OK;
-    return res;
+  default:
+    break;
   }
+  // mixed type: the identity fallback, negated (see perform_equal).
+  p_reg->array.data[base + p_dest] = BOOL_AS_VALUE(lhs != p_rhs);
+  return (interpret_result){.status = RUNTIME_OK, .top_level_return = NULL_AS_VALUE()};
 }
 
-static interpret_result
-perform_greater(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
-  const uint32_t base = p_frame->registers_base;
-  value lhs = p_lhs;
-  value rhs = p_rhs;
-  if (IS_VALUE_NUMBER(lhs)) {
-    if (IS_VALUE_NUMBER(rhs)) {
-      lhs = BOOL_AS_VALUE(VALUE_AS_NUMBER(lhs) > VALUE_AS_NUMBER(rhs));
-    } else if (IS_VALUE_INT(rhs)) {
-      lhs = BOOL_AS_VALUE(VALUE_AS_NUMBER(lhs) > VALUE_AS_INT(rhs));
-    } else if (IS_VALUE_OBJECT(rhs)) {
-      // TODO
-      // not sure if we should allow this for objects or they have to be strictly lhs.
-      // TBD after we add classes.
-    } else {
-      goto invalid;
-    }
-  } else if (IS_VALUE_INT(lhs)) {
-    if (IS_VALUE_INT(rhs)) {
-      lhs = BOOL_AS_VALUE(VALUE_AS_INT(lhs) > VALUE_AS_INT(rhs));
-    } else if (IS_VALUE_NUMBER(rhs)) {
-      lhs = BOOL_AS_VALUE(VALUE_AS_INT(lhs) > VALUE_AS_NUMBER(rhs));
-    } else if (IS_VALUE_OBJECT(rhs)) {
-      // TODO
-      // not sure if we should allow this for objects or they have to be strictly lhs.
-      // TBD after we add classes.
-    } else {
-      goto invalid;
-    }
-  } else if (IS_VALUE_OBJECT(lhs)) {
-    if (IS_VALUE_STRING(lhs) && IS_VALUE_STRING(rhs)) {
-      lhs = BOOL_AS_VALUE(strncmp(VALUE_AS_STRING(p_lhs)->string.chars,
-                                  VALUE_AS_STRING(p_rhs)->string.chars,
-                                  string_get_length(&VALUE_AS_STRING(p_lhs)->string)) > 0);
-    } else {
-      goto invalid;
-      // TODO others
-    }
-  } else {
-  invalid: {
-    runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '>'.");
-    interpret_result res;
-    res.status = RUNTIME_ERROR;
-    res.top_level_return = NULL_AS_VALUE();
-    return res;
+// the four comparisons share one shape: numbers compare through the numeric
+// union, everything else is a type error (no coercion, no cross-type order).
+#define PERFORM_ORDERED(name, op, spelling)                                                                             \
+  static interpret_result perform_##name(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest,          \
+                                          value p_lhs, value p_rhs) {                                                   \
+    const uint32_t base = p_frame->registers_base;                                                                      \
+    if (value_is_numeric(p_lhs) && value_is_numeric(p_rhs)) {                                                           \
+      p_reg->array.data[base + p_dest] = BOOL_AS_VALUE(value_as_f64(p_lhs) op value_as_f64(p_rhs));                     \
+      return (interpret_result){.status = RUNTIME_OK, .top_level_return = NULL_AS_VALUE()};                             \
+    }                                                                                                                   \
+    runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '" spelling "'.");                                     \
+    return (interpret_result){.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};                            \
   }
-  }
-  {
-    p_reg->array.data[base + p_dest] = lhs;
-    interpret_result res;
-    res.status = RUNTIME_OK;
-    return res;
-  }
-}
 
-static interpret_result
-perform_less(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
-  const uint32_t base = p_frame->registers_base;
-  value lhs = p_lhs;
-  value rhs = p_rhs;
-  if (IS_VALUE_NUMBER(lhs)) {
-    if (IS_VALUE_NUMBER(rhs)) {
-      lhs = BOOL_AS_VALUE(VALUE_AS_NUMBER(lhs) < VALUE_AS_NUMBER(rhs));
-    } else if (IS_VALUE_INT(rhs)) {
-      lhs = BOOL_AS_VALUE(VALUE_AS_NUMBER(lhs) < VALUE_AS_INT(rhs));
-    } else if (IS_VALUE_OBJECT(rhs)) {
-      // TODO
-      // not sure if we should allow this for objects or they have to be strictly lhs.
-      // TBD after we add classes.
-    } else {
-      goto invalid;
-    }
-  } else if (IS_VALUE_INT(lhs)) {
-    if (IS_VALUE_INT(rhs)) {
-      lhs = BOOL_AS_VALUE(VALUE_AS_INT(lhs) < VALUE_AS_INT(rhs));
-    } else if (IS_VALUE_NUMBER(rhs)) {
-      lhs = BOOL_AS_VALUE(VALUE_AS_INT(lhs) < VALUE_AS_NUMBER(rhs));
-    } else if (IS_VALUE_OBJECT(rhs)) {
-      // TODO
-      // not sure if we should allow this for objects or they have to be strictly lhs.
-      // TBD after we add classes.
-    } else {
-      goto invalid;
-    }
-  } else if (IS_VALUE_OBJECT(lhs)) {
-    if (IS_VALUE_STRING(lhs) && IS_VALUE_STRING(rhs)) {
-      lhs = BOOL_AS_VALUE(strncmp(VALUE_AS_STRING(p_lhs)->string.chars,
-                                  VALUE_AS_STRING(p_rhs)->string.chars,
-                                  string_get_length(&VALUE_AS_STRING(p_lhs)->string)) < 0);
-    } else {
-      goto invalid;
-      // TODO others
-    }
-  } else {
-  invalid: {
-    runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '<'.");
-    interpret_result res;
-    res.status = RUNTIME_ERROR;
-    res.top_level_return = NULL_AS_VALUE();
-    return res;
-  }
-  }
-  {
-    p_reg->array.data[base + p_dest] = lhs;
-    interpret_result res;
-    res.status = RUNTIME_OK;
-    return res;
-  }
-}
-
-static interpret_result
-perform_greater_equal(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
-  const uint32_t base = p_frame->registers_base;
-  value lhs = p_lhs;
-  value rhs = p_rhs;
-  if (IS_VALUE_NUMBER(lhs)) {
-    if (IS_VALUE_NUMBER(rhs)) {
-      lhs = BOOL_AS_VALUE(VALUE_AS_NUMBER(lhs) >= VALUE_AS_NUMBER(rhs));
-    } else if (IS_VALUE_INT(rhs)) {
-      lhs = BOOL_AS_VALUE(VALUE_AS_NUMBER(lhs) >= VALUE_AS_INT(rhs));
-    } else if (IS_VALUE_OBJECT(rhs)) {
-      // TODO
-      // not sure if we should allow this for objects or they have to be strictly lhs.
-      // TBD after we add classes.
-    } else {
-      goto invalid;
-    }
-  } else if (IS_VALUE_INT(lhs)) {
-    if (IS_VALUE_INT(rhs)) {
-      lhs = BOOL_AS_VALUE(VALUE_AS_INT(lhs) >= VALUE_AS_INT(rhs));
-    } else if (IS_VALUE_NUMBER(rhs)) {
-      lhs = BOOL_AS_VALUE(VALUE_AS_INT(lhs) >= VALUE_AS_NUMBER(rhs));
-    } else if (IS_VALUE_OBJECT(rhs)) {
-      // TODO
-      // not sure if we should allow this for objects or they have to be strictly lhs.
-      // TBD after we add classes.
-    } else {
-      goto invalid;
-    }
-  } else if (IS_VALUE_OBJECT(lhs)) {
-    if (IS_VALUE_STRING(lhs) && IS_VALUE_STRING(rhs)) {
-      lhs = BOOL_AS_VALUE(strncmp(VALUE_AS_STRING(p_lhs)->string.chars,
-                                  VALUE_AS_STRING(p_rhs)->string.chars,
-                                  string_get_length(&VALUE_AS_STRING(p_lhs)->string)) >= 0);
-    } else {
-      goto invalid;
-      // TODO others
-    }
-  } else {
-  invalid: {
-    runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '>='.");
-    interpret_result res;
-    res.status = RUNTIME_ERROR;
-    res.top_level_return = NULL_AS_VALUE();
-    return res;
-  }
-  }
-  {
-    p_reg->array.data[base + p_dest] = lhs;
-    interpret_result res;
-    res.status = RUNTIME_OK;
-    return res;
-  }
-}
-
-static interpret_result
-perform_less_equal(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
-  const uint32_t base = p_frame->registers_base;
-  value lhs = p_lhs;
-  value rhs = p_rhs;
-  if (IS_VALUE_NUMBER(lhs)) {
-    if (IS_VALUE_NUMBER(rhs)) {
-      lhs = BOOL_AS_VALUE(VALUE_AS_NUMBER(lhs) <= VALUE_AS_NUMBER(rhs));
-    } else if (IS_VALUE_INT(rhs)) {
-      lhs = BOOL_AS_VALUE(VALUE_AS_NUMBER(lhs) <= VALUE_AS_INT(rhs));
-    } else if (IS_VALUE_OBJECT(rhs)) {
-      // TODO
-      // not sure if we should allow this for objects or they have to be strictly lhs.
-      // TBD after we add classes.
-    } else {
-      goto invalid;
-    }
-  } else if (IS_VALUE_INT(lhs)) {
-    if (IS_VALUE_INT(rhs)) {
-      lhs = BOOL_AS_VALUE(VALUE_AS_INT(lhs) <= VALUE_AS_INT(rhs));
-    } else if (IS_VALUE_NUMBER(rhs)) {
-      lhs = BOOL_AS_VALUE(VALUE_AS_INT(lhs) <= VALUE_AS_NUMBER(rhs));
-    } else if (IS_VALUE_OBJECT(rhs)) {
-      // TODO
-      // not sure if we should allow this for objects or they have to be strictly lhs.
-      // TBD after we add classes.
-    } else {
-      goto invalid;
-    }
-  } else if (IS_VALUE_OBJECT(lhs)) {
-    if (IS_VALUE_STRING(lhs) && IS_VALUE_STRING(rhs)) {
-      lhs = BOOL_AS_VALUE(strncmp(VALUE_AS_STRING(p_lhs)->string.chars,
-                                  VALUE_AS_STRING(p_rhs)->string.chars,
-                                  string_get_length(&VALUE_AS_STRING(p_lhs)->string)) <= 0);
-    } else {
-      goto invalid;
-      // TODO others
-    }
-  } else {
-  invalid: {
-    runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '<='.");
-    interpret_result res;
-    res.status = RUNTIME_ERROR;
-    res.top_level_return = NULL_AS_VALUE();
-    return res;
-  }
-  }
-  {
-    p_reg->array.data[base + p_dest] = lhs;
-    interpret_result res;
-    res.status = RUNTIME_OK;
-    return res;
-  }
-}
+PERFORM_ORDERED(greater, >, ">")
+PERFORM_ORDERED(less, <, "<")
+PERFORM_ORDERED(greater_equal, >=, ">=")
+PERFORM_ORDERED(less_equal, <=, "<=")
 
 static inline bool as_str_rest(vm* p_vm, ok_string_view p_str, value* p_result) {
   object_specs specs = {p_vm->alloc, p_vm->objects_store};
@@ -1305,6 +929,33 @@ static inline bool object_as_str(vm* p_vm, object* p_obj, value* p_result) {
   case OBJ_NATIVE_VALUE: {
     return native_value_as_str(p_vm, p_obj, p_result);
   }
+  case OBJ_CLASS: {
+    object_class* klass = (object_class*)p_obj;
+    string str = asprint(p_vm->alloc, "<class %s>", klass->name->string.chars);
+    if (str.chars == NULL) {
+      runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert class to string.");
+      return false;
+    }
+    return as_str_rest(p_vm, ok_create_string_view_from_string(str), p_result);
+  }
+  case OBJ_INSTANCE: {
+    object_instance* inst = (object_instance*)p_obj;
+    string str = asprint(p_vm->alloc, "<instance %s>", inst->klass->name->string.chars);
+    if (str.chars == NULL) {
+      runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert instance to string.");
+      return false;
+    }
+    return as_str_rest(p_vm, ok_create_string_view_from_string(str), p_result);
+  }
+  case OBJ_BOUND_METHOD: {
+    object_bound_method* bound = (object_bound_method*)p_obj;
+    string str = asprint(p_vm->alloc, "<method %s>", bound->entry->name->string.chars);
+    if (str.chars == NULL) {
+      runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert method to string.");
+      return false;
+    }
+    return as_str_rest(p_vm, ok_create_string_view_from_string(str), p_result);
+  }
   }
   runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert unknown object to string.");
   return false;
@@ -1514,6 +1165,11 @@ return_1_from_frame(vm* p_vm, execution_state* p_exe, call_frame* p_frame, uint1
     cleanup_frame(p_exe, registers, p_frame);
     return 0;
   }
+  // the frame's upvalues close BEFORE the result lands: return_base is the
+  // call window base, which for a method is its receiver's own slot (r0),
+  // and an open cell there must snapshot the receiver - not the return
+  // value that is about to overwrite it.
+  close_upvalues(p_exe, p_frame->registers_base);
   switch (p_returned) {
   case RETURNED_NULL: {
     registers->array.data[p_frame->return_base] = NULL_AS_VALUE();
@@ -1552,6 +1208,8 @@ return_1_from_frame(vm* p_vm, execution_state* p_exe, call_frame* p_frame, uint1
 static uint16_t
 return_from_frame(execution_state* p_exe, register_file* p_registers, call_frame* p_frame, uint16_t p_a, uint16_t p_b) {
   const uint32_t count = p_b == 0 ? RETURN_COUNT_DYNAMIC : p_b;
+  // close before the results land in the window (see return_1_from_frame).
+  close_upvalues(p_exe, p_frame->registers_base);
   const uint16_t result = return_n_from_frame(p_registers, p_frame, p_a, count);
   cleanup_frame(p_exe, p_registers, p_frame);
   return result;
@@ -1962,6 +1620,370 @@ static unwind_resume __attribute__((noinline, cold)) attempt_unwind(vm* p_vm, ui
     return resume;
   }
   return resume;
+}
+
+// ============================== classes =================================
+
+// the segment of p_class's frozen layout that declares p_slot. chains are
+// short and this only runs on the guarded (obj.field) paths.
+static const object_class* field_defining_segment(const object_class* p_class, uint16_t p_slot) {
+  for (const object_class* c = p_class; c != NULL; c = c->parent) {
+    const uint16_t base = c->parent != NULL ? c->parent->nfields : 0;
+    if (p_slot >= base && p_slot < base + c->nown) {
+      return c;
+    }
+  }
+  return NULL;
+}
+
+// private methods are callable from the defining class and its subclasses
+// only; the caller's lexical class rides the running frame's closure.
+static bool entry_visible_from(const method_entry* p_entry, const call_frame* p_frame) {
+  if (p_entry->pub) {
+    return true;
+  }
+  if (p_frame == NULL) {
+    // a call with no bytecode caller (ok_call from C): the top of the world
+    // is outside every hierarchy ring.
+    return false;
+  }
+  const object_class* caller = p_frame->closure->owner;
+  if (caller == NULL) {
+    return false;
+  }
+  return object_class_is_a(caller, p_entry->owner);
+}
+
+// rewrite one chunk's field NAME ops in place to baked slots (or globals).
+// width-stable by construction: every NAME form rewrites to an op of the same
+// word count with the same operand roles (the b'/C payload swaps name-const
+// for slot / global id; the global store rebuilds its word because the
+// operands trade places).
+// rewrite one 2w instruction in place: low word first, high second
+// (chunk_write_word2's split, JOIN_WORD's contract).
+static void rewrite_word2(chunk* p_chunk, uint32_t p_at, word2 p_words) {
+  p_chunk->code.data[p_at] = (word)(p_words & UINT64_C(0xffffffff));
+  p_chunk->code.data[p_at + 1] = (word)(p_words >> 32u);
+}
+
+static bool patch_chunk_fields(vm* p_vm, object_class* p_class, chunk* p_chunk, bool p_construction) {
+  for (uint32_t i = 0; i < p_chunk->code.count;) {
+    const word instruction = p_chunk->code.data[i];
+    const opcode op = op_of(instruction);
+    const uint32_t words = opcode_word_count(op);
+    switch (op) {
+    case OP_GET_FIELD_NAME:
+    case OP_GET_FIELD_NAME_LONG: {
+      const bool is_long = op == OP_GET_FIELD_NAME_LONG;
+      const word2 joined = is_long ? join_words(p_chunk->code.data[i + 1], instruction) : 0;
+      const uint16_t dst = is_long ? A_of(joined) : aprime_of(instruction);
+      const uint16_t name_at = is_long ? B_of(joined) : bprime_of(instruction);
+      const object_string* name = VALUE_AS_STRING(p_chunk->constants.data[name_at]);
+      const field_entry* field = object_class_find_field(p_class, name);
+      if (field != NULL) {
+        if (is_long) {
+          rewrite_word2(p_chunk, i, encode_OPPABCQ(OP_GET_FIELD_LONG, false, dst, field->slot, 0, false));
+        } else {
+          p_chunk->code.data[i] = encode_oppabprime(OP_GET_FIELD, false, dst, field->slot);
+        }
+      } else {
+        const global glob = globals_store_get(p_vm->globals_store, ok_create_string_view(
+                                                                       name->string.chars,
+                                                                       string_get_length(&name->string),
+                                                                       false));
+        if (!IS_GLOBAL_VALID(glob)) {
+          runtime_error(p_vm,
+                        OK_EK_TYPE,
+                        "undefined variable: %s (class %s has no field of this name).",
+                        name->string.chars,
+                        p_class->name->string.chars);
+          return false;
+        }
+        if (is_long) {
+          rewrite_word2(p_chunk, i, encode_OPPABCQ(OP_LOAD_GLOBAL_LONG, false, dst, glob.index, 0, false));
+        } else {
+          p_chunk->code.data[i] = encode_oppabprime(OP_LOAD_GLOBAL, false, dst, glob.index);
+        }
+      }
+      break;
+    }
+    case OP_STORE_FIELD_NAME:
+    case OP_STORE_FIELD_NAME_LONG: {
+      const bool is_long = op == OP_STORE_FIELD_NAME_LONG;
+      const bool value_is_constant = p_of(instruction);
+      const word2 joined = is_long ? join_words(p_chunk->code.data[i + 1], instruction) : 0;
+      const uint16_t value_at = is_long ? A_of(joined) : aprime_of(instruction);
+      const uint16_t name_at = is_long ? B_of(joined) : bprime_of(instruction);
+      const object_string* name = VALUE_AS_STRING(p_chunk->constants.data[name_at]);
+      const field_entry* field = object_class_find_field(p_class, name);
+      if (field != NULL) {
+        // mutability is a post-construction contract: the initializer thunks
+        // and the init method itself assign non-mut fields (that is the
+        // point of construction). everything else bakes the trap.
+        if (field->mut || p_construction) {
+          if (is_long) {
+            rewrite_word2(p_chunk, i, encode_OPPABCQ(OP_STORE_FIELD_LONG, value_is_constant, value_at, field->slot, 0, false));
+          } else {
+            p_chunk->code.data[i] =
+                encode_oppabprime(OP_STORE_FIELD, value_is_constant, value_at, field->slot);
+          }
+        } else {
+          p_chunk->code.data[i] = encode_oppabprime(OP_FIELD_IMMUTABLE, false, 0, name_at);
+        }
+      } else {
+        const global glob = globals_store_get(p_vm->globals_store, ok_create_string_view(
+                                                                       name->string.chars,
+                                                                       string_get_length(&name->string),
+                                                                       false));
+        if (!IS_GLOBAL_VALID(glob)) {
+          runtime_error(p_vm,
+                        OK_EK_TYPE,
+                        "undefined variable: %s (class %s has no field of this name).",
+                        name->string.chars,
+                          p_class->name->string.chars);
+          return false;
+        }
+        if (is_long) {
+          // STORE_GLOBAL_LONG (p, A=gid, B=value): the operands trade places
+          rewrite_word2(p_chunk, i, encode_OPPABCQ(OP_STORE_GLOBAL_LONG, value_is_constant, glob.index, value_at, 0, false));
+        } else {
+          // STORE_GLOBAL (p, a'=gid, b'=value): the operands trade places
+          p_chunk->code.data[i] =
+              encode_oppabprime(OP_STORE_GLOBAL, value_is_constant, glob.index, value_at);
+        }
+      }
+      break;
+    }
+    case OP_STORE_FIELD_G_NAME: {
+      const word2 joined = join_words(p_chunk->code.data[i + 1], instruction);
+      const uint16_t obj_at = A_of(joined);
+      const uint16_t value_at = B_of(joined);
+      const uint16_t name_at = C_of(joined);
+      const object_string* name = VALUE_AS_STRING(p_chunk->constants.data[name_at]);
+      const field_entry* field = object_class_find_field(p_class, name);
+      if (field == NULL) {
+        // not an instance field of this class: leave the name form alone.
+        // the receiver may be a class value (a static store) - that is a
+        // runtime truth, and OP_STORE_FIELD_G_NAME resolves it itself.
+        break;
+      }
+      if (!field->mut) {
+        rewrite_word2(p_chunk, i, encode_OPPABCQ(OP_FIELD_IMMUTABLE_G, false, 0, 0, name_at, false));
+        break;
+      }
+      rewrite_word2(p_chunk, i, encode_OPPABCQ(OP_STORE_FIELD_G, false, obj_at, value_at, field->slot, false));
+      break;
+    }
+    default:
+      break;
+    }
+    i += words;
+  }
+  return true;
+}
+
+static bool freeze_walk_chunk(vm* p_vm, object_class* p_class, chunk* p_chunk, bool p_construction);
+
+// patch one proto (once): the patched_by marker is the single-definition
+// guard - a body frozen for one class cannot be re-frozen for another (the
+// in-place rewrite is already done; per-definition copies are the ladder step
+// when local classes earn them).
+static bool freeze_patch_proto(vm* p_vm, object_class* p_class, object_function* p_proto, bool p_construction) {
+  if (p_proto->patched_by == p_class) {
+    return true;
+  }
+  if (p_proto->patched_by != NULL) {
+    runtime_error(p_vm,
+                  OK_EK_TYPE,
+                  "this class body is already defined: a local class can only be defined once.");
+    return false;
+  }
+  p_proto->patched_by = p_class;
+  return freeze_walk_chunk(p_vm, p_class, &p_proto->chunk, p_construction);
+}
+
+static bool freeze_walk_chunk(vm* p_vm, object_class* p_class, chunk* p_chunk, bool p_construction) {
+  if (!patch_chunk_fields(p_vm, p_class, p_chunk, p_construction)) {
+    return false;
+  }
+  // proto trees grow downward only (a proto's constants are built before it
+  // is finished), so the recursion terminates; shared protos short-circuit
+  // through the patched_by guard. nested protos do NOT inherit the
+  // construction flag: a closure inside init is patched like any other
+  // method body, so deferred mutation of a non-mut field stays trapped.
+  for (uint32_t i = 0; i < p_chunk->constants.count; ++i) {
+    if (IS_VALUE_FUNCTION(p_chunk->constants.data[i])) {
+      if (!freeze_patch_proto(p_vm, p_class, VALUE_AS_FUNCTION(p_chunk->constants.data[i]), false)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+// the definition end: freeze the layout, then patch every member body (the
+// method closures, the field initializer thunks, and every proto nested under
+// them - lambdas included).
+static bool class_freeze(vm* p_vm, object_class* p_class) {
+  if (!object_class_freeze(p_class)) {
+    if (p_class->nfields > aprime_MAX || p_class->nown > aprime_MAX) {
+      runtime_error(p_vm, OK_EK_TYPE, "too many fields in class %s.", p_class->name->string.chars);
+    } else {
+      runtime_oom(p_vm, "out of memory: failed to freeze class.");
+    }
+    return false;
+  }
+  for (uint32_t i = 0; i < p_class->methods.capacity; ++i) {
+    if (p_class->methods.keys[i] != NULL && p_class->methods.values[i].closure != NULL) {
+      const object_string* mname = p_class->methods.keys[i];
+      const bool is_init = string_get_length(&mname->string) == 4 && memcmp(mname->string.chars, "init", 4) == 0;
+      if (!freeze_patch_proto(p_vm, p_class, p_class->methods.values[i].closure->function, is_init)) {
+        return false;
+      }
+    }
+  }
+  for (uint32_t i = 0; i < p_class->own_inits.count; ++i) {
+    if (p_class->own_inits.data[i] != NULL) {
+      if (!freeze_patch_proto(p_vm, p_class, p_class->own_inits.data[i]->function, true)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+// stage a method call at the register file top and run it to completion: the
+// defer machinery's lane (stage, call, nested run_until, restore watermark).
+// the receiver lands at the window base, the arguments above it; the caller's
+// window is never touched. used by construction only - the dispatch loop's
+// own calls resume through it instead.
+static bool run_method_to_completion(vm* p_vm, object_closure* p_closure, value p_receiver, uint32_t p_argc,
+                                     const value* p_args, value* p_result) {
+  execution_state* exe = p_vm->current_execution_state;
+  register_file* reg = &exe->registers;
+  const uint32_t depth = exe->call_stack.count;
+  const uint32_t saved_top = reg->top;
+  const uint32_t need = 1u + p_argc + p_closure->function->registers;
+  if (reg->top + need > UINT16_MAX + 1u) {
+    runtime_error(p_vm, OK_EK_INTERNAL, "construction: register file exhausted.");
+    return false;
+  }
+  if (reg->top + need > reg->array.capacity) {
+    // same contract as call()'s growth: fresh slots must read as null
+    const uint32_t target = reg->top + need + ((reg->top + need) >> 1u);
+    const uint32_t new_capacity = target > UINT16_MAX + 1u ? UINT16_MAX + 1u : target;
+    const uint32_t initialized_uptill = reg->array.capacity;
+    if (!register_array_grow(&reg->array, new_capacity)) {
+      runtime_oom(p_vm, "out of memory: failed to grow register file.");
+      return false;
+    }
+    for (uint32_t i = initialized_uptill; i < new_capacity; ++i) {
+      reg->array.data[i] = NULL_AS_VALUE();
+    }
+  }
+  const uint32_t staged = reg->top;
+  reg->array.data[staged] = p_receiver;
+  for (uint32_t i = 0; i < p_argc; ++i) {
+    reg->array.data[staged + 1u + i] = p_args[i];
+  }
+  reg->top = staged + need;
+  gc_guard_up(p_vm->alloc->gc, OBJECT_AS_VALUE(p_closure));
+  const bool called = call(p_vm, exe, reg, p_closure, staged, (uint16_t)p_argc, p_result != NULL ? 1u : 0u);
+  gc_guard_down(p_vm->alloc->gc);
+  if (!called) {
+    reg->top = saved_top;
+    return false;
+  }
+  const interpret_result result = run_until(p_vm, depth);
+  reg->top = saved_top;
+  if (result.status != RUNTIME_OK) {
+    return false;
+  }
+  if (p_result != NULL) {
+    *p_result = reg->array.data[staged];
+  }
+  return true;
+}
+
+// run one class's field initializer thunks against a fresh instance, then
+// recurse up the chain: parent segments initialize before own (declaration
+// order within a segment, root-first across segments).
+static bool run_field_inits(vm* p_vm, object_class* p_class, value p_instance) {
+  if (p_class == NULL) {
+    return true;
+  }
+  if (!run_field_inits(p_vm, p_class->parent, p_instance)) {
+    return false;
+  }
+  for (uint32_t i = 0; i < p_class->own_inits.count; ++i) {
+    object_closure* thunk = p_class->own_inits.data[i];
+    if (thunk == NULL) {
+      continue;
+    }
+    if (!run_method_to_completion(p_vm, thunk, p_instance, 0, NULL, NULL)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// the default construction: allocate the instance, run the field initializer
+// thunks root-first, call the nearest init with the caller's arguments, and
+// publish the instance at the call window. an overridden static operator ()
+// never reaches here - the caller dispatched to it instead.
+static bool construct_instance(vm* p_vm, object_class* p_class, uint32_t p_window, uint16_t p_argc) {
+  execution_state* exe = p_vm->current_execution_state;
+  register_file* reg = &exe->registers;
+  object_specs specs = {p_vm->alloc, p_vm->objects_store};
+  if (p_argc > UINT8_MAX) {
+    runtime_error(p_vm, OK_EK_ARITY, "too many arguments to construct class %s.", p_class->name->string.chars);
+    return false;
+  }
+  // the arguments are staged at the call window; the register file may grow
+  // (and realloc) while the initializer thunks run, so they are stashed in C
+  // first - the same discipline call_native applies to its own window.
+  value args_stash[UINT8_MAX];
+  if (p_argc > 0) {
+    memcpy(args_stash, reg->array.data + p_window + 1u, p_argc * sizeof(value));
+  }
+  gc_guard_up(p_vm->alloc->gc, OBJECT_AS_VALUE(p_class));
+  object_instance* inst = create_object_instance(p_class, &specs);
+  gc_guard_down(p_vm->alloc->gc);
+  if (inst == NULL) {
+    runtime_oom(p_vm, "out of memory: failed to allocate an instance.");
+    return false;
+  }
+  const value instance_value = OBJECT_AS_VALUE(inst);
+  gc_guard_up(p_vm->alloc->gc, instance_value);
+  bool ok = run_field_inits(p_vm, p_class, instance_value);
+  if (ok) {
+    // the nearest init wins (standard method lookup); its return value is
+    // discarded - the construction's value is the instance.
+    const method_entry* init =
+        p_vm->init_method_name != NULL ? object_class_find_method(p_class, p_vm->init_method_name) : NULL;
+    if (init != NULL) {
+      if (init->is_native) {
+        runtime_error(p_vm, OK_EK_INTERNAL, "native methods arrive with the native-class patch.");
+        ok = false;
+      } else if (!run_method_to_completion(p_vm, init->closure, instance_value, p_argc, args_stash, NULL)) {
+        ok = false;
+      }
+    }
+  }
+  gc_guard_down(p_vm->alloc->gc);
+  if (!ok) {
+    return false;
+  }
+  // per OP_CALL semantics the result lands at the call window start; the
+  // watermark returns to the caller's frame top (call_native's contract).
+  if (exe->call_stack.count > 0) {
+    call_frame* caller = &exe->call_stack.data[exe->call_stack.count - 1];
+    reg->top = caller->registers_base + caller->closure->function->registers;
+  } else {
+    reg->top = p_window;
+  }
+  reg->array.data[p_window] = instance_value;
+  return true;
 }
 
 static interpret_result error_interpret_result(void) {
@@ -3118,6 +3140,994 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       // this path (conditional defer, a loop iteration that skipped it)
       break;
     }
+    case OP_CLASS: {
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      value parent_value = REG_AT(C);
+      object_class* parent = NULL;
+      if (IS_VALUE_CLASS(parent_value)) {
+        parent = VALUE_AS_CLASS(parent_value);
+      } else if (!IS_VALUE_STRICTLY_NULL(parent_value)) {
+        runtime_error(p_vm, OK_EK_TYPE, "the parent of a class must be a class.");
+        FAIL_PATH();
+        break;
+      }
+      if (parent == NULL) {
+        parent = p_vm->object_singleton;
+      }
+      if (parent == NULL) {
+        runtime_error(p_vm, OK_EK_INTERNAL, "class Object is missing.");
+        FAIL_PATH();
+        break;
+      }
+      if (!IS_VALUE_STRING(frame->closure->function->chunk.constants.data[B])) {
+        runtime_error(p_vm, OK_EK_INTERNAL, "class name constant is not a string.");
+        FAIL_PATH();
+        break;
+      }
+      object_specs specs = {p_vm->alloc, p_vm->objects_store};
+      object_string* name = VALUE_AS_STRING(frame->closure->function->chunk.constants.data[B]);
+      gc_guard_up(p_vm->alloc->gc, parent_value);
+      object_class* klass = create_object_class(name, parent, &specs);
+      gc_guard_down(p_vm->alloc->gc);
+      if (klass == NULL) {
+        runtime_oom(p_vm, "out of memory: failed to allocate class.");
+        FAIL_PATH();
+        break;
+      }
+      REG_AT(A) = OBJECT_AS_VALUE(klass);
+      break;
+    }
+    case OP_DEFINE_FIELD: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool has_no_init = p_of(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      const bool is_mut = Q_of(words);
+      if (!IS_VALUE_CLASS(REG_AT(A)) || !IS_VALUE_STRING(frame->closure->function->chunk.constants.data[C])) {
+        runtime_error(p_vm, OK_EK_INTERNAL, "corrupt class field definition.");
+        FAIL_PATH();
+        break;
+      }
+      object_class* klass = VALUE_AS_CLASS(REG_AT(A));
+      object_string* name = VALUE_AS_STRING(frame->closure->function->chunk.constants.data[C]);
+      object_closure* thunk = NULL;
+      if (!has_no_init) {
+        if (!IS_VALUE_CLOSURE(REG_AT(B))) {
+          runtime_error(p_vm, OK_EK_INTERNAL, "corrupt class field initializer.");
+          FAIL_PATH();
+          break;
+        }
+        thunk = VALUE_AS_CLOSURE(REG_AT(B));
+        thunk->owner = klass;
+      }
+      const object_string* previous_owner = NULL;
+      if (!object_class_add_field(klass, name, is_mut, thunk, &previous_owner)) {
+        if (previous_owner != NULL) {
+          runtime_error(p_vm,
+                        OK_EK_TYPE,
+                        "field '%s' is already declared by class '%s'.",
+                        name->string.chars,
+                        previous_owner->string.chars);
+        } else {
+          runtime_oom(p_vm, "out of memory: failed to add field.");
+        }
+        FAIL_PATH();
+        break;
+      }
+      break;
+    }
+    case OP_DEFINE_METHOD: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool is_pub = p_of(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      if (!IS_VALUE_CLASS(REG_AT(A)) || !IS_VALUE_CLOSURE(REG_AT(B)) ||
+          !IS_VALUE_STRING(frame->closure->function->chunk.constants.data[C])) {
+        runtime_error(p_vm, OK_EK_INTERNAL, "corrupt class method definition.");
+        FAIL_PATH();
+        break;
+      }
+      object_class* klass = VALUE_AS_CLASS(REG_AT(A));
+      object_closure* closure = VALUE_AS_CLOSURE(REG_AT(B));
+      object_string* name = VALUE_AS_STRING(frame->closure->function->chunk.constants.data[C]);
+      if (klass->frozen) {
+        runtime_error(p_vm, OK_EK_TYPE, "class %s is sealed; methods cannot be added.", klass->name->string.chars);
+        FAIL_PATH();
+        break;
+      }
+      closure->owner = klass;
+      // pub survives overrides: an override of a pub ancestor is pub, and a
+      // private override of a pub ancestor is refused (no quiet narrowing).
+      bool pub = is_pub;
+      {
+        const method_entry* inherited = NULL;
+        for (const object_class* c = klass->parent; c != NULL; c = c->parent) {
+          inherited = method_map_get(&c->methods, name);
+          if (inherited != NULL) {
+            break;
+          }
+        }
+        if (inherited != NULL) {
+          if (inherited->pub && !is_pub) {
+            runtime_error(p_vm,
+                          OK_EK_TYPE,
+                          "method '%s' overrides a pub method and must be pub.",
+                          name->string.chars);
+            FAIL_PATH();
+            break;
+          }
+          if (inherited->pub) {
+            pub = true;
+          }
+          // the signature contract governs virtual dispatch: an override
+          // must accept what the parent accepted. init is exempt - it is a
+          // construction entry point, never dispatched through a base
+          // reference, and the super-forwarding pattern requires the
+          // subclass to widen its parameter list.
+          const bool is_init_name =
+              string_get_length(&name->string) == 4 && memcmp(name->string.chars, "init", 4) == 0;
+          const object_function* fu = closure->function;
+          if (!is_init_name && (inherited->arity != fu->arity ||
+                                inherited->closure->function->ndefaults != fu->ndefaults ||
+                                inherited->closure->function->has_varargs != fu->has_varargs)) {
+            runtime_error(p_vm,
+                          OK_EK_TYPE,
+                          "method '%s' overrides a method with a different signature.",
+                          name->string.chars);
+            FAIL_PATH();
+            break;
+          }
+        }
+      }
+      // the super-initializer rule's teeth, at the one point they can exist:
+      // the chain is complete here (runtime names resolved), and the body
+      // was compiled with the calls-super flag. an init override whose chain
+      // carries an init must call super - forgot-super is a definition error.
+      if (string_get_length(&name->string) == 4 && memcmp(name->string.chars, "init", 4) == 0) {
+        for (const object_class* c = klass->parent; c != NULL; c = c->parent) {
+          if (method_map_get(&c->methods, name) != NULL) {
+            if (!closure->function->calls_super_init) {
+              runtime_error(p_vm,
+                            OK_EK_TYPE,
+                            "class '%s' defines init without calling super(): an ancestor defines init.",
+                            klass->name->string.chars);
+              FAIL_PATH();
+            }
+            break;
+          }
+        }
+        if (p_vm->current_execution_state->error_pending) {
+          break;
+        }
+      }
+      method_entry entry;
+      entry.closure = closure;
+      entry.native = NULL;
+      entry.name = name;
+      entry.arity = closure->function->arity;
+      entry.owner = klass;
+      entry.is_native = 0;
+      entry.pub = pub;
+      if (!method_map_set(&klass->methods, name, entry)) {
+        runtime_oom(p_vm, "out of memory: failed to add method.");
+        FAIL_PATH();
+        break;
+      }
+      break;
+    }
+    case OP_CLASS_END: {
+      const uint16_t ap = aprime_of(instruction);
+      if (!IS_VALUE_CLASS(REG_AT(ap))) {
+        runtime_error(p_vm, OK_EK_INTERNAL, "corrupt class definition end.");
+        FAIL_PATH();
+        break;
+      }
+      object_class* klass = VALUE_AS_CLASS(REG_AT(ap));
+      if (!class_freeze(p_vm, klass)) {
+        FAIL_PATH();
+        break;
+      }
+      break;
+    }
+    case OP_CLASS_END_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t A = A_of(words);
+      if (!IS_VALUE_CLASS(REG_AT(A))) {
+        runtime_error(p_vm, OK_EK_INTERNAL, "corrupt class definition end.");
+        FAIL_PATH();
+        break;
+      }
+      object_class* klass = VALUE_AS_CLASS(REG_AT(A));
+      if (!class_freeze(p_vm, klass)) {
+        FAIL_PATH();
+        break;
+      }
+      break;
+    }
+    case OP_DEFINE_STATIC_METHOD: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool is_pub = p_of(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      if (!IS_VALUE_CLASS(REG_AT(A)) || !IS_VALUE_CLOSURE(REG_AT(B)) ||
+          !IS_VALUE_STRING(frame->closure->function->chunk.constants.data[C])) {
+        runtime_error(p_vm, OK_EK_INTERNAL, "corrupt static method definition.");
+        FAIL_PATH();
+        break;
+      }
+      object_class* klass = VALUE_AS_CLASS(REG_AT(A));
+      object_closure* closure = VALUE_AS_CLOSURE(REG_AT(B));
+      object_string* name = VALUE_AS_STRING(frame->closure->function->chunk.constants.data[C]);
+      if (klass->frozen) {
+        runtime_error(p_vm, OK_EK_TYPE, "class %s is sealed; statics cannot be added.", klass->name->string.chars);
+        FAIL_PATH();
+        break;
+      }
+      closure->owner = klass;
+      // pub survival and the signature contract, against the parent's STATICS
+      // (the same rules methods carry, one table over).
+      bool pub = is_pub;
+      {
+        const method_entry* inherited = NULL;
+        for (const object_class* c = klass->parent; c != NULL; c = c->parent) {
+          inherited = method_map_get(&c->statics, name);
+          if (inherited != NULL) {
+            break;
+          }
+        }
+        if (inherited != NULL) {
+          if (inherited->pub && !is_pub) {
+            runtime_error(p_vm,
+                          OK_EK_TYPE,
+                          "static method '%s' overrides a pub static and must be pub.",
+                          name->string.chars);
+            FAIL_PATH();
+            break;
+          }
+          if (inherited->pub) {
+            pub = true;
+          }
+          const object_function* fu = closure->function;
+          if (inherited->arity != fu->arity || inherited->closure->function->ndefaults != fu->ndefaults ||
+              inherited->closure->function->has_varargs != fu->has_varargs) {
+            runtime_error(p_vm,
+                          OK_EK_TYPE,
+                          "static method '%s' overrides a static with a different signature.",
+                          name->string.chars);
+            FAIL_PATH();
+            break;
+          }
+        }
+      }
+      method_entry entry;
+      entry.closure = closure;
+      entry.native = NULL;
+      entry.name = name;
+      entry.arity = closure->function->arity;
+      entry.owner = klass;
+      entry.is_native = 0;
+      entry.pub = pub;
+      if (!method_map_set(&klass->statics, name, entry)) {
+        runtime_oom(p_vm, "out of memory: failed to add static method.");
+        FAIL_PATH();
+        break;
+      }
+      break;
+    }
+    case OP_DEFINE_STATIC_FIELD: {
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      const bool is_mut = Q_of(words);
+      if (!IS_VALUE_CLASS(REG_AT(A)) || !IS_VALUE_STRING(frame->closure->function->chunk.constants.data[C])) {
+        runtime_error(p_vm, OK_EK_INTERNAL, "corrupt static field definition.");
+        FAIL_PATH();
+        break;
+      }
+      object_class* klass = VALUE_AS_CLASS(REG_AT(A));
+      object_string* name = VALUE_AS_STRING(frame->closure->function->chunk.constants.data[C]);
+      const object_string* previous_owner = NULL;
+      if (!object_class_add_static_field(klass, name, is_mut, REG_AT(B), &previous_owner)) {
+        if (previous_owner != NULL) {
+          runtime_error(p_vm,
+                        OK_EK_TYPE,
+                        "static '%s' is already declared by class '%s'.",
+                        name->string.chars,
+                        previous_owner->string.chars);
+        } else {
+          runtime_oom(p_vm, "out of memory: failed to add static field.");
+        }
+        FAIL_PATH();
+        break;
+      }
+      break;
+    }
+    case OP_GET_STATIC_NAME: {
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      value klass_value = REG_AT(B);
+      if (!IS_VALUE_CLASS(klass_value) ||
+          !IS_VALUE_STRING(frame->closure->function->chunk.constants.data[C])) {
+        runtime_error(p_vm, OK_EK_INTERNAL, "corrupt static field read.");
+        FAIL_PATH();
+        break;
+      }
+      object_class* klass = VALUE_AS_CLASS(klass_value);
+      object_string* name = VALUE_AS_STRING(frame->closure->function->chunk.constants.data[C]);
+      const object_class* owner = NULL;
+      const field_entry* entry = object_class_find_static(klass, name, &owner);
+      if (entry == NULL) {
+        runtime_error(p_vm,
+                      OK_EK_TYPE,
+                      "undefined variable: %s (class %s has no static of this name).",
+                      name->string.chars,
+                      klass->name->string.chars);
+        FAIL_PATH();
+        break;
+      }
+      REG_AT(A) = owner->static_values.data[entry->slot];
+      break;
+    }
+    case OP_STORE_STATIC_NAME: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool value_is_constant = p_of(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      value klass_value = REG_AT(B);
+      if (!IS_VALUE_CLASS(klass_value) ||
+          !IS_VALUE_STRING(frame->closure->function->chunk.constants.data[C])) {
+        runtime_error(p_vm, OK_EK_INTERNAL, "corrupt static field store.");
+        FAIL_PATH();
+        break;
+      }
+      object_class* klass = VALUE_AS_CLASS(klass_value);
+      object_string* name = VALUE_AS_STRING(frame->closure->function->chunk.constants.data[C]);
+      const object_class* owner = NULL;
+      const field_entry* entry = object_class_find_static(klass, name, &owner);
+      if (entry == NULL) {
+        runtime_error(p_vm,
+                      OK_EK_TYPE,
+                      "undefined variable: %s (class %s has no static of this name).",
+                      name->string.chars,
+                      klass->name->string.chars);
+        FAIL_PATH();
+        break;
+      }
+      if (!entry->mut) {
+        runtime_error(p_vm,
+                      OK_EK_VALUE,
+                      "cannot assign to static '%s': declared without 'mut'.",
+                      name->string.chars);
+        FAIL_PATH();
+        break;
+      }
+      owner->static_values.data[entry->slot] = value_is_constant
+                                                    ? frame->closure->function->chunk.constants.data[A]
+                                                    : REG_AT(A);
+      break;
+    }
+    case OP_GET_FIELD: {
+      const uint16_t ap = aprime_of(instruction);
+      const uint16_t bp = bprime_of(instruction);
+      value self = REG_AT(0);
+      if (!IS_VALUE_INSTANCE(self)) {
+        runtime_error(p_vm, OK_EK_TYPE, "field access outside a method receiver.");
+        FAIL_PATH();
+        break;
+      }
+      REG_AT(ap) = VALUE_AS_INSTANCE(self)->fields[bp];
+      break;
+    }
+    case OP_GET_FIELD_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      value self = REG_AT(0);
+      if (!IS_VALUE_INSTANCE(self)) {
+        runtime_error(p_vm, OK_EK_TYPE, "field access outside a method receiver.");
+        FAIL_PATH();
+        break;
+      }
+      REG_AT(A) = VALUE_AS_INSTANCE(self)->fields[B];
+      break;
+    }
+    case OP_STORE_FIELD: {
+      const bool value_is_constant = p_of(instruction);
+      const uint16_t ap = aprime_of(instruction);
+      const uint16_t bp = bprime_of(instruction);
+      value self = REG_AT(0);
+      if (!IS_VALUE_INSTANCE(self)) {
+        runtime_error(p_vm, OK_EK_TYPE, "field access outside a method receiver.");
+        FAIL_PATH();
+        break;
+      }
+      VALUE_AS_INSTANCE(self)->fields[bp] = value_is_constant
+                                                ? frame->closure->function->chunk.constants.data[ap]
+                                                : REG_AT(ap);
+      break;
+    }
+    case OP_STORE_FIELD_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool value_is_constant = p_of(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      value self = REG_AT(0);
+      if (!IS_VALUE_INSTANCE(self)) {
+        runtime_error(p_vm, OK_EK_TYPE, "field access outside a method receiver.");
+        FAIL_PATH();
+        break;
+      }
+      VALUE_AS_INSTANCE(self)->fields[B] = value_is_constant
+                                               ? frame->closure->function->chunk.constants.data[A]
+                                               : REG_AT(A);
+      break;
+    }
+    case OP_FIELD_IMMUTABLE: {
+      const uint16_t bp = bprime_of(instruction);
+      const object_string* name = VALUE_AS_STRING(frame->closure->function->chunk.constants.data[bp]);
+      runtime_error(p_vm,
+                    OK_EK_VALUE,
+                    "cannot assign to field '%s': declared without 'mut'.",
+                    name->string.chars);
+      FAIL_PATH();
+      break;
+    }
+    case OP_STORE_FIELD_G: {
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      value recv = REG_AT(A);
+      if (!IS_VALUE_INSTANCE(recv)) {
+        runtime_error(p_vm, OK_EK_TYPE, "only instances have fields.");
+        FAIL_PATH();
+        break;
+      }
+      object_instance* inst = VALUE_AS_INSTANCE(recv);
+      const object_class* recv_seg = field_defining_segment(inst->klass, C);
+      const object_class* owner_seg = frame->closure->owner != NULL
+                                          ? field_defining_segment(frame->closure->owner, C)
+                                          : NULL;
+      if (recv_seg == NULL || recv_seg != owner_seg) {
+        runtime_error(p_vm,
+                      OK_EK_TYPE,
+                      "class '%s' does not share this field with the enclosing hierarchy.",
+                      inst->klass->name->string.chars);
+        FAIL_PATH();
+        break;
+      }
+      inst->fields[C] = REG_AT(B);
+      break;
+    }
+    case OP_STORE_FIELD_G_NAME: {
+      // the un-baked member store: the receiver is an expression, so it may
+      // be an instance (a field the freeze could not bake - or chose not to)
+      // or a class value (a static). name-keyed, resolved here, both lanes
+      // carry the visibility ring and the mutability contract.
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      value recv = REG_AT(A);
+      if (!IS_VALUE_STRING(frame->closure->function->chunk.constants.data[C])) {
+        runtime_error(p_vm, OK_EK_INTERNAL, "corrupt member store.");
+        FAIL_PATH();
+        break;
+      }
+      object_string* name = VALUE_AS_STRING(frame->closure->function->chunk.constants.data[C]);
+      if (IS_VALUE_INSTANCE(recv)) {
+        object_instance* inst = VALUE_AS_INSTANCE(recv);
+        const field_entry* field = object_class_find_field(inst->klass, name);
+        if (field == NULL) {
+          runtime_error(p_vm,
+                        OK_EK_TYPE,
+                        "class '%s' has no field '%s'.",
+                        inst->klass->name->string.chars,
+                        name->string.chars);
+          FAIL_PATH();
+          break;
+        }
+        const object_class* seg = field_defining_segment(inst->klass, field->slot);
+        const object_class* caller = frame->closure->owner;
+        if (seg == NULL || caller == NULL || !object_class_is_a(caller, seg)) {
+          runtime_error(p_vm,
+                        OK_EK_TYPE,
+                        "field '%s' of class '%s' is not visible here.",
+                        name->string.chars,
+                        inst->klass->name->string.chars);
+          FAIL_PATH();
+          break;
+        }
+        if (!field->mut) {
+          runtime_error(p_vm,
+                        OK_EK_VALUE,
+                        "cannot assign to field '%s': declared without 'mut'.",
+                        name->string.chars);
+          FAIL_PATH();
+          break;
+        }
+        inst->fields[field->slot] = REG_AT(B);
+        break;
+      }
+      if (IS_VALUE_CLASS(recv)) {
+        object_class* klass = VALUE_AS_CLASS(recv);
+        const object_class* owner = NULL;
+        const field_entry* statik = object_class_find_static(klass, name, &owner);
+        if (statik == NULL) {
+          runtime_error(p_vm,
+                        OK_EK_TYPE,
+                        "class '%s' has no static '%s'.",
+                        klass->name->string.chars,
+                        name->string.chars);
+          FAIL_PATH();
+          break;
+        }
+        const object_class* caller = frame->closure->owner;
+        if (caller == NULL || !object_class_is_a(caller, owner)) {
+          runtime_error(p_vm,
+                        OK_EK_TYPE,
+                        "static '%s' of class '%s' is not visible here.",
+                        name->string.chars,
+                        owner->name->string.chars);
+          FAIL_PATH();
+          break;
+        }
+        if (!statik->mut) {
+          runtime_error(p_vm,
+                        OK_EK_VALUE,
+                        "cannot assign to static '%s': declared without 'mut'.",
+                        name->string.chars);
+          FAIL_PATH();
+          break;
+        }
+        owner->static_values.data[statik->slot] = REG_AT(B);
+        break;
+      }
+      runtime_error(p_vm, OK_EK_TYPE, "only instances and classes have assignable members.");
+      FAIL_PATH();
+      break;
+    }
+    case OP_FIELD_IMMUTABLE_G: {
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t C = C_of(words);
+      const object_string* name = VALUE_AS_STRING(frame->closure->function->chunk.constants.data[C]);
+      runtime_error(p_vm,
+                    OK_EK_VALUE,
+                    "cannot assign to field '%s': declared without 'mut'.",
+                    name->string.chars);
+      FAIL_PATH();
+      break;
+    }
+    case OP_GET_MEMBER: {
+      const word2 words = JOIN_WORD(instruction);
+      const word mic_word = READ_WORD();
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      const uint16_t mic_at = (uint16_t)mic_word;
+      value recv = REG_AT(B);
+      object_instance* inst = NULL;
+      object_class* klass = NULL;
+      const bool recv_is_class = IS_VALUE_CLASS(recv);
+      if (IS_VALUE_INSTANCE(recv)) {
+        inst = VALUE_AS_INSTANCE(recv);
+        klass = inst->klass;
+      } else if (recv_is_class) {
+        klass = VALUE_AS_CLASS(recv);
+      } else {
+        runtime_error(p_vm, OK_EK_TYPE, "only instances and classes have members.");
+        FAIL_PATH();
+        break;
+      }
+      chunk* chunk = &frame->closure->function->chunk;
+      if (mic_at >= chunk->mic.count) {
+        runtime_error(p_vm, OK_EK_INTERNAL, "member cache index out of range.");
+        FAIL_PATH();
+        break;
+      }
+      mic_entry* cache = &chunk->mic.data[mic_at];
+      if (cache->klass == OBJECT_AS_VALUE(klass) && cache->recv_is_class == (recv_is_class ? 1u : 0u)) {
+        if (cache->is_field) {
+          if (cache->recv_is_class) {
+            // static fields never cache: a stale lane flip means corruption.
+            runtime_error(p_vm, OK_EK_INTERNAL, "corrupt member cache lane.");
+            FAIL_PATH();
+            break;
+          }
+          REG_AT(A) = inst->fields[cache->field_slot];
+          break;
+        }
+        // a cached method entry: the bind
+        gc_guard_up(p_vm->alloc->gc, recv);
+        object_specs specs = {p_vm->alloc, p_vm->objects_store};
+        object_bound_method* bound = create_object_bound_method(recv, cache->method, &specs);
+        gc_guard_down(p_vm->alloc->gc);
+        if (bound == NULL) {
+          runtime_oom(p_vm, "out of memory: failed to allocate a bound method.");
+          FAIL_PATH();
+          break;
+        }
+        REG_AT(A) = OBJECT_AS_VALUE(bound);
+        break;
+      }
+      if (!IS_VALUE_STRING(chunk->constants.data[C])) {
+        runtime_error(p_vm, OK_EK_INTERNAL, "member name constant is not a string.");
+        FAIL_PATH();
+        break;
+      }
+      object_string* name = VALUE_AS_STRING(chunk->constants.data[C]);
+      if (recv_is_class) {
+        // the statics lane. static fields walk uncached: the slot indexes the
+        // DEFINING class's storage, which this mic slot cannot carry (baking
+        // is the ladder step, when a profile asks for it).
+        const object_class* owner = NULL;
+        const field_entry* sf = object_class_find_static(klass, name, &owner);
+        if (sf != NULL) {
+          // the field doctrine: statics are hierarchy-internal, the ring is
+          // the defining class and everything below it.
+          const object_class* caller = frame->closure->owner;
+          if (caller == NULL || !object_class_is_a(caller, owner)) {
+            runtime_error(p_vm,
+                          OK_EK_TYPE,
+                          "static '%s' of class '%s' is not visible here.",
+                          name->string.chars,
+                          owner->name->string.chars);
+            FAIL_PATH();
+            break;
+          }
+          REG_AT(A) = owner->static_values.data[sf->slot];
+          break;
+        }
+        const method_entry* entry = object_class_find_static_method(klass, name);
+        if (entry != NULL) {
+          if (!entry_visible_from(entry, frame)) {
+            runtime_error(p_vm,
+                          OK_EK_TYPE,
+                          "static method '%s' of class '%s' is private.",
+                          name->string.chars,
+                          klass->name->string.chars);
+            FAIL_PATH();
+            break;
+          }
+          cache->klass = recv;
+          cache->method = entry;
+          cache->field_slot = 0;
+          cache->is_field = 0;
+          cache->recv_is_class = 1;
+          gc_guard_up(p_vm->alloc->gc, recv);
+          object_specs specs = {p_vm->alloc, p_vm->objects_store};
+          object_bound_method* bound = create_object_bound_method(recv, entry, &specs);
+          gc_guard_down(p_vm->alloc->gc);
+          if (bound == NULL) {
+            runtime_oom(p_vm, "out of memory: failed to allocate a bound method.");
+            FAIL_PATH();
+            break;
+          }
+          REG_AT(A) = OBJECT_AS_VALUE(bound);
+          break;
+        }
+        runtime_error(p_vm,
+                      OK_EK_TYPE,
+                      "class '%s' has no static '%s'.",
+                      klass->name->string.chars,
+                      name->string.chars);
+        FAIL_PATH();
+        break;
+      }
+      const field_entry* field = object_class_find_field(klass, name);
+      if (field != NULL) {
+        // visibility: the calling hierarchy must contain the field's defining
+        // segment (class-wide privacy, the C++ ring)
+        const object_class* seg = field_defining_segment(klass, field->slot);
+        const object_class* caller = frame->closure->owner;
+        if (seg == NULL || caller == NULL || !object_class_is_a(caller, seg)) {
+          runtime_error(p_vm,
+                        OK_EK_TYPE,
+                        "field '%s' of class '%s' is not visible here.",
+                        name->string.chars,
+                        klass->name->string.chars);
+          FAIL_PATH();
+          break;
+        }
+        cache->klass = OBJECT_AS_VALUE(klass);
+        cache->method = NULL;
+        cache->field_slot = field->slot;
+        cache->is_field = 1;
+        cache->recv_is_class = 0;
+        REG_AT(A) = inst->fields[field->slot];
+        break;
+      }
+      const method_entry* entry = object_class_find_method(klass, name);
+      if (entry != NULL) {
+        if (!entry_visible_from(entry, frame)) {
+          runtime_error(p_vm,
+                        OK_EK_TYPE,
+                        "method '%s' of class '%s' is private.",
+                        name->string.chars,
+                        klass->name->string.chars);
+          FAIL_PATH();
+          break;
+        }
+        cache->klass = OBJECT_AS_VALUE(klass);
+        cache->method = entry;
+        cache->field_slot = 0;
+        cache->is_field = 0;
+        cache->recv_is_class = 0;
+        gc_guard_up(p_vm->alloc->gc, recv);
+        object_specs specs = {p_vm->alloc, p_vm->objects_store};
+        object_bound_method* bound = create_object_bound_method(recv, entry, &specs);
+        gc_guard_down(p_vm->alloc->gc);
+        if (bound == NULL) {
+          runtime_oom(p_vm, "out of memory: failed to allocate a bound method.");
+          FAIL_PATH();
+          break;
+        }
+        REG_AT(A) = OBJECT_AS_VALUE(bound);
+        break;
+      }
+      runtime_error(p_vm,
+                    OK_EK_TYPE,
+                    "class '%s' has no field or method '%s'.",
+                    klass->name->string.chars,
+                    name->string.chars);
+      FAIL_PATH();
+      break;
+    }
+    case OP_INVOKE: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool takes_one = p_of(instruction);
+      const word mic_word = READ_WORD();
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      const uint16_t mic_at = (uint16_t)mic_word;
+      value recv = REG_AT(A);
+      const method_entry* entry = NULL;
+      object_class* klass = NULL;
+      object_instance* inst = NULL;
+      const bool recv_is_class = IS_VALUE_CLASS(recv);
+      if (IS_VALUE_INSTANCE(recv)) {
+        inst = VALUE_AS_INSTANCE(recv);
+        klass = inst->klass;
+      } else if (recv_is_class) {
+        // the statics lane: Foo.m(args) is the same INVOKE with the class
+        // value as its receiver, and Foo(args) rides OP_CALL's class arm.
+        klass = VALUE_AS_CLASS(recv);
+      } else {
+        runtime_error(p_vm, OK_EK_TYPE, "only instances and classes have methods.");
+        FAIL_PATH();
+        break;
+      }
+      chunk* chunk = &frame->closure->function->chunk;
+      if (mic_at >= chunk->mic.count) {
+        runtime_error(p_vm, OK_EK_INTERNAL, "invoke cache index out of range.");
+        FAIL_PATH();
+        break;
+      }
+      mic_entry* cache = &chunk->mic.data[mic_at];
+      if (cache->klass == OBJECT_AS_VALUE(klass) && cache->recv_is_class == (recv_is_class ? 1u : 0u)) {
+        if (cache->is_field) {
+          if (cache->recv_is_class) {
+            runtime_error(p_vm, OK_EK_INTERNAL, "corrupt invoke cache lane.");
+            FAIL_PATH();
+            break;
+          }
+          // a cached field slot holding a callable: the other thing
+          // obj.name(args) can mean. re-read and re-check every time - the
+          // value in a mut field can change between calls.
+          entry = NULL;
+          value callable = inst->fields[cache->field_slot];
+          if (IS_VALUE_CLOSURE(callable)) {
+            REG_AT(A) = callable;
+            frame->ip = ip;
+            if (!call(p_vm, exe, reg, VALUE_AS_CLOSURE(callable), frame->registers_base + A, B,
+                      takes_one ? 1u : 0u)) {
+              FAIL_PATH();
+              break;
+            }
+            exe = p_vm->current_execution_state;
+            reg = &exe->registers;
+            frame = &exe->call_stack.data[exe->call_stack.count - 1];
+            ip = frame->ip;
+            break;
+          }
+          runtime_error(p_vm,
+                        OK_EK_TYPE,
+                        "field holds a value that is not callable in this position.");
+          FAIL_PATH();
+          break;
+        }
+        entry = cache->method;
+      } else {
+        if (!IS_VALUE_STRING(chunk->constants.data[C])) {
+          runtime_error(p_vm, OK_EK_INTERNAL, "method name constant is not a string.");
+          FAIL_PATH();
+          break;
+        }
+        object_string* name = VALUE_AS_STRING(chunk->constants.data[C]);
+        if (recv_is_class) {
+          entry = object_class_find_static_method(klass, name);
+          if (entry == NULL) {
+            // the call operator on a class with no override is the default
+            // construction - the one name that means "build me one".
+            if (p_vm->static_call_name != NULL &&
+                string_get_length(&name->string) == string_get_length(&p_vm->static_call_name->string) &&
+                memcmp(name->string.chars, p_vm->static_call_name->string.chars,
+                       string_get_length(&name->string)) == 0) {
+              frame->ip = ip;
+              if (!construct_instance(p_vm, klass, frame->registers_base + A, B)) {
+                FAIL_PATH();
+                break;
+              }
+              exe = p_vm->current_execution_state;
+              reg = &exe->registers;
+              frame = &exe->call_stack.data[exe->call_stack.count - 1];
+              ip = frame->ip;
+              break;
+            }
+            runtime_error(p_vm,
+                          OK_EK_TYPE,
+                          "class '%s' has no static method '%s'.",
+                          klass->name->string.chars,
+                          name->string.chars);
+            FAIL_PATH();
+            break;
+          }
+          if (!entry_visible_from(entry, frame)) {
+            runtime_error(p_vm,
+                          OK_EK_TYPE,
+                          "static method '%s' of class '%s' is private.",
+                          name->string.chars,
+                          klass->name->string.chars);
+            FAIL_PATH();
+            break;
+          }
+          cache->klass = recv;
+          cache->method = entry;
+          cache->field_slot = 0;
+          cache->is_field = 0;
+          cache->recv_is_class = 1;
+        } else {
+          entry = object_class_find_method(klass, name);
+          if (entry == NULL) {
+            // the field fallback: a field holding a callable. visibility
+            // follows the field doctrine (the ring), a non-callable value is
+            // a type error, and the cache holds the slot.
+            const field_entry* field = object_class_find_field(klass, name);
+            const object_class* caller = frame->closure->owner;
+            const object_class* seg = field != NULL ? field_defining_segment(klass, field->slot) : NULL;
+            if (field != NULL && seg != NULL && caller != NULL && object_class_is_a(caller, seg)) {
+              value callable = inst->fields[field->slot];
+              if (IS_VALUE_CLOSURE(callable)) {
+                cache->klass = OBJECT_AS_VALUE(klass);
+                cache->method = NULL;
+                cache->field_slot = field->slot;
+                cache->is_field = 1;
+                cache->recv_is_class = 0;
+                REG_AT(A) = callable;
+                frame->ip = ip;
+                if (!call(p_vm, exe, reg, VALUE_AS_CLOSURE(callable), frame->registers_base + A, B,
+                          takes_one ? 1u : 0u)) {
+                  FAIL_PATH();
+                  break;
+                }
+                exe = p_vm->current_execution_state;
+                reg = &exe->registers;
+                frame = &exe->call_stack.data[exe->call_stack.count - 1];
+                ip = frame->ip;
+                break;
+              }
+              runtime_error(p_vm,
+                            OK_EK_TYPE,
+                            "field '%s' of class '%s' holds a value that is not callable.",
+                            name->string.chars,
+                            klass->name->string.chars);
+              FAIL_PATH();
+              break;
+            }
+            runtime_error(p_vm,
+                          OK_EK_TYPE,
+                          "class '%s' has no method '%s'.",
+                          klass->name->string.chars,
+                          name->string.chars);
+            FAIL_PATH();
+            break;
+          }
+          if (!entry_visible_from(entry, frame)) {
+            runtime_error(p_vm,
+                          OK_EK_TYPE,
+                          "method '%s' of class '%s' is private.",
+                          name->string.chars,
+                          klass->name->string.chars);
+            FAIL_PATH();
+            break;
+          }
+          cache->klass = OBJECT_AS_VALUE(klass);
+          cache->method = entry;
+          cache->field_slot = 0;
+          cache->is_field = 0;
+          cache->recv_is_class = 0;
+        }
+      }
+      if (entry->is_native) {
+        runtime_error(p_vm, OK_EK_INTERNAL, "native methods arrive with the native-class patch.");
+        FAIL_PATH();
+        break;
+      }
+      frame->ip = ip;
+      if (!call(p_vm, exe, reg, entry->closure, frame->registers_base + A, B, takes_one ? 1u : 0u)) {
+        FAIL_PATH();
+        break;
+      }
+      exe = p_vm->current_execution_state;
+      reg = &exe->registers;
+      frame = &exe->call_stack.data[exe->call_stack.count - 1];
+      ip = frame->ip;
+      break;
+    }
+    case OP_SUPER_INVOKE: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool takes_one = p_of(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      object_class* owner = frame->closure->owner;
+      if (owner == NULL || owner->parent == NULL) {
+        runtime_error(p_vm, OK_EK_TYPE, "'super' outside a class hierarchy.");
+        FAIL_PATH();
+        break;
+      }
+      if (!IS_VALUE_STRING(frame->closure->function->chunk.constants.data[C])) {
+        runtime_error(p_vm, OK_EK_INTERNAL, "method name constant is not a string.");
+        FAIL_PATH();
+        break;
+      }
+      object_string* name = VALUE_AS_STRING(frame->closure->function->chunk.constants.data[C]);
+      // the receiver at register 0 picks the lane: an instance walks the
+      // parent's methods, a class value walks the parent's statics.
+      const bool static_lane = IS_VALUE_CLASS(REG_AT(0));
+      const method_entry* entry =
+          static_lane ? object_class_find_static_method(owner->parent, name)
+                      : object_class_find_method(owner->parent, name);
+      if (entry == NULL) {
+        runtime_error(p_vm,
+                      OK_EK_TYPE,
+                      "no %s '%s' in the super chain of class '%s'.",
+                      static_lane ? "static" : "method",
+                      name->string.chars,
+                      owner->name->string.chars);
+        FAIL_PATH();
+        break;
+      }
+      if (entry->is_native) {
+        runtime_error(p_vm, OK_EK_INTERNAL, "native methods arrive with the native-class patch.");
+        FAIL_PATH();
+        break;
+      }
+      // stage the receiver (register 0) as the call window base, then the
+      // ordinary call machinery owns the rest
+      REG_AT(A) = REG_AT(0);
+      frame->ip = ip;
+      if (!call(p_vm, exe, reg, entry->closure, frame->registers_base + A, B, takes_one ? 1u : 0u)) {
+        FAIL_PATH();
+        break;
+      }
+      exe = p_vm->current_execution_state;
+      reg = &exe->registers;
+      frame = &exe->call_stack.data[exe->call_stack.count - 1];
+      ip = frame->ip;
+      break;
+    }
     }
   next_instruction:; // FAIL_PATH resumes here: the catch's first instruction is next
   }
@@ -3594,6 +4604,43 @@ static bool call_value(vm* p_vm,
       return call(p_vm, p_exe, p_reg, (object_closure*)obj, p_base + p_callee, p_argc, p_retc);
     case OBJ_NATIVE_FUNCTION:
       return call_native(p_vm, p_exe, p_reg, (object_native_function*)obj, p_base + p_callee, p_argc, p_retc);
+    case OBJ_BOUND_METHOD: {
+      // the receiver takes the bound value's place at the window base (the
+      // OP_CALL shape holds), then the entry calls through the ordinary lane
+      object_bound_method* bound = (object_bound_method*)obj;
+      if (bound->entry->is_native) {
+        runtime_error(p_vm, OK_EK_INTERNAL, "native methods arrive with the native-class patch.");
+        return false;
+      }
+      p_reg->array.data[p_base + p_callee] = bound->receiver;
+      return call(p_vm, p_exe, p_reg, bound->entry->closure, p_base + p_callee, p_argc, p_retc);
+    }
+    case OBJ_CLASS: {
+      // calling a class value: the overridden static operator () if the
+      // class declares one, otherwise the default construction. the callee
+      // slot already holds the class, so a user override stages exactly like
+      // any method call with the class as its receiver.
+      object_class* klass = (object_class*)obj;
+      const method_entry* entry =
+          p_vm->static_call_name != NULL ? object_class_find_static_method(klass, p_vm->static_call_name) : NULL;
+      if (entry != NULL) {
+        const call_frame* caller =
+            p_exe->call_stack.count > 0 ? &p_exe->call_stack.data[p_exe->call_stack.count - 1] : NULL;
+        if (!entry_visible_from(entry, caller)) {
+          runtime_error(p_vm,
+                        OK_EK_TYPE,
+                        "static method 'operator ()' of class '%s' is private.",
+                        klass->name->string.chars);
+          return false;
+        }
+        if (entry->is_native) {
+          runtime_error(p_vm, OK_EK_INTERNAL, "native methods arrive with the native-class patch.");
+          return false;
+        }
+        return call(p_vm, p_exe, p_reg, entry->closure, p_base + p_callee, p_argc, p_retc);
+      }
+      return construct_instance(p_vm, klass, p_base + p_callee, p_argc);
+    }
     default:;
     }
   }
@@ -3612,6 +4659,9 @@ static interpret_result create_closure(
     interpret_result result = {.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
     return result;
   }
+  // a lambda born inside a method belongs to the same class lexically: the
+  // privacy checks and super resolution of its body read this at runtime.
+  closure->owner = p_frame->closure->owner;
   p_reg->array.data[p_frame->registers_base + p_dest] = OBJECT_AS_VALUE(closure);
   if (function->upvalues.count > 0 && !upvalue_array_grow(&closure->upvalues, function->upvalues.count)) {
     runtime_oom(p_vm, "out of memory: failed to allocate closure upvalues.");

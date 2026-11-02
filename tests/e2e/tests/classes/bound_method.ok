@@ -1,0 +1,9 @@
+class Greeter {
+  let who;
+  fu init(who) { this.who = who; }
+  pub fu greet(prefix) { return prefix + " " + who; }
+}
+let g = Greeter("world");
+let m = g.greet;
+print(m("hello")); // expect: hello world
+print(m("hi")); // expect: hi world

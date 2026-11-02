@@ -75,13 +75,23 @@ typedef enum {
   LOCATION_KIND_CONSTANT,
   LOCATION_KIND_GLOBAL,
   LOCATION_KIND_UPVALUE,
+  // a field of `this`, named by a string constant. only materializes inside
+  // class-body methods (and lambdas within): the freeze pass rewrites the
+  // emitted NAME op to a baked slot (or a global) once the layout is known.
+  LOCATION_KIND_FIELD,
+  // a static field of the enclosing class, named by a string constant. the
+  // class operand is resolved at emit time through the class-name variable,
+  // so the op works at definition time and inside methods alike.
+  LOCATION_KIND_STATIC_FIELD,
 } location_kind;
 
 typedef enum {
   LVALUE_INVALID = 0,
   LVALUE_VARIABLE,
   LVALUE_SUBSCRIPT,
-  LVALUE_FIELD,
+  LVALUE_FIELD,  // a field of `this` (bare name or this.x)
+  LVALUE_MEMBER, // obj.x: receiver materialized, resolved at runtime
+  LVALUE_STATIC, // a static field of the enclosing class (bare name)
 } lvalue_kind;
 
 typedef struct {
@@ -92,6 +102,16 @@ typedef struct {
       location base;  // always materialized into a register by resolve_lvalue
       location index; // register or constant (GET/SET carry a const-index flag)
     } subscript;
+    struct {
+      location name; // the field's string constant (LVALUE_FIELD)
+    } field;
+    struct {
+      location base; // the receiver, materialized into a register
+      location name; // the member's string constant
+    } member;
+    struct {
+      location name; // the static field's string constant (LVALUE_STATIC)
+    } statik;
   };
 } lvalue;
 
@@ -173,6 +193,8 @@ typedef enum {
   FUNCTION_NONE = 0,
   FUNCTION_SCRIPT,
   FUNCTION_FUNCTION,
+  FUNCTION_METHOD, // receiver ('this') rides register 0 instead of the name
+  FUNCTION_STATIC, // receiver ('this') rides register 0 and is the class value
 } function_type;
 
 typedef struct {
@@ -211,6 +233,14 @@ typedef struct {
   // first return's AST node for the mismatch error's "at line N" half.
   uint16_t return_span;
   ast_node* first_return_author;
+  // unresolved bare names may be fields of `this` (methods and anything
+  // lexically nested inside them). propagated to nested contexts.
+  bool sees_fields;
+  // unresolved bare names may be statics of the enclosing class (static
+  // methods, the class body itself, anything nested inside those). the class
+  // operand is the class-name variable, whose view this carries.
+  bool sees_statics;
+  ok_string_view statics_of_class;
 } compile_context;
 
 ARRAY_DECLARE_DEFAULT(compile_contexts, compile_context)

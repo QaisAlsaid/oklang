@@ -89,9 +89,34 @@ static const char* const OPCODE_NAMES[] = {
     "THROW",
     "DEFER_MARK",
     "DEFER_RUN",
+    "CLASS",
+    "DEFINE_FIELD",
+    "DEFINE_METHOD",
+    "CLASS_END",
+    "GET_FIELD",
+    "GET_FIELD_LONG",
+    "STORE_FIELD",
+    "STORE_FIELD_LONG",
+    "GET_FIELD_NAME",
+    "GET_FIELD_NAME_LONG",
+    "STORE_FIELD_NAME",
+    "STORE_FIELD_NAME_LONG",
+    "STORE_FIELD_G",
+    "STORE_FIELD_G_NAME",
+    "FIELD_IMMUTABLE",
+    "FIELD_IMMUTABLE_G",
+    "GET_MEMBER",
+    "INVOKE",
+    "SUPER_INVOKE",
+    "CLASS_END_LONG",
+    "DEFINE_STATIC_METHOD",
+    "DEFINE_STATIC_FIELD",
+    "GET_STATIC_NAME",
+    "STORE_STATIC_NAME",
 };
-typedef char
-    opcode_names_in_sync[(sizeof(OPCODE_NAMES) / sizeof(OPCODE_NAMES[0]) == (size_t)OP_DEFER_RUN + 1) ? 1 : -1];
+typedef char opcode_names_in_sync[(sizeof(OPCODE_NAMES) / sizeof(OPCODE_NAMES[0]) == (size_t)OP_STORE_STATIC_NAME + 1)
+                                      ? 1
+                                      : -1];
 
 static const char* binop_symbol(const opcode p_op) {
   switch (p_op) {
@@ -239,7 +264,10 @@ uint32_t debug_disassemble_instruction(disassembler* p_disassembler, uint32_t p_
   }
   const word instruction = chunk->code.data[p_offset];
   const opcode op = op_of(instruction);
-  const uint32_t words = op_is_two_words(op) ? 2 : 1;
+  // the chunk's word counter is the one authority: 1w, 2w, and the 3w
+  // invoke/member pair (whose third word is the mic index) all walk the same
+  // table the freeze pass walks.
+  const uint32_t words = opcode_word_count(op);
   const word2 joined =
       words == 2 ? (((word2)chunk->code.data[p_offset + 1] << 32u) | (word2)instruction) : (word2)instruction;
 
@@ -575,6 +603,130 @@ uint32_t debug_disassemble_instruction(disassembler* p_disassembler, uint32_t p_
     break;
   case OP_PRINT:
     printf("print r%u", Al);
+    break;
+  case OP_CLASS:
+    printf("r%u = class k%u : r%u", A, B, C);
+    break;
+  case OP_CLASS_END:
+    printf("freeze r%u", ap);
+    break;
+  case OP_CLASS_END_LONG:
+    printf("freeze r%u", A);
+    break;
+  case OP_DEFINE_FIELD:
+    printf("r%u field k%u%s", A, C, q ? " mut" : "");
+    if (!p) {
+      printf(" init r%u", B);
+    }
+    break;
+  case OP_DEFINE_METHOD:
+    printf("r%u method k%u = r%u%s", A, C, B, p ? " pub" : "");
+    break;
+  case OP_DEFINE_STATIC_METHOD:
+    printf("r%u static k%u = r%u%s", A, C, B, p ? " pub" : "");
+    break;
+  case OP_DEFINE_STATIC_FIELD:
+    printf("r%u static k%u = r%u%s", A, C, B, q ? " mut" : "");
+    break;
+  case OP_GET_FIELD:
+    printf("r%u = this.f[%u]", ap, bp);
+    break;
+  case OP_GET_FIELD_LONG:
+    printf("r%u = this.f[%u]", A, B);
+    break;
+  case OP_STORE_FIELD:
+    printf("this.f[%u] = ", bp);
+    if (p) {
+      print_constant_inline(chunk, ap);
+    } else {
+      printf("r%u", ap);
+    }
+    break;
+  case OP_STORE_FIELD_LONG:
+    printf("this.f[%u] = ", B);
+    if (p) {
+      print_constant_inline(chunk, A);
+    } else {
+      printf("r%u", A);
+    }
+    break;
+  case OP_GET_FIELD_NAME:
+    printf("r%u = this.", ap);
+    print_constant_inline(chunk, bp);
+    break;
+  case OP_GET_FIELD_NAME_LONG:
+    printf("r%u = this.", A);
+    print_constant_inline(chunk, B);
+    break;
+  case OP_STORE_FIELD_NAME:
+    printf("this.");
+    print_constant_inline(chunk, bp);
+    printf(" = ");
+    if (p) {
+      print_constant_inline(chunk, ap);
+    } else {
+      printf("r%u", ap);
+    }
+    break;
+  case OP_STORE_FIELD_NAME_LONG:
+    printf("this.");
+    print_constant_inline(chunk, B);
+    printf(" = ");
+    if (p) {
+      print_constant_inline(chunk, A);
+    } else {
+      printf("r%u", A);
+    }
+    break;
+  case OP_STORE_FIELD_G:
+    printf("r%u.f[%u] = r%u", A, C, B);
+    break;
+  case OP_STORE_FIELD_G_NAME:
+    printf("r%u.", A);
+    print_constant_inline(chunk, C);
+    printf(" = r%u", B);
+    break;
+  case OP_FIELD_IMMUTABLE:
+    printf("immutable trap ");
+    print_constant_inline(chunk, bp);
+    break;
+  case OP_FIELD_IMMUTABLE_G:
+    printf("immutable trap ");
+    print_constant_inline(chunk, C);
+    break;
+  case OP_GET_STATIC_NAME:
+    printf("r%u = ", A);
+    printf("r%u.", B);
+    print_constant_inline(chunk, C);
+    break;
+  case OP_STORE_STATIC_NAME:
+    printf("r%u.", B);
+    print_constant_inline(chunk, C);
+    printf(" = ");
+    if (p) {
+      print_constant_inline(chunk, A);
+    } else {
+      printf("r%u", A);
+    }
+    break;
+  case OP_GET_MEMBER: {
+    const word mic = chunk->code.data[p_offset + 2];
+    printf("r%u = r%u.", A, B);
+    print_constant_inline(chunk, C);
+    printf(" mic %u", (uint16_t)mic);
+    break;
+  }
+  case OP_INVOKE: {
+    const word mic = chunk->code.data[p_offset + 2];
+    printf("r%u = r%u.", A, A);
+    print_constant_inline(chunk, C);
+    printf("(r%u..r%u) mic %u%s", A + 1, A + B, (uint16_t)mic, p ? " take" : " discard");
+    break;
+  }
+  case OP_SUPER_INVOKE:
+    printf("r%u = super.", A);
+    print_constant_inline(chunk, C);
+    printf("(r%u..r%u)%s", A + 1, A + B, p ? " take" : " discard");
     break;
   default: {
     // binary value operators, narrow and long

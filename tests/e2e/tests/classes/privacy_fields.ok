@@ -1,0 +1,9 @@
+class A {
+  let x = 1;
+  let mut y = 2;
+  pub fu getx() { return x; }
+  pub fu gety() { return y; }
+}
+let a = A();
+print(a.getx()); // expect: 1
+print(a.x); // expect error: not visible

@@ -1,0 +1,2 @@
+fu top() { return super.x(); }
+print(top()); // expect error: only valid directly inside

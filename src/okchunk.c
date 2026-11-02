@@ -9,6 +9,7 @@
 
 ARRAY_DEFINE_DEFAULT(code, word, ARRAY_DEFAULT_TYPE_DEINIT)
 ARRAY_DEFINE_DEFAULT(source_info, ok_line_info_repeated, ARRAY_DEFAULT_TYPE_DEINIT)
+ARRAY_DEFINE_DEFAULT(mic_entries, mic_entry, ARRAY_DEFAULT_TYPE_DEINIT)
 #define IDENTIFIERS_DEINIT(x, a) string_deinit(x, a)
 ARRAY_DEFINE(identifiers, string, uint32_t, UINT32_MAX, IDENTIFIERS_DEINIT)
 
@@ -32,6 +33,7 @@ void chunk_init(chunk* p_chunk, allocators* p_alloc) {
   identifiers_init(&p_chunk->identifiers, p_alloc);
   value_array_init(&p_chunk->constants, p_alloc);
   source_info_init(&p_chunk->source_info, p_alloc);
+  mic_entries_init(&p_chunk->mic, p_alloc);
   p_chunk->source_id = VM_SOURCE_UNSTAMPED;
 }
 
@@ -40,6 +42,7 @@ void chunk_deinit(chunk* p_chunk) {
   identifiers_deinit(&p_chunk->identifiers, p_chunk->alloc);
   value_array_deinit(&p_chunk->constants, p_chunk->alloc);
   source_info_deinit(&p_chunk->source_info, p_chunk->alloc);
+  mic_entries_deinit(&p_chunk->mic, p_chunk->alloc);
 }
 
 bool chunk_write_word(chunk* p_chunk, const word p_word, const ok_line_info p_line_info) {
@@ -90,6 +93,18 @@ index_wrapper chunk_add_identifier(chunk* p_chunk, const ok_string_view p_identi
     return (index_wrapper){0, 0, IDENTIFIER_ALLOCATION_FAILED};
   }
   return (index_wrapper){p_chunk->identifiers.count - 1, 0, IDENTIFIER_OK};
+}
+
+mic_slot chunk_add_mic(chunk* p_chunk, const ok_line_info p_line_info) {
+  (void)p_line_info;
+  if (p_chunk->mic.count >= INDEX_MAX) {
+    return (index_wrapper){0, 0, MIC_OVERFLOW};
+  }
+  const mic_entry empty = {NULL_AS_VALUE(), NULL, 0, 0};
+  if (!mic_entries_append(&p_chunk->mic, empty)) {
+    return (index_wrapper){0, 0, MIC_OVERFLOW};
+  }
+  return (index_wrapper){p_chunk->mic.count - 1, 0, MIC_OK};
 }
 
 ok_line_info_repeated* chunk_find_line_info(const chunk* p_chunk, const uint32_t p_instruction_index) {

@@ -188,6 +188,12 @@ static bool mark_value(gc* p_gc, value p_value) {
 static bool mark_vm(gc* p_gc) {
   vm* vm = p_gc->vm;
   execution_state* exe = vm->current_execution_state;
+  // the hierarchy roots: Object, Class, and the cached lookup names are
+  // referenced only here, so this mark is what keeps them immortal.
+  if (!mark_object(p_gc, (object*)vm->object_singleton) || !mark_object(p_gc, (object*)vm->class_singleton) ||
+      !mark_object(p_gc, (object*)vm->static_call_name) || !mark_object(p_gc, (object*)vm->init_method_name)) {
+    return false;
+  }
   // a script-thrown value sits in the error lane from raise until the host
   // clears it (ok_last_error keeps it readable past the failed run/call).
   // across C boundaries where allocation happens, so it must root like a
@@ -342,6 +348,14 @@ static bool trace_object(gc* p_gc, object* p_object) {
     if (!mark_object(p_gc, (object*)fu->name) || !mark_value_array(p_gc, &fu->chunk.constants)) {
       return false;
     }
+    // the per-site inline caches hold class values (and through them, the
+    // frozen tables their raw entry pointers index): the chunk owns their
+    // rooting, a class can outlive every register that named it.
+    for (uint32_t i = 0; i < fu->chunk.mic.count; ++i) {
+      if (!mark_value(p_gc, fu->chunk.mic.data[i].klass)) {
+        return false;
+      }
+    }
     break;
   }
   case OBJ_CLOSURE: {
@@ -392,6 +406,84 @@ static bool trace_object(gc* p_gc, object* p_object) {
           return false;
         }
       }
+    }
+    break;
+  }
+  case OBJ_CLASS: {
+    object_class* klass = (object_class*)p_object;
+    // the name strings are shared with the defining chunk's constants, but a
+    // class routinely outlives the frame that defined it: the class owns its
+    // tables, so it traces every key it holds, shared or not.
+    if (!mark_object(p_gc, (object*)klass->name) || !mark_object(p_gc, (object*)klass->parent)) {
+      return false;
+    }
+    for (uint32_t i = 0; i < klass->own_names.count; ++i) {
+      if (!mark_object(p_gc, (object*)klass->own_names.data[i])) {
+        return false;
+      }
+    }
+    for (uint32_t i = 0; i < klass->own_inits.count; ++i) {
+      if (klass->own_inits.data[i] != NULL && !mark_object(p_gc, (object*)klass->own_inits.data[i])) {
+        return false;
+      }
+    }
+    for (uint32_t i = 0; i < klass->methods.capacity; ++i) {
+      if (klass->methods.keys[i] != NULL) {
+        if (!mark_object(p_gc, (object*)klass->methods.keys[i]) ||
+            !mark_object(p_gc, (object*)klass->methods.values[i].name) ||
+            (klass->methods.values[i].closure != NULL &&
+             !mark_object(p_gc, (object*)klass->methods.values[i].closure))) {
+          return false;
+        }
+      }
+    }
+    for (uint32_t i = 0; i < klass->own_static_names.count; ++i) {
+      if (!mark_object(p_gc, (object*)klass->own_static_names.data[i])) {
+        return false;
+      }
+    }
+    if (!mark_value_array(p_gc, &klass->static_values)) {
+      return false;
+    }
+    for (uint32_t i = 0; i < klass->statics.capacity; ++i) {
+      if (klass->statics.keys[i] != NULL) {
+        if (!mark_object(p_gc, (object*)klass->statics.keys[i]) ||
+            !mark_object(p_gc, (object*)klass->statics.values[i].name) ||
+            (klass->statics.values[i].closure != NULL &&
+             !mark_object(p_gc, (object*)klass->statics.values[i].closure))) {
+          return false;
+        }
+      }
+    }
+    for (uint32_t i = 0; i < klass->static_fields.capacity; ++i) {
+      if (klass->static_fields.keys[i] != NULL && !mark_object(p_gc, (object*)klass->static_fields.keys[i])) {
+        return false;
+      }
+    }
+    for (uint32_t i = 0; i < klass->fields.capacity; ++i) {
+      if (klass->fields.keys[i] != NULL && !mark_object(p_gc, (object*)klass->fields.keys[i])) {
+        return false;
+      }
+    }
+    break;
+  }
+  case OBJ_INSTANCE: {
+    object_instance* inst = (object_instance*)p_object;
+    if (!mark_object(p_gc, (object*)inst->klass)) {
+      return false;
+    }
+    for (uint32_t i = 0; i < inst->klass->nfields; ++i) {
+      if (!mark_value(p_gc, inst->fields[i])) {
+        return false;
+      }
+    }
+    break;
+  }
+  case OBJ_BOUND_METHOD: {
+    // the entry lives inside the receiver's (or the receiver class's) frozen
+    // table: marking the receiver roots the table that owns the entry.
+    if (!mark_value(p_gc, ((object_bound_method*)p_object)->receiver)) {
+      return false;
     }
     break;
   }

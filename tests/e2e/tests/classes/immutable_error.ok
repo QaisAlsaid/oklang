@@ -1,0 +1,2 @@
+class A { let x = 1; pub fu setx(v) { x = v; } }
+print(A().setx(5)); // expect error: declared without 'mut'

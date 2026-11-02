@@ -1,0 +1,2 @@
+class A { pub fu hi() { return 1; } }
+let s = super; // expect error: must call a method

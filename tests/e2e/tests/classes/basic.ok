@@ -1,0 +1,23 @@
+class Animal {
+  let name;
+  let legs = 4;
+  let mut visits = 0;
+
+  fu init(name) {
+    this.name = name;
+  }
+
+  pub fu describe() {
+    return name + " has " + legs as str + " legs";
+  }
+
+  pub fu visit() {
+    visits = visits + 1;
+    return visits;
+  }
+}
+
+let a = Animal("rex");
+print(a.describe()); // expect: rex has 4 legs
+print(a.visit()); // expect: 1
+print(a.visit()); // expect: 2

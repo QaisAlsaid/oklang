@@ -160,8 +160,12 @@ check_keyword(lexer* p_lexer, uint32_t p_start, uint32_t p_length, const char* p
 
 static token_type lookup_identifier(lexer* p_lexer) {
   switch (p_lexer->start[0]) {
-  case 'p':
+  case 'p': {
+    if (p_lexer->current - p_lexer->start > 1 && p_lexer->start[1] == 'u') {
+      return check_keyword(p_lexer, 2, 1, "b", TOKEN_PUB);
+    }
     return check_keyword(p_lexer, 1, 4, "rint", TOKEN_PRINT);
+  }
   case 'l':
     return check_keyword(p_lexer, 1, 2, "et", TOKEN_LET);
   case 'b':
@@ -215,8 +219,6 @@ static token_type lookup_identifier(lexer* p_lexer) {
         return check_keyword(p_lexer, 2, 4, "port", TOKEN_IMPORT);
       case 'f':
         return check_keyword(p_lexer, 2, 0, "", TOKEN_IF);
-      case 'n':
-        return check_keyword(p_lexer, 2, 6, "herits", TOKEN_INHERITS);
       }
     }
     break;
@@ -281,6 +283,8 @@ static token_type lookup_identifier(lexer* p_lexer) {
       switch (p_lexer->start[1]) {
       case 'u':
         return check_keyword(p_lexer, 2, 3, "per", TOKEN_SUPER);
+      case 't':
+        return check_keyword(p_lexer, 2, 4, "atic", TOKEN_STATIC);
       }
     }
     break;

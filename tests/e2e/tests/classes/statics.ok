@@ -1,0 +1,38 @@
+class Counter {
+  static let mut count = 0;
+  static let scale = 10;
+
+  pub static fu bump() {
+    count = count + 1;
+    return count;
+  }
+  pub static fu value() { return count * scale; }
+  static fu hidden() { return count; }
+}
+print(Counter.bump()); // expect: 1
+print(Counter.bump()); // expect: 2
+print(Counter.value()); // expect: 20
+
+class Sub : Counter {
+  pub static fu double_bump() {
+    this.bump();
+    return this.bump();
+  }
+}
+print(Sub.double_bump()); // expect: 4
+print(Counter.value()); // expect: 40
+
+class Id {
+  static let mut next = 0;
+  let id;
+  fu init() {
+    Id.next = Id.next + 1;
+    this.id = Id.next;
+  }
+  pub fu tag() { return id; }
+  pub static fu issued() { return next; }
+}
+let a = Id();
+let b = Id();
+print(a.tag() + b.tag()); // expect: 3
+print(Id.issued()); // expect: 2

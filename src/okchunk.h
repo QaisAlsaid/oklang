@@ -133,6 +133,35 @@ typedef enum {
 typedef uint32_t word;
 typedef uint64_t word2;
 
+// one monomorphic inline-cache slot, owned by the chunk and addressed by the
+// third word of OP_INVOKE / OP_GET_MEMBER. klass roots the class (its tables
+// are frozen, so the raw entry pointer beneath it can never dangle); method
+// serves INVOKE, field_slot serves GET_MEMBER (is_field picks the lane).
+struct method_entry;
+
+typedef struct {
+  value klass;
+  const struct method_entry* method;
+  uint16_t field_slot;
+  uint8_t is_field;
+  // the cache key's lane: 0 = the receiver was an instance (klass is its
+  // class), 1 = the receiver was the class value itself (klass is recv).
+  // one site can see both across executions, and the two lanes read
+  // different storage, so the key alone must not decide.
+  uint8_t recv_is_class;
+} mic_entry;
+
+typedef index_wrapper mic_slot;
+
+enum {
+  MIC_OK = 0,
+  MIC_OVERFLOW,
+};
+
+#define IS_MIC_VALID(mw) ((mw).errors == MIC_OK)
+
+ARRAY_DECLARE_DEFAULT(mic_entries, mic_entry)
+
 // clang-format off
 typedef enum {
   // name                   size  operands        runtime
@@ -275,6 +304,62 @@ typedef enum {
                          //                          stage the thunk at the register file top (above every compile-time register, so nothing live is clobbered)
                          //                          and call it, discard lane. a null slot is a no-op: the defer statement never executed on this
                          //                          path (conditional defer, loop iteration that skipped it).
+  OP_CLASS,              // 2w:   (A, B, C)       -> r[A] = new class named k[B], parent r[C] (a class value;
+                         //                          null means Object). tables start empty and unfrozen.
+  OP_DEFINE_FIELD,       // 2w:   (p, A, B, C)    -> class r[A] gains field k[C]; p == 1: no initializer,
+                         //                          else r[B] is a thunk closure run with the fresh instance
+                         //                          as its receiver at construction time.
+  OP_DEFINE_METHOD,      // 2w:   (p, A, B, C)    -> class r[A] gains method k[C] from closure r[B]; p == 1
+                         //                          marks it pub (default private). refused once frozen.
+  OP_CLASS_END,          // w:    (a')            -> freeze class r[a']: build the flat field map, patch the
+                         //                          method bodies' field ops to baked slots (the freeze pass
+                         //                          in okvm.c), then seal the tables forever.
+  OP_GET_FIELD,          // w:    (a', b')        -> r[a'] = fields of `this` at slot b'
+  OP_GET_FIELD_LONG,     // 2w:   (A, B)          -> r[A] = fields of `this` at slot B; ip += w
+  OP_STORE_FIELD,        // w:    (p, a', b')     -> fields of `this` at slot b' = p then k[a'] otherwise r[a']
+  OP_STORE_FIELD_LONG,   // 2w:   (p, A, B)       -> fields of `this` at slot B = p then k[A] otherwise r[A]; ip += w
+  OP_GET_FIELD_NAME,     // w:    (a', b')        -> r[a'] = field k[b'] of `this`, else global k[b']. the
+                         //                          pre-patch form: the freeze pass rewrites it in place to
+                         //                          GET_FIELD (slot) or LOAD_GLOBAL once the layout is known.
+  OP_GET_FIELD_NAME_LONG, // 2w:  (A, B)          -> same, wide; ip += w
+  OP_STORE_FIELD_NAME,   // w:    (p, a', b')     -> field-or-global k[b'] of `this` = p then k[a'] otherwise r[a'].
+                         //                          pre-patch: rewritten to STORE_FIELD (slot), STORE_GLOBAL,
+                         //                          or the immutable-field trap.
+  OP_STORE_FIELD_NAME_LONG, // 2w: (p, A, B)      -> same, wide; ip += w
+  OP_STORE_FIELD_G,      // 2w:   (A, B, C)       -> fields of r[A] at slot C = r[B], hierarchy-guarded
+                         //                          (classof(r[A]) must be within the field's defining class).
+  OP_STORE_FIELD_G_NAME, // 2w:   (A, B, C)       -> field k[C] of r[A] = r[B], guarded. pre-patch form;
+                         //                          the freeze pass bakes the slot (never a global: member
+                         //                          stores only ever write fields).
+  OP_FIELD_IMMUTABLE,    // w:    (b')            -> always errors: the field named k[b'] was declared
+                         //                          without 'mut'. written by the freeze pass in place of a
+                         //                          this-relative store it proved illegal.
+  OP_FIELD_IMMUTABLE_G,  // 2w:   (A, B, C)       -> the guarded-store flavor of the same trap (C names
+                         //                          the field); the widths must match what they replace.
+  OP_GET_MEMBER,         // 3w:   (A, B, C) + mic -> r[A] = member k[C] of r[B]: a field (when visible from
+                         //                          the calling hierarchy) or a bound method. the mic word
+                         //                          caches (class -> slot or entry) for the site.
+  OP_INVOKE,             // 3w:   (p, A, B, C) + mic -> r[A] = r[A].k[C](r[A + 1] ... r[A + B]); p == 1
+                         //                          takes exactly one result, p == 0 discards. the receiver
+                         //                          doubles as the call window base; the mic word caches
+                         //                          (receiver class -> entry).
+  OP_SUPER_INVOKE,       // 2w:   (p, A, B, C)    -> r[A] = r[0].k[C](r[A + 1] ... r[A + B]) with lookup
+                         //                          starting at the parent of the defining class of the
+                         //                          running method. p == 1 takes one result, else discard.
+  OP_CLASS_END_LONG,      // 2w:   (A, B, C)       -> freeze class r[A]. the wide spelling of OP_CLASS_END:
+                         //                          one op, one width, so every code walker stays decodable.
+  OP_DEFINE_STATIC_METHOD, // 2w:  (p, A, B, C)    -> class r[A] gains static method k[C] from closure
+                         //                          r[B]; p == 1 marks it pub. statics live in their own
+                         //                          table and the receiver is the class value itself.
+  OP_DEFINE_STATIC_FIELD, // 2w:   (A, B, C, Q)    -> class r[A] gains static field k[C] with the value r[B]
+                         //                          (already evaluated inline, at definition time). Q == 1
+                         //                          marks it mutable. storage is per defining class and
+                         //                          shared down the chain by lookup, never copied.
+  OP_GET_STATIC_NAME,     // 2w:   (A, B, C)       -> r[A] = static field k[C] of the class value r[B]
+                         //                          (walked down its parent chain). the name form: the
+                         //                          layout is a runtime truth, so no slot baking in 0.5.0.
+  OP_STORE_STATIC_NAME,   // 2w:   (p, A, B, C)    -> static field k[C] of class value r[B] = p then
+                         //                          k[A] otherwise r[A]. mutability checked at the walk.
 } opcode;
 
 // clang-format on
@@ -449,6 +534,11 @@ struct chunk {
   identifiers identifiers;
   value_array constants;
   source_info source_info;
+  // per-site monomorphic inline caches, addressed by the mic word of
+  // OP_INVOKE / OP_GET_MEMBER. the klass values are gc-traced with the
+  // chunk (the function tracer walks them); the raw method pointers
+  // beneath them are sound because class tables freeze at definition end.
+  mic_entries mic;
   // index into the vm's source table (VM_SOURCE_UNSTAMPED until ok_run stamps the freshly compiled tree).
   // runtime reports read the frame's chunk's entry
   uint32_t source_id;
@@ -465,5 +555,76 @@ bool chunk_write_word2(chunk* p_chunk, const word2 p_words, const ok_line_info p
 identifier chunk_add_identifier(chunk* p_chunk, const ok_string_view p_identifier, const ok_line_info p_line_info);
 constant chunk_add_constant(chunk* p_chunk, const value p_constant, const ok_line_info p_line_info);
 
+// allocate the next inline-cache slot (compile time). the index rides the
+// mic word of the site it belongs to.
+mic_slot chunk_add_mic(chunk* p_chunk, const ok_line_info p_line_info);
+
 ok_line_info_repeated* chunk_find_line_info(const chunk* p_chunk, const uint32_t p_instruction_index);
+
+// instruction width in words: the one authority (the disassembler and the
+// class freeze pass both walk code with it).
+static inline uint32_t opcode_word_count(opcode p_op) {
+  switch (p_op) {
+  case OP_MOVE_LONG:
+  case OP_LOAD_CONSTANT_LONG:
+  case OP_JUMP_IF:
+  case OP_JUMP_IF_SET:
+  case OP_LOAD_NULL:
+  case OP_LOAD_GLOBAL_LONG:
+  case OP_STORE_GLOBAL_LONG:
+  case OP_LOAD_UPVALUE_LONG:
+  case OP_STORE_UPVALUE_LONG:
+  case OP_CALL_LONG:
+  case OP_RETURN_LONG:
+  case OP_CLOSURE_LONG:
+  case OP_NOT_LONG:
+  case OP_NEGATE_LONG:
+  case OP_ADD_LONG:
+  case OP_SUBTRACT_LONG:
+  case OP_MULTIPLY_LONG:
+  case OP_DIVIDE_LONG:
+  case OP_AS_LONG:
+  case OP_MODULUS_LONG:
+  case OP_EQUALS_LONG:
+  case OP_NOT_EQUAL_LONG:
+  case OP_GREATER_LONG:
+  case OP_LESS_LONG:
+  case OP_GREATER_EQUAL_LONG:
+  case OP_LESS_EQUAL_LONG:
+  case OP_ARRAY_NEW_LONG:
+  case OP_MAP_NEW_LONG:
+  case OP_INDEX_GET_LONG:
+  case OP_INDEX_SET_LONG:
+  case OP_JUMP_IF_ARGC:
+  case OP_FOR_PREP:
+  case OP_FOR_LOOP:
+  case OP_ITER_PREP:
+  case OP_ITER_GET:
+  case OP_ITER_LOOP:
+  case OP_CALL_SPREAD_LONG:
+  case OP_TRY_ENTER:
+  case OP_THROW:
+  case OP_DEFINE_FIELD:
+  case OP_DEFINE_METHOD:
+  case OP_GET_FIELD_LONG:
+  case OP_STORE_FIELD_LONG:
+  case OP_GET_FIELD_NAME_LONG:
+  case OP_STORE_FIELD_NAME_LONG:
+  case OP_STORE_FIELD_G:
+  case OP_STORE_FIELD_G_NAME:
+  case OP_FIELD_IMMUTABLE_G:
+  case OP_SUPER_INVOKE:
+  case OP_CLASS_END_LONG:
+  case OP_DEFINE_STATIC_METHOD:
+  case OP_DEFINE_STATIC_FIELD:
+  case OP_GET_STATIC_NAME:
+  case OP_STORE_STATIC_NAME:
+    return 2;
+  case OP_GET_MEMBER:
+  case OP_INVOKE:
+    return 3;
+  default:
+    return 1;
+  }
+}
 #endif // OK_CHUNK_HPP

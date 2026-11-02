@@ -173,6 +173,8 @@ static void object_function_init(object_function* p_object_function,
   p_object_function->has_varargs = false; // compiler sets this when the last parameter is `rest...`
   upvalue_descriptor_array_init(&p_object_function->upvalues, p_specs->alloc);
   chunk_init(&p_object_function->chunk, p_specs->alloc);
+  p_object_function->patched_by = NULL;
+  p_object_function->calls_super_init = false;
 }
 
 static void object_function_deinit(object_function* p_object_function, object_specs* p_specs) {
@@ -201,6 +203,7 @@ static void object_closure_init(object_closure* p_closure, object_function* p_fu
   p_closure->function = p_function;
   upvalue_array_init(&p_closure->upvalues, p_specs->alloc);
   upvalue_array_grow(&p_closure->upvalues, p_function->upvalues.count);
+  p_closure->owner = NULL;
 }
 
 static void object_closure_deinit(object_closure* p_closure, object_specs* p_specs) {
@@ -374,6 +377,272 @@ object_map* create_object_map(object_specs* p_specs) {
   return object_m;
 }
 
+// method + field tables: object_string* keys, content-compared probes over
+// the cached FNV-1a. keys are shared, not owned: they are the class body
+// chunk's string constants, kept alive by the method protos the class itself
+// traces, so the per-entry deinits are no-ops.
+#define SM_KEY_IS_EMPTY(k) ((k) == NULL)
+#define SM_KEY_SET_EMPTY(k) (*(k) = NULL)
+#define SM_PROBE_HASH(p) ((p)->hash)
+#define SM_PROBE_MATCHES(p, k)                                                                                \
+  (string_get_length(&(p)->string) == string_get_length(&(k)->string) &&                                     \
+   memcmp((p)->string.chars, (k)->string.chars, string_get_length(&(p)->string)) == 0)
+#define SM_KEY_CLONE(p, a) (p)
+#define SM_NO_DEINIT(k, a) ((void)0)
+
+MAP_DEFINE(method_map,
+           object_string*,
+           method_entry,
+           const object_string*,
+           SM_KEY_IS_EMPTY,
+           SM_KEY_SET_EMPTY,
+           SM_PROBE_HASH,
+           SM_PROBE_MATCHES,
+           SM_KEY_CLONE,
+           SM_NO_DEINIT,
+           SM_NO_DEINIT)
+
+MAP_DEFINE(field_map,
+           object_string*,
+           field_entry,
+           const object_string*,
+           SM_KEY_IS_EMPTY,
+           SM_KEY_SET_EMPTY,
+           SM_PROBE_HASH,
+           SM_PROBE_MATCHES,
+           SM_KEY_CLONE,
+           SM_NO_DEINIT,
+           SM_NO_DEINIT)
+
+ARRAY_DEFINE_DEFAULT(object_string_array, object_string*, ARRAY_DEFAULT_TYPE_DEINIT)
+ARRAY_DEFINE_DEFAULT(uint8_array, uint8_t, ARRAY_DEFAULT_TYPE_DEINIT)
+ARRAY_DEFINE_DEFAULT(object_closure_array, object_closure*, ARRAY_DEFAULT_TYPE_DEINIT)
+
+static void object_class_init(object_class* p_class,
+                              object_string* p_name,
+                              object_class* p_parent,
+                              object_specs* p_specs) {
+  object_init(&p_class->object, OBJ_CLASS);
+  p_class->name = p_name;
+  p_class->parent = p_parent;
+  p_class->nfields = 0;
+  p_class->nown = 0;
+  object_string_array_init(&p_class->own_names, p_specs->alloc);
+  uint8_array_init(&p_class->own_muts, p_specs->alloc);
+  object_closure_array_init(&p_class->own_inits, p_specs->alloc);
+  field_map_init(&p_class->fields, p_specs->alloc);
+  method_map_init(&p_class->methods, p_specs->alloc);
+  method_map_init(&p_class->statics, p_specs->alloc);
+  object_string_array_init(&p_class->own_static_names, p_specs->alloc);
+  uint8_array_init(&p_class->own_static_muts, p_specs->alloc);
+  value_array_init(&p_class->static_values, p_specs->alloc);
+  field_map_init(&p_class->static_fields, p_specs->alloc);
+  p_class->frozen = false;
+}
+
+static void object_class_deinit(object_class* p_class, object_specs* p_specs) {
+  // keys and method entries are shared, not owned (constants, closures):
+  // only the backing buffers die here.
+  object_string_array_deinit(&p_class->own_names, p_specs->alloc);
+  uint8_array_deinit(&p_class->own_muts, p_specs->alloc);
+  object_closure_array_deinit(&p_class->own_inits, p_specs->alloc);
+  field_map_deinit(&p_class->fields);
+  method_map_deinit(&p_class->methods);
+  method_map_deinit(&p_class->statics);
+  object_string_array_deinit(&p_class->own_static_names, p_specs->alloc);
+  uint8_array_deinit(&p_class->own_static_muts, p_specs->alloc);
+  value_array_deinit(&p_class->static_values, p_specs->alloc);
+  field_map_deinit(&p_class->static_fields);
+  object_deinit(&p_class->object);
+}
+
+object_class* create_object_class(object_string* p_name, object_class* p_parent, object_specs* p_specs) {
+  object_class* klass = (object_class*)p_specs->alloc->allocate(p_specs->alloc, sizeof(object_class));
+  if (klass == NULL) {
+    return NULL;
+  }
+  object_class_init(klass, p_name, p_parent, p_specs);
+  object_store_append(p_specs->store, (object*)klass);
+  return klass;
+}
+
+bool object_class_add_field(object_class* p_class,
+                            const object_string* p_name,
+                            bool p_mut,
+                            object_closure* p_init_thunk,
+                            const object_string** p_previous_owner) {
+  if (p_class->frozen) {
+    return false;
+  }
+  // redeclaration check against the frozen ancestors first: their maps are
+  // complete, so one probe covers the whole inherited layout.
+  for (const object_class* c = p_class->parent; c != NULL; c = c->parent) {
+    if (field_map_get(&c->fields, p_name) != NULL) {
+      if (p_previous_owner != NULL) {
+        *p_previous_owner = c->name;
+      }
+      return false;
+    }
+  }
+  // then own declarations so far (this class's map is only built at freeze).
+  for (uint32_t i = 0; i < p_class->own_names.count; ++i) {
+    if (p_class->own_names.data[i] == p_name ||
+        (string_get_length(&p_class->own_names.data[i]->string) == string_get_length(&p_name->string) &&
+         memcmp(p_class->own_names.data[i]->string.chars, p_name->string.chars, string_get_length(&p_name->string)) ==
+             0)) {
+      if (p_previous_owner != NULL) {
+        *p_previous_owner = p_class->name;
+      }
+      return false;
+    }
+  }
+  if (!object_string_array_append(&p_class->own_names, (object_string*)p_name) ||
+      !uint8_array_append(&p_class->own_muts, p_mut ? 1u : 0u) ||
+      !object_closure_array_append(&p_class->own_inits, p_init_thunk)) {
+    return false;
+  }
+  p_class->nown++;
+  return true;
+}
+
+bool object_class_freeze(object_class* p_class) {
+  if (p_class->frozen) {
+    return true;
+  }
+  if (p_class->parent != NULL) {
+    p_class->nfields = (uint16_t)(p_class->parent->nfields + p_class->nown);
+  } else {
+    p_class->nfields = p_class->nown;
+  }
+  if (p_class->nfields > aprime_MAX) {
+    // the field ops address slots with 12-bit operands.
+    return false;
+  }
+  // flat map, parent segments first so a subclass's own entries land after
+  // (redeclaration was already rejected at add_field time).
+  for (const object_class* c = p_class->parent; c != NULL; c = c->parent) {
+    for (uint32_t i = 0; i < c->own_names.count; ++i) {
+      const field_entry* inherited = field_map_get(&c->fields, c->own_names.data[i]);
+      if (inherited == NULL || !field_map_set(&p_class->fields, c->own_names.data[i], *inherited)) {
+        return false;
+      }
+    }
+  }
+  const uint16_t base = p_class->parent != NULL ? p_class->parent->nfields : 0;
+  for (uint32_t i = 0; i < p_class->own_names.count; ++i) {
+    const field_entry entry = {(uint16_t)(base + i), p_class->own_muts.data[i]};
+    if (!field_map_set(&p_class->fields, p_class->own_names.data[i], entry)) {
+      return false;
+    }
+  }
+  p_class->frozen = true;
+  return true;
+}
+
+const field_entry* object_class_find_field(const object_class* p_class, const object_string* p_name) {
+  return field_map_get(&p_class->fields, p_name);
+}
+
+const method_entry* object_class_find_method(const object_class* p_class, const object_string* p_name) {
+  for (const object_class* c = p_class; c != NULL; c = c->parent) {
+    const method_entry* entry = method_map_get(&c->methods, p_name);
+    if (entry != NULL) {
+      return entry;
+    }
+  }
+  return NULL;
+}
+
+bool object_class_is_a(const object_class* p_class, const object_class* p_maybe_ancestor) {
+  for (const object_class* c = p_class; c != NULL; c = c->parent) {
+    if (c == p_maybe_ancestor) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool object_class_add_static_field(object_class* p_class,
+                                    const object_string* p_name,
+                                    bool p_mut,
+                                    value p_value,
+                                    const object_string** p_previous_owner) {
+  if (p_class->frozen) {
+    return false;
+  }
+  // one name, one slot, chain-wide: an inherited static may never be shadowed
+  // by a redeclaration, exactly like instance fields.
+  for (const object_class* c = p_class; c != NULL; c = c->parent) {
+    if (field_map_get(&c->static_fields, p_name) != NULL) {
+      if (p_previous_owner != NULL) {
+        *p_previous_owner = c->name;
+      }
+      return false;
+    }
+  }
+  const field_entry entry = {(uint16_t)p_class->static_values.count, p_mut ? 1u : 0u};
+  if (!object_string_array_append(&p_class->own_static_names, (object_string*)p_name) ||
+      !uint8_array_append(&p_class->own_static_muts, p_mut ? 1u : 0u) ||
+      !value_array_append(&p_class->static_values, p_value) ||
+      !field_map_set(&p_class->static_fields, p_name, entry)) {
+    return false;
+  }
+  return true;
+}
+
+const field_entry* object_class_find_static(const object_class* p_class,
+                                             const object_string* p_name,
+                                             const object_class** p_owner) {
+  for (const object_class* c = p_class; c != NULL; c = c->parent) {
+    const field_entry* entry = field_map_get(&c->static_fields, p_name);
+    if (entry != NULL) {
+      if (p_owner != NULL) {
+        *p_owner = c;
+      }
+      return entry;
+    }
+  }
+  return NULL;
+}
+
+const method_entry* object_class_find_static_method(const object_class* p_class, const object_string* p_name) {
+  for (const object_class* c = p_class; c != NULL; c = c->parent) {
+    const method_entry* entry = method_map_get(&c->statics, p_name);
+    if (entry != NULL) {
+      return entry;
+    }
+  }
+  return NULL;
+}
+
+object_instance* create_object_instance(object_class* p_class, object_specs* p_specs) {
+  object_instance* instance = (object_instance*)p_specs->alloc->allocate(
+      p_specs->alloc, sizeof(object_instance) + p_class->nfields * sizeof(value));
+  if (instance == NULL) {
+    return NULL;
+  }
+  object_init(&instance->object, OBJ_INSTANCE);
+  instance->klass = p_class;
+  for (uint32_t i = 0; i < p_class->nfields; ++i) {
+    instance->fields[i] = NULL_AS_VALUE();
+  }
+  object_store_append(p_specs->store, (object*)instance);
+  return instance;
+}
+
+object_bound_method* create_object_bound_method(value p_receiver, const method_entry* p_entry, object_specs* p_specs) {
+  object_bound_method* bound =
+      (object_bound_method*)p_specs->alloc->allocate(p_specs->alloc, sizeof(object_bound_method));
+  if (bound == NULL) {
+    return NULL;
+  }
+  object_init(&bound->object, OBJ_BOUND_METHOD);
+  bound->receiver = p_receiver;
+  bound->entry = p_entry;
+  object_store_append(p_specs->store, (object*)bound);
+  return bound;
+}
+
 void object_dispatch_deinit(object* p_object, object_specs* p_specs) {
   switch (object_get_type(p_object)) {
   case OBJ_STRING:
@@ -399,6 +668,16 @@ void object_dispatch_deinit(object* p_object, object_specs* p_specs) {
     break;
   case OBJ_MAP:
     object_map_deinit((object_map*)p_object, p_specs);
+    break;
+  case OBJ_CLASS:
+    object_class_deinit((object_class*)p_object, p_specs);
+    break;
+  case OBJ_INSTANCE:
+    // the inline fields array dies with the allocation
+    object_deinit(p_object);
+    break;
+  case OBJ_BOUND_METHOD:
+    object_deinit(p_object);
     break;
   }
 }
@@ -450,6 +729,19 @@ void object_debug_print(object* p_object) {
   }
   case OBJ_MAP: {
     printf("<map %u>", ((object_map*)p_object)->entries.count);
+    break;
+  }
+  case OBJ_CLASS: {
+    printf("<class %s>", ((object_class*)p_object)->name->string.chars);
+    break;
+  }
+  case OBJ_INSTANCE: {
+    printf("<instance %s>", ((object_instance*)p_object)->klass->name->string.chars);
+    break;
+  }
+  case OBJ_BOUND_METHOD: {
+    const object_bound_method* bound = (const object_bound_method*)p_object;
+    printf("<method %s>", bound->entry->name->string.chars);
     break;
   }
   }

@@ -70,8 +70,9 @@
   X(TOKEN_AND, "and")                                                                                                  \
   X(TOKEN_OR, "or")                                                                                                    \
   X(TOKEN_CLASS, "class")                                                                                              \
+  X(TOKEN_STATIC, "static")                                                                                            \
   X(TOKEN_SUPER, "super")                                                                                              \
-  X(TOKEN_INHERITS, "inherits")                                                                                        \
+  X(TOKEN_PUB, "pub")                                                                                        \
   X(TOKEN_THIS, "this")                                                                                                \
   X(TOKEN_NULL, "null")                                                                                                \
   X(TOKEN_TRUE, "true")                                                                                                \
@@ -154,8 +155,9 @@ typedef enum {
   TOKEN_AND,
   TOKEN_OR,
   TOKEN_CLASS,
+  TOKEN_STATIC,
   TOKEN_SUPER,
-  TOKEN_INHERITS,
+  TOKEN_PUB,
   TOKEN_THIS,
   TOKEN_NULL,
   TOKEN_TRUE,

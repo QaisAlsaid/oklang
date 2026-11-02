@@ -163,6 +163,9 @@ static void compile_context_init(compile_context* p_context,
   p_context->active_handlers = 0;
   p_context->in_catch = false;
   p_context->catch_park_reg = 0;
+  p_context->sees_fields = false;
+  p_context->sees_statics = false;
+  p_context->statics_of_class = ok_create_string_view("", 0, true);
 }
 
 static void compile_context_deinit(compile_context* p_context, allocators* p_alloc) {
@@ -357,6 +360,21 @@ begin_context(compiler* p_compiler, ok_string_view p_name, function_type p_type,
   }
   gc_guard_up(alloc->gc, OBJECT_AS_VALUE(obj_fu));
   compile_context_init(&ctx, obj_fu, p_type, alloc);
+  if (p_type == FUNCTION_METHOD) {
+    ctx.sees_fields = true;
+  } else if (p_type == FUNCTION_STATIC) {
+    ctx.sees_fields = false;
+    ctx.sees_statics = true;
+    if (p_compiler->contexts.count > 0) {
+      // the class operand rides the enclosing context (set while the class
+      // body compiles): statics of the class being defined, then inherited.
+      ctx.statics_of_class = p_compiler->contexts.data[p_compiler->contexts.count - 1].statics_of_class;
+    }
+  } else if (p_compiler->contexts.count > 0) {
+    ctx.sees_fields = p_compiler->contexts.data[p_compiler->contexts.count - 1].sees_fields;
+    ctx.sees_statics = p_compiler->contexts.data[p_compiler->contexts.count - 1].sees_statics;
+    ctx.statics_of_class = p_compiler->contexts.data[p_compiler->contexts.count - 1].statics_of_class;
+  }
   const bool res = compile_contexts_append(&p_compiler->contexts, ctx);
   gc_guard_down(alloc->gc);
   if (!res) {
@@ -482,6 +500,22 @@ static bool compile_expression(compiler* p_compiler,
 static bool compile_let_declration(compiler* p_compiler, ast_let_declaration* p_let);
 static bool compile_let_declaration_span(compiler* p_compiler, ast_let_declaration* p_let);
 static bool compile_function_declaration(compiler* p_compiler, ast_function_declaration* p_fu);
+static bool compile_class_declaration(compiler* p_compiler, ast_class_declaration* p_class);
+static bool compile_this_expression(compiler* p_compiler,
+                                    ast_this_expression* p_this,
+                                    _register p_dest,
+                                    uint32_t p_requested_count,
+                                    expression_result* p_out);
+static bool compile_super_expression(compiler* p_compiler,
+                                     ast_super_expression* p_super,
+                                     _register p_dest,
+                                     uint32_t p_requested_count,
+                                     expression_result* p_out);
+static bool compile_access_expression(compiler* p_compiler,
+                                      ast_access_expression* p_access,
+                                      _register p_dest,
+                                      uint32_t p_requested_count,
+                                      expression_result* p_out);
 
 static bool compile_expression_statement(compiler* p_compiler, ast_expression_statement* p_expression_statement);
 static bool compile_eof_statement(compiler* p_compiler, ast_eof_statement* p_eof);
@@ -670,6 +704,16 @@ ret: {
 }
 }
 
+// the member-name constant for an access site. every site gets its own string
+// object: constants are not interned, and the freeze pass + runtime compare
+// by content, so sharing is an optimization nobody asked for yet.
+static constant add_name_constant(compiler* p_compiler, token p_name, ast_node* p_author);
+
+// the statics lane resolves the enclosing class's name through the ordinary
+// variable machinery (a local in the body, an upvalue inside methods), so the
+// name-op emitters need this before its definition.
+static location resolve_variable(compiler* p_compiler, const ok_string_view p_identifier, ast_node* p_author);
+
 constant add_constant(compiler* p_compiler, value p_value, ast_node* p_author) {
   chunk* chunk = current_chunk(p_compiler);
   constant index = chunk_add_constant(chunk, p_value, p_author->token.line_info);
@@ -758,6 +802,9 @@ static bool compile_statement(compiler* p_compiler, ast_statement* p_statement) 
   case AST_FUNCTION_DECLARATION:
     result = compile_function_declaration(p_compiler, (ast_function_declaration*)p_statement);
     break;
+  case AST_CLASS_DECLARATION:
+    result = compile_class_declaration(p_compiler, (ast_class_declaration*)p_statement);
+    break;
   case AST_EOF_STATEMENT:
     result = compile_eof_statement(p_compiler, (ast_eof_statement*)p_statement);
     break;
@@ -822,6 +869,15 @@ static bool compile_expression(compiler* p_compiler,
   case AST_NULL_EXPRESSION:
     result = compile_null_expression(p_compiler, (ast_null_expression*)p_expression, p_dest, p_requested_count, p_out);
     break;
+  case AST_THIS_EXPRESSION:
+    result = compile_this_expression(p_compiler, (ast_this_expression*)p_expression, p_dest, p_requested_count, p_out);
+    break;
+  case AST_SUPER_EXPRESSION:
+    result = compile_super_expression(p_compiler, (ast_super_expression*)p_expression, p_dest, p_requested_count, p_out);
+    break;
+  case AST_ACCESS_EXPRESSION:
+    result = compile_access_expression(p_compiler, (ast_access_expression*)p_expression, p_dest, p_requested_count, p_out);
+    break;
   case AST_FUNCTION_EXPRESSION:
     result = compile_function_expression(
         p_compiler, (ast_function_expression*)p_expression, p_dest, p_requested_count, p_out);
@@ -862,6 +918,18 @@ static bool compile_expression(compiler* p_compiler,
   return result;
 }
 
+// is `this` the receiver local (register 0) of the CURRENT context? true only
+// directly inside a method body; in anything nested (a lambda) `this` is a
+// captured upvalue and field ops must take the guarded member lane.
+static bool this_is_receiver_local(compiler* p_compiler, ast_node* p_author) {
+  if (current_context(p_compiler)->function.type != FUNCTION_METHOD &&
+      current_context(p_compiler)->function.type != FUNCTION_STATIC) {
+    return false;
+  }
+  location self = resolve_variable(p_compiler, ok_create_string_view("this", OK_STRING_VIEW_CALCULATE_LENGTH, true), p_author);
+  return self.error == LOCATION_OK && self.kind == LOCATION_KIND_REGISTER && self.index == 0;
+}
+
 static bool materialize_value(compiler* p_compiler, _register p_dest, location p_value, ast_node* p_author) {
   if (p_value.kind == LOCATION_KIND_REGISTER && p_value.index == p_dest.index) {
     return true; // already there: no self move
@@ -885,6 +953,91 @@ static bool materialize_value(compiler* p_compiler, _register p_dest, location p
     op = OP_LOAD_UPVALUE;
     op_long = OP_LOAD_UPVALUE_LONG;
     break;
+  case LOCATION_KIND_STATIC_FIELD: {
+    // a static of the enclosing class: resolve the class-name variable (a
+    // local in the body, an upvalue inside methods), load it into a temp,
+    // then the name-keyed read walks the chain at runtime.
+    register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
+    const uint32_t checkpoint = regalloc->temp_top;
+    _register klass_reg;
+    if (!register_allocator_allocate_temp(regalloc, &klass_reg)) {
+      report_oom(p_compiler, p_author);
+      return false;
+    }
+    location klass_loc = resolve_variable(p_compiler, current_context(p_compiler)->statics_of_class, p_author);
+    if (klass_loc.error != LOCATION_OK || klass_loc.kind == LOCATION_KIND_STATIC_FIELD ||
+        klass_loc.kind == LOCATION_KIND_FIELD) {
+      // the class operand must resolve to a real variable (the class-name
+      // binding). anything else would recurse this very path forever.
+      error_at(p_compiler,
+               p_author,
+               ok_create_string_view("the enclosing class name did not resolve to a variable.",
+                                     OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      return false;
+    }
+    if (!materialize_value(p_compiler, klass_reg, klass_loc, p_author)) {
+      return false;
+    }
+    if (!emit_word2(p_compiler,
+                    encode_OPPABCQ(OP_GET_STATIC_NAME, false, p_dest.index, klass_reg.index, p_value.index, false),
+                    p_author)) {
+      report_oom(p_compiler, p_author);
+      return false;
+    }
+    register_allocator_reset_temps(regalloc, checkpoint);
+    return true;
+  }
+  case LOCATION_KIND_FIELD: {
+    if (this_is_receiver_local(p_compiler, p_author)) {
+      // a field of `this`, receiver-relative: the NAME form, rewritten in
+      // place by the freeze pass (slot op, or LOAD_GLOBAL when the name is
+      // not a field after all).
+      if (p_dest.index > aprime_MAX || p_value.index > bprime_MAX) {
+        if (!emit_word2(p_compiler, encode_OPPABCQ(OP_GET_FIELD_NAME_LONG, false, p_dest.index, p_value.index, 0, 0),
+                        p_author)) {
+          report_oom(p_compiler, p_author);
+          return false;
+        }
+      } else if (!emit_word(p_compiler, encode_oppabprime(OP_GET_FIELD_NAME, false, p_dest.index, p_value.index),
+                           p_author)) {
+        report_oom(p_compiler, p_author);
+        return false;
+      }
+      return true;
+    }
+    // nested inside a lambda: `this` is a captured upvalue, so the read is a
+    // guarded member read on the materialized receiver (a field, when
+    // visible from the calling hierarchy).
+    {
+      register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
+      const uint32_t checkpoint = regalloc->temp_top;
+      _register recv;
+      if (!register_allocator_allocate_temp(regalloc, &recv)) {
+        report_oom(p_compiler, p_author);
+        return false;
+      }
+      location self = resolve_variable(
+          p_compiler, ok_create_string_view("this", OK_STRING_VIEW_CALCULATE_LENGTH, true), p_author);
+      if (self.error != LOCATION_OK || !materialize_value(p_compiler, recv, self, p_author)) {
+        return false;
+      }
+      mic_slot mic = chunk_add_mic(current_chunk(p_compiler), p_author->token.line_info);
+      if (!IS_MIC_VALID(mic)) {
+        report_oom(p_compiler, p_author);
+        return false;
+      }
+      const bool ok =
+          emit_word2(p_compiler,
+                     encode_OPPABCQ(OP_GET_MEMBER, false, p_dest.index, recv.index, p_value.index, false), p_author) &&
+          emit_word(p_compiler, (word)CONSTANT_RAW_INDEX(mic), p_author);
+      register_allocator_reset_temps(regalloc, checkpoint);
+      if (!ok) {
+        report_oom(p_compiler, p_author);
+        return false;
+      }
+      return true;
+    }
+  }
   default:
     CRASH_MSG(false, "unimplemented rhs location.");
     break;
@@ -1255,6 +1408,327 @@ static bool compile_function_declaration(compiler* p_compiler, ast_function_decl
   return define_variable(p_compiler, variable, value, (ast_node*)p_fu);
 }
 
+static constant add_name_constant(compiler* p_compiler, token p_name, ast_node* p_author) {
+  object_specs specs = {p_compiler->alloc, p_compiler->objects_store};
+  ok_string_view name_view = ok_create_string_view(p_name.start, p_name.length, false);
+  object_string* name = create_object_string(name_view, &specs);
+  if (name == NULL) {
+    report_oom(p_compiler, p_author);
+    return (constant){0, 0, CONSTANT_ALLOCATION_FAILED};
+  }
+  // the constants array can grow (and collect) mid-append: the string rides
+  // the guard stack until it is reachable through the proto it lands in.
+  gc_guard_up(p_compiler->alloc->gc, OBJECT_AS_VALUE(name));
+  constant added = add_constant(p_compiler, OBJECT_AS_VALUE(name), p_author);
+  gc_guard_down(p_compiler->alloc->gc);
+  return added;
+}
+
+// the field-initializer thunk: a hidden method `fu() { this.field = expr; }`
+// built as a tiny AST so compile_function_impl does all the real work (the
+// defaults/varargs/upvalue machinery is shared verbatim). runs at
+// construction with the fresh instance as its receiver.
+static bool compile_field_initializer(compiler* p_compiler,
+                                      token p_field_name,
+                                      ast_expression* p_value,
+                                      _register p_dest,
+                                      expression_result* p_out,
+                                      ast_node* p_author) {
+  allocators* alloc = p_compiler->alloc;
+  ast_specs specs = {alloc};
+  ast_this_expression* this_expr = (ast_this_expression*)alloc->allocate(alloc, sizeof(ast_this_expression));
+  ast_access_expression* access = (ast_access_expression*)alloc->allocate(alloc, sizeof(ast_access_expression));
+  ast_assign_expression* assign = (ast_assign_expression*)alloc->allocate(alloc, sizeof(ast_assign_expression));
+  ast_expression_statement* body =
+      (ast_expression_statement*)alloc->allocate(alloc, sizeof(ast_expression_statement));
+  if (this_expr == NULL || access == NULL || assign == NULL || body == NULL) {
+    // free what allocated; the rest are NULL
+    alloc->release(alloc, this_expr);
+    alloc->release(alloc, access);
+    alloc->release(alloc, assign);
+    alloc->release(alloc, body);
+    report_oom(p_compiler, p_author);
+    return false;
+  }
+  ast_this_expression_init(this_expr, p_field_name, &specs);
+  ast_access_expression_init(access, p_field_name, (ast_expression*)this_expr, p_field_name, &specs);
+  ast_assign_expression_init(assign, p_field_name, (ast_expression*)access, p_value, &specs);
+  ast_expression_statement_init(body, p_field_name, (ast_expression*)assign, &specs);
+  ok_string_view field_name = ok_create_string_view(p_field_name.start, p_field_name.length, false);
+  ast_bindings_list no_params;
+  ast_bindings_list_init(&no_params, alloc);
+  const bool ok = compile_function_impl(p_compiler, field_name, FUNCTION_METHOD, no_params, (ast_statement*)body,
+                                        p_dest, p_out, p_author);
+  ast_bindings_list_deinit(&no_params, alloc);
+  // teardown: the synthesized thunk BORROWED the initializer expression (the
+  // class member owns it and frees it with the rest of the tree), so only
+  // the synthesized nodes die here - the assign is never deinit'd, its left
+  // side (the access, and through it the this node) is torn down manually
+  // and its right side is not ours to free.
+  ast_access_expression_deinit(access);
+  alloc->release(alloc, access);
+  alloc->release(alloc, assign);
+  alloc->release(alloc, body);
+  return ok;
+}
+
+// `class Name : Parent { members }`. the whole body compiles inline in the
+// enclosing chunk: OP_CLASS builds the value, DEFINE_FIELD/DEFINE_METHOD
+// populate it, OP_CLASS_END freezes the layout and patches the method bodies
+// (see the freeze pass in okvm.c). the name binds like a fu declaration.
+static bool compile_class_declaration(compiler* p_compiler, ast_class_declaration* p_class) {
+  allocators* alloc = p_compiler->alloc;
+  ast_node* author = (ast_node*)p_class;
+  register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
+  object_specs obj_specs = {alloc, p_compiler->objects_store};
+
+  ok_string_view name_view = ok_create_string_view(p_class->name.start, p_class->name.length, false);
+  variable_declaration vardecl = {
+      .identifier = name_view,
+      .flags = variable_declaration_flags_from_modifiers(p_class->declaration.modifiers, BINDING_NONE)};
+  // the name first: method bodies capture it like a fu's body captures its
+  // own name (class Foo can appear inside its own methods), and the static
+  // lane resolves it as the class operand. it is declared INITIALIZED: the
+  // register is dead until OP_CLASS fills it, but no member code can run
+  // before that point (static initializers execute after the OP_CLASS, and
+  // methods long after), so early visibility is sound.
+  location varloc = {0, LOCATION_KIND_REGISTER, LOCATION_INVALID};
+  if ((vardecl.flags & VARIABLE_DECLARATION_FLAGS_GLOBAL) == 0) {
+    _register local = add_local(p_compiler, vardecl, true, author);
+    varloc = (location){local.index, LOCATION_KIND_REGISTER, IS_REGISTER_VALID(local) ? LOCATION_OK : LOCATION_INVALID};
+  } else {
+    global glob = add_global(p_compiler, vardecl, author);
+    varloc = (location){glob.index, LOCATION_KIND_GLOBAL, IS_GLOBAL_VALID(glob) ? LOCATION_OK : LOCATION_INVALID};
+  }
+  if (varloc.error != LOCATION_OK) {
+    return false;
+  }
+  _register klass_reg;
+  if (!register_for_location(p_compiler, varloc, &klass_reg)) {
+    report_oom(p_compiler, author);
+    return false;
+  }
+  const uint32_t klass_checkpoint = regalloc->temp_top;
+
+  _register parent_reg;
+  if (!register_allocator_allocate_temp(regalloc, &parent_reg)) {
+    report_oom(p_compiler, author);
+    return false;
+  }
+  if (p_class->parent != NULL) {
+    expression_result parent_res;
+    if (!compile_expression(p_compiler, p_class->parent, parent_reg, 1, &parent_res)) {
+      return false;
+    }
+    if (!materialize_into(p_compiler, &parent_res.value, parent_reg, author)) {
+      return false;
+    }
+  } else {
+    if (!emit_word2(p_compiler, encode_OPPABCQ(OP_LOAD_NULL, false, parent_reg.index, 1, 0, 0), author)) {
+      report_oom(p_compiler, author);
+      return false;
+    }
+  }
+  object_string* name_str = create_object_string(name_view, &obj_specs);
+  if (name_str == NULL) {
+    report_oom(p_compiler, author);
+    return false;
+  }
+  gc_guard_up(alloc->gc, OBJECT_AS_VALUE(name_str));
+  constant name_const = add_constant(p_compiler, OBJECT_AS_VALUE(name_str), author);
+  gc_guard_down(alloc->gc);
+  if (!IS_CONSTANT_VALID(name_const)) {
+    return false;
+  }
+  if (!emit_word2(p_compiler,
+                  encode_OPPABCQ(OP_CLASS, false, klass_reg.index, CONSTANT_RAW_INDEX(name_const), parent_reg.index, false),
+                  author)) {
+    report_oom(p_compiler, author);
+    return false;
+  }
+  register_allocator_reset_temps(regalloc, klass_checkpoint); // the parent temp is spent
+
+  // the class body compiles inline in the enclosing context: while the
+  // members run, unresolved bare names may be this class's statics (earlier
+  // ones - forward references are definition-time errors). the flags are
+  // scoped to the body and restored after, so code following the decl in the
+  // same function does not see them.
+  compile_context* body_ctx = current_context(p_compiler);
+  const bool saved_sees_statics = body_ctx->sees_statics;
+  const ok_string_view saved_statics_of = body_ctx->statics_of_class;
+  body_ctx->sees_statics = true;
+  body_ctx->statics_of_class = name_view;
+
+  for (uint32_t i = 0; i < p_class->members.count; ++i) {
+    ast_statement* member = p_class->members.data[i];
+    const uint32_t member_checkpoint = regalloc->temp_top;
+    if (member->node.node_type == AST_LET_DECLARATION) {
+      ast_let_declaration* let = (ast_let_declaration*)member;
+      if (let->span_bindings.count > 0) {
+        error_at(p_compiler,
+                 (ast_node*)member,
+                 ok_create_string_view("a field is one name; span lets are not fields.",
+                                       OK_STRING_VIEW_CALCULATE_LENGTH, true));
+        return false;
+      }
+      token field_tok = ((ast_identifier_expression*)let->binding->lvalue)->expression.node.token;
+      constant field_const = add_name_constant(p_compiler, field_tok, (ast_node*)member);
+      if (!IS_CONSTANT_VALID(field_const)) {
+        return false;
+      }
+      const bool is_mut = (let->binding->modifiers & BINDING_MUT) != 0;
+      const bool is_static = (let->declaration.modifiers & DECLARATION_STATIC) != 0;
+      if (is_static) {
+        // static field: the initializer runs inline, at definition time, in
+        // this context (it may read earlier statics and call static methods
+        // through the class name). the value is spent by the define op.
+        _register value_reg;
+        if (!register_allocator_allocate_temp(regalloc, &value_reg)) {
+          report_oom(p_compiler, author);
+          return false;
+        }
+        if (let->value != NULL) {
+          expression_result value_res;
+          if (!compile_expression(p_compiler, let->value, value_reg, 1, &value_res)) {
+            return false;
+          }
+          if (!materialize_into(p_compiler, &value_res.value, value_reg, (ast_node*)member)) {
+            return false;
+          }
+        } else {
+          if (!emit_word2(p_compiler, encode_OPPABCQ(OP_LOAD_NULL, false, value_reg.index, 1, 0, 0),
+                          (ast_node*)member)) {
+            report_oom(p_compiler, author);
+            return false;
+          }
+        }
+        if (!emit_word2(p_compiler,
+                        encode_OPPABCQ(OP_DEFINE_STATIC_FIELD,
+                                       false,
+                                       klass_reg.index,
+                                       value_reg.index,
+                                       CONSTANT_RAW_INDEX(field_const),
+                                       is_mut),
+                        (ast_node*)member)) {
+          report_oom(p_compiler, author);
+          return false;
+        }
+        register_allocator_reset_temps(regalloc, member_checkpoint);
+        continue;
+      }
+      if (let->value != NULL) {
+        _register thunk_reg;
+        if (!register_allocator_allocate_temp(regalloc, &thunk_reg)) {
+          report_oom(p_compiler, author);
+          return false;
+        }
+        expression_result thunk_res;
+        if (!compile_field_initializer(p_compiler, field_tok, let->value, thunk_reg, &thunk_res, (ast_node*)member)) {
+          return false;
+        }
+        if (!emit_word2(p_compiler,
+                        encode_OPPABCQ(OP_DEFINE_FIELD,
+                                       false,
+                                       klass_reg.index,
+                                       thunk_reg.index,
+                                       CONSTANT_RAW_INDEX(field_const),
+                                       is_mut),
+                        (ast_node*)member)) {
+          report_oom(p_compiler, author);
+          return false;
+        }
+      } else {
+        if (!emit_word2(p_compiler,
+                        encode_OPPABCQ(OP_DEFINE_FIELD,
+                                       true,
+                                       klass_reg.index,
+                                       0,
+                                       CONSTANT_RAW_INDEX(field_const),
+                                       is_mut),
+                        (ast_node*)member)) {
+          report_oom(p_compiler, author);
+          return false;
+        }
+      }
+    } else if (member->node.node_type == AST_FUNCTION_DECLARATION) {
+      ast_function_declaration* fu = (ast_function_declaration*)member;
+      ok_string_view method_name =
+          ast_identifier_expression_get_value((ast_identifier_expression*)fu->binding->lvalue);
+      _register closure_reg;
+      if (!register_allocator_allocate_temp(regalloc, &closure_reg)) {
+        report_oom(p_compiler, author);
+        return false;
+      }
+      expression_result closure_res;
+      const bool is_pub = (fu->declaration.modifiers & DECLARATION_PUB) != 0;
+      const bool is_static_method = (fu->declaration.modifiers & DECLARATION_STATIC) != 0;
+      if (!compile_function_impl(p_compiler,
+                                 method_name,
+                                 is_static_method ? FUNCTION_STATIC : FUNCTION_METHOD,
+                                 fu->parameters,
+                                 fu->body,
+                                 closure_reg,
+                                 &closure_res,
+                                 (ast_node*)member)) {
+        return false;
+      }
+      constant method_const =
+          add_name_constant(p_compiler, ((ast_identifier_expression*)fu->binding->lvalue)->expression.node.token,
+                            (ast_node*)member);
+      if (!IS_CONSTANT_VALID(method_const)) {
+        return false;
+      }
+      if (is_static_method) {
+        if (!emit_word2(p_compiler,
+                        encode_OPPABCQ(OP_DEFINE_STATIC_METHOD,
+                                       is_pub,
+                                       klass_reg.index,
+                                       closure_reg.index,
+                                       CONSTANT_RAW_INDEX(method_const),
+                                       false),
+                        (ast_node*)member)) {
+          report_oom(p_compiler, author);
+          return false;
+        }
+      } else if (!emit_word2(p_compiler,
+                      encode_OPPABCQ(OP_DEFINE_METHOD,
+                                     is_pub,
+                                     klass_reg.index,
+                                     closure_reg.index,
+                                     CONSTANT_RAW_INDEX(method_const),
+                                     false),
+                      (ast_node*)member)) {
+        report_oom(p_compiler, author);
+        return false;
+      }
+    } else {
+      error_at(p_compiler,
+               (ast_node*)member,
+               ok_create_string_view("class bodies take 'let' fields and 'fu' methods.",
+                                     OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      return false;
+    }
+    register_allocator_reset_temps(regalloc, member_checkpoint);
+  }
+  body_ctx->sees_statics = saved_sees_statics;
+  body_ctx->statics_of_class = saved_statics_of;
+
+  if (klass_reg.index > aprime_MAX) {
+    if (!emit_word2(p_compiler, encode_OPPABCQ(OP_CLASS_END_LONG, false, klass_reg.index, 0, 0, 0), author)) {
+      report_oom(p_compiler, author);
+      return false;
+    }
+  } else if (!emit_word(p_compiler, encode_oppabprime(OP_CLASS_END, false, klass_reg.index, 0), author)) {
+    report_oom(p_compiler, author);
+    return false;
+  }
+  return define_variable(
+      p_compiler,
+      varloc,
+      (expression_result){EXPRESSION_LVALUE | EXPRESSION_VALUE, varloc, (lvalue){LVALUE_VARIABLE, varloc}, 1},
+      author);
+}
+
 static bool compile_expression_statement(compiler* p_compiler, ast_expression_statement* p_expression_statement) {
   expression_result value;
   _register devnull;
@@ -1443,6 +1917,45 @@ static location resolve_variable(compiler* p_compiler, const ok_string_view p_id
     }
   }
 
+  // the statics lane: inside the class body or a static method an unresolved
+  // name may be a static of the enclosing class. checked before the field
+  // lane: the only context carrying both flags is a class body nested inside
+  // an instance method, and there the inner class's statics are the closer
+  // binding. globals lose to statics.
+  if (current_context(p_compiler)->sees_statics) {
+    object_specs specs = {p_compiler->alloc, p_compiler->objects_store};
+    object_string* name = create_object_string(p_identifier, &specs);
+    if (name == NULL) {
+      report_oom(p_compiler, p_author);
+      return invalid;
+    }
+    gc_guard_up(p_compiler->alloc->gc, OBJECT_AS_VALUE(name));
+    constant name_const = add_constant(p_compiler, OBJECT_AS_VALUE(name), p_author);
+    gc_guard_down(p_compiler->alloc->gc);
+    if (!IS_CONSTANT_VALID(name_const)) {
+      return invalid;
+    }
+    return (location){CONSTANT_RAW_INDEX(name_const), LOCATION_KIND_STATIC_FIELD, LOCATION_OK};
+  }
+  // the field lane: inside a class-body method an unresolved name may be a
+  // field of `this` (own or inherited - the layout is a runtime truth, so the
+  // name rides a constant and the freeze pass bakes the slot or rewrites to
+  // the global). captured enclosing names won above; globals lose to fields.
+  if (current_context(p_compiler)->sees_fields) {
+    object_specs specs = {p_compiler->alloc, p_compiler->objects_store};
+    object_string* name = create_object_string(p_identifier, &specs);
+    if (name == NULL) {
+      report_oom(p_compiler, p_author);
+      return invalid;
+    }
+    gc_guard_up(p_compiler->alloc->gc, OBJECT_AS_VALUE(name));
+    constant name_const = add_constant(p_compiler, OBJECT_AS_VALUE(name), p_author);
+    gc_guard_down(p_compiler->alloc->gc);
+    if (!IS_CONSTANT_VALID(name_const)) {
+      return invalid;
+    }
+    return (location){CONSTANT_RAW_INDEX(name_const), LOCATION_KIND_FIELD, LOCATION_OK};
+  }
   {
     const global glob = globals_store_get(p_compiler->globals_store, p_identifier);
     if (IS_GLOBAL_VALID(glob)) {
@@ -1475,7 +1988,15 @@ static bool expression_is_inert(const ast_expression* p_expression) {
   case AST_BOOLEAN_EXPRESSION:
   case AST_NULL_EXPRESSION:
   case AST_FUNCTION_EXPRESSION:
+  case AST_THIS_EXPRESSION:
+  case AST_SUPER_EXPRESSION:
     return true;
+  case AST_ACCESS_EXPRESSION: {
+    // reading a member cannot reseat locals (a field read is receiver-relative,
+    // a method bind allocates but never writes)
+    const ast_access_expression* access = (const ast_access_expression*)p_expression;
+    return expression_is_inert(access->left);
+  }
   case AST_PREFIX_UNARY_EXPRESSION:
     return expression_is_inert(((const ast_prefix_unary_expression*)p_expression)->right);
   case AST_INFIX_BINARY_EXPRESSION: {
@@ -1528,7 +2049,91 @@ static lvalue resolve_lvalue(compiler* p_compiler, ast_expression* p_lvalue_expr
     if (var.error != LOCATION_OK) {
       return (lvalue){LVALUE_INVALID};
     }
+    if (var.kind == LOCATION_KIND_FIELD) {
+      lvalue lv;
+      lv.kind = LVALUE_FIELD;
+      lv.field.name = var;
+      return lv;
+    }
+    if (var.kind == LOCATION_KIND_STATIC_FIELD) {
+      lvalue lv;
+      lv.kind = LVALUE_STATIC;
+      lv.statik.name = var;
+      return lv;
+    }
     return (lvalue){LVALUE_VARIABLE, var};
+  }
+  case AST_ACCESS_EXPRESSION: {
+    // obj.x = v: the receiver evaluates once into its own register (surviving
+    // the rhs compile), the name rides a constant. `this.x = v` inside a
+    // method takes the this-relative field lane instead.
+    ast_access_expression* access = (ast_access_expression*)p_lvalue_expr;
+    ast_node* author = (ast_node*)p_lvalue_expr;
+    if (access->left->node.node_type == AST_SUPER_EXPRESSION) {
+      error_at(p_compiler,
+               author,
+               ok_create_string_view("'super' must call a method or the parent initializer.",
+                                     OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      return (lvalue){LVALUE_INVALID};
+    }
+    if (access->left->node.node_type == AST_THIS_EXPRESSION &&
+        current_context(p_compiler)->sees_fields) {
+      // in a method body `this` is local 0 and the store is this-relative; in
+      // a nested lambda it is a captured upvalue and must take the guarded
+      // member path below.
+      location self = resolve_variable(p_compiler,
+                                       ok_create_string_view("this", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                                       author);
+      if (self.error == LOCATION_OK && self.kind == LOCATION_KIND_REGISTER && self.index == 0) {
+        object_specs specs = {p_compiler->alloc, p_compiler->objects_store};
+        ok_string_view name_view = ok_create_string_view(access->name.start, access->name.length, false);
+        object_string* name = create_object_string(name_view, &specs);
+        if (name == NULL) {
+          report_oom(p_compiler, author);
+          return (lvalue){LVALUE_INVALID};
+        }
+        gc_guard_up(p_compiler->alloc->gc, OBJECT_AS_VALUE(name));
+        constant name_const = add_constant(p_compiler, OBJECT_AS_VALUE(name), author);
+        gc_guard_down(p_compiler->alloc->gc);
+        if (!IS_CONSTANT_VALID(name_const)) {
+          return (lvalue){LVALUE_INVALID};
+        }
+        lvalue lv;
+        lv.kind = LVALUE_FIELD;
+        lv.field.name = (location){CONSTANT_RAW_INDEX(name_const), LOCATION_KIND_FIELD, LOCATION_OK};
+        return lv;
+      }
+    }
+    _register base;
+    if (!register_allocator_allocate_temp(regalloc, &base)) {
+      report_oom(p_compiler, author);
+      return (lvalue){LVALUE_INVALID};
+    }
+    expression_result base_result;
+    if (!compile_expression(p_compiler, access->left, base, 1, &base_result)) {
+      return (lvalue){LVALUE_INVALID};
+    }
+    if (!materialize_into(p_compiler, &base_result.value, base, author)) {
+      return (lvalue){LVALUE_INVALID};
+    }
+    object_specs specs = {p_compiler->alloc, p_compiler->objects_store};
+    ok_string_view name_view = ok_create_string_view(access->name.start, access->name.length, false);
+    object_string* name = create_object_string(name_view, &specs);
+    if (name == NULL) {
+      report_oom(p_compiler, author);
+      return (lvalue){LVALUE_INVALID};
+    }
+    gc_guard_up(p_compiler->alloc->gc, OBJECT_AS_VALUE(name));
+    constant name_const = add_constant(p_compiler, OBJECT_AS_VALUE(name), author);
+    gc_guard_down(p_compiler->alloc->gc);
+    if (!IS_CONSTANT_VALID(name_const)) {
+      return (lvalue){LVALUE_INVALID};
+    }
+    lvalue lv;
+    lv.kind = LVALUE_MEMBER;
+    lv.member.base = (location){base.index, LOCATION_KIND_REGISTER, LOCATION_OK};
+    lv.member.name = (location){CONSTANT_RAW_INDEX(name_const), LOCATION_KIND_CONSTANT, LOCATION_OK};
+    return lv;
   }
   case AST_SUBSCRIPT_EXPRESSION: {
     // the 3 temp discipline: base and index are evaluated once, into their own
@@ -1648,6 +2253,141 @@ static bool store_lvalue(compiler* p_compiler, lvalue p_lvalue, expression_resul
       report_oom(p_compiler, p_author);
       return false;
     }
+    return true;
+  }
+  case LVALUE_FIELD: {
+    // this.field = value. directly in a method: the NAME form, rewritten by
+    // the freeze pass to a baked slot store, a plain global store, or the
+    // immutable-field trap. nested in a lambda: a guarded member store on
+    // the captured receiver.
+    if (this_is_receiver_local(p_compiler, p_author)) {
+      bool is_value_constant = false;
+      location value = p_value.value;
+      if (!materialize_if_not_common(p_compiler, &is_value_constant, &value, p_author)) {
+        return false;
+      }
+      if (!materialize_if_not_register(p_compiler, &value, p_author)) {
+        return false;
+      }
+      // common values (constants) still need the p flag: mirror STORE_GLOBAL.
+      const bool value_is_constant = value.kind == LOCATION_KIND_CONSTANT;
+      if (value.index > aprime_MAX || p_lvalue.field.name.index > bprime_MAX) {
+        if (!emit_word2(p_compiler,
+                        encode_OPPABCQ(OP_STORE_FIELD_NAME_LONG,
+                                       value_is_constant,
+                                       value.index,
+                                       p_lvalue.field.name.index,
+                                       0,
+                                       false),
+                        p_author)) {
+          report_oom(p_compiler, p_author);
+          return false;
+        }
+        return true;
+      }
+      if (!emit_word(p_compiler,
+                     encode_oppabprime(OP_STORE_FIELD_NAME, value_is_constant, value.index, p_lvalue.field.name.index),
+                     p_author)) {
+        report_oom(p_compiler, p_author);
+        return false;
+      }
+      return true;
+    }
+    {
+      register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
+      const uint32_t checkpoint = regalloc->temp_top;
+      _register recv;
+      if (!register_allocator_allocate_temp(regalloc, &recv)) {
+        report_oom(p_compiler, p_author);
+        return false;
+      }
+      location self = resolve_variable(p_compiler, ok_create_string_view("this", OK_STRING_VIEW_CALCULATE_LENGTH, true), p_author);
+      if (self.error != LOCATION_OK || !materialize_value(p_compiler, recv, self, p_author)) {
+        return false;
+      }
+      location value = p_value.value;
+      if (!materialize_if_not_register(p_compiler, &value, p_author)) {
+        return false;
+      }
+      bool ok = emit_word2(p_compiler,
+                           encode_OPPABCQ(OP_STORE_FIELD_G_NAME,
+                                          false,
+                                          recv.index,
+                                          value.index,
+                                          p_lvalue.field.name.index,
+                                          false),
+                           p_author);
+      register_allocator_reset_temps(regalloc, checkpoint);
+      if (!ok) {
+        report_oom(p_compiler, p_author);
+        return false;
+      }
+      return true;
+    }
+  }
+  case LVALUE_MEMBER: {
+    // obj.field = value: guarded store. the receiver is a stable register,
+    // the value a register (constants materialize), the name a constant that
+    // the freeze pass bakes to a slot.
+    location value = p_value.value;
+    if (!materialize_if_not_register(p_compiler, &value, p_author)) {
+      return false;
+    }
+    if (!emit_word2(p_compiler,
+                    encode_OPPABCQ(OP_STORE_FIELD_G_NAME,
+                                   false,
+                    p_lvalue.member.base.index,
+                                   value.index,
+                                   p_lvalue.member.name.index,
+                                   false),
+                    p_author)) {
+      report_oom(p_compiler, p_author);
+      return false;
+    }
+    return true;
+  }
+  case LVALUE_STATIC: {
+    // static-field = value: the class operand resolves through the
+    // class-name variable (a local here, an upvalue inside methods) into a
+    // temp that survives the value materialization. mutability is the
+    // runtime walk's call (the defining class owns the slot).
+    register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
+    location value = p_value.value;
+    const uint32_t checkpoint = regalloc->temp_top;
+    _register klass_reg;
+    if (!register_allocator_allocate_temp(regalloc, &klass_reg)) {
+      report_oom(p_compiler, p_author);
+      return false;
+    }
+    location klass_loc =
+        resolve_variable(p_compiler, current_context(p_compiler)->statics_of_class, p_author);
+    if (klass_loc.error != LOCATION_OK || klass_loc.kind == LOCATION_KIND_STATIC_FIELD ||
+        klass_loc.kind == LOCATION_KIND_FIELD) {
+      error_at(p_compiler,
+               p_author,
+               ok_create_string_view("the enclosing class name did not resolve to a variable.",
+                                     OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      return false;
+    }
+    if (!materialize_value(p_compiler, klass_reg, klass_loc, p_author)) {
+      return false;
+    }
+    if (!materialize_if_not_register(p_compiler, &value, p_author)) {
+      return false;
+    }
+    const bool value_is_constant = value.kind == LOCATION_KIND_CONSTANT;
+    if (!emit_word2(p_compiler,
+                    encode_OPPABCQ(OP_STORE_STATIC_NAME,
+                                   value_is_constant,
+                                   value.index,
+                                   klass_reg.index,
+                                   p_lvalue.statik.name.index,
+                                   false),
+                    p_author)) {
+      report_oom(p_compiler, p_author);
+      return false;
+    }
+    register_allocator_reset_temps(regalloc, checkpoint);
     return true;
   }
   case LVALUE_INVALID:
@@ -2486,6 +3226,14 @@ static bool compile_return_statement(compiler* p_compiler, ast_return_statement*
     if (!compile_expression(p_compiler, p_return->returned.data[0], dest, 1, &returned)) {
       return false;
     }
+    if (returned.value.kind == LOCATION_KIND_FIELD || returned.value.kind == LOCATION_KIND_STATIC_FIELD) {
+      // a field or static read has no RETURN_1 operand encoding: materialize
+      // it into the temp register first, then the register lane carries it.
+      if (!materialize_value(p_compiler, dest, returned.value, (ast_node*)p_return)) {
+        return false;
+      }
+      returned.value = (location){dest.index, LOCATION_KIND_REGISTER, LOCATION_OK};
+    }
     uint8_t e = RETURNED_NULL;
     chunk* chunk = current_chunk(p_compiler);
     switch (returned.value.kind) {
@@ -3124,6 +3872,141 @@ bool compile_call_expression(compiler* p_compiler,
   //       let is the only caller that passes n. call() checks it).
   allocators* alloc = p_compiler->alloc;
   register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
+  // the fused lanes: obj.name(args) is one OP_INVOKE (the receiver doubles as
+  // the call window base), super.name(args) and the bare super(args) are one
+  // OP_SUPER_INVOKE (the receiver rides the running method's register 0).
+  // spreads and multi-result requests fall back to the generic callable path.
+  {
+    ast_expression* callee = p_call->callable;
+    const bool is_access = callee->node.node_type == AST_ACCESS_EXPRESSION;
+    const bool is_super_call = callee->node.node_type == AST_SUPER_EXPRESSION;
+    const bool is_super_access =
+        is_access && ((ast_access_expression*)callee)->left->node.node_type == AST_SUPER_EXPRESSION;
+    if (is_super_call || is_super_access) {
+      if (current_context(p_compiler)->function.type != FUNCTION_METHOD &&
+          current_context(p_compiler)->function.type != FUNCTION_STATIC) {
+        error_at(p_compiler,
+                 (ast_node*)p_call,
+                 ok_create_string_view("'super' is only valid directly inside a method body.",
+                                       OK_STRING_VIEW_CALCULATE_LENGTH, true));
+        return false;
+      }
+      // the compile-time half of the super-initializer rule: a body that
+      // contains super(...) (bare, or spelled super.init(...)) marks every
+      // enclosing method proto. the definition-time check in OP_DEFINE_METHOD
+      // reads the flag when the chain actually carries an init.
+      const bool is_init_call =
+          is_super_call ||
+          (((ast_access_expression*)callee)->name.length == 4 &&
+           memcmp(((ast_access_expression*)callee)->name.start, "init", 4) == 0);
+      if (is_init_call) {
+        for (uint32_t ci = 0; ci < p_compiler->contexts.count; ++ci) {
+          const function_type ft = p_compiler->contexts.data[ci].function.type;
+          if (ft == FUNCTION_METHOD || ft == FUNCTION_STATIC) {
+            p_compiler->contexts.data[ci].function.function->calls_super_init = true;
+          }
+        }
+      }
+    }
+    const bool has_spread = p_call->arguments.count > 0 &&
+                            p_call->arguments.data[p_call->arguments.count - 1]->node.node_type == AST_SPREAD_EXPRESSION;
+    const uint32_t fused_argc = p_call->arguments.count;
+    const uint32_t fused_retc = p_requested_count + 1;
+    if (!has_spread && fused_argc <= B_MAX && (fused_retc == 1 || fused_retc == 2)) {
+      if (is_super_call || is_super_access) {
+        // stage the arguments above p_dest; the op stages the receiver itself.
+        _register args;
+        args.index = 0;
+        args.flags = REGISTER_FLAG_NONE;
+        args.errors = REGISTER_OK;
+        if (!compile_expressions_list(p_compiler, &p_call->arguments, A_MAX, &args, (ast_node*)p_call)) {
+          return false;
+        }
+        constant name_const;
+        if (is_super_access) {
+          name_const = add_name_constant(p_compiler, ((ast_access_expression*)callee)->name, (ast_node*)p_call);
+        } else {
+          object_specs specs = {p_compiler->alloc, p_compiler->objects_store};
+          object_string* init_name =
+              create_object_string(ok_create_string_view("init", OK_STRING_VIEW_CALCULATE_LENGTH, true), &specs);
+          if (init_name == NULL) {
+            report_oom(p_compiler, (ast_node*)p_call);
+            return false;
+          }
+          gc_guard_up(p_compiler->alloc->gc, OBJECT_AS_VALUE(init_name));
+          name_const = add_constant(p_compiler, OBJECT_AS_VALUE(init_name), (ast_node*)p_call);
+          gc_guard_down(p_compiler->alloc->gc);
+        }
+        if (!IS_CONSTANT_VALID(name_const)) {
+          return false;
+        }
+        if (!emit_word2(p_compiler,
+                        encode_OPPABCQ(OP_SUPER_INVOKE,
+                                       fused_retc == 2,
+                                       p_dest.index,
+                                       fused_argc,
+                                       CONSTANT_RAW_INDEX(name_const),
+                                       false),
+                        (ast_node*)p_call)) {
+          report_oom(p_compiler, (ast_node*)p_call);
+          return false;
+        }
+        p_out->value = (location){p_dest.index, LOCATION_KIND_REGISTER, LOCATION_OK};
+        p_out->lvalue = (lvalue){LVALUE_INVALID};
+        p_out->count = p_requested_count;
+        p_out->type = EXPRESSION_VALUE;
+        return true;
+      }
+      if (is_access) {
+        ast_access_expression* access = (ast_access_expression*)callee;
+        // receiver into p_dest, arguments right above it: the same window
+        // discipline OP_CALL rides.
+        expression_result recv;
+        if (!compile_expression(p_compiler, access->left, p_dest, 1, &recv)) {
+          return false;
+        }
+        if (!materialize_into(p_compiler, &recv.value, p_dest, (ast_node*)p_call)) {
+          return false;
+        }
+        _register args;
+        args.index = 0;
+        args.flags = REGISTER_FLAG_NONE;
+        args.errors = REGISTER_OK;
+        if (!compile_expressions_list(p_compiler, &p_call->arguments, A_MAX, &args, (ast_node*)p_call)) {
+          return false;
+        }
+        constant name_const = add_name_constant(p_compiler, access->name, (ast_node*)p_call);
+        if (!IS_CONSTANT_VALID(name_const)) {
+          return false;
+        }
+        mic_slot mic = chunk_add_mic(current_chunk(p_compiler), ((ast_node*)p_call)->token.line_info);
+        if (!IS_MIC_VALID(mic)) {
+          report_oom(p_compiler, (ast_node*)p_call);
+          return false;
+        }
+        if (!emit_word2(p_compiler,
+                        encode_OPPABCQ(OP_INVOKE,
+                                       fused_retc == 2,
+                                       p_dest.index,
+                                       fused_argc,
+                                       CONSTANT_RAW_INDEX(name_const),
+                                       false),
+                        (ast_node*)p_call)) {
+          report_oom(p_compiler, (ast_node*)p_call);
+          return false;
+        }
+        if (!emit_word(p_compiler, (word)CONSTANT_RAW_INDEX(mic), (ast_node*)p_call)) {
+          report_oom(p_compiler, (ast_node*)p_call);
+          return false;
+        }
+        p_out->value = (location){p_dest.index, LOCATION_KIND_REGISTER, LOCATION_OK};
+        p_out->lvalue = (lvalue){LVALUE_INVALID};
+        p_out->count = p_requested_count;
+        p_out->type = EXPRESSION_VALUE;
+        return true;
+      }
+    }
+  }
   expression_result callable;
   if (!compile_expression(p_compiler, p_call->callable, p_dest, 1, &callable)) {
     return false;
@@ -3473,6 +4356,35 @@ static bool compile_compound_assign_expression(compiler* p_compiler,
     }
     if (lv.kind == LVALUE_VARIABLE) {
       if (!materialize_value(p_compiler, cur, lv.variable, author)) {
+        return false;
+      }
+    } else if (lv.kind == LVALUE_FIELD || lv.kind == LVALUE_STATIC) {
+      // the NAME forms: field-of-this or static-of-the-class, both resolved
+      // against a chain at runtime (and both patched/frozen for fields).
+      if (!materialize_value(p_compiler,
+                             cur,
+                             lv.kind == LVALUE_FIELD ? lv.field.name : lv.statik.name,
+                             author)) {
+        return false;
+      }
+    } else if (lv.kind == LVALUE_MEMBER) {
+      // the guarded member read (a visible field, or a bound method - which
+      // then fails the operator as it should). same shape as the access site.
+      mic_slot mic = chunk_add_mic(current_chunk(p_compiler), author->token.line_info);
+      if (!IS_MIC_VALID(mic)) {
+        report_oom(p_compiler, author);
+        return false;
+      }
+      if (!emit_word2(p_compiler,
+                      encode_OPPABCQ(OP_GET_MEMBER,
+                                     false,
+                                     cur.index,
+                                     lv.member.base.index,
+                                     lv.member.name.index,
+                                     false),
+                      author) ||
+          !emit_word(p_compiler, (word)CONSTANT_RAW_INDEX(mic), author)) {
+        report_oom(p_compiler, author);
         return false;
       }
     } else if (!emit_index_get(p_compiler, cur, lv.subscript.base, lv.subscript.index, author)) {
@@ -3848,6 +4760,132 @@ static bool compile_boolean_expression(compiler* p_compiler,
   return true;
 }
 
+static bool compile_this_expression(compiler* p_compiler,
+                                    ast_this_expression* p_this,
+                                    _register p_dest,
+                                    uint32_t p_requested_count,
+                                    expression_result* p_out) {
+  (void)p_dest;
+  if (p_requested_count == 0) {
+    return true;
+  }
+  location loc = resolve_variable(p_compiler,
+                                  ok_create_string_view("this", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                                  (ast_node*)p_this);
+  if (loc.error != LOCATION_OK) {
+    error_at(p_compiler,
+             (ast_node*)p_this,
+             ok_create_string_view("'this' is only valid inside a method body.",
+                                   OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return false;
+  }
+  p_out->type = EXPRESSION_VALUE | EXPRESSION_LVALUE;
+  p_out->lvalue = (lvalue){LVALUE_VARIABLE, loc};
+  p_out->value = loc;
+  p_out->count = 1;
+  return true;
+}
+
+static bool compile_super_expression(compiler* p_compiler,
+                                     ast_super_expression* p_super,
+                                     _register p_dest,
+                                     uint32_t p_requested_count,
+                                     expression_result* p_out) {
+  (void)p_dest;
+  (void)p_requested_count;
+  (void)p_out;
+  // compile_call_expression intercepts every call-shaped super; a bare super
+  // reaching here is an expression position and always an error.
+  error_at(p_compiler,
+           (ast_node*)p_super,
+           ok_create_string_view("'super' must call a method or the parent initializer.",
+                                 OK_STRING_VIEW_CALCULATE_LENGTH, true));
+  return false;
+}
+
+static bool compile_access_expression(compiler* p_compiler,
+                                      ast_access_expression* p_access,
+                                      _register p_dest,
+                                      uint32_t p_requested_count,
+                                      expression_result* p_out) {
+  if (p_requested_count == 0) {
+    return true;
+  }
+  ast_node* author = (ast_node*)p_access;
+  if (p_access->left->node.node_type == AST_SUPER_EXPRESSION) {
+    error_at(p_compiler,
+             author,
+             ok_create_string_view("'super' must call a method or the parent initializer.",
+                                   OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return false;
+  }
+  if (p_access->left->node.node_type == AST_THIS_EXPRESSION && current_context(p_compiler)->sees_fields) {
+    // this.field: in a method body this is register 0 and the read is
+    // this-relative (the freeze pass bakes the slot). in a nested lambda this
+    // is a captured upvalue and must take the guarded member path below.
+    location self = resolve_variable(p_compiler,
+                                     ok_create_string_view("this", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                                     author);
+    if (self.error == LOCATION_OK && self.kind == LOCATION_KIND_REGISTER && self.index == 0) {
+      constant name_const = add_name_constant(p_compiler, p_access->name, author);
+      if (!IS_CONSTANT_VALID(name_const)) {
+        return false;
+      }
+      if (p_dest.index > aprime_MAX || CONSTANT_RAW_INDEX(name_const) > bprime_MAX) {
+        if (!emit_word2(
+            p_compiler, encode_OPPABCQ(OP_GET_FIELD_NAME_LONG, false, p_dest.index, CONSTANT_RAW_INDEX(name_const), 0, 0),
+            author)) {
+          report_oom(p_compiler, author);
+          return false;
+        }
+      } else if (!emit_word(p_compiler,
+                            encode_oppabprime(OP_GET_FIELD_NAME, false, p_dest.index, CONSTANT_RAW_INDEX(name_const)),
+                            author)) {
+        report_oom(p_compiler, author);
+        return false;
+      }
+      p_out->type = EXPRESSION_VALUE;
+      p_out->lvalue = (lvalue){LVALUE_INVALID};
+      p_out->value = (location){p_dest.index, LOCATION_KIND_REGISTER, LOCATION_OK};
+      p_out->count = 1;
+      return true;
+    }
+  }
+  // the generic member read: receiver into p_dest, one OP_GET_MEMBER with its
+  // own inline-cache slot. field (when visible) or bound method, runtime's call.
+  expression_result recv;
+  if (!compile_expression(p_compiler, p_access->left, p_dest, 1, &recv)) {
+    return false;
+  }
+  if (!materialize_into(p_compiler, &recv.value, p_dest, author)) {
+    return false;
+  }
+  constant name_const = add_name_constant(p_compiler, p_access->name, author);
+  if (!IS_CONSTANT_VALID(name_const)) {
+    return false;
+  }
+  mic_slot mic = chunk_add_mic(current_chunk(p_compiler), author->token.line_info);
+  if (!IS_MIC_VALID(mic)) {
+    report_oom(p_compiler, author);
+    return false;
+  }
+  if (!emit_word2(p_compiler,
+                  encode_OPPABCQ(OP_GET_MEMBER, false, p_dest.index, p_dest.index, CONSTANT_RAW_INDEX(name_const), false),
+                  author)) {
+    report_oom(p_compiler, author);
+    return false;
+  }
+  if (!emit_word(p_compiler, (word)CONSTANT_RAW_INDEX(mic), author)) {
+    report_oom(p_compiler, author);
+    return false;
+  }
+  p_out->type = EXPRESSION_VALUE;
+  p_out->lvalue = (lvalue){LVALUE_INVALID};
+  p_out->value = (location){p_dest.index, LOCATION_KIND_REGISTER, LOCATION_OK};
+  p_out->count = 1;
+  return true;
+}
+
 static bool compile_null_expression(compiler* p_compiler,
                                     ast_null_expression* p_null,
                                     _register p_dest,
@@ -3913,22 +4951,48 @@ static bool compile_function_impl(compiler* p_compiler,
     end_context(p_compiler);
     return false;
   }
-  variable_declaration decl = {.identifier = p_name, .flags = DECLARATION_NONE};
-  _register funtion_name = add_local(p_compiler, decl, false, p_author);
-  if (!IS_REGISTER_VALID(funtion_name)) {
-    end_scope(p_compiler, p_author);
-    end_context(p_compiler);
-    return false;
-  }
-  location loc = {funtion_name.index, LOCATION_KIND_REGISTER, LOCATION_OK};
-  if (!define_variable(
-          p_compiler,
-          loc,
-          (expression_result){EXPRESSION_LVALUE | EXPRESSION_VALUE, loc, (lvalue){LVALUE_VARIABLE, loc}, 1},
-          p_author)) {
-    end_scope(p_compiler, p_author);
-    end_context(p_compiler);
-    return false;
+  if (p_type == FUNCTION_METHOD || p_type == FUNCTION_STATIC) {
+    // the receiver rides register 0: 'this', implicit, immutable, capturable
+    // like any local. for a static the receiver is the class value itself.
+    // methods carry no self-name local (recursion goes through this.m() or
+    // the class name).
+    variable_declaration this_decl = {
+        .identifier = ok_create_string_view("this", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+        .flags = VARIABLE_DECLRATION_FLAGS_NONE};
+    _register self = add_local(p_compiler, this_decl, true, p_author);
+    if (!IS_REGISTER_VALID(self)) {
+      end_scope(p_compiler, p_author);
+      end_context(p_compiler);
+      return false;
+    }
+    location self_loc = {self.index, LOCATION_KIND_REGISTER, LOCATION_OK};
+    if (!define_variable(
+            p_compiler,
+            self_loc,
+            (expression_result){EXPRESSION_LVALUE | EXPRESSION_VALUE, self_loc, (lvalue){LVALUE_VARIABLE, self_loc}, 1},
+            p_author)) {
+      end_scope(p_compiler, p_author);
+      end_context(p_compiler);
+      return false;
+    }
+  } else {
+    variable_declaration decl = {.identifier = p_name, .flags = DECLARATION_NONE};
+    _register funtion_name = add_local(p_compiler, decl, false, p_author);
+    if (!IS_REGISTER_VALID(funtion_name)) {
+      end_scope(p_compiler, p_author);
+      end_context(p_compiler);
+      return false;
+    }
+    location loc = {funtion_name.index, LOCATION_KIND_REGISTER, LOCATION_OK};
+    if (!define_variable(
+            p_compiler,
+            loc,
+            (expression_result){EXPRESSION_LVALUE | EXPRESSION_VALUE, loc, (lvalue){LVALUE_VARIABLE, loc}, 1},
+            p_author)) {
+      end_scope(p_compiler, p_author);
+      end_context(p_compiler);
+      return false;
+    }
   }
 
   location param_locations[UINT8_MAX + 1];

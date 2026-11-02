@@ -259,7 +259,9 @@ static top_level_declarations ok_get_top_level_declarations(ok* p_ok, bool* p_er
                                       {ok_create_string_view("get", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
                                       {ok_create_string_view("str", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
                                       {ok_create_string_view("num", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
-                                      {ok_create_string_view("bool", OK_STRING_VIEW_CALCULATE_LENGTH, true)}};
+                                      {ok_create_string_view("bool", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
+                                      {ok_create_string_view("Object", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
+                                      {ok_create_string_view("Class", OK_STRING_VIEW_CALCULATE_LENGTH, true)}};
 
   *p_error = !top_level_declarations_append_n(&decls, raw_decls, sizeof(raw_decls) / sizeof(variable_declaration));
   return decls;
@@ -287,6 +289,16 @@ static value_array ok_get_top_level_values(ok* p_ok, bool* p_error) {
     if (!value_array_append(&vals, temp)) {
       *p_error = true;
       break;
+    }
+  }
+  // the hierarchy singletons ride the same seeding: position-paired with
+  // their declarations above (Object, Class), pulled straight from the vm
+  // since no global storage exists for them.
+  if (!*p_error) {
+    if (p_ok->vm.object_singleton == NULL || p_ok->vm.class_singleton == NULL ||
+        !value_array_append(&vals, OBJECT_AS_VALUE(p_ok->vm.object_singleton)) ||
+        !value_array_append(&vals, OBJECT_AS_VALUE(p_ok->vm.class_singleton))) {
+      *p_error = true;
     }
   }
   return vals;
@@ -318,6 +330,11 @@ ok* ok_create(ok_specs p_specs) {
       .alloc = &okay->alloc, .globals_store = &okay->globals_store, .objects_store = &okay->objects_store, .ok = okay};
   vm_init(&okay->vm, vm_specs);
   gc_watch_vm(&okay->gc, &okay->vm);
+  // the singletons need mark_vm live before they exist: their only root is
+  // the vm itself, and the in-flight pieces ride the guard stack.
+  if (!vm_init_singletons(&okay->vm)) {
+    return NULL;
+  }
   if (!ok_define_core_natives(okay)) { // beware we not compiling yet
     ok_free(okay);
     return NULL;
