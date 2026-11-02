@@ -1,4 +1,4 @@
-// R6: no adjust-to-receiver — 2 results into 1 binding is an error
+// R6: no adjust-to-receiver - 2 results into 1 binding is an error
 fu pair(a, b) {
   return a, b;
 }

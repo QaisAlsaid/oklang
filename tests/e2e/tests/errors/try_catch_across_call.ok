@@ -1,0 +1,14 @@
+fu risky(d) {
+  if d == "boom" {
+    throw "bad input";
+  }
+  return d;
+}
+try {
+  print(risky("fine")); // expect: fine
+  risky("boom");
+  print("unreachable");
+} catch e {
+  print(e); // expect: bad input
+}
+print("after"); // expect: after

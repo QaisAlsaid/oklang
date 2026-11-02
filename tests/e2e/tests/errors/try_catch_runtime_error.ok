@@ -1,0 +1,12 @@
+try {
+  let a = 1 + "x";
+} catch e {
+  print(e["kind"]); // expect: type
+  print(e["what"]); // expect: invalid operands for binary '+'.
+}
+try {
+  let arr = [1, 2, 3];
+  print(arr[9]);
+} catch e {
+  print(e["kind"]); // expect: index
+}

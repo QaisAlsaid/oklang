@@ -29,6 +29,7 @@ int main(int argc, char** argv) {
 
 void repl(ok* p_ok) {
   char line[1024];
+  ok_retain_source(p_ok, true);
   for (;;) {
     printf("> ");
     if (!fgets(line, sizeof(line), stdin)) {
@@ -36,7 +37,6 @@ void repl(ok* p_ok) {
       break;
     }
     ok_source source;
-    source.from = OK_FROM_REPL;
     source.code = line;
     source.path = "stdin";
     ok_result result = ok_run(p_ok, source);
@@ -58,7 +58,6 @@ void run_file(ok* p_ok, const char* p_path) {
     exit(1);
   }
   ok_source source;
-  source.from = OK_FROM_FILE;
   source.code = src;
   source.path = p_path;
   ok_result result = ok_run(p_ok, source);

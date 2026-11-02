@@ -1,0 +1,9 @@
+try {
+  try {
+    throw "rethrown";
+  } catch e {
+    throw;
+  }
+} catch outer {
+  print(outer); // expect: rethrown
+}

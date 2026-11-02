@@ -1,0 +1,5 @@
+try {
+  throw "discarded";
+} catch {
+  print("caught"); // expect: caught
+}

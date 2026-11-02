@@ -32,6 +32,9 @@
 #define VALUE_AS_NATIVE_FUNCTION(value) ((object_native_function*)VALUE_AS_OBJECT(value))
 #define VALUE_AS_ARRAY(value) ((object_array*)VALUE_AS_OBJECT(value))
 #define VALUE_AS_MAP(value) ((object_map*)VALUE_AS_OBJECT(value))
+// the defer tag's payload is an object_closure*, but it is not an object-tagged value.
+// unwrap through the payload directly (the tag check is IS_VALUE_STRICTLY_DEFER, never IS_VALUE_CLOSURE).
+#define VALUE_AS_DEFER(value) ((object_closure*)(uintptr_t)(VALUE_PAYLOAD(value)))
 
 typedef struct {
   allocators* alloc;
@@ -86,13 +89,12 @@ typedef struct {
   uint16_t arity;
   uint16_t ndefaults; // trailing defaulted params: floor = arity - ndefaults
   uint16_t registers;
-  uint16_t results; // the function's result span width (SPANS R2, inferred by the compiler).
-                     // 1 for every single-result function (the default); n >= 2 when every
-                     // return path agrees on n. call() compares the caller's requested retc
-                     // against this — the strictness doctrine (R6) lives there.
-  bool has_varargs;  // the last parameter is `rest...` (SPANS R3): argc has no ceiling, the
-                     // floor drops it, and the runtime frame widens past `registers` to cover
-                     // the staged arguments. set by the compiler at the prologue.
+  uint16_t results; // the function's result span width.
+                    // 1 for every single-result function (the default); n >= 2 when every
+                    // return path agrees on n. call() compares the caller's requested retc
+  bool has_varargs; // the last parameter is `rest...`: argc has no ceiling, the
+                    // floor drops it, and the runtime frame widens past `registers` to cover
+                    // the staged arguments. set by the compiler at the prologue.
   upvalue_descriptor_array upvalues;
 } object_function;
 
@@ -165,8 +167,8 @@ object_array* create_object_array(object_specs* p_specs);
 // for the types that are legal keys (strings, numbers, bools).
 //
 // version: bumped by every size-changing operation (insert-new, remove;
-// overwrites do NOT bump). the for-in ops snapshot it at loop entry and hard
-// error on a mid-iteration size change - overwriting values while iterating is
+// overwrites do not bump). the for-in ops snapshot it at loop entry and hard
+// error on a mid-iteration size change, overwriting values while iterating is
 // fine, inserting/removing is not.
 typedef struct {
   object object;
@@ -181,12 +183,10 @@ bool map_value_key_equals(value p_probe, value p_key);
 
 // the v1 key whitelist: strings, numbers (int-tagged included) and booleans.
 // null is the empty-slot encoding (never a legal key), arrays/maps/functions
-// are identity-shaped and wait for classes (docs/drafts/MAPS.md §1).
 bool map_key_is_legal(value p_key);
 
-// insert-or-overwrite + version bookkeeping. returns false only on OOM (the
-// okmap core's contract); a size change bumps p_map->version so active
-// iterations can detect it.
+// insert-or-overwrite + version bookkeeping. returns false only on oom
+// (the okmap core's contract), a size change bumps p_map->version so active iterations can detect it.
 bool object_map_set(object_map* p_map, value p_key, value p_value);
 
 // false = absent (no version change).

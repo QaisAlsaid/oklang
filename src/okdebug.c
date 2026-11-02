@@ -84,8 +84,14 @@ static const char* const OPCODE_NAMES[] = {
     "VA_PACK",
     "CALL_SPREAD",
     "CALL_SPREAD_LONG",
+    "TRY_ENTER",
+    "TRY_EXIT",
+    "THROW",
+    "DEFER_MARK",
+    "DEFER_RUN",
 };
-typedef char opcode_names_in_sync[(sizeof(OPCODE_NAMES) / sizeof(OPCODE_NAMES[0]) == (size_t)OP_CALL_SPREAD_LONG + 1) ? 1 : -1];
+typedef char
+    opcode_names_in_sync[(sizeof(OPCODE_NAMES) / sizeof(OPCODE_NAMES[0]) == (size_t)OP_DEFER_RUN + 1) ? 1 : -1];
 
 static const char* binop_symbol(const opcode p_op) {
   switch (p_op) {
@@ -189,6 +195,8 @@ static bool op_is_two_words(opcode p_op) {
   case OP_ITER_PREP:
   case OP_ITER_GET:
   case OP_ITER_LOOP:
+  case OP_TRY_ENTER:
+  case OP_THROW:
     return true;
   default:
     return false;
@@ -378,6 +386,21 @@ uint32_t debug_disassemble_instruction(disassembler* p_disassembler, uint32_t p_
     } else {
       printf("%u", C - 1);
     }
+    break;
+  case OP_TRY_ENTER:
+    printf("try -> +%u (park r%u, floor %u)", A, B, C);
+    break;
+  case OP_TRY_EXIT:
+    printf("try exit");
+    break;
+  case OP_THROW:
+    printf("throw r%u", A);
+    break;
+  case OP_DEFER_MARK:
+    printf("defer mark r%u", Alarge_of(instruction));
+    break;
+  case OP_DEFER_RUN:
+    printf("defer run r%u", Alarge_of(instruction));
     break;
   case OP_RETURN:
     if (bp == 0) {

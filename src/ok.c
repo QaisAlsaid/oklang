@@ -241,11 +241,11 @@ static bool ok_define_core_natives(ok* p_ok) {
 static bool ok_define_temporary_types(ok* p_ok) {
   bool status = true;
   status &= ok_global_define(
-      p_ok, ok_create_string_view(" str", OK_STRING_VIEW_CALCULATE_LENGTH, true), RESERVED_1_AS_VALUE(TT_STR), false);
+      p_ok, ok_create_string_view(" str", OK_STRING_VIEW_CALCULATE_LENGTH, true), AS_TAG_AS_VALUE(TT_STR), false);
   status &= ok_global_define(
-      p_ok, ok_create_string_view(" num", OK_STRING_VIEW_CALCULATE_LENGTH, true), RESERVED_1_AS_VALUE(TT_NUM), false);
+      p_ok, ok_create_string_view(" num", OK_STRING_VIEW_CALCULATE_LENGTH, true), AS_TAG_AS_VALUE(TT_NUM), false);
   status &= ok_global_define(
-      p_ok, ok_create_string_view(" bool", OK_STRING_VIEW_CALCULATE_LENGTH, true), RESERVED_1_AS_VALUE(TT_BOOL), false);
+      p_ok, ok_create_string_view(" bool", OK_STRING_VIEW_CALCULATE_LENGTH, true), AS_TAG_AS_VALUE(TT_BOOL), false);
   return status;
 }
 
@@ -329,8 +329,49 @@ ok* ok_create(ok_specs p_specs) {
   return okay;
 }
 
+static ok_result ok_run_inner(ok* p_ok, uint32_t p_source_id);
+
+// stamp the freshly compiled tree with its source id: the main function and
+// every nested proto (function protos live in the constants arrays).
+// proto trees grow downward only (a proto's constants are built before it is finished),
+// so the walk terminates. shared protos stamp idempotently.
+static void stamp_source_ids(object_function* p_function, uint32_t p_source_id) {
+  p_function->chunk.source_id = p_source_id;
+  for (uint32_t i = 0; i < p_function->chunk.constants.count; ++i) {
+    const value v = p_function->chunk.constants.data[i];
+    if (IS_VALUE_FUNCTION(v)) {
+      stamp_source_ids(VALUE_AS_FUNCTION(v), p_source_id);
+    }
+  }
+}
+
 ok_result ok_run(ok* p_ok, ok_source p_source) {
+  // a fresh run starts with a clean error lane: ok_last_error reads the
+  // most recent failed run, and this run hasn't failed yet.
+  vm_clear_error(&p_ok->vm);
+  const uint32_t source_id = vm_begin_source(&p_ok->vm, p_source.code, p_source.path);
+  if (source_id == VM_SOURCE_UNSTAMPED) {
+    return OK_INIT_ERROR;
+  }
   p_ok->source = p_source;
+  const ok_result result = ok_run_inner(p_ok, source_id);
+  vm_end_source(&p_ok->vm, source_id);
+  return result;
+}
+
+void ok_retain_source(ok* p_ok, bool p_retain) {
+  p_ok->vm.retain_source = p_retain;
+}
+
+ok_value ok_last_error(ok* p_ok) {
+  return vm_last_error(&p_ok->vm);
+}
+
+void ok_clear_error(ok* p_ok) {
+  vm_clear_error(&p_ok->vm);
+}
+
+static ok_result ok_run_inner(ok* p_ok, uint32_t p_source_id) {
   parser parser;
   parser_specs specs = {.alloc = &p_ok->alloc, .source = &p_ok->source};
   parser_init(&parser, specs);
@@ -363,6 +404,9 @@ ok_result ok_run(ok* p_ok, ok_source p_source) {
   if (compile_result.status != COMPILE_OK) {
     return OK_COMPILE_ERROR;
   }
+  // the freshly compiled tree remembers its source:
+  // main + every nested proto. runtime reports read it back per frame
+  stamp_source_ids(compile_result.function, p_source_id);
   if (p_ok->dump_bytecode) {
     gc_pause(&p_ok->gc);
     disassembler disassembler;
@@ -378,7 +422,7 @@ ok_result ok_run(ok* p_ok, ok_source p_source) {
   }
   interpret_specs interpret_specs;
   interpret_specs.function = compile_result.function;
-  interpret_specs.source = &p_ok->source;
+  interpret_specs.source_id = p_source_id;
   if (!gc_guard_up(&p_ok->gc, OBJECT_AS_VALUE(compile_result.function))) {
     return OK_INIT_ERROR;
   }
@@ -531,6 +575,10 @@ bool ok_global_define_native_function(ok* p_ok, ok_string_view p_name, uint8_t p
 
 bool ok_native_error(ok* p_ok, ok_string_view p_message) {
   return vm_native_error(&p_ok->vm, p_message);
+}
+
+bool ok_native_throw(ok* p_ok, ok_value p_value) {
+  return vm_native_throw(&p_ok->vm, p_value);
 }
 
 ok_value

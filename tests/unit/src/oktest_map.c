@@ -9,7 +9,7 @@
 #include <okspecs.h>
 #include <okutils.h>
 
-// instantiation 1: the globals_store shape — raw string keys, uint32 values,
+// instantiation 1: the globals_store shape - raw string keys, uint32 values,
 // string-view probes (zero-allocation lookups).
 #define S_KEY_IS_EMPTY(k) ((k).chars == NULL)
 #define S_KEY_SET_EMPTY(k)                                                                                               \
@@ -39,7 +39,7 @@ MAP_DEFINE(str_map, string, uint32_t, ok_string_view, S_KEY_IS_EMPTY, S_KEY_SET_
 MAP_DECLARE(bad_map, uint32_t, uint32_t, uint32_t)
 MAP_DEFINE(bad_map, uint32_t, uint32_t, uint32_t, U_KEY_IS_EMPTY, U_KEY_SET_EMPTY, U_PROBE_HASH, U_PROBE_MATCHES, U_KEY_CLONE, U_KEY_DEINIT, ARRAY_DEFAULT_TYPE_DEINIT)
 
-// instantiation 3: identity hashing — lets tests place entries at chosen
+// instantiation 3: identity hashing - lets tests place entries at chosen
 // home slots (wraparound coverage).
 #define W_PROBE_HASH(p) ((hash_t)(p))
 

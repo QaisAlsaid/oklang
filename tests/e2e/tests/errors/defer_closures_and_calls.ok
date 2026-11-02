@@ -1,0 +1,58 @@
+// the deferred call is an ordinary call: lambdas, defaults,
+// multi-result callees (results discarded) all work
+fu say(what) {
+  print(what);
+  return true;
+}
+
+let counter = fu() {
+  let mut n = 0;
+  return fu() {
+    n = n + 1;
+    print("tick " + (n as str));
+    return true;
+  };
+};
+let tick = counter();
+{
+  defer tick();
+  defer tick();
+  print("armed"); // expect: armed
+}
+// expect: tick 1
+// expect: tick 2
+
+fu defaulted(a, b = "def") {
+  print("defaulted " + a + " " + b);
+  return true;
+}
+{
+  defer defaulted("x");
+}
+// expect: defaulted x def
+
+fu multi() {
+  print("multi ran");
+  return 1, 2, 3;
+}
+{
+  defer multi();
+}
+// expect: multi ran
+
+// a defer inside a defer's own cleanup (nested defers, LIFO)
+fu nested() {
+  print("nested start");
+  {
+    defer say("nested cleanup");
+  }
+  print("nested end");
+  return true;
+}
+{
+  defer nested();
+}
+// expect: nested start
+// expect: nested cleanup
+// expect: nested end
+print("fin"); // expect: fin

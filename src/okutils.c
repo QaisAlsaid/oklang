@@ -62,10 +62,13 @@ report_status report_at(bool* p_panic,
                         const token* p_token,
                         const report_severity p_severity,
                         const ok_string_view p_message) {
-  return report_at_noted(
-      p_panic, p_had_error, p_is_eof, p_source, p_token, p_severity, p_message, ok_create_string_view(NULL, 0, false));
+  return report_at_noted(p_panic, p_had_error, p_is_eof, p_source, p_token, p_severity, p_message, NULL);
 }
 
+// the token-based wrapper the parser and compiler ride. the renderer takes
+// spans (offsets computed from pointers at token creation. never the old
+// accumulated counter) and reads the source text itself, so the printed
+// "line" is the source line, not the token text, and columns line up with it.
 report_status report_at_noted(bool* p_panic,
                               bool* p_had_error,
                               const bool p_is_eof,
@@ -73,40 +76,16 @@ report_status report_at_noted(bool* p_panic,
                               const token* p_token,
                               const report_severity p_severity,
                               const ok_string_view p_message,
-                              const ok_string_view p_note) {
+                              const ok_note* p_note) {
   // TODO: custom loggers
-  // idk man should we care about printf fail, or at least hide behind macro or not care at all..
-  // TODO fix formmating, token has only relevant part to it, while error message require full line info (for proper
-  // offset)
-  if (*p_panic)
-    return REPORT_STATUS_SKIPPED;
-  bool printf_fail = false;
-  *p_panic = true;
-  *p_had_error = true;
-  const char* report = p_severity == REPORT_SEVERITY_WARN ? "warning" : "error";
-  printf_fail |= fprintf(stderr,
-                         "%s:%d:%d: %s: %.*s\n",
-                         p_source->path,
-                         p_token->line_info.line,
-                         p_token->line_info.offset,
-                         report,
-                         (int)ok_string_view_get_length(&p_message),
-                         p_message.chars) < 0;
-  if (p_is_eof) {
-    printf_fail |= fprintf(stderr, "    | ") < 0;
-    printf_fail |= fprintf(stderr, "at end (EOF).\n") < 0;
-  } else {
-    printf_fail |= fprintf(stderr, "    | ") < 0;
-    printf_fail |= fprintf(stderr, "%.*s\n", p_token->length, p_token->start) < 0;
-#if 0
-    if (p_token->type != TOKEN_ERROR) {
-      printf_fail |= fprintf(stderr, "    | ") < 0;
-      printf_fail |= fprintf(stderr, "%*c\n", p_token->line_info.offset - 1, '^') < 0;
-    }
-#endif
-  }
-  if (p_note.chars != NULL) {
-    printf_fail |= fprintf(stderr, "    | note: %.*s\n", (int)ok_string_view_get_length(&p_note), p_note.chars) < 0;
-  }
-  return printf_fail ? REPORT_STATUS_FAILED : REPORT_STATUS_OK;
+  const ok_span span = ok_span_of_token(p_token);
+  return okdiag_report(p_panic,
+                       p_had_error,
+                       p_source != NULL ? p_source->path : "<unknown>",
+                       p_source != NULL ? p_source->code : NULL,
+                       &span,
+                       p_is_eof,
+                       p_severity,
+                       p_message,
+                       p_note);
 }

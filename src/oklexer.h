@@ -7,8 +7,10 @@
 #include "oktoken.h"
 
 typedef struct {
+  const char* src; // the source begin: token offsets are (start - src), see create_token
   const char* start;
   const char* current;
+  const char* line_start; // first byte of the current line: columns are (start - line_start + 1)
   ok_line_info line_info;
 } lexer;
 

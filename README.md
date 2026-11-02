@@ -142,7 +142,6 @@ int main() {
   }
   if (ok_run(state,
              {
-                 OK_FROM_FILE,                             //  use the provided source name for diagnostics
                  "print('Hello from OKLang!'); print(c);", // the OKLang script to run
                  "embedded"                                // source name, used for diagnostics
              }) != OK) {

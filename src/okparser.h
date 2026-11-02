@@ -39,6 +39,7 @@ typedef struct {
   token previous;
   bool panic;
   bool had_error;
+  uint32_t defer_serial;
 } parser;
 
 typedef enum { PARSE_OK, PARSE_ERROR } parse_status;

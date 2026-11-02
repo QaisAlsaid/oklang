@@ -1,0 +1,42 @@
+fu close(tag) {
+  print("closing " + tag);
+  return true;
+}
+
+fu bare() {
+  defer close("bare");
+  return;
+}
+bare();
+// expect: closing bare
+
+fu valued() {
+  defer close("valued");
+  return 42;
+}
+print(valued()); // expect: closing valued
+// expect: 42
+
+fu two() {
+  defer close("two");
+  return 1, 2;
+}
+let (a, b) = two();
+print(a + b); // expect: closing two
+// expect: 3
+
+// defers of every enclosing scope run on return, innermost first
+fu scopes() {
+  defer close("function-scope");
+  {
+    defer close("block-scope");
+    {
+      defer close("inner-block");
+      return "returned";
+    }
+  }
+}
+print(scopes()); // expect: closing inner-block
+// expect: closing block-scope
+// expect: closing function-scope
+// expect: returned

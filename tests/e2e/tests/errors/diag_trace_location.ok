@@ -1,0 +1,4 @@
+fu g() {
+  return 1 + "x";
+}
+g(); // expect error: 2:12: error:

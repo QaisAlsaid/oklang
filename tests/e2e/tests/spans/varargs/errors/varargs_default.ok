@@ -1,4 +1,4 @@
-// a varargs parameter cannot have a default — it always defaults to []
+// a varargs parameter cannot have a default - it always defaults to []
 fu f(rest... = [1]) {
   return rest;
 }

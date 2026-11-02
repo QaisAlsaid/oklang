@@ -27,6 +27,9 @@ static ast_while_statement* parse_while_statement(parser* p_parser);
 static ast_for_statement* parse_for_statement(parser* p_parser);
 static ast_control_flow_statement* parse_control_flow_statement(parser* p_parser);
 static ast_return_statement* parse_return_statement(parser* p_parser);
+static ast_throw_statement* parse_throw_statement(parser* p_parser);
+static ast_try_statement* parse_try_statement(parser* p_parser);
+static ast_defer_statement* parse_defer_statement(parser* p_parser, bool p_is_err);
 
 static ast_bindings_list parse_bindings_list(parser* p_parser,
                                              ast_binding_modifiers_t p_allowed_binds,
@@ -159,12 +162,14 @@ static const parse_rule parse_rules[] = {
     [TOKEN_TRY] = {NULL, NULL, PREC_NONE},
     [TOKEN_CATCH] = {NULL, NULL, PREC_NONE},
     [TOKEN_THROW] = {NULL, NULL, PREC_NONE},
-    [TOKEN_FINALIZE] = {NULL, NULL, PREC_NONE},
+    [TOKEN_DEFER] = {NULL, NULL, PREC_NONE},
+    [TOKEN_DEFERR] = {NULL, NULL, PREC_NONE},
 };
 
 void parser_init(parser* p_parser, parser_specs p_specs) {
   p_parser->panic = false;
   p_parser->had_error = false;
+  p_parser->defer_serial = 0;
   p_parser->source = p_specs.source;
   p_parser->alloc = p_specs.alloc;
   lexer_init(&p_parser->lexer, p_parser->source->code);
@@ -194,10 +199,16 @@ void parse_result_deinit(parse_result* parse_result) {
 }
 
 void error_at(parser* p_parser, token p_token, const ok_string_view p_message) {
-  error_at_noted(p_parser, p_token, p_message, ok_create_string_view("", 0, true));
+  error_at_noted(p_parser, p_token, p_message, ok_create_string_view(NULL, 0, false));
 }
 
 void error_at_noted(parser* p_parser, token p_token, const ok_string_view p_message, const ok_string_view p_note) {
+  ok_note note;
+  note.text = p_note;
+  note.has_span = false;
+  note.span.line = 0;
+  note.span.offset = 0;
+  note.span.length = 0;
   report_at_noted(&p_parser->panic,
                   &p_parser->had_error,
                   p_token.type == TOKEN_EOF,
@@ -205,7 +216,7 @@ void error_at_noted(parser* p_parser, token p_token, const ok_string_view p_mess
                   &p_token,
                   REPORT_SEVERITY_ERROR,
                   p_message,
-                  p_note);
+                  p_note.chars != NULL ? &note : NULL);
 }
 
 bool advance(parser* p_parser) {
@@ -216,7 +227,7 @@ bool advance(parser* p_parser) {
     if (p_parser->current.type != TOKEN_ERROR) {
       break;
     }
-    string message = asprint(alloc, "%*.s", p_parser->current.length, p_parser->current.start);
+    string message = asprint(alloc, "%.*s", p_parser->current.length, p_parser->current.start);
     error_at(p_parser, p_parser->current, ok_create_string_view_from_string(message));
     string_deinit(&message, alloc);
     return false;
@@ -890,14 +901,17 @@ ast_statement* parse_statement(parser* p_parser) {
   case TOKEN_RETURN:
     return (ast_statement*)parse_return_statement(p_parser);
   case TOKEN_THROW:
+    return (ast_statement*)parse_throw_statement(p_parser);
   case TOKEN_TRY:
+    return (ast_statement*)parse_try_statement(p_parser);
+  case TOKEN_DEFER:
+    return (ast_statement*)parse_defer_statement(p_parser, false);
+  case TOKEN_DEFERR:
+    return (ast_statement*)parse_defer_statement(p_parser, true);
   case TOKEN_CATCH:
-  case TOKEN_FINALIZE:
-    // planned error-model statements, not implemented yet: parse to a clean
-    // error instead of the old assert + release-build fallthrough.
     error_at(p_parser,
              p_parser->previous,
-             ok_create_string_view("error handling is not implemented yet.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+             ok_create_string_view("'catch' can only follow a 'try' block.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
     return NULL;
   case TOKEN_SEMICOLON:
     return (ast_statement*)parse_empty_statement(p_parser);
@@ -2086,6 +2100,340 @@ static ast_return_statement* parse_return_statement(parser* p_parser) {
   return ret;
 free:
   ast_expressions_list_deinit(&returned, alloc);
+  return NULL;
+}
+// `throw expr;` the value is the error. `throw;` (bare) is the rethrow:
+// legal only inside a catch block, checked at compile time
+// (the compiler knows the enclosing catch's parked-error register.
+// the parser does not track catch context).
+static ast_throw_statement* parse_throw_statement(parser* p_parser) {
+  allocators* alloc = p_parser->alloc;
+  token throw_tok = p_parser->previous;
+  ast_expression* expression = NULL;
+
+  if (p_parser->current.type != TOKEN_SEMICOLON) {
+    advance(p_parser); // first expression token into previous
+    expression = parse_expression(p_parser, PREC_NONE);
+    if (expression == NULL) {
+      return NULL;
+    }
+  }
+  if (p_parser->current.type != TOKEN_SEMICOLON) {
+    error_at(p_parser,
+             p_parser->current,
+             ok_create_string_view("expected ';' after throw statement.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    if (expression != NULL) {
+      ast_dispatch_deinit((ast_node*)expression);
+      alloc->release(alloc, expression);
+    }
+    return NULL;
+  }
+  advance(p_parser);
+  ast_throw_statement* throw_stmt = (ast_throw_statement*)alloc->allocate(alloc, sizeof(ast_throw_statement));
+  if (throw_stmt == NULL) {
+    error_at(p_parser,
+             throw_tok,
+             ok_create_string_view("failed to allocate memory for throw node.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    if (expression != NULL) {
+      ast_dispatch_deinit((ast_node*)expression);
+      alloc->release(alloc, expression);
+    }
+    return NULL;
+  }
+  ast_specs s = {alloc};
+  ast_throw_statement_init(throw_stmt, expression, throw_tok, &s);
+  return throw_stmt;
+}
+
+// `try { B } catch e { H }` / `catch { H }` the binder is optional and
+// immutable (no parens anywhere, `catch e { }` reads like every other
+// binding in the language). the try block must be followed by a catch
+// clause. deferred cleanup is not a clause of try, it is the `defer` statement, scoped to whatever block owns the
+// resource.
+static ast_try_statement* parse_try_statement(parser* p_parser) {
+  allocators* alloc = p_parser->alloc;
+  token try_tok = p_parser->previous;
+  ast_specs s = {alloc};
+
+  if (!expect(p_parser,
+              TOKEN_LEFT_BRACE,
+              ok_create_string_view("expected '{' after 'try'.", OK_STRING_VIEW_CALCULATE_LENGTH, true))) {
+    return NULL;
+  }
+  ast_compound_statement* body = parse_compound_statement(p_parser);
+  if (body == NULL) {
+    return NULL;
+  }
+
+  ast_binding* catch_binding = NULL;
+  ast_statement* catch_body = NULL;
+
+  if (p_parser->current.type == TOKEN_CATCH) {
+    advance(p_parser); // 'catch' into previous; the binder (if any) is current
+    if (p_parser->current.type == TOKEN_MUT) {
+      error_at(p_parser,
+               p_parser->current,
+               ok_create_string_view("the catch binder is immutable.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      goto fail_body;
+    }
+    if (p_parser->current.type == TOKEN_IDENTIFIER) {
+      const token name_tok = p_parser->current;
+      advance(p_parser); // binder into previous
+      // the binder: an immutable local scoped to the catch block. built the
+      // same way for-in builds its loop binding.
+      ast_identifier_expression* ident =
+          (ast_identifier_expression*)alloc->allocate(alloc, sizeof(ast_identifier_expression));
+      if (ident == NULL) {
+        error_at(p_parser,
+                 try_tok,
+                 ok_create_string_view(
+                     "failed to allocate memory for catch binder.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+        goto fail_body;
+      }
+      ast_binding* binding = (ast_binding*)alloc->allocate(alloc, sizeof(ast_binding));
+      if (binding == NULL) {
+        alloc->release(alloc, ident);
+        error_at(p_parser,
+                 try_tok,
+                 ok_create_string_view(
+                     "failed to allocate memory for catch binder.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+        goto fail_body;
+      }
+      ast_identifier_expression_init(ident, name_tok, &s);
+      ast_binding_init(binding, (ast_expression*)ident, BINDING_NONE, name_tok, &s);
+      catch_binding = binding;
+    }
+    if (!expect(p_parser,
+                TOKEN_LEFT_BRACE,
+                ok_create_string_view("expected '{' after catch binder.", OK_STRING_VIEW_CALCULATE_LENGTH, true))) {
+      goto fail_binding;
+    }
+    ast_compound_statement* handler = parse_compound_statement(p_parser);
+    if (handler == NULL) {
+      goto fail_binding;
+    }
+    catch_body = (ast_statement*)handler;
+  }
+
+  if (catch_body == NULL) {
+    error_at(p_parser,
+             p_parser->current,
+             ok_create_string_view("expected 'catch' after try block.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    goto fail_body;
+  }
+
+  {
+    ast_try_statement* try_stmt = (ast_try_statement*)alloc->allocate(alloc, sizeof(ast_try_statement));
+    if (try_stmt == NULL) {
+      error_at(p_parser,
+               try_tok,
+               ok_create_string_view("failed to allocate memory for try node.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      goto fail_all;
+    }
+    ast_try_statement_init(try_stmt, try_tok, &s);
+    try_stmt->body = (ast_statement*)body;
+    try_stmt->catch_binding = catch_binding;
+    try_stmt->catch_body = catch_body;
+    return try_stmt;
+  }
+
+fail_all:
+  if (catch_body != NULL) {
+    ast_dispatch_deinit((ast_node*)catch_body);
+    alloc->release(alloc, catch_body);
+  }
+fail_binding:
+  if (catch_binding != NULL) {
+    ast_binding_deinit(catch_binding);
+    alloc->release(alloc, catch_binding);
+  }
+fail_body:
+  ast_dispatch_deinit((ast_node*)body);
+  alloc->release(alloc, body);
+  return NULL;
+}
+
+// a synthetic TOKEN_IDENTIFIER over an owned hidden name: the position rides
+// the defer statement's (diagnostics inside the thunk point at the defer
+// site, which is the honest author), the bytes come from the names block.
+static token hidden_name_token(token p_source, const char* p_start, uint32_t p_length) {
+  token t = p_source;
+  t.type = TOKEN_IDENTIFIER;
+  t.start = p_start;
+  t.length = p_length;
+  return t;
+}
+
+// `defer f(a, b)` / `deferr f(a, b)`: schedule the call for the enclosing
+// scope's exit. the parsed call is kept whole, it is the snapshot source
+// (callee and arguments compile into hidden locals at the defer site, so
+// later reassignments of `a` are not what the deferred call sees). and the
+// thing that runs is `thunk`: a parser-built lambda over the hidden names,
+// `fu() { " d3c"(" d3a0", " d3a1") }`, compiled by the ordinary lambda path.
+// one mechanism for both spellings: the only difference is that the scope's
+// normal exits kill a deferr slot instead of running it, the unwind scan
+// runs both. and covers errdefer.
+static ast_defer_statement* parse_defer_statement(parser* p_parser, bool p_is_err) {
+  allocators* alloc = p_parser->alloc;
+  token defer_tok = p_parser->previous; // 'defer' / 'deferr' already in previous
+  ast_specs s = {alloc};
+
+  ast_expression* expression = NULL;
+  if (p_parser->current.type == TOKEN_SEMICOLON || p_parser->current.type == TOKEN_EOF) {
+    error_at(p_parser,
+             p_parser->current,
+             ok_create_string_view(
+                 "'defer' schedules a call, like: defer close(file).", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL;
+  }
+  advance(p_parser); // first expression token into previous
+  expression = parse_expression(p_parser, PREC_NONE);
+  if (expression == NULL) {
+    return NULL;
+  }
+  if (expression->node.node_type != AST_CALL_EXPRESSION) {
+    error_at(p_parser,
+             defer_tok,
+             ok_create_string_view(
+                 "'defer' schedules a call, like: defer close(file).", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    goto fail_expression;
+  }
+  ast_call_expression* call = (ast_call_expression*)expression;
+  const uint32_t argc = call->arguments.count;
+
+  // the hidden names, one owned NUL-separated block the thunk's identifier
+  // tokens view into (the defer node outlives compilation, so the views stay
+  // valid as long as the AST does. the compiler's scope maps copy their keys).
+  const uint32_t serial = p_parser->defer_serial++;
+  uint32_t total = 0;
+  char piece[48];
+  int n = snprintf(piece, sizeof(piece), " d%uc", serial);
+  total += (uint32_t)n + 1;
+  for (uint32_t i = 0; i < argc; ++i) {
+    n = snprintf(piece, sizeof(piece), " d%ua%u", serial, i);
+    total += (uint32_t)n + 1;
+  }
+  n = snprintf(piece, sizeof(piece), " d%us", serial);
+  total += (uint32_t)n + 1;
+  char* names = (char*)alloc->allocate(alloc, total);
+  if (names == NULL) {
+    error_at(
+        p_parser,
+        defer_tok,
+        ok_create_string_view("failed to allocate memory for defer names.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    goto fail_expression;
+  }
+
+  // the thunk: identifiers over the block, one call, one expression statement,
+  // one zero-arity function. built bottom-up. on failure everything not yet
+  // handed to a parent is released here, everything that has been is the
+  // parent's (single-owner discipline).
+  ast_expressions_list thunk_args;
+  ast_expressions_list_init(&thunk_args, alloc);
+  ok_string_view slot_name = ok_create_string_view(NULL, 0, false);
+  ast_identifier_expression* callee_ident = NULL;
+  char* cursor = names;
+  {
+    n = snprintf(cursor, (size_t)(total - (uint32_t)(cursor - names)), " d%uc", serial);
+    if (n < 0) {
+      goto fail_thunk_oom;
+    }
+    callee_ident = (ast_identifier_expression*)alloc->allocate(alloc, sizeof(ast_identifier_expression));
+    if (callee_ident == NULL) {
+      goto fail_thunk_oom;
+    }
+    ast_identifier_expression_init(callee_ident, hidden_name_token(defer_tok, cursor, (uint32_t)n), &s);
+    cursor += n + 1;
+    for (uint32_t i = 0; i < argc; ++i) {
+      n = snprintf(cursor, (size_t)(total - (uint32_t)(cursor - names)), " d%ua%u", serial, i);
+      if (n < 0 || ast_expressions_list_append(&thunk_args, NULL) == false) {
+        goto fail_thunk_oom;
+      }
+      ast_identifier_expression* arg_ident =
+          (ast_identifier_expression*)alloc->allocate(alloc, sizeof(ast_identifier_expression));
+      if (arg_ident == NULL) {
+        thunk_args.count--; // the NULL placeholder never owned anything
+        goto fail_thunk_oom;
+      }
+      thunk_args.data[thunk_args.count - 1] = (ast_expression*)arg_ident;
+      ast_identifier_expression_init(arg_ident, hidden_name_token(defer_tok, cursor, (uint32_t)n), &s);
+      cursor += n + 1;
+    }
+    // the slot's own name: written last, never referenced by the thunk.
+    // the enclosing scope declares it (the compiler reads the view off the node).
+    n = snprintf(cursor, (size_t)(total - (uint32_t)(cursor - names)), " d%us", serial);
+    slot_name = ok_create_string_view(cursor, (uint32_t)n, false);
+  }
+  {
+    ast_call_expression* thunk_call = (ast_call_expression*)alloc->allocate(alloc, sizeof(ast_call_expression));
+    if (thunk_call == NULL) {
+      goto fail_thunk_oom;
+    }
+    ast_call_expression_init(thunk_call, defer_tok, (ast_expression*)callee_ident, thunk_args, &s);
+    thunk_args.count = 0; // ownership moved into the call node
+    callee_ident = NULL;
+    ast_expression_statement* thunk_body =
+        (ast_expression_statement*)alloc->allocate(alloc, sizeof(ast_expression_statement));
+    if (thunk_body == NULL) {
+      ast_dispatch_deinit((ast_node*)thunk_call);
+      alloc->release(alloc, thunk_call);
+      goto fail_thunk_list;
+    }
+    ast_expression_statement_init(thunk_body, defer_tok, (ast_expression*)thunk_call, &s);
+    ast_bindings_list thunk_params;
+    ast_bindings_list_init(&thunk_params, alloc);
+    ast_function_expression* thunk = (ast_function_expression*)alloc->allocate(alloc, sizeof(ast_function_expression));
+    if (thunk == NULL) {
+      ast_expression_statement_deinit(thunk_body);
+      alloc->release(alloc, thunk_body);
+      goto fail_thunk_list;
+    }
+    ast_function_expression_init(thunk, defer_tok, thunk_params, (ast_statement*)thunk_body, &s);
+
+    if (p_parser->current.type != TOKEN_SEMICOLON) {
+      error_at(p_parser,
+               p_parser->current,
+               ok_create_string_view("expected ';' after defer statement.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      ast_function_expression_deinit(thunk);
+      alloc->release(alloc, thunk);
+      goto fail_thunk_list;
+    }
+    advance(p_parser); // ';'
+
+    ast_defer_statement* defer = (ast_defer_statement*)alloc->allocate(alloc, sizeof(ast_defer_statement));
+    if (defer == NULL) {
+      error_at(
+          p_parser,
+          defer_tok,
+          ok_create_string_view("failed to allocate memory for defer node.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      ast_function_expression_deinit(thunk);
+      alloc->release(alloc, thunk);
+      goto fail_thunk_list;
+    }
+    ast_defer_statement_init(defer, defer_tok, call, thunk, names, slot_name, p_is_err, &s);
+    return defer;
+  }
+
+fail_thunk_oom:
+  error_at(p_parser,
+           defer_tok,
+           ok_create_string_view("failed to allocate memory for defer thunk.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+fail_thunk_list:
+  if (callee_ident != NULL) {
+    ast_identifier_expression_deinit(callee_ident);
+    alloc->release(alloc, callee_ident);
+  }
+  for (uint32_t i = 0; i < thunk_args.count; ++i) {
+    if (thunk_args.data[i] != NULL) {
+      ast_dispatch_deinit((ast_node*)thunk_args.data[i]);
+      alloc->release(alloc, thunk_args.data[i]);
+    }
+  }
+  ast_expressions_list_deinit(&thunk_args, alloc);
+  alloc->release(alloc, names);
+fail_expression:
+  ast_dispatch_deinit((ast_node*)expression);
+  alloc->release(alloc, expression);
   return NULL;
 }
 

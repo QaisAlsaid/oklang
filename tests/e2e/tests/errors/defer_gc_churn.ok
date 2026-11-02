@@ -1,0 +1,36 @@
+// defer under allocation pressure: thunks are closures, their captured
+// snapshots are upvalues, and the slots hold tagged payloads - the GC must
+// trace all of it. loops churn scopes so slots and registers get reused.
+fu consume(a, b) {
+  return len(a) + len(b);
+}
+
+let mut total = 0;
+for let mut i = 0; i < 200; i = i + 1 {
+  {
+    let sink = [];
+    let m = {:};
+    for let mut j = 0; j < 10; j = j + 1 {
+      push(sink, j * i);
+      m["k" + ((j * i) as str)] = j;
+    }
+    defer consume(sink, m);
+    total = total + len(sink);
+  }
+}
+print(total); // expect: 2000
+
+// error-path churn: every unwind scan allocates nothing, but the caught
+// maps and the thunks under aggressive collection do
+let mut caught = 0;
+for let mut i = 0; i < 100; i = i + 1 {
+  try {
+    {
+      defer consume([1, 2, 3], {"a": 1});
+      throw i;
+    }
+  } catch e {
+    caught = caught + e;
+  }
+}
+print(caught); // expect: 4950

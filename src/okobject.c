@@ -5,26 +5,16 @@
 #include "okobject_store.h"
 #include "okutils.h"
 
-// ===================== surface map (value keys and values) =====================
-//
-// the okmap.h core instantiated at ok_value keys/values. hashing rules (docs/drafts/MAPS.md §5):
+// the okmap.h core instantiated at ok_value keys/values. hashing rules:
 //   - numbers (and int-tagged operands, widened to their double form like
 //     perform_equal's int/number comparison): splitmix64 over the normalized
-//     bits. -0.0 folds to +0.0 first (R2) so 0.0 and -0.0 are one key. NaN keys
+//     bits. -0.0 folds to +0.0 first, so 0.0 and -0.0 are one key. NaN keys
 //     keep their bits: same-bits NaNs are one key, different NaNs are different
 //     keys - hashing and equality stay in agreement, which is the only hard rule.
-//   - strings: the cached FNV-1a from the string header, so probing never walks
-//     the bytes twice.
+//   - strings: the cached FNV-1a from the string header, so probing never walks the bytes twice.
 //   - bools: the tag bits themselves.
 //   - the tag is mixed into the final hash so `1`, `true` and `"1"` can never
 //     share a probe path (quality: PROBE_MATCHES is the real authority).
-
-static hash_t splitmix64(hash_t p_x) {
-  p_x += UINT64_C(0x9e3779b97f4a7c15);
-  p_x = (p_x ^ (p_x >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
-  p_x = (p_x ^ (p_x >> 27)) * UINT64_C(0x94d049bb133111eb);
-  return p_x ^ (p_x >> 31);
-}
 
 // the normalized double bits two keys must share to compare equal
 static uint64_t map_key_number_bits(value p_key) {
@@ -35,7 +25,7 @@ static uint64_t map_key_number_bits(value p_key) {
     d = (double)VALUE_AS_INT(p_key);
   }
   if (d == 0.0) {
-    d = 0.0; // -0.0 -> +0.0 (R2): one key, not two
+    d = 0.0; // -0.0 -> +0.0 one key, not two
   }
   union pun {
     uint64_t bits;
@@ -50,7 +40,7 @@ hash_t map_value_hash(value p_key) {
   uint64_t tag_mix;
   if (IS_VALUE_NUMBER(p_key) || IS_VALUE_INT(p_key)) {
     raw = map_key_number_bits(p_key);
-    tag_mix = 0; // numbers ARE their tag space; mixing 0 keeps splitmix64(bits)
+    tag_mix = 0; // numbers are their tag space. mixing 0 keeps splitmix64(bits)
   } else if (IS_VALUE_STRING(p_key)) {
     raw = VALUE_AS_STRING(p_key)->hash;
     tag_mix = TAG_OBJECT_MASK;
@@ -83,18 +73,27 @@ bool map_value_key_equals(value p_probe, value p_key) {
 // number first: a negative subnormal double can alias TAG_INT_MASK, but
 // IS_VALUE_NUMBER already claimed every raw double before this check runs.
 bool map_key_is_legal(value p_key) {
-  return IS_VALUE_NUMBER(p_key) || IS_VALUE_INT(p_key) || IS_VALUE_STRICTLY_BOOL(p_key) ||
-         IS_VALUE_STRING(p_key);
+  return IS_VALUE_NUMBER(p_key) || IS_VALUE_INT(p_key) || IS_VALUE_STRICTLY_BOOL(p_key) || IS_VALUE_STRING(p_key);
 }
 
 #define VM_KEY_IS_EMPTY(k) IS_VALUE_STRICTLY_NULL(k)
 #define VM_KEY_SET_EMPTY(k) (*(k) = NULL_AS_VALUE())
 #define VM_PROBE_HASH(p) (map_value_hash(p))
 #define VM_PROBE_MATCHES(p, k) (map_value_key_equals((p), (k)))
-#define VM_KEY_CLONE(p, a) (p)                    /* values are copied bit for bit; the gc owns the memory */
-#define VM_NO_DEINIT(k, a) ((void)0)              /* ditto: nothing to release per entry */
+#define VM_KEY_CLONE(p, a) (p)       /* values are copied bit for bit; the gc owns the memory */
+#define VM_NO_DEINIT(k, a) ((void)0) /* ditto: nothing to release per entry */
 
-MAP_DEFINE(value_map, value, value, value, VM_KEY_IS_EMPTY, VM_KEY_SET_EMPTY, VM_PROBE_HASH, VM_PROBE_MATCHES, VM_KEY_CLONE, VM_NO_DEINIT, VM_NO_DEINIT)
+MAP_DEFINE(value_map,
+           value,
+           value,
+           value,
+           VM_KEY_IS_EMPTY,
+           VM_KEY_SET_EMPTY,
+           VM_PROBE_HASH,
+           VM_PROBE_MATCHES,
+           VM_KEY_CLONE,
+           VM_NO_DEINIT,
+           VM_NO_DEINIT)
 
 bool object_map_set(object_map* p_map, value p_key, value p_value) {
   const uint32_t before = p_map->entries.count;
@@ -140,25 +139,10 @@ void object_set_marked(object* p_object, bool p_marked) {
   p_object->info = p_marked ? p_object->info | mask : p_object->info & ~mask;
 }
 
-// standard FNV-1a (xor the byte, THEN multiply): the multiply spreads every
-// byte into the full 64 bits. (okutils' fnv1a_hash_str xors byte*prime
-// instead, whose low bits stay confined to a narrow band for short ASCII
-// keys - fine for the dozens of identifiers globals_store hashes, but a
-// 200k-string-key map collapsed to an average probe distance of 377 with it.
-// found via the map_insert bench; globals_store keeps its own hash.)
-static hash_t string_hash_fnv1a(const ok_string_view p_string) {
-  hash_t hash = 14695981039346656037ULL;
-  for (uint64_t i = 0; i < ok_string_view_get_length(&p_string); ++i) {
-    hash ^= (uint8_t)p_string.chars[i];
-    hash *= 1099511628211ULL;
-  }
-  return hash;
-}
-
 static void object_string_init(object_string* p_object_string, const ok_string_view p_string, object_specs* p_specs) {
   object_init(&p_object_string->object, OBJ_STRING);
   p_object_string->string = create_string_from_string_view(p_string, p_specs->alloc);
-  p_object_string->hash = string_hash_fnv1a(p_string);
+  p_object_string->hash = default_hash_str(p_string);
 }
 
 static void object_string_deinit(object_string* p_object_string, object_specs* p_specs) {
@@ -183,9 +167,9 @@ static void object_function_init(object_function* p_object_function,
   object_init(&p_object_function->object, OBJ_FUNCTION);
   p_object_function->name = p_name;
   p_object_function->arity = p_arity;
-  p_object_function->ndefaults = 0; // compiler sets this when the function is complete
-  p_object_function->registers = 0; // compiler sets this when the function is complete
-  p_object_function->results = 1;   // compiler raises this when every return path agrees on n
+  p_object_function->ndefaults = 0;       // compiler sets this when the function is complete
+  p_object_function->registers = 0;       // compiler sets this when the function is complete
+  p_object_function->results = 1;         // compiler raises this when every return path agrees on n
   p_object_function->has_varargs = false; // compiler sets this when the last parameter is `rest...`
   upvalue_descriptor_array_init(&p_object_function->upvalues, p_specs->alloc);
   chunk_init(&p_object_function->chunk, p_specs->alloc);

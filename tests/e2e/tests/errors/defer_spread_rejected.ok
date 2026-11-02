@@ -1,0 +1,5 @@
+fu sum_all(nums...) {
+  return 0;
+}
+let arr = [1, 2, 3];
+defer sum_all(arr...); // expect error: spread ('...') is not allowed in a defer call

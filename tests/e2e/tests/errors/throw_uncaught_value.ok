@@ -1,0 +1,4 @@
+fu inner() {
+  throw "the message";
+}
+inner(); // expect error: uncaught error: the message

@@ -176,12 +176,27 @@ static bool mark_value(gc* p_gc, value p_value) {
   if (IS_VALUE_STRICTLY_OBJECT(p_value) && !mark_object(p_gc, VALUE_AS_OBJECT(p_value))) {
     return false;
   }
+  // a pending defer holds its thunk closure in the payload. the slot is a
+  // live register from mark's point of view, so the closure must root like
+  // any other object reference (the defer tag is not OBJ_*-typed).
+  if (IS_VALUE_STRICTLY_DEFER(p_value) && !mark_object(p_gc, (object*)VALUE_AS_DEFER(p_value))) {
+    return false;
+  }
   return true;
 }
 
 static bool mark_vm(gc* p_gc) {
   vm* vm = p_gc->vm;
   execution_state* exe = vm->current_execution_state;
+  // a script-thrown value sits in the error lane from raise until the host
+  // clears it (ok_last_error keeps it readable past the failed run/call).
+  // across C boundaries where allocation happens, so it must root like a
+  // register (a thrown object surviving a collection mid-unwind).
+  if (exe->has_error && exe->error_is_script) {
+    if (!mark_value(p_gc, exe->error_value)) {
+      return false;
+    }
+  }
   for (uint32_t i = 0; i < exe->registers.top; ++i) {
     if (!mark_value(p_gc, exe->registers.array.data[i])) {
       return false;
@@ -365,8 +380,8 @@ static bool trace_object(gc* p_gc, object* p_object) {
     break;
   }
   case OBJ_MAP: {
-    // walk OCCUPIED slots only, marking key AND value (both are gc refs -
-    // strings are heap objects). empty slots hold the strict-null key
+    // walk occupied slots only, marking key and value
+    // (both are gc refs, strings are heap objects). empty slots hold the strict-null key
     // sentinel, and their value slots are stale garbage from backward-shift
     // moves and overwrites: marking those could resurrect a swept object's
     // dangling pointer. the keys array is the occupancy authority.

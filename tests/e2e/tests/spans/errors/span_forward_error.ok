@@ -1,5 +1,5 @@
 // v1: `return pair(1, 2);` counts as a ONE-wide return path (the list has one
-// expression), so outer's inferred span is 1 — and the destructuring caller
+// expression), so outer's inferred span is 1 - and the destructuring caller
 // is told exactly that. the fix inside outer is `let (a, b) = pair(1, 2);
 // return a, b;`. compile-time rejection of the forwarding shape needs the
 // known-globals table; flagged in the patch notes.

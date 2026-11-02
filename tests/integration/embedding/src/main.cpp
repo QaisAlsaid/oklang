@@ -1,13 +1,38 @@
 #include <ok/ok.h>
 
+#include <unistd.h>
+
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <vector>
 
 static int g_destructor_calls = 0;
+
+// captures everything the embedded ok writes to stderr while p_fn runs
+// (dup2 swap, restored even on assert death - the fds leak then, which the
+// sanitizer runs forgive for a test binary).
+static std::string capture_stderr(const std::function<void()>& p_fn) {
+  fflush(stderr);
+  const int saved_fd = dup(fileno(stderr));
+  FILE* capture = tmpfile();
+  dup2(fileno(capture), fileno(stderr));
+  p_fn();
+  fflush(stderr);
+  dup2(saved_fd, fileno(stderr));
+  close(saved_fd);
+  rewind(capture);
+  std::string out;
+  int c;
+  while ((c = fgetc(capture)) != EOF) {
+    out += static_cast<char>(c);
+  }
+  fclose(capture);
+  return out;
+}
 
 static ok_value native_add(ok* p_ok, uint8_t argc, const ok_value* argv) {
   (void)p_ok;
@@ -271,7 +296,6 @@ int main() {
   )";
 
   ok_source source = {
-      .from = OK_FROM_FILE,
       .code = code,
       .path = "embed",
   };
@@ -388,7 +412,6 @@ int main() {
   const char* error_code = "host_fail();\n";
 
   ok_source error_source = {
-      .from = OK_FROM_FILE,
       .code = error_code,
       .path = "embed",
   };
@@ -415,7 +438,6 @@ int main() {
   )";
 
   ok_source callback_error_source = {
-      .from = OK_FROM_FILE,
       .code = callback_error_code,
       .path = "embed",
   };
@@ -497,7 +519,6 @@ int main() {
   )";
 
   ok_source churn_source = {
-      .from = OK_FROM_FILE,
       .code = churn_code,
       .path = "churn",
   };
@@ -569,7 +590,6 @@ int main() {
   )";
 
   ok_source array_source = {
-      .from = OK_FROM_FILE,
       .code = array_code,
       .path = "array",
   };
@@ -695,7 +715,6 @@ int main() {
   )";
 
   ok_source map_source = {
-      .from = OK_FROM_FILE,
       .code = map_code,
       .path = "map",
   };
@@ -760,7 +779,6 @@ int main() {
   )";
 
   ok_source print_source = {
-      .from = OK_FROM_FILE,
       .code = print_code,
       .path = "print",
   };
@@ -778,6 +796,274 @@ int main() {
   assert(printed_lines[5] == "<object>");
 
   ok_free(vm);
+
+  // --- source ownership (0.4.0): A/B cross-source reporting ---
+  // R8's disqualifying bug: one borrowed source per vm meant a function
+  // compiled by run A and called during/after run B reported B's path with
+  // A's line numbers, and a freed buffer was a segfault once reports started
+  // printing excerpts. the fix: the vm owns a per-run source table, chunks
+  // carry their source id, and the code is borrowed for the ok_run call only
+  // (retention is opt-in). expectations: A's path with A's line:col ALWAYS;
+  // an excerpt only while the text is alive.
+  {
+    ok* own = ok_create(ok_specs{});
+
+    const char* source_a = "glob fu a_err() {\n  return 1 + \"x\";\n}\n";
+    ok_source sa = {source_a, "a_embed_source.ok"};
+    assert(ok_run(own, sa) == OK);
+    ok_source sb = {"let b = 1;\n", "b_embed_source.ok"};
+    assert(ok_run(own, sb) == OK);
+
+    // E7 world: ok_call failures print nothing, so the report lane is
+    // exercised through a second ok_run whose script CALLS the leftover -
+    // an uncaught error, printed by the ok_run lane, naming A's path and
+    // A's line:col (the borrowed lane: no excerpt).
+    std::string report = capture_stderr([&] {
+      ok_source caller = {"a_err();\n", "caller_embed.ok"};
+      assert(ok_run(own, caller) == OK_RUNTIME_ERROR);
+    });
+    assert(report.find("a_embed_source.ok:2:12") != std::string::npos);
+    assert(report.find("    2 |") == std::string::npos); // no snippet: borrowed
+
+    // the stack-buffer shape the REPL rides: excerpts work DURING the run,
+    // and reusing the buffer right after must not corrupt anything.
+    char line[64];
+    snprintf(line, sizeof(line), "print(1 + \"boom\");\n");
+    ok_source stack_src = {line, "stack_embed.ok"};
+    assert(ok_run(own, stack_src) == OK_RUNTIME_ERROR);
+    snprintf(line, sizeof(line), "let after = 1;\n");
+    ok_source stack_src2 = {line, "stack_embed2.ok"};
+    assert(ok_run(own, stack_src2) == OK);
+
+    ok_free(own);
+  }
+
+  // retention on: same A-then-B-then-call dance, but the excerpt survives -
+  // every ok_run's source is ok's copy until ok_free.
+  {
+    ok* own = ok_create(ok_specs{});
+    ok_retain_source(own, true);
+
+    const char* source_a = "glob fu a_err() {\n  return 1 + \"x\";\n}\n";
+    ok_source sa = {source_a, "a_retained.ok"};
+    assert(ok_run(own, sa) == OK);
+    ok_source sb = {"let b = 1;\n", "b_retained.ok"};
+    assert(ok_run(own, sb) == OK);
+
+    std::string report = capture_stderr([&] {
+      ok_source caller = {"a_err();\n", "caller_retained.ok"};
+      assert(ok_run(own, caller) == OK_RUNTIME_ERROR);
+    });
+    assert(report.find("a_retained.ok:2:12") != std::string::npos);
+    assert(report.find("return 1 + \"x\";") != std::string::npos); // the excerpt is alive
+    assert(report.find("    2 |") != std::string::npos);           // snippet rendered
+
+    ok_free(own);
+  }
+
+  // --- throw/catch across the native ok_call boundary (0.4.0) ---
+  // the promised hard case: a script throw inside a closure invoked BY a
+  // native (ok_call) must unwind through the C frame and land in the script
+  // try that surrounds the native's OP_CALL. native_apply ignores the failed
+  // ok_call and returns null - call_native still fails the OP_CALL (the
+  // error_pending invariant), so the value reaches the catch regardless.
+  {
+    ok* err_vm = ok_create(ok_specs{});
+    assert(ok_global_define_native_function(
+        err_vm, ok_create_string_view("host_apply", OK_STRING_VIEW_CALCULATE_LENGTH, true), 2, native_apply));
+
+    const char* code = R"(
+      glob fu thrower(n) {
+        throw n * 2;
+      }
+      glob fu thrower_str(n) {
+        throw "across the boundary";
+      }
+      glob let mut caught = 0;
+      glob let mut caught_str = "";
+      glob let mut kind = "";
+      glob let mut what = "";
+      glob let mut reached = 0;
+      try {
+        host_apply(thrower, 21);
+        reached = 1;
+      } catch e {
+        caught = e;
+      }
+      try {
+        host_apply(thrower_str, 1);
+        reached = 2;
+      } catch e {
+        caught_str = e;
+      }
+      try {
+        let a = 1 + "x";
+      } catch e {
+        kind = e["kind"];
+        what = e["what"];
+      }
+    )";
+    ok_source src = {code, "across.ok"};
+    assert(ok_run(err_vm, src) == OK);
+
+    ok_value v = ok_value_null();
+    assert(ok_global_get(err_vm, ok_create_string_view("caught", 6, true), &v));
+    assert(ok_value_is_number(v) && ok_value_as_number(v) == 42.0);
+
+    assert(ok_global_get(err_vm, ok_create_string_view("caught_str", 10, true), &v));
+    assert(ok_value_is_string(v));
+    assert(std::string(ok_value_as_string(v).chars) == "across the boundary");
+
+    assert(ok_global_get(err_vm, ok_create_string_view("kind", 4, true), &v));
+    assert(ok_value_is_string(v));
+    assert(std::string(ok_value_as_string(v).chars) == "type");
+
+    assert(ok_global_get(err_vm, ok_create_string_view("what", 4, true), &v));
+    assert(ok_value_is_string(v));
+    assert(std::string(ok_value_as_string(v).chars) == "invalid operands for binary '+'.");
+
+    assert(ok_global_get(err_vm, ok_create_string_view("reached", 7, true), &v));
+    assert(ok_value_is_number(v) && ok_value_as_number(v) == 0.0); // both throws caught
+
+    ok_free(err_vm);
+  }
+
+  // --- the C boundary (0.4.0): ok_last_error / ok_native_throw / E7 ---
+  // E7's one embedder-visible behavior change: a failed ok_call prints
+  // NOTHING (host-caught lane) - the uncaught-to-top report stays ok_run's.
+  {
+    ok* host = ok_create(ok_specs{});
+
+    // a script-thrown value, read back through ok_last_error
+    const char* thrower_code = R"(
+      glob fu thrower() {
+        throw {"code": 42, "text": "host value"};
+      }
+    )";
+    ok_source tsrc = {thrower_code, "thrower_host.ok"};
+    assert(ok_run(host, tsrc) == OK);
+    ok_value thrower = ok_value_null();
+    assert(ok_global_get(host, ok_create_string_view("thrower", 7, true), &thrower));
+
+    std::string silent = capture_stderr([&] {
+      ok_value out = ok_value_null();
+      assert(!ok_call(host, thrower, 0, nullptr, &out));
+    });
+    assert(silent.empty()); // E7: host-caught errors do not auto-print
+
+    // the documented rooting contract: the returned value is unrooted, so
+    // every allocation happens BEFORE ok_last_error (ok_value_string
+    // allocates - under aggressive GC it would sweep the map mid-use).
+    ok_value key_code = ok_value_string(host, ok_create_string_view("code", 4, true));
+    ok_value err = ok_last_error(host);
+    assert(ok_value_is_map(err));
+    ok_value code = ok_value_null();
+    assert(ok_map_get(err, key_code, &code));
+    assert(ok_value_is_number(code) && ok_value_as_number(code) == 42.0);
+
+    // cleared explicitly
+    ok_clear_error(host);
+    assert(ok_value_is_null(ok_last_error(host)));
+
+    // a runtime-raised error materializes the {:kind:, :what:} map
+    const char* binop_code = R"(
+      glob fu bad() {
+        return 1 + "x";
+      }
+    )";
+    ok_source bsrc = {binop_code, "binop_host.ok"};
+    assert(ok_run(host, bsrc) == OK);
+    ok_value bad = ok_value_null();
+    assert(ok_global_get(host, ok_create_string_view("bad", 3, true), &bad));
+    ok_value out2 = ok_value_null();
+    assert(!ok_call(host, bad, 0, nullptr, &out2));
+    // the rooting lane: ok_last_error's map is unrooted, and THIS time an
+    // allocation must happen after it - so the map goes under ok_root first
+    // (the documented contract, demonstrated instead of avoided).
+    ok_value rerr = ok_last_error(host);
+    assert(ok_value_is_map(rerr));
+    const uint32_t rerr_root = ok_root(host, rerr);
+    assert(rerr_root != OK_ROOT_INVALID);
+    ok_value key_kind = ok_value_string(host, ok_create_string_view("kind", 4, true));
+    ok_value kind = ok_value_null();
+    assert(ok_map_get(rerr, key_kind, &kind));
+    assert(ok_value_is_string(kind));
+    assert(std::string(ok_value_as_string(kind).chars) == "type");
+    assert(ok_unroot(host, rerr_root));
+
+    ok_clear_error(host);
+
+    // ok_native_throw: the host's value crosses into the script's catch as itself
+    auto native_thrower = [](ok* p_ok, uint8_t argc, const ok_value* argv) -> ok_value {
+      (void)argc;
+      (void)argv;
+      assert(ok_native_throw(p_ok, ok_value_number(7.0)));
+      return ok_value_null();
+    };
+    assert(ok_global_define_native_function(
+        host, ok_create_string_view("host_throw", OK_STRING_VIEW_CALCULATE_LENGTH, true), 0, native_thrower));
+    const char* catcher_code = R"(
+      glob let mut got = 0;
+      try {
+        host_throw();
+      } catch e {
+        got = e;
+      }
+    )";
+    ok_source csrc = {catcher_code, "catcher_host.ok"};
+    assert(ok_run(host, csrc) == OK);
+    ok_value got = ok_value_null();
+    assert(ok_global_get(host, ok_create_string_view("got", 3, true), &got));
+    assert(ok_value_is_number(got) && ok_value_as_number(got) == 7.0);
+
+    // and the ok_run lane still prints its uncaught report
+    const char* uncaught_code = "throw \"to the top\";\n";
+    ok_source usrc = {uncaught_code, "uncaught_host.ok"};
+    std::string loud = capture_stderr([&] { assert(ok_run(host, usrc) == OK_RUNTIME_ERROR); });
+    assert(loud.find("uncaught_host.ok:1:1: error: uncaught error: to the top") != std::string::npos);
+
+    // --- defer (0.4.0): the uncaught sweep through the host lane ---
+    // an uncaught error still runs every frame's defers before the report:
+    // cleanup on the way out is defer's whole job, even at the C boundary.
+    {
+      std::vector<std::string> printed;
+      ok_set_print(
+          host,
+          [](void* p_ctx, ok_value p_value) {
+            auto* sink = static_cast<std::vector<std::string>*>(p_ctx);
+            if (ok_value_is_string(p_value)) {
+              ok_cstring_view text = ok_value_as_string(p_value);
+              sink->emplace_back(text.chars, std::strlen(text.chars));
+              ok_cstring_view_deinit(&text);
+            }
+          },
+          &printed);
+      const char* sweep_code = R"(
+        fu close(tag) {
+          print("closed " + tag);
+          return true;
+        }
+        fu inner() {
+          defer close("inner");
+          throw "host sweep";
+        }
+        fu outer() {
+          defer close("outer");
+          inner();
+        }
+        outer();
+      )";
+      ok_source ssrc = {sweep_code, "defer_host.ok"};
+      std::string sweep_report = capture_stderr([&] { assert(ok_run(host, ssrc) == OK_RUNTIME_ERROR); });
+      ok_set_print(host, nullptr, nullptr);
+      assert(sweep_report.find("uncaught error: host sweep") != std::string::npos);
+      assert(printed.size() == 2);
+      assert(printed[0] == "closed inner"); // innermost frame's defer first
+      assert(printed[1] == "closed outer");
+    }
+
+    ok_free(host);
+  }
 
   assert(g_destructor_calls == 1);
   assert(bag_destructor_calls == 1);

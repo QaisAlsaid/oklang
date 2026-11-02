@@ -1,0 +1,33 @@
+fu close(tag) {
+  print("closing " + tag);
+  return true;
+}
+
+for let mut i = 0; i < 4; i = i + 1 {
+  {
+    defer close("iter-" + (i as str));
+    if i == 1 { continue; }
+    if i == 2 { break; }
+    print("body " + (i as str)); // expect: body 0
+  }
+  // per-iteration scope exit: the defer fires on every path out
+}
+// expect: closing iter-0
+// expect: closing iter-1
+// expect: closing iter-2
+print("after"); // expect: after
+
+// while loops: same story
+let mut n = 0;
+while n < 3 {
+  {
+    defer close("w" + (n as str));
+    n = n + 1;
+    if n == 2 { continue; }
+    if n == 3 { break; }
+  }
+}
+print("done"); // expect: closing w0
+// expect: closing w1
+// expect: closing w2
+// expect: done

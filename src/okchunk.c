@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "okchunk.h"
+#include "okdef.h"
 #include "okutils.h"
 
 ARRAY_DEFINE_DEFAULT(code, word, ARRAY_DEFAULT_TYPE_DEINIT)
@@ -31,6 +32,7 @@ void chunk_init(chunk* p_chunk, allocators* p_alloc) {
   identifiers_init(&p_chunk->identifiers, p_alloc);
   value_array_init(&p_chunk->constants, p_alloc);
   source_info_init(&p_chunk->source_info, p_alloc);
+  p_chunk->source_id = VM_SOURCE_UNSTAMPED;
 }
 
 void chunk_deinit(chunk* p_chunk) {
@@ -67,9 +69,7 @@ bool chunk_write_word2(chunk* p_chunk, const word2 p_words, const ok_line_info p
 
 index_wrapper chunk_add_constant(chunk* p_chunk, const value p_constant, const ok_line_info p_line_info) {
   if (p_chunk->constants.count >= CONSTANTS_MAX) {
-    return (index_wrapper){
-        0, 0, CONSTANT_OVERFLOW
-    };
+    return (index_wrapper){0, 0, CONSTANT_OVERFLOW};
   }
   if (!value_array_append(&p_chunk->constants, p_constant)) {
     return (index_wrapper){0, 0, CONSTANT_ALLOCATION_FAILED};
@@ -79,9 +79,7 @@ index_wrapper chunk_add_constant(chunk* p_chunk, const value p_constant, const o
 
 index_wrapper chunk_add_identifier(chunk* p_chunk, const ok_string_view p_identifier, const ok_line_info p_line_info) {
   if (p_chunk->identifiers.count >= IDENTIFIERS_MAX) {
-    return (index_wrapper){
-        0, 0, IDENTIFIER_OVERFLOW
-    };
+    return (index_wrapper){0, 0, IDENTIFIER_OVERFLOW};
   }
   string owned = create_string_from_string_view(p_identifier, p_chunk->alloc);
   if (owned.chars == NULL) {
@@ -95,6 +93,17 @@ index_wrapper chunk_add_identifier(chunk* p_chunk, const ok_string_view p_identi
 }
 
 ok_line_info_repeated* chunk_find_line_info(const chunk* p_chunk, const uint32_t p_instruction_index) {
+#if !defined(NDEBUG)
+  // invariant guard: the RLE table must cover exactly [0, code.count)
+  // instructions. a wrapped/stale index once made this return NULL silently
+  {
+    uint32_t total = 0;
+    for (uint32_t i = 0; i < p_chunk->source_info.count; ++i) {
+      total += p_chunk->source_info.data[i].reps;
+    }
+    ASSERT(total == p_chunk->code.count);
+  }
+#endif // !defined(NDEBUG)
   for (uint32_t num_instructions = 0, i = 0; i < p_chunk->source_info.count; ++i) {
     ok_line_info_repeated* info = &p_chunk->source_info.data[i];
     num_instructions += info->reps;
