@@ -6,7 +6,7 @@
 ![C99](https://img.shields.io/badge/Language-C99-748D9C?style=for-the-badge&logo=c&color=8196A4)
 ![Coverage](https://img.shields.io/codecov/c/github/QaisAlsaid/oklang?style=for-the-badge&color=206680)
 ![Release](https://img.shields.io/github/v/release/QaisAlsaid/oklang?style=for-the-badge&include_prereleases&color=BD5F42)
-![Codename](https://img.shields.io/badge/Codename-Urn-748D9C?style=for-the-badge&color=8196A4)
+![Codename](https://img.shields.io/badge/Codename-Eyrie-748D9C?style=for-the-badge&color=8196A4)
 ![License](https://img.shields.io/github/license/QaisAlsaid/oklang?style=for-the-badge&color=A31F34)
 
 </p>
@@ -58,7 +58,7 @@ i fed 4 birds.
 
 ## Status
 
-OKLang is in very early development, currently sitting at **v0.3.0 (Urn)**.
+OKLang is in very early development, currently sitting at **v0.4.0 (Eyrie)**.
 
 The language is a bytecode compiler and a register-based VM.
 
@@ -142,7 +142,6 @@ int main() {
   }
   if (ok_run(state,
              {
-                 OK_FROM_FILE,                             //  use the provided source name for diagnostics
                  "print('Hello from OKLang!'); print(c);", // the OKLang script to run
                  "embedded"                                // source name, used for diagnostics
              }) != OK) {

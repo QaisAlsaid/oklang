@@ -7,20 +7,24 @@
 extern "C" {
 #endif // __cplusplus
 
-typedef enum {
-  OK_FROM_FILE,
-  OK_FROM_REPL,
-} ok_from;
-
+// the source handed to ok_run. ok reads both fields during the call.
+// your buffers are yours. the path is interned (copied) internally
+// so diagnostics can name it after the run.
+// the code is copied too, but only when source retention is on (ok_retain_source).
 typedef struct {
-  ok_from from;
   const char* code;
   const char* path;
 } ok_source;
 
+// a location in the source. `offset` is the ablsolute file byte offset
+// of the token start and `column` its 1-based column,
+// the column is stored here so runtime reports can
+// print `path:line:col` even after the source text itself is gone.
+// current asuumption: char = byte
 typedef struct {
   uint32_t offset;
   uint32_t line;
+  uint32_t column;
 } ok_line_info;
 
 typedef struct {

@@ -24,14 +24,14 @@
   X(AST_CALL_EXPRESSION, ast_call_expression)                                                                          \
   X(AST_ASSIGN_EXPRESSION, ast_assign_expression)                                                                      \
   X(AST_COMPOUND_ASSIGN_EXPRESSION, ast_compound_assign_expression)                                                    \
-  X(AST_CONDITIONAL_EXPRESSION, ast_conditional_expression)                                                        \
+  X(AST_CONDITIONAL_EXPRESSION, ast_conditional_expression)                                                            \
   X(AST_BOOLEAN_EXPRESSION, ast_boolean_expression)                                                                    \
   X(AST_NULL_EXPRESSION, ast_null_expression)                                                                          \
   /*X(AST_ACCESS_EXPRESSION, ast_access_expression)*/                                                                  \
   /*X(AST_THIS_EXPRESSION, ast_this_expression)*/                                                                      \
   /*X(AST_SUPER_EXPRESSION, ast_super_expression)*/                                                                    \
   X(AST_ARRAY_EXPRESSION, ast_array_expression)                                                                        \
-  X(AST_MAP_EXPRESSION, ast_map_expression)                                                                        \
+  X(AST_MAP_EXPRESSION, ast_map_expression)                                                                            \
   X(AST_SUBSCRIPT_EXPRESSION, ast_subscript_expression)                                                                \
   X(AST_FUNCTION_EXPRESSION, ast_function_expression)                                                                  \
   X(AST_SPREAD_EXPRESSION, ast_spread_expression)                                                                      \
@@ -43,14 +43,12 @@
   X(AST_WHILE_STATEMENT, ast_while_statement)                                                                          \
   X(AST_FOR_STATEMENT, ast_for_statement)                                                                              \
   X(AST_FOR_IN_STATEMENT, ast_for_in_statement)                                                                        \
-  X(AST_FOR_NUMERIC_STATEMENT, ast_for_numeric_statement)                                                                        \
+  X(AST_FOR_NUMERIC_STATEMENT, ast_for_numeric_statement)                                                              \
   X(AST_CONTROL_FLOW_STATEMENT, ast_control_flow_statement)                                                            \
   X(AST_RETURN_STATEMENT, ast_return_statement)                                                                        \
-  /*X(AST_THROW_STATEMENT, ast_throw_statement)*/                                                                      \
-  /*X(AST_TRY_STATEMENT, ast_try_statement)*/                                                                          \
-  /*X(AST_CATCH_STATEMENT, ast_catch_statement)*/                                                                      \
-  /*X(AST_FINALIZE_STATEMENT, ast_finalize_statement)*/                                                                \
-  /*X(AST_TRY_CATCH_STATEMENT, ast_try_catch_statement)*/                                                              \
+  X(AST_THROW_STATEMENT, ast_throw_statement)                                                                          \
+  X(AST_TRY_STATEMENT, ast_try_statement)                                                                              \
+  X(AST_DEFER_STATEMENT, ast_defer_statement)                                                                          \
   X(AST_EOF_STATEMENT, ast_eof_statement)                                                                              \
   X(AST_LET_DECLARATION, ast_let_declaration)                                                                          \
   X(AST_FUNCTION_DECLARATION, ast_function_declaration)                                                                \
@@ -882,13 +880,7 @@ string ast_map_expression_asprint(const ast_map_expression* p_map) {
   for (uint32_t i = 0; i < p_map->keys.count; ++i) {
     string k = ast_dispatch_asprint((ast_node*)p_map->keys.data[i]);
     string v = ast_dispatch_asprint((ast_node*)p_map->values.data[i]);
-    string joined = asprint(alloc,
-                            "%s%s%s: %s%s",
-                            ret.chars,
-                            i == 0 ? "" : ", ",
-                            k.chars,
-                            v.chars,
-                            "");
+    string joined = asprint(alloc, "%s%s%s: %s%s", ret.chars, i == 0 ? "" : ", ", k.chars, v.chars, "");
     string_deinit(&k, alloc);
     string_deinit(&v, alloc);
     string_deinit(&ret, alloc);
@@ -1413,12 +1405,148 @@ string ast_return_statement_asprint(const ast_return_statement* p_return) {
   string res = create_static_string("return ", STRING_CALCULATE_LENGTH);
   for (uint32_t i = 0; i < p_return->returned.count; ++i) {
     string part = ast_dispatch_asprint((ast_node*)p_return->returned.data[i]);
-    string joined =
-        asprint(alloc, "%s%s%s", res.chars, part.chars, i + 1 < p_return->returned.count ? ", " : "");
+    string joined = asprint(alloc, "%s%s%s", res.chars, part.chars, i + 1 < p_return->returned.count ? ", " : "");
     string_deinit(&part, alloc);
     string_deinit(&res, alloc); // no-op for the leading static string
     res = joined;
   }
+  return res;
+}
+
+void ast_throw_statement_init(ast_throw_statement* p_throw,
+                              ast_expression* p_expression,
+                              token p_token,
+                              ast_specs* p_specs) {
+  ast_statement_init(&p_throw->statement, AST_THROW_STATEMENT, p_token, p_specs);
+  p_throw->expression = p_expression;
+}
+
+void ast_throw_statement_deinit(ast_throw_statement* p_throw) {
+  allocators* alloc = p_throw->statement.node.alloc;
+  if (p_throw->expression != NULL) {
+    ast_dispatch_deinit((ast_node*)p_throw->expression);
+    alloc->release(alloc, p_throw->expression);
+    p_throw->expression = NULL;
+  }
+  ast_statement_deinit(&p_throw->statement);
+}
+
+bool ast_throw_statement_print(const ast_throw_statement* p_throw) {
+  bool res = printf("throw") > 0;
+  if (p_throw->expression != NULL) {
+    res &= printf(" ") > 0;
+    res &= ast_dispatch_print((ast_node*)p_throw->expression);
+  }
+  return res;
+}
+
+string ast_throw_statement_asprint(const ast_throw_statement* p_throw) {
+  if (p_throw->expression == NULL) {
+    return create_static_string("throw", STRING_CALCULATE_LENGTH);
+  }
+  allocators* alloc = p_throw->statement.node.alloc;
+  string part = ast_dispatch_asprint((ast_node*)p_throw->expression);
+  string res = asprint(alloc, "throw %s", part.chars);
+  string_deinit(&part, alloc);
+  return res;
+}
+
+void ast_try_statement_init(ast_try_statement* p_try, token p_token, ast_specs* p_specs) {
+  ast_statement_init(&p_try->statement, AST_TRY_STATEMENT, p_token, p_specs);
+  p_try->body = NULL;
+  p_try->catch_binding = NULL;
+  p_try->catch_body = NULL;
+}
+
+void ast_try_statement_deinit(ast_try_statement* p_try) {
+  allocators* alloc = p_try->statement.node.alloc;
+  if (p_try->catch_body != NULL) {
+    ast_dispatch_deinit((ast_node*)p_try->catch_body);
+    alloc->release(alloc, p_try->catch_body);
+    p_try->catch_body = NULL;
+  }
+  if (p_try->catch_binding != NULL) {
+    ast_binding_deinit(p_try->catch_binding);
+    alloc->release(alloc, p_try->catch_binding);
+    p_try->catch_binding = NULL;
+  }
+  ast_dispatch_deinit((ast_node*)p_try->body);
+  alloc->release(alloc, p_try->body);
+  p_try->body = NULL;
+  ast_statement_deinit(&p_try->statement);
+}
+
+bool ast_try_statement_print(const ast_try_statement* p_try) {
+  bool res = printf("try ") > 0;
+  res &= ast_dispatch_print((ast_node*)p_try->body);
+  if (p_try->catch_body != NULL) {
+    res &= printf(" catch ") > 0;
+    res &= ast_dispatch_print((ast_node*)p_try->catch_body);
+  }
+  return res;
+}
+
+string ast_try_statement_asprint(const ast_try_statement* p_try) {
+  allocators* alloc = p_try->statement.node.alloc;
+  string body = ast_dispatch_asprint((ast_node*)p_try->body);
+  string res = asprint(alloc, "try %s", body.chars);
+  string_deinit(&body, alloc);
+  if (p_try->catch_body != NULL) {
+    string part = ast_dispatch_asprint((ast_node*)p_try->catch_body);
+    string joined = asprint(alloc, "%s catch %s", res.chars, part.chars);
+    string_deinit(&part, alloc);
+    string_deinit(&res, alloc);
+    res = joined;
+  }
+  return res;
+}
+
+void ast_defer_statement_init(ast_defer_statement* p_defer,
+                              token p_token,
+                              ast_call_expression* p_call,
+                              ast_function_expression* p_thunk,
+                              char* p_names,
+                              ok_string_view p_slot_name,
+                              bool p_is_err,
+                              ast_specs* p_specs) {
+  ast_statement_init(&p_defer->statement, AST_DEFER_STATEMENT, p_token, p_specs);
+  p_defer->call = p_call;
+  p_defer->thunk = p_thunk;
+  p_defer->names = p_names;
+  p_defer->slot_name = p_slot_name;
+  p_defer->is_err = p_is_err;
+}
+
+void ast_defer_statement_deinit(ast_defer_statement* p_defer) {
+  allocators* alloc = p_defer->statement.node.alloc;
+  if (p_defer->thunk != NULL) {
+    ast_dispatch_deinit((ast_node*)p_defer->thunk);
+    alloc->release(alloc, p_defer->thunk);
+    p_defer->thunk = NULL;
+  }
+  if (p_defer->call != NULL) {
+    ast_dispatch_deinit((ast_node*)p_defer->call);
+    alloc->release(alloc, p_defer->call);
+    p_defer->call = NULL;
+  }
+  if (p_defer->names != NULL) {
+    alloc->release(alloc, p_defer->names);
+    p_defer->names = NULL;
+  }
+  ast_statement_deinit(&p_defer->statement);
+}
+
+bool ast_defer_statement_print(const ast_defer_statement* p_defer) {
+  bool res = printf(p_defer->is_err ? "deferr " : "defer ") > 0;
+  res &= ast_dispatch_print((ast_node*)p_defer->call);
+  return res;
+}
+
+string ast_defer_statement_asprint(const ast_defer_statement* p_defer) {
+  allocators* alloc = p_defer->statement.node.alloc;
+  string call = ast_dispatch_asprint((ast_node*)p_defer->call);
+  string res = asprint(alloc, "%s %s", p_defer->is_err ? "deferr" : "defer", call.chars);
+  string_deinit(&call, alloc);
   return res;
 }
 
@@ -1493,11 +1621,8 @@ string ast_let_declaration_asprint(const ast_let_declaration* p_let) {
   if (p_let->span_bindings.count > 0) {
     for (uint32_t i = 0; i < p_let->span_bindings.count; ++i) {
       string part = ast_binding_asprint(p_let->span_bindings.data[i]);
-      string joined = asprint(alloc,
-                              "%s%s%s",
-                              bindings_str.chars,
-                              part.chars,
-                              i + 1 < p_let->span_bindings.count ? ", " : ")");
+      string joined =
+          asprint(alloc, "%s%s%s", bindings_str.chars, part.chars, i + 1 < p_let->span_bindings.count ? ", " : ")");
       string_deinit(&part, alloc);
       string_deinit(&bindings_str, alloc); // no-op for the leading static string
       bindings_str = joined;

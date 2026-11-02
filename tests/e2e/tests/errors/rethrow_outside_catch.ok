@@ -1,0 +1,1 @@
+throw; // expect error: bare 'throw;' (rethrow) is only legal inside a catch block.

@@ -248,6 +248,33 @@ typedef enum {
                          //                          the object stays alive through the C-side reference), then CALL
                          //                          with argc = b + len and retc = c - 1 (c == 0 => dynamic), like OP_CALL.
   OP_CALL_SPREAD_LONG,   // 2w:   (A, B, C)       -> same; ip += w
+  OP_TRY_ENTER,          // 2w:   (A, B, C)       -> push handler record {catch_ip = ip + A (like OP_JUMP_IF's forward offset),
+                         //                          park = B, floor = C} onto the vm-wide handler stack, tagged with the current frame.
+                         //                          B is the register the unwinder parks the error value into 
+                         //                          (the catch binder's own register, or a hidden one for bare catch).
+                         //                          so delivery needs no separate bind opcode. C is the upvalue floor
+                         //                          (the try statement's scope checkpoint): the unwinder closes
+                         //                          everything above it. the register watermark restores to the
+                         //                          frame's full window (temps die, locals stay).
+  OP_TRY_EXIT,           // w:    ()              -> pop the top handler record (leaving the protected region:
+                         //                          normal completion, break/continue jumping out, or the re-dispatch).
+                         //                          break/continue emit one per active record between the jump and its loop's entry.
+  OP_THROW,              // 2w:   (A)             -> raise r[A]: the value is the error (any value). 
+                         //                          walk the handler stack top-down: first live record wins.
+                         //                          pop frames above it (closing their upvalues), close upvalues above the
+                         //                          record's floor, restore the watermark, park the value at the
+                         //                          record's register, jump to its catch_ip.
+                         //                          no record: the uncaught lane (report at the outermost C boundary).
+                         //                          bare `throw;` inside a catch compiles to OP_THROW on the binder's register.
+  OP_DEFER_MARK,         // w:    (A)             -> r[A] = defer_tagged(r[A]). the compiler's only writer of the defer tag:
+                         //                          the register must hold the thunk closure just built by OP_CLOSURE 
+                         //                          (an internal error otherwise. the tag is never user-forgeable).
+                         //                          a marked slot is a pending defer: OP_DEFER_RUN consumes it, the unwind scan consumes it, and nothing else can ever see it.
+  OP_DEFER_RUN,          // w:    (A)             -> if r[A] is defer-tagged: nil the slot 
+                         //                          (consumed, a scope instance runs each defer exactly once), 
+                         //                          stage the thunk at the register file top (above every compile-time register, so nothing live is clobbered)
+                         //                          and call it, discard lane. a null slot is a no-op: the defer statement never executed on this
+                         //                          path (conditional defer, loop iteration that skipped it).
 } opcode;
 
 // clang-format on
@@ -412,11 +439,19 @@ static inline uint16_t Q_of(const word2 p_word) {
   return (p_word & Q_MASK) >> Q_LOFFSET;
 }
 
+// chunks reference their source by index into the vm's source table.
+// UINT32_MAX = unstamped: a chunk compiled outside ok_run.
+// none today, but the guard keeps reports honest instead of accidentally reading entry 0.
+#define VM_SOURCE_UNSTAMPED UINT32_MAX
+
 struct chunk {
   code code;
   identifiers identifiers;
   value_array constants;
   source_info source_info;
+  // index into the vm's source table (VM_SOURCE_UNSTAMPED until ok_run stamps the freshly compiled tree).
+  // runtime reports read the frame's chunk's entry
+  uint32_t source_id;
   allocators* alloc;
 };
 

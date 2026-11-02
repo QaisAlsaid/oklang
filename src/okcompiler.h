@@ -119,11 +119,37 @@ MAP_DECLARE(scope_registers, string, uint16_t /* index to the scope's registers 
 ARRAY_DECLARE_DEFAULT(registers, _register)
 ARRAY_DECLARE_DEFAULT(upvalues, upvalue)
 
+// a binder's receipt: where a local was declared. the scope map stores only
+// the register index, so these ride in a parallel array.
+// the "note: previously declared here" lane reads them at error time
+// (the token's .start points into the source, alive for the whole compile pass).
+typedef struct {
+  uint16_t register_index;
+  token declared;
+} scope_declaration;
+
+ARRAY_DECLARE_DEFAULT(declarations, scope_declaration)
+
+// one pending defer: which register holds its tagged thunk,
+// and whether it is a deferr (error path only).
+typedef struct {
+  uint16_t slot;
+  bool is_err;
+} defer_slot_entry;
+
+ARRAY_DECLARE_DEFAULT(defer_slots, defer_slot_entry)
+
 typedef struct {
   scope_registers registers_map; // indices into the scope's registers
   uint16_array registers;        // indices into the function's registers
+  declarations declarations;     // binder receipts, parallel to the map's values
   uint32_t registers_checkpoint;
   bool captures_any;
+  // the scope's pending defers, in declaration order (cleanup emits them in reverse (lifo)).
+  // one entry per defer statement that executed or may execute in this scope instance:
+  // slot = the hidden local holding the tagged thunk,
+  // is_err = deferr (normal exits kill the slot. only the unwind scan runs it).
+  defer_slots defers;
 } scope;
 
 ARRAY_DECLARE_DEFAULT(scopes, scope)
@@ -135,6 +161,10 @@ typedef struct {
   uint16_array continues;
   uint16_array breaks;
   bool continue_forward;
+  // the handler depth at loop entry: break/continue jumps leaving try regions
+  // behind must pop their records first
+  // (a stale record would hijack a later error into this frame's dead window).
+  uint32_t handlers_at_entry;
 } loop_context;
 
 ARRAY_DECLARE_DEFAULT(loop_stack, loop_context)
@@ -161,9 +191,20 @@ typedef struct {
 typedef struct {
   scopes scopes;
   upvalues upvalues;
+  // binder receipts for upvalues, by position in `upvalues`
+  // (the captured local's declaration token, when the root was resolvable).
+  // the immutable-upvalue-mutation note reads it.
+  declarations upvalue_declarations;
   loop_stack loop_stack;
   compile_function function;
   register_allocator register_allocator;
+  // live handler records this function has emitted (TRY_ENTERs minus TRY_EXITs):
+  // what break/continue pop and what the rethrow context reads.
+  uint32_t active_handlers;
+  // the catch context: while compiling a catch body, a bare `throw;`
+  // re-emits the parked error value from this register.
+  bool in_catch;
+  uint16_t catch_park_reg;
   // for inference: the agreed result width of the function being compiled.
   // 0 = no explicit return seen yet, 1 = single (the classic path);
   // n >= 2 = every return path agreed on n. first_return_author points at the

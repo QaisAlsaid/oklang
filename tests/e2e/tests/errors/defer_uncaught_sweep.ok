@@ -1,0 +1,18 @@
+fu close(tag) {
+  print("closing " + tag);
+  return true;
+}
+
+// uncaught: every frame's defers run before the interpreter gives up
+fu deep() {
+  defer close("deep");
+  throw "to the top";
+}
+fu middle() {
+  defer close("middle");
+  deep();
+}
+middle();
+// expect: closing deep
+// expect: closing middle
+// expect error: uncaught error: to the top

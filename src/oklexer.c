@@ -6,17 +6,23 @@
 #include "oktoken.h"
 
 void lexer_init(lexer* p_lexer, const char* p_src) {
+  p_lexer->src = p_src;
   p_lexer->start = p_src;
   p_lexer->current = p_src;
+  p_lexer->line_start = p_src;
   p_lexer->line_info.line = 1;
-  p_lexer->line_info.offset = 1;
+  p_lexer->line_info.offset = 0;
+  p_lexer->line_info.column = 1;
 }
 
 void lexer_deinit(lexer* p_lexer) {
+  p_lexer->src = NULL;
   p_lexer->start = NULL;
   p_lexer->current = NULL;
+  p_lexer->line_start = NULL;
   p_lexer->line_info.line = 0;
   p_lexer->line_info.offset = 0;
+  p_lexer->line_info.column = 0;
 }
 
 static bool at_end(lexer* p_lexer) {
@@ -27,6 +33,8 @@ static token create_token(lexer* p_lexer, token_type p_type) {
   token token;
   token.type = p_type;
   token.line_info = p_lexer->line_info;
+  token.line_info.offset = (uint32_t)(p_lexer->start - p_lexer->src);
+  token.line_info.column = (uint32_t)(p_lexer->start - p_lexer->line_start) + 1;
   token.length = (uint32_t)(p_lexer->current - p_lexer->start);
   token.start = p_lexer->start;
   return token;
@@ -36,13 +44,14 @@ static token create_error_token(lexer* p_lexer, const char* p_message) {
   token token;
   token.type = TOKEN_ERROR;
   token.line_info = p_lexer->line_info;
+  token.line_info.offset = (uint32_t)(p_lexer->start - p_lexer->src);
+  token.line_info.column = (uint32_t)(p_lexer->start - p_lexer->line_start) + 1;
   token.length = strlen(p_message);
   token.start = p_message;
   return token;
 }
 
 static char advance(lexer* p_lexer) {
-  p_lexer->line_info.offset++;
   return (++p_lexer->current)[-1];
 }
 
@@ -71,6 +80,9 @@ static token string(lexer* p_lexer, char p_start, bool p_multiline) {
       return error;
     } else if (peek(p_lexer) == '\n') {
       p_lexer->line_info.line++;
+      advance(p_lexer);
+      p_lexer->line_start = p_lexer->current;
+      continue;
     }
     advance(p_lexer);
   }
@@ -162,6 +174,16 @@ static token_type lookup_identifier(lexer* p_lexer) {
     return check_keyword(p_lexer, 1, 4, "hile", TOKEN_WHILE);
   case 'r':
     return check_keyword(p_lexer, 1, 5, "eturn", TOKEN_RETURN);
+  case 'd': {
+    if (p_lexer->current - p_lexer->start > 1 && p_lexer->start[1] == 'e') {
+      token_type t = check_keyword(p_lexer, 2, 4, "ferr", TOKEN_DEFERR);
+      if (t != TOKEN_IDENTIFIER) {
+        return t;
+      }
+      return check_keyword(p_lexer, 2, 3, "fer", TOKEN_DEFER);
+    }
+    break;
+  }
   case 'f': {
     if (p_lexer->current - p_lexer->start > 1) {
       switch (p_lexer->start[1]) {
@@ -171,8 +193,6 @@ static token_type lookup_identifier(lexer* p_lexer) {
         return check_keyword(p_lexer, 2, 3, "lse", TOKEN_FALSE);
       case 'o':
         return check_keyword(p_lexer, 2, 1, "r", TOKEN_FOR);
-      case 'i':
-        return check_keyword(p_lexer, 2, 6, "nalize", TOKEN_FINALIZE);
       }
     }
     break;
@@ -379,6 +399,7 @@ start:
   }
   case '\n':
     p_lexer->line_info.line++;
+    p_lexer->line_start = p_lexer->current; // current already stepped past the newline
     goto start;
   case ' ':
   case '\t':

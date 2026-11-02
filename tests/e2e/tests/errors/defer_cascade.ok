@@ -1,0 +1,35 @@
+fu boom() {
+  throw "cleanup-failed";
+  return true;
+}
+fu ok_close() {
+  print("ok close");
+  return true;
+}
+
+// cascade at a normal scope exit: when a defer fails, subsequent
+// defers in the dying region are skipped (ok_close never runs)
+try {
+  {
+    defer ok_close();
+    defer boom();
+  }
+} catch e {
+  print("caught: " + e); // expect: caught: cleanup-failed
+}
+
+// cascade on the unwind path: the in-flight error plus a failing defer
+// -> the defer's error replaces it, the second defer is skipped, and the
+// error flies PAST the catch whose region was unwinding (its record was
+// consumed before the defers ran - the defer-owning function cannot catch
+// its own defer's failure; only handlers further out can)
+try {
+  {
+    defer ok_close();
+    defer boom();
+    throw "original";
+  }
+} catch e {
+  print("never: " + e);
+}
+// expect error: uncaught error: cleanup-failed

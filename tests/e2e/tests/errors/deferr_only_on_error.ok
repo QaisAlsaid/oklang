@@ -1,0 +1,55 @@
+fu close(tag) {
+  print("closing " + tag);
+  return true;
+}
+
+// deferr runs ONLY when an error unwinds out of its scope
+fu normal() {
+  deferr close("never-on-normal");
+  defer close("always");
+  print("in normal"); // expect: in normal
+}
+normal();
+// expect: closing always
+
+fu returns() {
+  deferr close("never-on-return");
+  return 1;
+}
+print(returns()); // expect: 1
+
+fu breaks() {
+  for let mut i = 0; i < 3; i = i + 1 {
+    {
+      deferr close("never-on-continue");
+      continue;
+    }
+  }
+  return 2;
+}
+print(breaks()); // expect: 2
+
+// the error path: deferr runs, LIFO interleaved with defer by
+// declaration order
+try {
+  {
+    deferr close("errdefer");
+    defer close("defer");
+    throw "x";
+  }
+} catch e {
+  print("caught"); // expect: closing defer
+}
+// expect: closing errdefer
+// expect: caught
+
+// caught INSIDE the scope: the scope exits normally, deferr does not run
+{
+  deferr close("not-this-time");
+  try {
+    throw "inner";
+  } catch e {
+    print("inner caught"); // expect: inner caught
+  }
+}
+print("done"); // expect: done

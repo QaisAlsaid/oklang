@@ -25,9 +25,19 @@ typedef enum {
 // creates parser + compiler + vm, sets up pipline
 ok* ok_create(ok_specs p_specs);
 void ok_free(ok* p_ok);
-// runs the pipline with the source.
-// takes ownership of code and path strings.
+// runs the pipline with the source. reads p_source.code and p_source.path
+// during the call, your buffers are yours. the path is interned (copied) so diagnostics can name it
+// after the run. the code is copied only when source retention is on.
 ok_result ok_run(ok* p_ok, ok_source p_source);
+
+// opt-in source retention (default off).
+// when on: every ok_run's source is copied into the ok state and kept alive until ok_free.
+// runtime reports can reference source text for functions compiled by earlier runs
+// when off: the code is borrowed for the duration of each ok_run call only.
+// later reports on leftover functions print the right path and line:col,
+// without referencing code.
+// embedders that never reuse buffers past ok_run pay nothing.
+void ok_retain_source(ok* p_ok, bool p_retain);
 
 /* values */
 typedef uint64_t ok_value;
@@ -67,7 +77,26 @@ typedef ok_value (*ok_native_fn)(ok* p_ok, uint8_t p_argc, const ok_value* p_arg
 
 bool ok_global_define_native_function(ok* p_ok, ok_string_view p_name, uint8_t p_arity, ok_native_fn p_cb);
 
+// the message lane: raises inside the native,
+// crosses into script catch as the map {:kind: "native", :what: <message>}
+// (message sugar) (use ok_native_throw to send any value whole).
 bool ok_native_error(ok* p_ok, ok_string_view p_message);
+
+// the value lane: the value crosses into the script's catch binder as-is,
+// exactly like a script `throw v`. only valid inside a native callback (like ok_native_error).
+// a host error that no script catches fails the ok_call/ok_run. read it with ok_last_error.
+bool ok_native_throw(ok* p_ok, ok_value p_value);
+
+// the error from the most recent failure (ok_run/ok_call)
+// on this state: your thrown value as-is,
+// or (for runtime-raised errors) a fresh  {:kind: "...", :what: "..."} map.
+// root it (ok_root) if you need it past your next ok allocation.
+// a null value means "no error". a caught error clears it. ok_clear_error clears it explicitly. the next ok_run also
+// clears it. a failed ok_call prints nothing. reporting is your call.
+ok_value ok_last_error(ok* p_ok);
+
+// clears the ok_last_error lane.
+void ok_clear_error(ok* p_ok);
 
 typedef void (*ok_native_destructor)(void* p_data);
 

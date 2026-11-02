@@ -1,0 +1,32 @@
+fu boom() {
+  throw "cleanup-failed";
+  return true;
+}
+fu ok_close() {
+  print("ok close");
+  return true;
+}
+
+// a failing defer's error replaces the in-flight one and escapes
+// the defer-owning function: the CALLER catches it
+fu failing_cleanup() {
+  defer boom();
+  throw "original";
+}
+try {
+  failing_cleanup();
+} catch e {
+  print("outer got: " + e); // expect: outer got: cleanup-failed
+}
+
+// a defer error at a NORMAL scope exit unwinds to an enclosing
+// try in the same function (the exit point is inside its region)
+try {
+  {
+    defer boom();
+    print("body ran"); // expect: body ran
+  }
+  print("never");
+} catch e {
+  print("same-frame caught: " + e); // expect: same-frame caught: cleanup-failed
+}

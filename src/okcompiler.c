@@ -111,6 +111,8 @@ static void register_allocator_reset_locals(register_allocator* p_regalloc, uint
 static void scope_init(scope* p_scope, uint32_t p_checkpoint, allocators* p_alloc) {
   scope_registers_init(&p_scope->registers_map, p_alloc);
   uint16_array_init(&p_scope->registers, p_alloc);
+  declarations_init(&p_scope->declarations, p_alloc);
+  defer_slots_init(&p_scope->defers, p_alloc);
   p_scope->registers_checkpoint = p_checkpoint;
   p_scope->captures_any = false;
 }
@@ -118,6 +120,8 @@ static void scope_init(scope* p_scope, uint32_t p_checkpoint, allocators* p_allo
 static void scope_deinit(scope* p_scope, allocators* p_alloc) {
   scope_registers_deinit(&p_scope->registers_map);
   uint16_array_deinit(&p_scope->registers, p_alloc);
+  declarations_deinit(&p_scope->declarations, p_alloc);
+  defer_slots_deinit(&p_scope->defers, p_alloc);
   p_scope->registers_checkpoint = 0;
 }
 
@@ -125,6 +129,7 @@ static void loop_context_init(loop_context* p_context, allocators* p_alloc) {
   p_context->break_target = 0;
   p_context->continue_target = 0;
   p_context->continue_forward = false;
+  p_context->handlers_at_entry = 0;
   uint16_array_init(&p_context->continues, p_alloc);
   uint16_array_init(&p_context->breaks, p_alloc);
 }
@@ -148,17 +153,22 @@ static void compile_context_init(compile_context* p_context,
                                  allocators* p_alloc) {
   register_allocator_init(&p_context->register_allocator, p_alloc);
   upvalues_init(&p_context->upvalues, p_alloc);
+  declarations_init(&p_context->upvalue_declarations, p_alloc);
   scopes_init(&p_context->scopes, p_alloc);
   loop_stack_init(&p_context->loop_stack, p_alloc);
   p_context->function.function = p_obj_function;
   p_context->function.type = p_type;
   p_context->return_span = 0;
   p_context->first_return_author = NULL;
+  p_context->active_handlers = 0;
+  p_context->in_catch = false;
+  p_context->catch_park_reg = 0;
 }
 
 static void compile_context_deinit(compile_context* p_context, allocators* p_alloc) {
   loop_stack_deinit(&p_context->loop_stack, p_alloc);
   scopes_deinit(&p_context->scopes, p_alloc);
+  declarations_deinit(&p_context->upvalue_declarations, p_alloc);
   upvalues_deinit(&p_context->upvalues, p_alloc);
   register_allocator_deinit(&p_context->register_allocator);
   p_context->function.function = NULL;
@@ -167,15 +177,17 @@ static void compile_context_deinit(compile_context* p_context, allocators* p_all
 
 ARRAY_DEFINE_DEFAULT(registers, _register, ARRAY_DEFAULT_TYPE_DEINIT)
 ARRAY_DEFINE_DEFAULT(upvalues, upvalue, ARRAY_DEFAULT_TYPE_DEINIT)
+ARRAY_DEFINE_DEFAULT(declarations, scope_declaration, ARRAY_DEFAULT_TYPE_DEINIT)
+ARRAY_DEFINE_DEFAULT(defer_slots, defer_slot_entry, ARRAY_DEFAULT_TYPE_DEINIT)
 ARRAY_DEFINE_DEFAULT(scopes, scope, scope_deinit)
 ARRAY_DEFINE_DEFAULT(compile_contexts, compile_context, compile_context_deinit)
 ARRAY_DEFINE_DEFAULT(uint16_array, uint16_t, ARRAY_DEFAULT_TYPE_DEINIT)
 ARRAY_DEFINE_DEFAULT(loop_stack, loop_context, loop_context_deinit)
 
-static void error_at_noted(compiler* p_compiler,
-                           const ast_node* p_author,
-                           const ok_string_view p_message,
-                           const ok_string_view p_note) {
+static void error_at_noted_located(compiler* p_compiler,
+                                   const ast_node* p_author,
+                                   const ok_string_view p_message,
+                                   const ok_note* p_note) {
   report_at_noted(&p_compiler->panic,
                   &p_compiler->had_error,
                   p_author->node_type == AST_EOF_STATEMENT,
@@ -184,6 +196,19 @@ static void error_at_noted(compiler* p_compiler,
                   REPORT_SEVERITY_ERROR,
                   p_message,
                   p_note);
+}
+
+static void error_at_noted(compiler* p_compiler,
+                           const ast_node* p_author,
+                           const ok_string_view p_message,
+                           const ok_string_view p_note) {
+  ok_note note;
+  note.text = p_note;
+  note.has_span = false;
+  note.span.line = 0;
+  note.span.offset = 0;
+  note.span.length = 0;
+  error_at_noted_located(p_compiler, p_author, p_message, p_note.chars != NULL ? &note : NULL);
 }
 
 static void error_at(compiler* p_compiler, const ast_node* p_author, const ok_string_view p_message) {
@@ -257,7 +282,38 @@ static bool begin_scope(compiler* p_compiler, ast_node* p_author) {
   return true;
 }
 
+// the scope's defer exits, for the normal paths: run every defer slot (lifo),
+// then kill every deferr slot
+// (a deferr is error path only.
+// its tag must not survive the scope, or a later unwind scan would run a defer whose scope exited cleanly).
+// runs before the upvalue close: a defer's thunk captures the snapshot locals as open upvalues,
+// and it must read them while they still point at live registers. "one step of live code before the usual cleanup".
+static bool cleanup_scope_defers(compiler* p_compiler, scope* p_scope, ast_node* p_author) {
+  for (uint32_t i = p_scope->defers.count; i-- > 0;) {
+    if (p_scope->defers.data[i].is_err) {
+      continue;
+    }
+    if (!emit_word(p_compiler, encode_oppA(OP_DEFER_RUN, false, p_scope->defers.data[i].slot), p_author)) {
+      report_oom(p_compiler, p_author);
+      return false;
+    }
+  }
+  for (uint32_t i = 0; i < p_scope->defers.count; ++i) {
+    if (!p_scope->defers.data[i].is_err) {
+      continue;
+    }
+    if (!emit_word2(p_compiler, encode_OPPABCQ(OP_LOAD_NULL, false, p_scope->defers.data[i].slot, 1, 0, 0), p_author)) {
+      report_oom(p_compiler, p_author);
+      return false;
+    }
+  }
+  return true;
+}
+
 static bool cleanup_scope(compiler* p_compiler, scope* p_scope, ast_node* p_author) {
+  if (!cleanup_scope_defers(p_compiler, p_scope, p_author)) {
+    return false;
+  }
   if (p_scope->captures_any) {
     if (!emit_word(p_compiler, encode_oppA(OP_CLOSE_UPVALUES, false, p_scope->registers_checkpoint), p_author)) {
       report_oom(p_compiler, p_author);
@@ -317,6 +373,30 @@ static inline void end_context(compiler* p_compiler) {
   ASSERT(compile_contexts_pop(&p_compiler->contexts));
 }
 
+// the latest receipt for a register in one scope (latest first: the span
+// bindings path can re-emit a register inside the same scope).
+static token* scope_declaration_at(scope* p_scope, uint16_t p_register) {
+  for (uint32_t i = p_scope->declarations.count; i-- > 0;) {
+    if (p_scope->declarations.data[i].register_index == p_register) {
+      return &p_scope->declarations.data[i].declared;
+    }
+  }
+  return NULL;
+}
+
+// the receipt for a live local, innermost scope first. register indices are
+// unique across live scopes (allocation is monotonic from a shared top, dead
+// scopes pop with their receipts), so the first hit is the declaration.
+static token* context_declaration_at(compile_context* p_ctx, uint16_t p_register) {
+  for (uint32_t i = p_ctx->scopes.count; i-- > 0;) {
+    token* declared = scope_declaration_at(&p_ctx->scopes.data[i], p_register);
+    if (declared != NULL) {
+      return declared;
+    }
+  }
+  return NULL;
+}
+
 static _register
 add_local(compiler* p_compiler, const variable_declaration p_declration, bool p_initialized, ast_node* p_author) {
   // full flag set must be computed before any allocation: the metadata array copies the
@@ -364,11 +444,27 @@ add_local(compiler* p_compiler, const variable_declaration p_declration, bool p_
       register_allocator_rollback_local(&ctx->register_allocator);
       return reg;
     }
+    // the binder receipt: what the redefinition and immutability notes read.
+    // allocation failure is not fatal here, the notes just degrade to text.
+    scope_declaration receipt = {reg.index, p_author->token};
+    declarations_append(&scp->declarations, receipt);
     return reg;
   }
   string name = create_string_from_string_view(p_declration.identifier, alloc);
   string message = asprint(alloc, "redefining local: '%s' in the same scope.", name.chars);
-  error_at(p_compiler, p_author, ok_create_string_view_from_string(message));
+  string note = asprint(alloc, "previous declaration of '%s' is here.", name.chars);
+  ok_note located;
+  located.text = ok_create_string_view_from_string(note);
+  token* declared = scope_declaration_at(scp, *resolved);
+  if (declared != NULL) {
+    located.has_span = true;
+    located.span = ok_span_of_token(declared);
+  } else {
+    located.has_span = false;
+  }
+  error_at_noted_located(
+      p_compiler, p_author, ok_create_string_view_from_string(message), declared != NULL ? &located : NULL);
+  string_deinit(&note, alloc);
   string_deinit(&message, alloc);
   string_deinit(&name, alloc);
   reg.errors = REGISTER_REDEFINED_LOCAL;
@@ -398,6 +494,9 @@ static bool compile_for_in_statement(compiler* p_compiler, ast_for_in_statement*
 static bool compile_for_numeric_statement(compiler* p_compiler, ast_for_numeric_statement* p_for_numeric);
 static bool compile_control_flow_statement(compiler* p_compiler, ast_control_flow_statement* p_control);
 static bool compile_return_statement(compiler* p_compiler, ast_return_statement* p_return);
+static bool compile_throw_statement(compiler* p_compiler, ast_throw_statement* p_throw);
+static bool compile_try_statement(compiler* p_compiler, ast_try_statement* p_try);
+static bool compile_defer_statement(compiler* p_compiler, ast_defer_statement* p_defer);
 
 static bool compile_identifier(compiler* p_compiler,
                                ast_identifier_expression* p_identifier,
@@ -543,8 +642,11 @@ compile_result compiler_compile(compiler* p_compiler, compile_specs p_specs) {
   bool res = compile_root(p_compiler, p_specs.root);
   result.function = current_context(p_compiler)->function.function;
   result.function->registers = current_context(p_compiler)->register_allocator.registers_count;
-  res &= emit_default_return(p_compiler, (ast_node*)p_specs.root);
+  // the user top-level scope ends before the fall off return:
+  // its defers (and its upvalue closes) are live code. ending it after the return would make
+  // the whole epilogue dead bytes. a top-level `defer` would never run.
   res &= end_scope(p_compiler, (ast_node*)p_specs.root); // user top-level scope
+  res &= emit_default_return(p_compiler, (ast_node*)p_specs.root);
   res &= end_scope(p_compiler, (ast_node*)p_specs.root); // hidden scope
   res &= end_scope(p_compiler, (ast_node*)p_specs.root);
   end_context(p_compiler);
@@ -640,6 +742,15 @@ static bool compile_statement(compiler* p_compiler, ast_statement* p_statement) 
     break;
   case AST_RETURN_STATEMENT:
     result = compile_return_statement(p_compiler, (ast_return_statement*)p_statement);
+    break;
+  case AST_THROW_STATEMENT:
+    result = compile_throw_statement(p_compiler, (ast_throw_statement*)p_statement);
+    break;
+  case AST_TRY_STATEMENT:
+    result = compile_try_statement(p_compiler, (ast_try_statement*)p_statement);
+    break;
+  case AST_DEFER_STATEMENT:
+    result = compile_defer_statement(p_compiler, (ast_defer_statement*)p_statement);
     break;
   case AST_LET_DECLARATION:
     result = compile_let_declration(p_compiler, (ast_let_declaration*)p_statement);
@@ -1172,17 +1283,33 @@ store_local(compiler* p_compiler, location p_local_location, expression_result p
   allocators* alloc = p_compiler->alloc;
   _register local = current_context(p_compiler)->register_allocator.registers.data[p_local_location.index];
   if ((local.flags & REGISTER_FLAG_MUTABLE) == 0) {
-    error_at_noted(p_compiler,
-                   p_author,
-                   ok_create_string_view(
-                       "attempting to mutate an immutable local variable.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-                   ok_create_string_view("did you forget to declare it 'mut'?", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    ok_note note;
+    note.text = ok_create_string_view("previously declared here without 'mut'.", OK_STRING_VIEW_CALCULATE_LENGTH, true);
+    token* declared = context_declaration_at(current_context(p_compiler), local.index);
+    if (declared != NULL) {
+      note.has_span = true;
+      note.span = ok_span_of_token(declared);
+      error_at_noted_located(p_compiler,
+                             p_author,
+                             ok_create_string_view("attempting to mutate an immutable local variable.",
+                                                   OK_STRING_VIEW_CALCULATE_LENGTH,
+                                                   true),
+                             &note);
+    } else {
+      error_at_noted(
+          p_compiler,
+          p_author,
+          ok_create_string_view(
+              "attempting to mutate an immutable local variable.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+          ok_create_string_view("did you forget to declare it 'mut'?", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    }
     return false;
   }
   return write_local(p_compiler, local, p_value, p_author);
 }
 
-static upvalue add_upvalue(compiler* p_compiler, compile_context* p_ctx, upvalue p_upvalue, ast_node* p_author) {
+static upvalue
+add_upvalue(compiler* p_compiler, compile_context* p_ctx, upvalue p_upvalue, const token* p_root, ast_node* p_author) {
   allocators* alloc = p_compiler->alloc;
   // the array stores semantic indices (captured local's slot, or parent's upvalue position),
   // but the returned index must be the position in this context's upvalues array, because
@@ -1211,6 +1338,11 @@ static upvalue add_upvalue(compiler* p_compiler, compile_context* p_ctx, upvalue
     report_oom(p_compiler, p_author);
     return p_upvalue;
   }
+  // binder receipt for the new entry, in lockstep
+  // (first capture wins: an existing entry keeps its receipt, found on the dedup path above).
+  // a missing root (hidden state) parks a zeroed token. has_span is judged by the note builder.
+  scope_declaration receipt = {p_upvalue.index, p_root != NULL ? *p_root : (token){0}};
+  declarations_append(&p_ctx->upvalue_declarations, receipt);
   p_upvalue.index = (ok_index)(p_ctx->upvalues.count - 1);
   p_upvalue.errors = UPVALUE_OK;
   return p_upvalue;
@@ -1238,12 +1370,19 @@ resolve_upvalue(compiler* p_compiler, uint32_t p_context_index, ok_string_view p
     if ((local_reg->flags & REGISTER_FLAG_MUTABLE) != 0) {
       u.flags |= UPVALUE_FLAG_MUTABLE;
     }
-    return add_upvalue(p_compiler, current, u, p_author);
+    return add_upvalue(p_compiler, current, u, scope_declaration_at(scp, local_reg->index), p_author);
   }
   u = resolve_upvalue(p_compiler, p_context_index + 1, p_identifier, p_author);
   if (u.error != UPVALUE_UNDEFINED) {
     u.flags = (u.flags & UPVALUE_FLAG_MUTABLE) != 0 ? UPVALUE_FLAG_MUTABLE | UPVALUE_FLAG_UP : UPVALUE_FLAG_UP;
-    return add_upvalue(p_compiler, current, u, p_author);
+    // an UP upvalue's root receipt lives in the parent context's parallel
+    // array, by the semantic index the recursive call returned.
+    const token* root = NULL;
+    if (u.index < up->upvalue_declarations.count &&
+        up->upvalue_declarations.data[u.index].declared.line_info.line > 0) {
+      root = &up->upvalue_declarations.data[u.index].declared;
+    }
+    return add_upvalue(p_compiler, current, u, root, p_author);
   }
   return u;
 }
@@ -1251,11 +1390,28 @@ resolve_upvalue(compiler* p_compiler, uint32_t p_context_index, ok_string_view p
 static bool store_upvalue(compiler* p_compiler, location p_upvalue, expression_result p_value, ast_node* p_author) {
   upvalue up = current_context(p_compiler)->upvalues.data[p_upvalue.index];
   if ((up.flags & UPVALUE_FLAG_MUTABLE) == 0) {
-    error_at_noted(p_compiler,
-                   p_author,
-                   ok_create_string_view(
-                       "attempting to mutate an immutable upvalue variable.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-                   ok_create_string_view("did you forget to declare it 'mut'?", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    compile_context* ctx = current_context(p_compiler);
+    ok_note note;
+    note.text = ok_create_string_view("previously declared here without 'mut'.", OK_STRING_VIEW_CALCULATE_LENGTH, true);
+    const bool rooted = p_upvalue.index < ctx->upvalue_declarations.count &&
+                        ctx->upvalue_declarations.data[p_upvalue.index].declared.line_info.line > 0;
+    if (rooted) {
+      note.has_span = true;
+      note.span = ok_span_of_token(&ctx->upvalue_declarations.data[p_upvalue.index].declared);
+      error_at_noted_located(p_compiler,
+                             p_author,
+                             ok_create_string_view("attempting to mutate an immutable upvalue variable.",
+                                                   OK_STRING_VIEW_CALCULATE_LENGTH,
+                                                   true),
+                             &note);
+    } else {
+      error_at_noted(
+          p_compiler,
+          p_author,
+          ok_create_string_view(
+              "attempting to mutate an immutable upvalue variable.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+          ok_create_string_view("did you forget to declare it 'mut'?", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    }
     return false;
   }
   // the operand must be the position in this function's upvalue array (the location index),
@@ -1796,6 +1952,7 @@ bool compile_while_statement(compiler* p_compiler, ast_while_statement* p_while)
 
 #define CTX ctx->loop_stack.data[ctx->loop_stack.count - 1]
   CTX.scope_depth = ctx->scopes.count - 1;
+  CTX.handlers_at_entry = ctx->active_handlers;
   chunk* chunk = current_chunk(p_compiler);
   const uint32_t loop_start = chunk->code.count;
   expression_result condition;
@@ -1860,6 +2017,7 @@ bool compile_for_statement(compiler* p_compiler, ast_for_statement* p_for) {
   }
   chunk* chunk = current_chunk(p_compiler);
   CTX.scope_depth = ctx->scopes.count - 1;
+  CTX.handlers_at_entry = ctx->active_handlers;
   if (p_for->initializer != NULL && !compile_statement(p_compiler, p_for->initializer)) {
     goto fail;
   }
@@ -1932,6 +2090,22 @@ fail:
 #undef CTX
 }
 
+// the defer exits for every scope a jump crosses, innermost first.
+// the order a natural unwind would tear them down. break/continue cross the
+// scopes between the jump and its loop's entry
+// (the loop's own scope is cleaned at the break target, by patch_loop_context's fallthrough);
+// return crosses them all. emission only, the runtime owns nothing here,
+// which is the whole point of defer: the exits are compile time visible.
+static bool emit_defer_exits_from_innermost(compiler* p_compiler, uint32_t p_stop_depth, ast_node* p_author) {
+  compile_context* ctx = current_context(p_compiler);
+  for (uint32_t d = ctx->scopes.count; d-- > p_stop_depth;) {
+    if (!cleanup_scope_defers(p_compiler, &ctx->scopes.data[d], p_author)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool compile_control_flow_statement(compiler* p_compiler, ast_control_flow_statement* p_control) {
   compile_context* ctx = current_context(p_compiler);
   if (ctx->loop_stack.count == 0) {
@@ -1942,6 +2116,20 @@ bool compile_control_flow_statement(compiler* p_compiler, ast_control_flow_state
     return false;
   }
   loop_context* lctx = &ctx->loop_stack.data[ctx->loop_stack.count - 1];
+  // the crossed scopes' defers run first, still inside any try region the
+  // jump is leaving (a failing defer unwinds to a live catch, same as a defer at a scope's natural end). then the
+  // records pop.
+  if (!emit_defer_exits_from_innermost(p_compiler, lctx->scope_depth + 1, (ast_node*)p_control)) {
+    return false;
+  }
+  // leaving try regions behind: pop each active record the jump crosses
+  // (records between here and the loop's entry). a stale record would
+  // address a dead window and hijack a later error into it.
+  for (uint32_t i = lctx->handlers_at_entry; i < ctx->active_handlers; ++i) {
+    if (!emit_word(p_compiler, encode_oppabprime(OP_TRY_EXIT, false, 0, 0), (ast_node*)p_control)) {
+      return false;
+    }
+  }
   if (p_control->type == CONTROL_FLOW_BREAK) {
     uint32_t jmp;
     if (!emit_incomplete_jump(p_compiler, OP_JUMP, &jmp, (ast_node*)p_control)) {
@@ -1960,6 +2148,279 @@ bool compile_control_flow_statement(compiler* p_compiler, ast_control_flow_state
       report_oom(p_compiler, (ast_node*)p_control);
       return false;
     }
+  }
+  return true;
+}
+
+// `throw expr;` evaluate, then OP_THROW the register: the value is the
+// error, any value. `throw;` (bare) re-emits the parked value of the
+// enclosing catch. legal only inside a catch body
+// (the context knows the register, a nested function literal gets a fresh context and loses it).
+static bool compile_throw_statement(compiler* p_compiler, ast_throw_statement* p_throw) {
+  compile_context* ctx = current_context(p_compiler);
+  ast_node* author = (ast_node*)p_throw;
+
+  if (p_throw->expression == NULL) {
+    if (!ctx->in_catch) {
+      error_at_noted(
+          p_compiler,
+          author,
+          ok_create_string_view(
+              "bare 'throw;' (rethrow) is only legal inside a catch block.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+          ok_create_string_view(
+              "rethrow re-raises the error the enclosing catch is handling.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      return false;
+    }
+    return emit_word2(p_compiler, encode_OPPABCQ(OP_THROW, false, ctx->catch_park_reg, 0, 0, false), author);
+  }
+
+  expression_result value;
+  _register dest;
+  if (!register_allocator_allocate_temp(&ctx->register_allocator, &dest)) {
+    report_oom(p_compiler, author);
+    return false;
+  }
+  if (!compile_expression(p_compiler, p_throw->expression, dest, 1, &value)) {
+    return false;
+  }
+  if (!materialize_into_if_not_register(p_compiler, &value.value, dest, author)) {
+    return false;
+  }
+  return emit_word2(p_compiler, encode_OPPABCQ(OP_THROW, false, (uint16_t)value.value.index, 0, 0, false), author);
+}
+
+// `try { B } catch e { H }` compiles to:
+//
+//   TRY_ENTER catch_target, park = e's register, floor = the try scope's checkpoint
+//   B
+//   TRY_EXIT
+//   JUMP end
+// catch_target:            ; the unwinder parks the value at e's register
+//   H                      ; (e is an ordinary immutable local. zero MOVEs)
+// end:
+//
+// the record's floor is what the unwinder closes upvalues above.
+// the watermark restores to the handler frame's full window
+// (temps die, locals stay). entering the handler consumes the record, so a throw inside H finds
+// only outer handlers. and a bare `throw;` reads e's register directly.
+static bool compile_try_statement(compiler* p_compiler, ast_try_statement* p_try) {
+  allocators* alloc = p_compiler->alloc;
+  compile_context* ctx = current_context(p_compiler);
+  ast_node* author = (ast_node*)p_try;
+
+  if (!begin_scope(p_compiler, author)) {
+    return false;
+  }
+  const uint32_t floor = current_scope(p_compiler)->registers_checkpoint;
+
+  // the park slot: the binder's own register when there is one, else a
+  // hidden local (leading space: unreachable from user code, the for-in trick).
+  // it must be rooted even when discarded. the value may be an object the catch body allocates over.
+  _register park;
+  if (p_try->catch_binding != NULL) {
+    variable_declaration binder = {
+        .identifier = ast_identifier_expression_get_value((ast_identifier_expression*)p_try->catch_binding->lvalue),
+        .flags = VARIABLE_DECLRATION_FLAGS_NONE}; // immutable: the draft's ruling
+    park = add_local(p_compiler, binder, true, (ast_node*)p_try->catch_binding);
+  } else {
+    variable_declaration hidden = {.identifier = ok_create_string_view(" err", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                                   .flags = VARIABLE_DECLRATION_FLAGS_NONE};
+    park = add_local(p_compiler, hidden, true, author);
+  }
+  if (!IS_REGISTER_VALID(park)) {
+    end_scope(p_compiler, author);
+    return false;
+  }
+
+  uint32_t enter;
+  {
+    const uint32_t at = current_chunk(p_compiler)->code.count;
+    if (!emit_word2(
+            p_compiler, encode_OPPABCQ(OP_TRY_ENTER, false, 0, (uint16_t)park.index, (uint16_t)floor, false), author)) {
+      report_oom(p_compiler, author);
+      end_scope(p_compiler, author);
+      return false;
+    }
+    enter = at;
+  }
+  ctx->active_handlers++;
+
+  if (!compile_statement(p_compiler, p_try->body)) {
+    goto fail_active;
+  }
+
+  if (!emit_word(p_compiler, encode_oppabprime(OP_TRY_EXIT, false, 0, 0), author)) {
+    goto fail_active;
+  }
+  ctx->active_handlers--;
+
+  uint32_t end_jump;
+  if (!emit_incomplete_jump(p_compiler, OP_JUMP, &end_jump, author)) {
+    goto fail_active;
+  }
+
+  // catch_target: patch the TRY_ENTER's forward offset
+  // (patch_jump_if rewrites A and preserves B/C. the exact contract TRY_ENTER needs).
+  if (!patch_jump_if(p_compiler, false, enter, current_chunk(p_compiler)->code.count, author)) {
+    goto fail_post_jump;
+  }
+
+  if (p_try->catch_body != NULL) {
+    // the catch context: bare `throw;` inside H re-emits e's register
+    const bool saved_in_catch = ctx->in_catch;
+    const uint16_t saved_park = ctx->catch_park_reg;
+    ctx->in_catch = true;
+    ctx->catch_park_reg = (uint16_t)park.index;
+    const bool ok = compile_statement(p_compiler, p_try->catch_body);
+    ctx->in_catch = saved_in_catch;
+    ctx->catch_park_reg = saved_park;
+    if (!ok) {
+      goto fail_post_jump;
+    }
+  }
+
+  // end:
+  if (!patch_jump(p_compiler, false, end_jump, current_chunk(p_compiler)->code.count, author)) {
+    goto fail_post_jump;
+  }
+
+  return end_scope(p_compiler, author);
+
+fail_active:
+  ctx->active_handlers--;
+fail_post_jump:
+  end_scope(p_compiler, author);
+  return false;
+}
+
+// `defer f(a, b)` compiles to, inside the CURRENT scope
+// (per-scope scheduling, zig style. the scope that owns the resource runs the cleanup):
+//
+//   <hidden locals " dNc", " dNa0", " dNa1", " dNs" declared in the scope>
+//   <callee evaluated into a temp, moved to " dNc">      ; the snapshot:
+//   <arg evaluated into a temp, moved to " dNa0">        ; callee and args are
+//   ...                                                  ; read now, not at exit
+//   CLOSURE " dNs", k[thunk]                             ; fu() { dNc(dNa0, dNa1) }
+//   DEFER_MARK " dNs"                                    ; the slot is now a pending defer
+//
+// the thunk's identifiers resolve through the scope map onto the hidden locals,
+// captured as upvalues at CLOSURE time
+// (open, pointing at the registers. the snapshot values, written exactly once).
+// every scope exit then owns its own epilogue: normal end / break / continue / return emit
+// DEFER_RUN (reverse, lifo) + LOAD_NULL kills for deferr, and the unwind
+// scan runs everything. deferr differs only by never being RUN-emitted.
+static bool compile_defer_statement(compiler* p_compiler, ast_defer_statement* p_defer) {
+  compile_context* ctx = current_context(p_compiler);
+  scope* scp = current_scope(p_compiler);
+  register_allocator* regalloc = &ctx->register_allocator;
+  ast_node* author = (ast_node*)p_defer;
+  ast_call_expression* call = p_defer->call;
+  const uint32_t argc = call->arguments.count;
+  if (argc > UINT8_MAX) {
+    error_at_noted(p_compiler,
+                   author,
+                   ok_create_string_view("too many arguments to defer.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                   ok_create_string_view("limit is: 255.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return false;
+  }
+  for (uint32_t i = 0; i < argc; ++i) {
+    if (call->arguments.data[i]->node.node_type == AST_SPREAD_EXPRESSION) {
+      error_at_noted(
+          p_compiler,
+          author,
+          ok_create_string_view(
+              "spread ('...') is not allowed in a defer call.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+          ok_create_string_view("did you mean to defer a function that takes the array? defer run_all(items).",
+                                OK_STRING_VIEW_CALCULATE_LENGTH,
+                                true));
+      return false;
+    }
+  }
+
+  // the thunk carries the hidden names
+  // (its identifiers view into the defer node's owned block): callee, then one per argument.
+  ast_expression_statement* thunk_body = (ast_expression_statement*)p_defer->thunk->body;
+  ast_call_expression* thunk_call = (ast_call_expression*)thunk_body->expression;
+  if (thunk_call->arguments.count != argc) {
+    CRASH_MSG(false, "defer thunk arity mismatch.");
+  }
+
+  // hidden snapshot locals, declared in the scope in declaration order
+  // (dc, da0..da{n-1}). then the slot last, so descending register order
+  // (the unwind scan's order) is the lifo order across defers.
+  _register hidden[UINT8_MAX + 1];
+  {
+    variable_declaration decl = {
+        .identifier = ast_identifier_expression_get_value((ast_identifier_expression*)thunk_call->callable),
+        .flags = VARIABLE_DECLRATION_FLAGS_NONE};
+    hidden[0] = add_local(p_compiler, decl, true, author);
+    if (!IS_REGISTER_VALID(hidden[0])) {
+      return false;
+    }
+    for (uint32_t i = 0; i < argc; ++i) {
+      variable_declaration arg_decl = {
+          .identifier = ast_identifier_expression_get_value((ast_identifier_expression*)thunk_call->arguments.data[i]),
+          .flags = VARIABLE_DECLRATION_FLAGS_NONE};
+      hidden[i + 1] = add_local(p_compiler, arg_decl, true, author);
+      if (!IS_REGISTER_VALID(hidden[i + 1])) {
+        return false;
+      }
+    }
+  }
+  variable_declaration slot_decl = {.identifier = p_defer->slot_name, .flags = VARIABLE_DECLRATION_FLAGS_NONE};
+  _register slot = add_local(p_compiler, slot_decl, true, author);
+  if (!IS_REGISTER_VALID(slot)) {
+    return false;
+  }
+
+  // the snapshot: evaluate callee and arguments now, into temps at the
+  // allocation top (a nested call inside an argument lands its window at the
+  // temp region. the hidden locals below stay untouched), then move each
+  // into its hidden register. later reassignments of the source variables change nothing.
+  {
+    ast_expression* sources[UINT8_MAX + 1];
+    sources[0] = call->callable;
+    for (uint32_t i = 0; i < argc; ++i) {
+      sources[i + 1] = call->arguments.data[i];
+    }
+    for (uint32_t i = 0; i <= argc; ++i) {
+      const uint32_t temps = regalloc->temp_top;
+      _register temp;
+      if (!register_allocator_allocate_temp(regalloc, &temp)) {
+        report_oom(p_compiler, author);
+        return false;
+      }
+      expression_result result;
+      if (!compile_expression(p_compiler, sources[i], temp, 1, &result)) {
+        return false;
+      }
+      if (!materialize_value(p_compiler, hidden[i], result.value, author)) {
+        return false;
+      }
+      register_allocator_reset_temps(regalloc, temps);
+    }
+  }
+
+  // the thunk itself, through the ordinary lambda path: the identifiers
+  // resolve to the hidden locals just declared and capture them as upvalues.
+  // dest is the slot directly. the parent-side emission is one OP_CLOSURE.
+  {
+    expression_result result;
+    if (!compile_function_expression(p_compiler, p_defer->thunk, slot, 1, &result)) {
+      return false;
+    }
+  }
+
+  // the slot becomes a pending defer. mark is the only writer of the tag.
+  if (!emit_word(p_compiler, encode_oppA(OP_DEFER_MARK, false, (uint16_t)slot.index), author)) {
+    report_oom(p_compiler, author);
+    return false;
+  }
+
+  defer_slot_entry entry = {.slot = (uint16_t)slot.index, .is_err = p_defer->is_err};
+  if (!defer_slots_append(&scp->defers, entry)) {
+    report_oom(p_compiler, author);
+    return false;
   }
   return true;
 }
@@ -1984,8 +2445,9 @@ static bool record_return_span(compiler* p_compiler, ast_return_statement* p_ret
   if (ctx->return_span != p_count) {
     allocators* alloc = p_compiler->alloc;
     string message = asprint(alloc,
-                             "return span mismatch: this path returns %u values, the return at line %u returns %u.",
+                             "return span mismatch: this path returns %u value%s, the return at line %u returns %u.",
                              p_count,
+                             p_count == 1 ? "" : "s",
                              ctx->first_return_author != NULL ? ctx->first_return_author->token.line_info.line : 0,
                              ctx->return_span);
     error_at_noted(p_compiler,
@@ -2006,11 +2468,16 @@ static bool compile_return_statement(compiler* p_compiler, ast_return_statement*
     return false;
   }
   if (count == 0) {
+    // the crossed scopes' defers run before the frame dies
+    // (a bare return still exits every scope between here and the function body)
+    if (!emit_defer_exits_from_innermost(p_compiler, 0, (ast_node*)p_return)) {
+      return false;
+    }
     return emit_default_return(p_compiler, (ast_node*)p_return);
   }
   if (count == 1) {
-    // the classic single-result fast path: RETURN_1 with its constant/global/
-    // upvalue/register operand encodings. bytecode-identical to pre-spans.
+    // the classic single-result fast path: RETURN_1 with its
+    // constant/global/upvalue/register operand encodings.
     expression_result returned;
     _register dest;
     if (!register_allocator_allocate_temp(&current_context(p_compiler)->register_allocator, &dest)) {
@@ -2042,6 +2509,13 @@ static bool compile_return_statement(compiler* p_compiler, ast_return_statement*
       break;
     }
 
+    // the value's location (constant/global/upvalue, or a temp register) is
+    // stable across the defer calls: OP_DEFER_RUN stages its thunks at the
+    // runtime register top, above every compile-time register.
+    // nothing the return reads is clobbered
+    if (!emit_defer_exits_from_innermost(p_compiler, 0, (ast_node*)p_return)) {
+      return false;
+    }
     return emit_word(p_compiler, encode_oppAe(OP_RETURN_1, false, returned.value.index, e), (ast_node*)p_return);
   }
   // the span path (n >= 2): each expression lands in its own consecutive temp
@@ -2067,6 +2541,9 @@ static bool compile_return_statement(compiler* p_compiler, ast_return_statement*
     if (!materialize_into(p_compiler, &result.value, slot, (ast_node*)p_return)) {
       return false;
     }
+  }
+  if (!emit_defer_exits_from_innermost(p_compiler, 0, (ast_node*)p_return)) {
+    return false;
   }
   if (first.index > aprime_MAX || count > bprime_MAX) {
     if (!emit_word2(p_compiler, encode_OPPABCQ(OP_RETURN_LONG, false, first.index, count, 0, 0), (ast_node*)p_return)) {
@@ -2240,12 +2717,12 @@ static bool compile_logical_operator(compiler* p_compiler,
   return patch_jump_if_set(p_compiler, false, jmp, current_chunk(p_compiler)->code.count, p_dest, (ast_node*)p_logical);
 }
 
-// `condition then a otherwise b`. zero new opcodes: the shape is the if
-// statement's, folded into an expression. the condition evaluates into its own
-// temp; both arms compile into the caller's p_dest - the same result register -
+// `condition then a otherwise b`. zero new opcodes: the shape is the if statement's,
+// folded into an expression. the condition evaluates into its own temp.
+// both arms compile into the caller's p_dest, the same result register,
 // which is exactly the invariant the calling convention already guarantees
-// (callers allocate result registers, compile_expression targets them). a
-// conditional is never an lvalue; is_lvalue's whitelist keeps it that way.
+// (callers allocate result registers, compile_expression targets them).
+// a conditional is never an lvalue. is_lvalue's whitelist keeps it that way.
 static bool compile_conditional_expression(compiler* p_compiler,
                                            ast_conditional_expression* p_conditional,
                                            _register p_dest,
@@ -2549,25 +3026,24 @@ static bool compile_assign_expression(compiler* p_compiler,
     return false;
   }
   // `local = <simple> op <rhs>`: compile the rhs straight into the variable's
-  // register and skip the temp + move-back pair (the local_pressure finding:
-  // `a = a + 1` cost ADD-to-temp + MOVE, 2 dispatches where 1 suffices). safe
-  // because value binops write their destination exactly once, at the final
-  // op, reading both operands at emit time - the destination may alias an
-  // operand. the left operand must stay simple (identifier/literal): shapes
-  // like `a = (a + 1) + a` or `a = f() + a` re-read the variable after the
+  // register and skip the temp + move-back pair
+  // (the local_pressure finding: `a = a + 1` cost ADD-to-temp + MOVE, 2 dispatches where 1 suffices).
+  // safe because value binops write their destination exactly once, at the final op,
+  // reading both operands at emit time. the destination may alias an operand.
+  // the left operand must stay simple (identifier/literal):
+  // shapes like `a = (a + 1) + a` or `a = f() + a` re-read the variable after the
   // left side may have staged intermediate state in the destination, so they
   // keep the scratch-then-store path. store_lvalue still runs afterwards:
   // the mutability gate and the (now no-op) self move check both still apply.
   _register rhs_dest = p_dest;
   if (lv.kind == LVALUE_SUBSCRIPT) {
-    // the rhs compiles into its own temp ABOVE the lvalue's staged base/index.
+    // the rhs compiles into its own temp above the lvalue's staged base/index.
     // a call rhs opens the callee's register window at its destination, and the
-    // callee's frame ([dest, dest + fu->registers)) null-fills every slot above
-    // it - the staged base/index temps sit above p_dest, so compiling the rhs
+    // callee's frame ([dest, dest + fu->registers)) null-fills every slot above it.
+    // the staged base/index temps sit above p_dest, so compiling the rhs
     // there let the callee erase them (arr[0] = reseat(), where reseat captures
     // and reseats arr, died with "expected an array"). found by the elision-gate
-    // regression hunt; compound assigns were always safe because their cur/rhs
-    // temps are allocated after the staging.
+    // regression hunt. compound assigns were always safe because their cur/rhs temps are allocated after the staging.
     if (!register_allocator_allocate_temp(&current_context(p_compiler)->register_allocator, &rhs_dest)) {
       report_oom(p_compiler, (ast_node*)p_assign);
       return false;
@@ -2639,13 +3115,13 @@ bool compile_call_expression(compiler* p_compiler,
                              _register p_dest,
                              uint32_t p_requested_count,
                              expression_result* p_out) {
-  // p_requested_count is the result-span request (the SPANS hook):
+  // p_requested_count is the result-span request (the spans hook):
   //   0 = statement position - discard (c = 1: the VM's retc-0 lane, no arity
   //       check, the old code wrote the one result into the devnull instead).
-  //   1 = expression position - the classic strict single (c = 2, bytecode-
-  //       identical to pre-spans). call() checks it against the proto's results.
+  //   1 = expression position - the classic strict single (c = 2, bytecode-identical to pre-spans).
+  //       call() checks it against the proto's results.
   //   n >= 2 = destructuring position - the binding count (the destructuring
-  //       let is the only caller that passes n; call() checks it).
+  //       let is the only caller that passes n. call() checks it).
   allocators* alloc = p_compiler->alloc;
   register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
   expression_result callable;
@@ -2760,7 +3236,7 @@ bool compile_call_expression(compiler* p_compiler,
   return true;
 }
 
-// r[p_dest] = r[p_base][p_index]. the INDEX ops dispatch array/map at
+// r[p_dest] = r[p_base][p_index]. the INDEX-ops dispatch array/map at
 // runtime. base is always a register (resolve_lvalue materializes it),
 // index may be a constant (GET carries a const-index flag).
 static bool
@@ -2965,12 +3441,27 @@ static bool compile_compound_assign_expression(compiler* p_compiler,
   if (lv.kind == LVALUE_VARIABLE && lv.variable.kind == LOCATION_KIND_REGISTER) {
     const _register local = current_context(p_compiler)->register_allocator.registers.data[lv.variable.index];
     if ((local.flags & REGISTER_FLAG_MUTABLE) == 0) {
-      error_at_noted(
-          p_compiler,
-          author,
-          ok_create_string_view(
-              "attempting to mutate an immutable local variable.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-          ok_create_string_view("did you forget to declare it 'mut'?", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      ok_note note;
+      note.text =
+          ok_create_string_view("previously declared here without 'mut'.", OK_STRING_VIEW_CALCULATE_LENGTH, true);
+      token* declared = context_declaration_at(current_context(p_compiler), local.index);
+      if (declared != NULL) {
+        note.has_span = true;
+        note.span = ok_span_of_token(declared);
+        error_at_noted_located(p_compiler,
+                               author,
+                               ok_create_string_view("attempting to mutate an immutable local variable.",
+                                                     OK_STRING_VIEW_CALCULATE_LENGTH,
+                                                     true),
+                               &note);
+      } else {
+        error_at_noted(
+            p_compiler,
+            author,
+            ok_create_string_view(
+                "attempting to mutate an immutable local variable.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+            ok_create_string_view("did you forget to declare it 'mut'?", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      }
       return false;
     }
     cur = (_register){lv.variable.index, REGISTER_FLAG_NONE, REGISTER_OK};
@@ -3060,8 +3551,9 @@ static bool compile_for_in_statement(compiler* p_compiler, ast_for_in_statement*
   chunk* chunk = current_chunk(p_compiler);
 #define CTX ctx->loop_stack.data[ctx->loop_stack.count - 1]
   CTX.scope_depth = ctx->scopes.count - 1;
+  CTX.handlers_at_entry = ctx->active_handlers;
 
-  // the ITER ops read the cursor at B + 1 and the end at B + 2: the three
+  // the ITER-ops read the cursor at B + 1 and the end at B + 2: the three
   // hidden declarations must stay adjacent (asserted below).
   variable_declaration iter_decl = {.identifier = ok_create_string_view(" iter", OK_STRING_VIEW_CALCULATE_LENGTH, true),
                                     .flags = VARIABLE_DECLARATION_FLAGS_MUTABLE};
@@ -3083,8 +3575,8 @@ static bool compile_for_in_statement(compiler* p_compiler, ast_for_in_statement*
   }
   ASSERT(cur.index == iter.index + 1 && end.index == iter.index + 2);
 
-  // the two-binding map form: `for let k, v : m`. k and v must stay adjacent
-  // too - ITER_GET writes the value register at C + 1. arrays reject the form
+  // the two-binding map form: `for let k, v : m`. k and v must stay adjacent too.
+  // ITER_GET writes the value register at C + 1. arrays reject the form
   // at runtime (PREP), the compiler cannot know the iterable's type.
   const bool binds_value = p_for_in->value_binding != NULL;
   variable_declaration key_decl = {
@@ -3173,9 +3665,9 @@ fail:
 #undef CTX
 }
 
-// `for let (mut)? i = <start> : <limit> (: <step>)? <statement>` - the fused
-// numeric loop. start, limit and step are evaluated once, left to right, before
-// the first bounds test; the limit is frozen for the whole trip (lua style). the
+// `for let (mut)? i = <start> : <limit> (: <step>)? <statement>`
+// the fused numeric loop. start, limit and step are evaluated once, left to right, before
+// the first bounds test. the limit is frozen for the whole trip (lua style). the
 // counter is a normal binding: assignable when `mut` (reseats the current
 // iteration's value, never the trip), captureable with shared slot semantics.
 static bool compile_for_numeric_statement(compiler* p_compiler, ast_for_numeric_statement* p_for_numeric) {
@@ -3199,6 +3691,7 @@ static bool compile_for_numeric_statement(compiler* p_compiler, ast_for_numeric_
   chunk* chunk = current_chunk(p_compiler);
 #define CTX ctx->loop_stack.data[ctx->loop_stack.count - 1]
   CTX.scope_depth = ctx->scopes.count - 1;
+  CTX.handlers_at_entry = ctx->active_handlers;
 
   // the counter is the user-visible binding, declared first so the two hidden
   // locals can sit directly after it: the FOR ops read the limit at B + 1 and
@@ -3280,7 +3773,7 @@ static bool compile_for_numeric_statement(compiler* p_compiler, ast_for_numeric_
 
   // the back edge's p flag: a plain `let` counter is statically unwritable
   // (immutability is enforced on every store path), so the VM drops the
-  // per-trip counter gate; `let mut` keeps it.
+  // per-trip counter gate. `let mut` keeps it.
   const bool counter_immutable = (regalloc->registers.data[counter.index].flags & REGISTER_FLAG_MUTABLE) == 0;
 
   // entry: validate + first bounds test, skip the whole loop when it fails
@@ -3290,7 +3783,7 @@ static bool compile_for_numeric_statement(compiler* p_compiler, ast_for_numeric_
   }
 
   // body. continue lands on the FOR_LOOP back edge (the increment site, same
-  // discipline as the C style for's update clause); break lands after it.
+  // discipline as the C style for's update clause). break lands after it.
   const uint32_t body_start = chunk->code.count;
   CTX.continue_forward = true;
   if (!compile_statement(p_compiler, p_for_numeric->body)) {

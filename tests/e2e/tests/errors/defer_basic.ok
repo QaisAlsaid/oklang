@@ -1,0 +1,31 @@
+fu close(tag) {
+  print("closing " + tag);
+  return true;
+}
+
+// runs at scope exit, LIFO within the scope
+{
+  defer close("a");
+  defer close("b");
+  defer close("c");
+  print("body"); // expect: body
+}
+// expect: closing c
+// expect: closing b
+// expect: closing a
+
+// nested scopes: inner first
+{
+  defer close("outer");
+  {
+    defer close("inner");
+    print("mid"); // expect: mid
+  }
+  // expect: closing inner
+}
+// expect: closing outer
+
+// top-level defers run at the end of the run
+defer close("top-level");
+print("end"); // expect: end
+// expect: closing top-level

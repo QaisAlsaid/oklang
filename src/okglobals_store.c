@@ -4,18 +4,18 @@
 
 // the name -> id index is the first okmap.h user: raw string keys (identifier
 // copies owned by the map), global_id values, and lookups probe with a plain
-// string view. unlike the old oktable version, a lookup allocates nothing —
+// string view. unlike the old oktable version, a lookup allocates nothing.
 // the old code built and destroyed a fresh hashed_string probe per call.
 
 #define GL_KEY_IS_EMPTY(k) ((k).chars == NULL)
-#define GL_KEY_SET_EMPTY(k)                                                                                              \
-  do {                                                                                                                   \
-    (k)->chars = NULL;                                                                                                   \
-    (k)->info = 0;                                                                                                       \
+#define GL_KEY_SET_EMPTY(k)                                                                                            \
+  do {                                                                                                                 \
+    (k)->chars = NULL;                                                                                                 \
+    (k)->info = 0;                                                                                                     \
   } while (0)
 #define GL_PROBE_HASH(p) (default_hash_str(p))
-#define GL_PROBE_MATCHES(p, k)                                                                                           \
-  (ok_string_view_get_length(&(p)) == string_get_length(&(k)) &&                                                         \
+#define GL_PROBE_MATCHES(p, k)                                                                                         \
+  (ok_string_view_get_length(&(p)) == string_get_length(&(k)) &&                                                       \
    memcmp((k).chars, (p).chars, ok_string_view_get_length(&(p))) == 0)
 #define GL_KEY_CLONE(p, a) (create_string_from_string_view((p), (a)))
 #define GL_KEY_DEINIT(k, a) (string_deinit((k), (a)))

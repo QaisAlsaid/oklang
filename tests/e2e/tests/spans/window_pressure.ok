@@ -1,5 +1,5 @@
 // a span call with many args: the arg window and the 3-wide result window
-// overlap in time (results overwrite dead args) — this is the register
+// overlap in time (results overwrite dead args) - this is the register
 // discipline the whole design rides on
 fu three(a, b, c, d, e) {
   return a + b, c + d, e;

@@ -1,0 +1,18 @@
+let mut total = 0;
+for let mut i = 0; i < 5; i = i + 1 {
+  try {
+    if i == 2 {
+      continue;
+    }
+    if i == 3 {
+      break;
+    }
+    if i == 4 {
+      throw "never";
+    }
+    total = total + i;
+  } catch e {
+    total = total + 100;
+  }
+}
+print(total); // expect: 1

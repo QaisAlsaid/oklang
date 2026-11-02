@@ -1,0 +1,31 @@
+fu close(tag) {
+  print("closing " + tag);
+  return true;
+}
+
+// the defer lives in the loop BODY's scope: one registration slot,
+// reused per iteration, consumed at every exit - the body scope ends
+// (and the defer fires) at the '}' of each iteration
+for let mut i = 0; i < 3; i = i + 1 {
+  defer close("d" + (i as str));
+  print("iter " + (i as str)); // expect: iter 0
+}
+// expect: closing d0
+// expect: iter 1
+// expect: closing d1
+// expect: iter 2
+// expect: closing d2
+print("end"); // expect: end
+
+// a break BEFORE the defer statement crosses the scope without the
+// defer ever executing: the RUN is a no-op on a null slot
+let mut n = 0;
+while n < 4 {
+  if n == 2 { break; }
+  if n == 3 { continue; }
+  defer close("late-" + (n as str));
+  n = n + 1;
+}
+// expect: closing late-0
+// expect: closing late-1
+print("done"); // expect: done

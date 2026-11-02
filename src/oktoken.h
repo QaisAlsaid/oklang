@@ -35,8 +35,8 @@
   X(TOKEN_COMMA, ",")                                                                                                  \
   X(TOKEN_COLON, ":")                                                                                                  \
   X(TOKEN_SEMICOLON, ";")                                                                                              \
-  X(TOKEN_DOT, ".")                                                                                                     \
-  X(TOKEN_ELLIPSIS, "...")                                                                                                    \
+  X(TOKEN_DOT, ".")                                                                                                    \
+  X(TOKEN_ELLIPSIS, "...")                                                                                             \
   X(TOKEN_QUESTION, "?")                                                                                               \
   X(TOKEN_BANG, "!")                                                                                                   \
   X(TOKEN_BANG_EQUAL, "!=")                                                                                            \
@@ -84,7 +84,8 @@
   X(TOKEN_TRY, "try")                                                                                                  \
   X(TOKEN_CATCH, "catch")                                                                                              \
   X(TOKEN_THROW, "throw")                                                                                              \
-  X(TOKEN_FINALIZE, "finalize")
+  X(TOKEN_DEFER, "defer")                                                                                              \
+  X(TOKEN_DEFERR, "deferr")
 
 typedef enum {
   TOKEN_ERROR = 0,
@@ -167,7 +168,8 @@ typedef enum {
   TOKEN_TRY,
   TOKEN_CATCH,
   TOKEN_THROW,
-  TOKEN_FINALIZE,
+  TOKEN_DEFER,
+  TOKEN_DEFERR,
 } token_type;
 
 typedef struct {

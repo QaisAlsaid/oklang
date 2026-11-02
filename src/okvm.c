@@ -14,6 +14,7 @@
 #endif // defined(OK_TRACE_EXECUTION)
 
 #include "okarray.h"
+#include "okdiag.h"
 #include "okgc.h"
 #include "okglobals_store.h"
 #include "okobject.h"
@@ -21,7 +22,37 @@
 
 #define STACK_SIZE 256
 
-static void runtime_error(vm* p_vm, const char* p_fmt, ...);
+static void runtime_error(vm* p_vm, ok_error_kind p_kind, const char* p_fmt, ...);
+static void runtime_oom(vm* p_vm, const char* p_fmt, ...);
+static interpret_result vm_report_error(vm* p_vm) __attribute__((cold));
+static value materialize_error_value(vm* p_vm);
+static void reset_error_state(vm* p_vm);
+
+static const char* s_if_plural(uint32_t p_n) {
+  return p_n == 1 ? "" : "s";
+}
+
+const char* ok_error_kind_name(ok_error_kind p_kind) {
+  switch (p_kind) {
+  case OK_EK_TYPE:
+    return "type";
+  case OK_EK_ARITY:
+    return "arity";
+  case OK_EK_INDEX:
+    return "index";
+  case OK_EK_KEY:
+    return "key";
+  case OK_EK_VALUE:
+    return "value";
+  case OK_EK_CONVERSION:
+    return "conversion";
+  case OK_EK_NATIVE:
+    return "native";
+  case OK_EK_INTERNAL:
+    return "internal";
+  }
+  return "internal";
+}
 static bool call_spread(vm* p_vm,
                         execution_state* p_exe,
                         register_file* p_reg,
@@ -39,27 +70,38 @@ static bool call_value(vm* p_vm,
 static object_upvalue* capture_upvalue(vm* p_vm, execution_state* p_exe, uint32_t p_register);
 static void close_upvalues(execution_state* p_exe, uint32_t p_uptill);
 static interpret_result run_until(vm* p_vm, uint32_t p_call_depth);
+static inline bool call(vm* p_vm,
+                        execution_state* p_exe,
+                        register_file* p_reg,
+                        object_closure* p_closure,
+                        uint32_t p_callee,
+                        uint16_t p_argc,
+                        uint32_t p_retc);
+static bool stage_defer_thunk(vm* p_vm, execution_state* p_exe, register_file* p_reg, object_closure* p_thunk);
+static void nil_pending_defers(execution_state* p_exe, uint32_t p_from, uint32_t p_uptill);
+static bool run_pending_defers(vm* p_vm, uint32_t p_from, uint32_t p_uptill);
 static interpret_result create_closure(
     vm* p_vm, execution_state* p_exe, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, uint16_t p_src);
 void interpret_result_deinit(interpret_result* p_interpret_result) {
 }
 
-// the flag must stay visible to enclosing call_native frames while a native
-// is still unwinding (native_call_depth > 0). only the outermost C entry
-// point (depth == 0) consumes it so a subsequent ok_call starts clean.
-static inline void vm_consume_pending_error(execution_state* p_exe) {
-  if (p_exe->native_call_depth == 0) {
-    p_exe->error_pending = false;
-  }
-}
-
 // a runtime error fired somewhere under the current C entry point. callers
-// that resume interpretation after the error point (call_native returning to
-// an OP_CALL handler) must check this and fail instead: runtime_error already
-// reset the call stack + watermark, and continuing would run bytecode against
-// a wild frame pointer.
-static interpret_result vm_error(execution_state* p_exe) {
-  vm_consume_pending_error(p_exe);
+// that resume interpretation after the error point
+// (call_native returning to an OP_CALL handler) must check this and fail instead:
+// the error lane is set, and continuing would run bytecode against a reported then reset state.
+// the outermost C entry point (depth == 0) reports if unreported then consumes.
+static interpret_result vm_error(vm* p_vm, bool p_report) {
+  // no-op inside a native. at depth 0: the ok_run lane reports (the
+  // uncaught-to-top contract), the ok_call lane does not.
+  // host-caught errors stop auto-printing:
+  // the embedder holds the value through ok_last_error, printing it is their call.
+  if (p_vm->current_execution_state->native_call_depth == 0) {
+    if (p_report) {
+      vm_report_error(p_vm);
+    }
+    reset_error_state(p_vm);
+    p_vm->current_execution_state->error_pending = false;
+  }
   interpret_result result = {.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
   return result;
 }
@@ -68,7 +110,8 @@ void vm_init(vm* p_vm, vm_specs p_specs) {
   p_vm->alloc = p_specs.alloc;
   p_vm->objects_store = p_specs.objects_store;
   p_vm->globals_store = p_specs.globals_store;
-  p_vm->source = NULL;
+  vm_sources_init(&p_vm->sources, p_vm->alloc);
+  p_vm->retain_source = false;
   p_vm->ok = p_specs.ok;
   p_vm->print_cb = NULL;
   p_vm->print_ctx = NULL;
@@ -77,14 +120,33 @@ void vm_init(vm* p_vm, vm_specs p_specs) {
   p_vm->current_execution_state->open_upvalues = NULL;
   p_vm->current_execution_state->native_has_error = false;
   p_vm->current_execution_state->error_pending = false;
+  p_vm->current_execution_state->error_reported = false;
+  p_vm->current_execution_state->error_hard = false;
+  p_vm->current_execution_state->error_is_script = false;
+  p_vm->current_execution_state->error_value = NULL_AS_VALUE();
+  p_vm->current_execution_state->error_kind = OK_EK_INTERNAL;
+  p_vm->current_execution_state->has_error = false;
+  p_vm->current_execution_state->error_what[0] = '\0';
   p_vm->current_execution_state->native_call_depth = 0;
+  p_vm->current_execution_state->defer_cascade = false;
+  handler_stack_init(&p_vm->current_execution_state->handlers, p_vm->alloc);
   string_init(&p_vm->current_execution_state->native_error_message, NULL, 0, false, p_vm->alloc);
   register_file_init_warm(&p_vm->current_execution_state->registers, STACK_SIZE, p_specs.alloc);
   call_stack_init(&p_vm->current_execution_state->call_stack, p_specs.alloc);
 }
 
 void vm_deinit(vm* p_vm) {
-  p_vm->source = NULL;
+  for (uint32_t i = 0; i < p_vm->sources.count; ++i) {
+    vm_source_entry* entry = &p_vm->sources.data[i];
+    p_vm->alloc->release(p_vm->alloc, entry->path);
+    if (entry->owns_code && entry->code != NULL) {
+      p_vm->alloc->release(p_vm->alloc, (void*)entry->code);
+    }
+    entry->path = NULL;
+    entry->code = NULL;
+    entry->owns_code = false;
+  }
+  vm_sources_deinit(&p_vm->sources, p_vm->alloc);
   p_vm->globals_store = NULL;
   p_vm->objects_store = NULL;
   p_vm->ok = NULL;
@@ -95,6 +157,10 @@ void vm_deinit(vm* p_vm) {
   p_vm->current_execution_state->native_call_depth = 0;
   p_vm->current_execution_state->native_has_error = false;
   p_vm->current_execution_state->error_pending = false;
+  p_vm->current_execution_state->error_reported = false;
+  p_vm->current_execution_state->error_hard = false;
+  p_vm->current_execution_state->error_is_script = false;
+  handler_stack_deinit(&p_vm->current_execution_state->handlers, p_vm->alloc);
   string_deinit(&p_vm->current_execution_state->native_error_message, p_vm->alloc);
   p_vm->alloc->release(p_vm->alloc, p_vm->current_execution_state);
 }
@@ -109,25 +175,119 @@ bool vm_native_error(vm* p_vm, ok_string_view p_message) {
   return true;
 }
 
+uint32_t vm_begin_source(vm* p_vm, const char* p_code, const char* p_path) {
+  // the path is always ok's: chunks name their source after the run ends.
+  // the code is the caller's for the run, or ok's copy when retention is on.
+  allocators* alloc = p_vm->alloc;
+  const size_t path_len = strlen(p_path) + 1;
+  char* path_copy = alloc->allocate(alloc, path_len);
+  if (path_copy == NULL) {
+    return VM_SOURCE_UNSTAMPED;
+  }
+  memcpy(path_copy, p_path, path_len);
+  const char* code = p_code;
+  bool owns_code = false;
+  if (p_vm->retain_source) {
+    const size_t code_len = strlen(p_code) + 1;
+    char* code_copy = alloc->allocate(alloc, code_len);
+    if (code_copy == NULL) {
+      alloc->release(alloc, path_copy);
+      return VM_SOURCE_UNSTAMPED;
+    }
+    memcpy(code_copy, p_code, code_len);
+    code = code_copy;
+    owns_code = true;
+  }
+  vm_source_entry entry = {path_copy, code, owns_code};
+  if (!vm_sources_append(&p_vm->sources, entry)) {
+    if (owns_code) {
+      alloc->release(alloc, (void*)code);
+    }
+    alloc->release(alloc, path_copy);
+    return VM_SOURCE_UNSTAMPED;
+  }
+  return p_vm->sources.count - 1;
+}
+
+void vm_end_source(vm* p_vm, uint32_t p_source_id) {
+  if (p_source_id == VM_SOURCE_UNSTAMPED || p_source_id >= p_vm->sources.count) {
+    return;
+  }
+  vm_source_entry* entry = &p_vm->sources.data[p_source_id];
+  if (!entry->owns_code) {
+    // the borrow expired with the ok_run call: nothing may excerpt from it
+    // anymore (the caller's buffer is theirs again). the path stays.
+    entry->code = NULL;
+  }
+}
+
+const vm_source_entry* vm_source_of(const vm* p_vm, uint32_t p_source_id) {
+  if (p_source_id == VM_SOURCE_UNSTAMPED || p_source_id >= p_vm->sources.count) {
+    return NULL;
+  }
+  return &p_vm->sources.data[p_source_id];
+}
+
+value vm_last_error(vm* p_vm) {
+  execution_state* exe = p_vm->current_execution_state;
+  if (!exe->has_error) {
+    return NULL_AS_VALUE();
+  }
+  // a script-thrown value is handed back whole; a runtime-raised error
+  // materializes its {:kind:, :what:} map fresh (the lane text is the truth,
+  // the map is a projection, and a host that wants it past the next
+  // allocation roots it, same contract as ok_array_new).
+  return materialize_error_value(p_vm);
+}
+
+void vm_clear_error(vm* p_vm) {
+  execution_state* exe = p_vm->current_execution_state;
+  exe->has_error = false;
+  exe->error_pending = false;
+  exe->error_reported = false;
+  exe->error_is_script = false;
+  exe->error_hard = false;
+  exe->defer_cascade = false;
+  exe->error_value = NULL_AS_VALUE();
+}
+
+bool vm_native_throw(vm* p_vm, ok_value p_value) {
+  execution_state* exe = p_vm->current_execution_state;
+  if (exe->native_call_depth == 0) {
+    return false; // like ok_native_error: only meaningful inside a native
+  }
+  // the value-throwing lane: set the error lane directly. call_native's
+  // error_pending check fails the OP_CALL without touching the lane, and the
+  // dispatch loop's unwind parks THE VALUE at the script's catch binder,
+  // a host throw crosses into script catch as itself, zero extra machinery.
+  exe->error_pending = true;
+  exe->error_reported = false;
+  exe->error_hard = false;
+  exe->error_is_script = true;
+  exe->error_value = p_value;
+  exe->error_what[0] = '\0';
+  exe->error_kind = OK_EK_NATIVE;
+  exe->has_error = true;
+  return true;
+}
+
 interpret_result vm_interpret(vm* p_vm, interpret_specs p_specs) {
   execution_state* exe = p_vm->current_execution_state;
   register_file* reg = &exe->registers;
-  p_vm->source = p_specs.source; // TODO: having it this way means only one source per vm. but it's ok will fix soon.
   value vfn = OBJECT_AS_VALUE(p_specs.function);
-  gc_guard_up(p_vm->alloc->gc, vfn); // TODO array based gc guard
-  // reg->array.data[exe->registers.top] = vfn;
+  gc_guard_up(p_vm->alloc->gc, vfn);
   object_specs s = {p_vm->alloc, p_vm->objects_store};
   object_closure* closure = create_object_closure(p_specs.function, &s);
   if (closure == NULL) {
     interpret_result res = {.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
-    runtime_error(p_vm, "out of memory: failed to allocate to level function.");
+    runtime_oom(p_vm, "out of memory: failed to allocate to level function.");
     return res;
   }
 
   if (p_specs.top_level_values.count > STACK_SIZE - 2) { // otherwise call handles it
     if (!register_array_grow(&reg->array, closure->function->registers)) {
       interpret_result res = {.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
-      runtime_error(p_vm, "out of memory: failed to grow register file.");
+      runtime_oom(p_vm, "out of memory: failed to grow register file.");
       return res;
     }
   }
@@ -140,14 +300,18 @@ interpret_result vm_interpret(vm* p_vm, interpret_specs p_specs) {
   const uint32_t hidden_start = reg->top;
   gc_guard_down(p_vm->alloc->gc);
   if (!call_value(p_vm, p_vm->current_execution_state, reg, 0, 0, 0, 0)) {
-    return vm_error(p_vm->current_execution_state);
+    return vm_error(p_vm, true);
   }
   for (uint16_t i = 0; i < p_specs.top_level_values.count; ++i) {
     reg->array.data[hidden_start + i] = p_specs.top_level_values.data[i];
   }
   interpret_result interpret_result = run_until(p_vm, 0);
   if (interpret_result.status != RUNTIME_OK) {
-    vm_consume_pending_error(p_vm->current_execution_state);
+    // uncaught at the outermost level: FAIL_PATH already printed the report;
+    // this is the final reset + consume (the ok_run lane keeps its print).
+    vm_report_error(p_vm);
+    reset_error_state(p_vm);
+    exe->error_pending = false;
   }
   return interpret_result;
 }
@@ -158,18 +322,17 @@ interpret_result vm_call(vm* p_vm, value p_callee, uint32_t p_argc) {
   const uint32_t call_depth = exe->call_stack.count;
   const uint32_t base = reg->top - p_argc - 1;
 
-  // p_callee is already at an index relative p_base (compare OP_CALL: frame base +
-  // register index). passing base here double based the callee slot: with a
-  // non-empty call stack (i.e. a native calling back into the vm). while base > 0 and call_value read
-  // data[base + base], which is a garbage register, instead of the closure staged at
-  // data[base]. every tested ok_call until now ran from C on an empty call stack
-  // (base == 0), where 0 + 0 was accidentally correct. a regression test was written for this very case.
+  // p_callee is already at an index relative p_base (compare OP_CALL: frame base + register index).
+  // passing base here double based the callee slot:
+  // with a non-empty call stack (i.e. a native calling back into the vm).
+  // while base > 0 and call_value read data[base + base], which is a garbage register, instead of the closure staged at
+  // data[base].
   //
   // ok_call requests the dynamic lane. take everything, expose the
   // first ("first of span") instead of tripping the arity check.
   // single-result callees are byte-for-byte the old behavior.
   if (!call_value(p_vm, exe, reg, base, 0, p_argc, RETURN_COUNT_DYNAMIC)) {
-    return vm_error(exe);
+    return vm_error(p_vm, false);
   }
   if (exe->call_stack.count == call_depth) {
     interpret_result result = {.status = RUNTIME_OK,
@@ -178,10 +341,15 @@ interpret_result vm_call(vm* p_vm, value p_callee, uint32_t p_argc) {
   }
   interpret_result result = run_until(p_vm, call_depth);
   if (result.status != RUNTIME_OK) {
-    // only the outermost C entry point may consume a pending error: inner
-    // ok_calls (from inside a native) must leave it visible so the enclosing
-    // call_native can fail the OP_CALL instead of resuming on an erroneous reset state.
-    vm_consume_pending_error(exe);
+    // only the outermost C entry point may finalize: inner ok_calls (from inside a native)
+    // leave the error pending and the frame alive so an outer script level can still catch it,
+    // and the enclosing call_native can fail the OP_CALL instead of resuming.
+    // at depth 0 this is the host-caught lane:
+    // reset + consume, NO print (embedder reads ok_last_error).
+    if (exe->native_call_depth == 0) {
+      reset_error_state(p_vm);
+      exe->error_pending = false;
+    }
   }
   return result;
 }
@@ -220,7 +388,7 @@ static interpret_result perform_not(vm* p_vm, register_file* p_reg, call_frame* 
     // TODO
   } else {
   invalid: {
-    runtime_error(p_vm, "invalid operand for unary '!'.");
+    runtime_error(p_vm, OK_EK_TYPE, "invalid operand for unary '!'.");
     interpret_result res;
     res.status = RUNTIME_ERROR;
     res.top_level_return = NULL_AS_VALUE();
@@ -246,7 +414,7 @@ perform_negate(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_d
     // TODO
   } else {
   invalid: {
-    runtime_error(p_vm, "invalid operand for unary '-'.");
+    runtime_error(p_vm, OK_EK_TYPE, "invalid operand for unary '-'.");
     interpret_result res;
     res.status = RUNTIME_ERROR;
     res.top_level_return = NULL_AS_VALUE();
@@ -307,7 +475,7 @@ perform_add(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest
       const uint64_t right_length = string_get_length(&right->string);
       char* scratch = (char*)p_vm->alloc->allocate(p_vm->alloc, left_length + right_length);
       if (scratch == NULL) {
-        runtime_error(p_vm, "out of memory: failed to concatenate strings.");
+        runtime_oom(p_vm, "out of memory: failed to concatenate strings.");
         interpret_result res;
         res.status = RUNTIME_ERROR;
         res.top_level_return = NULL_AS_VALUE();
@@ -320,7 +488,7 @@ perform_add(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest
           create_object_string(ok_create_string_view(scratch, left_length + right_length, false), &specs);
       p_vm->alloc->release(p_vm->alloc, scratch);
       if (concatenated == NULL) {
-        runtime_error(p_vm, "out of memory: failed to concatenate strings.");
+        runtime_oom(p_vm, "out of memory: failed to concatenate strings.");
         interpret_result res;
         res.status = RUNTIME_ERROR;
         res.top_level_return = NULL_AS_VALUE();
@@ -332,7 +500,7 @@ perform_add(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest
     }
   } else {
   invalid: {
-    runtime_error(p_vm, "invalid operands for binary '+'.");
+    runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '+'.");
     interpret_result res;
     res.status = RUNTIME_ERROR;
     res.top_level_return = NULL_AS_VALUE();
@@ -381,7 +549,7 @@ perform_subtract(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p
     // TODO
   } else {
   invalid: {
-    runtime_error(p_vm, "invalid operands for binary '-'.");
+    runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '-'.");
     interpret_result res;
     res.status = RUNTIME_ERROR;
     res.top_level_return = NULL_AS_VALUE();
@@ -430,7 +598,7 @@ perform_multiply(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p
     // TODO
   } else {
   invalid: {
-    runtime_error(p_vm, "invalid operands for binary '*'.");
+    runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '*'.");
     interpret_result res;
     res.status = RUNTIME_ERROR;
     res.top_level_return = NULL_AS_VALUE();
@@ -490,7 +658,7 @@ perform_divide(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_d
     // TODO
   } else {
   invalid: {
-    runtime_error(p_vm, "invalid operands for binary '/'.");
+    runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '/'.");
     interpret_result res;
     res.status = RUNTIME_ERROR;
     res.top_level_return = NULL_AS_VALUE();
@@ -504,7 +672,7 @@ perform_divide(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_d
     return res;
   }
 division_by_zero: {
-  runtime_error(p_vm, "division by zero.");
+  runtime_error(p_vm, OK_EK_VALUE, "division by zero.");
   interpret_result res;
   res.status = RUNTIME_ERROR;
   res.top_level_return = NULL_AS_VALUE();
@@ -572,7 +740,7 @@ perform_modulo(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_d
     // TODO
   } else {
   invalid: {
-    runtime_error(p_vm, "invalid operands for binary '%%'.");
+    runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '%%'.");
     interpret_result res;
     res.status = RUNTIME_ERROR;
     res.top_level_return = NULL_AS_VALUE();
@@ -586,7 +754,7 @@ perform_modulo(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_d
     return res;
   }
 modulo_by_zero: {
-  runtime_error(p_vm, "modulo by zero.");
+  runtime_error(p_vm, OK_EK_VALUE, "modulo by zero.");
   interpret_result res;
   res.status = RUNTIME_ERROR;
   res.top_level_return = NULL_AS_VALUE();
@@ -747,7 +915,7 @@ perform_greater(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_
     }
   } else {
   invalid: {
-    runtime_error(p_vm, "invalid operands for binary '>'.");
+    runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '>'.");
     interpret_result res;
     res.status = RUNTIME_ERROR;
     res.top_level_return = NULL_AS_VALUE();
@@ -802,7 +970,7 @@ perform_less(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_des
     }
   } else {
   invalid: {
-    runtime_error(p_vm, "invalid operands for binary '<'.");
+    runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '<'.");
     interpret_result res;
     res.status = RUNTIME_ERROR;
     res.top_level_return = NULL_AS_VALUE();
@@ -857,7 +1025,7 @@ perform_greater_equal(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint1
     }
   } else {
   invalid: {
-    runtime_error(p_vm, "invalid operands for binary '>='.");
+    runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '>='.");
     interpret_result res;
     res.status = RUNTIME_ERROR;
     res.top_level_return = NULL_AS_VALUE();
@@ -912,7 +1080,7 @@ perform_less_equal(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t
     }
   } else {
   invalid: {
-    runtime_error(p_vm, "invalid operands for binary '<='.");
+    runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '<='.");
     interpret_result res;
     res.status = RUNTIME_ERROR;
     res.top_level_return = NULL_AS_VALUE();
@@ -931,7 +1099,7 @@ static inline bool as_str_rest(vm* p_vm, ok_string_view p_str, value* p_result) 
   object_specs specs = {p_vm->alloc, p_vm->objects_store};
   object_string* str = create_object_string(p_str, &specs);
   if (str == NULL) {
-    runtime_error(p_vm, "out of memory: failed to allocate string object.");
+    runtime_oom(p_vm, "out of memory: failed to allocate string object.");
     return false;
   }
   *p_result = OBJECT_AS_VALUE(str);
@@ -941,7 +1109,7 @@ static inline bool as_str_rest(vm* p_vm, ok_string_view p_str, value* p_result) 
 static inline bool num_as_str(vm* p_vm, double p_value, value* p_result) {
   char buff[64];
   if (snprintf(buff, 64, "%g", p_value) < 0) {
-    runtime_error(p_vm, "failed to convert number to string.");
+    runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert number to string.");
     return false;
   }
   return as_str_rest(p_vm, ok_create_string_view(buff, OK_STRING_VIEW_CALCULATE_LENGTH, true), p_result);
@@ -950,7 +1118,7 @@ static inline bool num_as_str(vm* p_vm, double p_value, value* p_result) {
 static inline bool int_as_str(vm* p_vm, int64_t p_value, value* p_result) {
   char buff[64];
   if (snprintf(buff, 64, "%li", p_value) < 0) {
-    runtime_error(p_vm, "failed to convert number to string.");
+    runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert number to string.");
     return false;
   }
   return as_str_rest(p_vm, ok_create_string_view(buff, OK_STRING_VIEW_CALCULATE_LENGTH, true), p_result);
@@ -983,7 +1151,7 @@ static inline bool map_as_str(vm* p_vm, object* p_obj, value* p_result) {
       chars = p_vm->alloc->reallocate(p_vm->alloc, chars, len, len + dellen + klen + 2);
       gc_guard_down(p_vm->alloc->gc);
       if (chars == NULL) {
-        runtime_error(p_vm, "out of memory: failed to convert map to string.");
+        runtime_oom(p_vm, "out of memory: failed to convert map to string.");
         return false;
       }
       if (dellen != 0) {
@@ -1004,7 +1172,7 @@ static inline bool map_as_str(vm* p_vm, object* p_obj, value* p_result) {
       chars = p_vm->alloc->reallocate(p_vm->alloc, chars, len, len + vlen);
       gc_guard_down(p_vm->alloc->gc);
       if (chars == NULL) {
-        runtime_error(p_vm, "out of memory: failed to convert map to string.");
+        runtime_oom(p_vm, "out of memory: failed to convert map to string.");
         return false;
       }
       memcpy(chars + len, vstr->chars, vlen);
@@ -1016,13 +1184,13 @@ static inline bool map_as_str(vm* p_vm, object* p_obj, value* p_result) {
     p_vm->alloc->release(p_vm->alloc, chars);
   }
   if (fstr.chars == NULL) {
-    runtime_error(p_vm, "out of memory: failed to convert map to string.");
+    runtime_oom(p_vm, "out of memory: failed to convert map to string.");
     return false;
   }
   object_specs specs = {p_vm->alloc, p_vm->objects_store};
   object_string* str = create_object_string(ok_create_string_view_from_string(fstr), &specs);
   if (str == NULL) {
-    runtime_error(p_vm, "out of memory: failed to convert map to string.");
+    runtime_oom(p_vm, "out of memory: failed to convert map to string.");
     return false;
   }
   *p_result = OBJECT_AS_VALUE(str);
@@ -1050,7 +1218,7 @@ static inline bool array_as_str(vm* p_vm, object* p_arr, value* p_result) {
       chars = p_vm->alloc->reallocate(p_vm->alloc, chars, len, len + reslen + delemlen);
       gc_guard_down(p_vm->alloc->gc);
       if (chars == NULL) {
-        runtime_error(p_vm, "out of memory: failed to convert array to string.");
+        runtime_oom(p_vm, "out of memory: failed to convert array to string.");
         return false;
       }
       memcpy(chars + len, str->chars, reslen);
@@ -1066,13 +1234,13 @@ static inline bool array_as_str(vm* p_vm, object* p_arr, value* p_result) {
                          chars); // release only after asprint copied: it could be NULL for an all-empty array
   }
   if (fstr.chars == NULL) {
-    runtime_error(p_vm, "failed to convert array to string.");
+    runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert array to string.");
     return false;
   }
   object_specs specs = {p_vm->alloc, p_vm->objects_store};
   object_string* str = create_object_string(ok_create_string_view_from_string(fstr), &specs);
   if (str == NULL) {
-    runtime_error(p_vm, "out of memory: failed to convert array to string.");
+    runtime_oom(p_vm, "out of memory: failed to convert array to string.");
     return false;
   }
   *p_result = OBJECT_AS_VALUE(str);
@@ -1084,7 +1252,7 @@ static inline bool closure_as_str(vm* p_vm, object* p_closure, value* p_result) 
   object_closure* closure = (object_closure*)p_closure;
   string str = asprint(p_vm->alloc, "fu %s |%i|", closure->function->name, closure->function->arity);
   if (str.chars == NULL) {
-    runtime_error(p_vm, "failed to convert function to string.");
+    runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert function to string.");
     return false;
   }
   return as_str_rest(p_vm, ok_create_string_view_from_string(str), p_result);
@@ -1100,7 +1268,7 @@ static inline bool native_function_as_str(vm* p_vm, object* p_native_function, v
   }
   string str = asprint(p_vm->alloc, "native fu %s |%s| (@%p)", nativefu->name, arity, nativefu->function);
   if (str.chars == NULL) {
-    runtime_error(p_vm, "failed to convert native function to string.");
+    runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert native function to string.");
     return false;
   }
   return as_str_rest(p_vm, ok_create_string_view_from_string(str), p_result);
@@ -1110,7 +1278,7 @@ static inline bool native_value_as_str(vm* p_vm, object* p_native_value, value* 
   object_native_value* nativev = (object_native_value*)p_native_value;
   string str = asprint(p_vm->alloc, "native value (@%p) (dtor @%p)", nativev->user_data, nativev->destructor);
   if (str.chars == NULL) {
-    runtime_error(p_vm, "failed to convert native value to string.");
+    runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert native value to string.");
     return false;
   }
   return as_str_rest(p_vm, ok_create_string_view_from_string(str), p_result);
@@ -1138,7 +1306,7 @@ static inline bool object_as_str(vm* p_vm, object* p_obj, value* p_result) {
     return native_value_as_str(p_vm, p_obj, p_result);
   }
   }
-  runtime_error(p_vm, "failed to convert unknown object to string.");
+  runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert unknown object to string.");
   return false;
 }
 
@@ -1166,7 +1334,7 @@ static inline bool as_str(vm* p_vm, value p_value, value* p_result) {
     return object_as_str(p_vm, VALUE_AS_OBJECT(p_value), p_result);
   }
   }
-  runtime_error(p_vm, "failed to convert unknown value to string.");
+  runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert unknown value to string.");
   return false;
 }
 
@@ -1177,7 +1345,7 @@ static inline bool object_as_num(vm* p_vm, object* p_obj, value* p_result) {
     string* str = &((object_string*)p_obj)->string;
     uint32_t len = string_get_length(str);
     if (len >= sizeof(buff)) {
-      runtime_error(p_vm, "failed to convert string to number: string too long. max is 64.");
+      runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert string to number: string too long. max is 64.");
       return false;
     }
     memcpy(buff, str->chars, len);
@@ -1187,43 +1355,43 @@ static inline bool object_as_num(vm* p_vm, object* p_obj, value* p_result) {
     char* endptr;
     const double value = strtod(buff, &endptr);
     if (endptr == buff) {
-      runtime_error(p_vm, "failed to convert string to number");
+      runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert string to number.");
       return false;
     }
     if (*endptr != '\0') {
-      runtime_error(p_vm, "failed to convert string to number");
+      runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert string to number.");
       return false;
     }
     if (errno == ERANGE) {
-      runtime_error(p_vm, "failed to convert string to number: out of range.");
+      runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert string to number: out of range.");
       return false;
     }
     *p_result = NUMBER_AS_VALUE(value);
     return true;
   }
   case OBJ_ARRAY: {
-    runtime_error(p_vm, "array is not convertable to number.");
+    runtime_error(p_vm, OK_EK_CONVERSION, "array is not convertible to number.");
     return false;
   }
   case OBJ_MAP: {
-    runtime_error(p_vm, "map is not convertable to number.");
+    runtime_error(p_vm, OK_EK_CONVERSION, "map is not convertible to number.");
     return false;
   }
   case OBJ_CLOSURE: {
-    runtime_error(p_vm, "function is not convertable to number.");
+    runtime_error(p_vm, OK_EK_CONVERSION, "function is not convertible to number.");
     return false;
   }
   case OBJ_NATIVE_FUNCTION: {
-    runtime_error(p_vm, "native function is not convertable to number.");
+    runtime_error(p_vm, OK_EK_CONVERSION, "native function is not convertible to number.");
     return false;
   }
   case OBJ_NATIVE_VALUE: {
     // scrr idk if we should allow this!?
-    runtime_error(p_vm, "native value is not convertable to number.");
+    runtime_error(p_vm, OK_EK_CONVERSION, "native value is not convertible to number.");
     return false;
   }
   }
-  runtime_error(p_vm, "failed to convert unknown object to string.");
+  runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert unknown object to string.");
   return false;
 }
 
@@ -1239,19 +1407,19 @@ static ok_value as_num(vm* p_vm, ok_value p_value, value* p_result) {
     *p_result = NUMBER_AS_VALUE(VALUE_AS_INT(p_value));
   }
   case TAG_NULL_MASK: {
-    runtime_error(p_vm, "null is not convertable to number.");
+    runtime_error(p_vm, OK_EK_CONVERSION, "null is not convertible to number.");
     return false;
   }
   case TAG_TRUE_MASK:
   case TAG_FALSE_MASK: {
-    runtime_error(p_vm, "boolean is not convertable to number.");
+    runtime_error(p_vm, OK_EK_CONVERSION, "boolean is not convertible to number.");
     return false;
   }
   case TAG_OBJECT_MASK: {
     return object_as_num(p_vm, VALUE_AS_OBJECT(p_value), p_result);
   }
   }
-  runtime_error(p_vm, "failed to convert unknown value to number.");
+  runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert unknown value to number.");
   return false;
 }
 
@@ -1273,13 +1441,13 @@ perform_as(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest,
   res.status = RUNTIME_ERROR;
   res.top_level_return = NULL_AS_VALUE();
 
-  if (!IS_VALUE_STRICTLY_RESERVED_1(p_rhs)) {
-    runtime_error(p_vm, "invalid type: expected a type in 'as' conversion.");
+  if (!IS_VALUE_STRICTLY_AS(p_rhs)) {
+    runtime_error(p_vm, OK_EK_CONVERSION, "invalid type: expected a type in 'as' conversion.");
     return res;
   }
   value* dest = &p_reg->array.data[base + p_dest];
 
-  switch (VALUE_AS_RESERVED_1(p_rhs)) {
+  switch (VALUE_AS_AS_TAG(p_rhs)) {
   case TT_STR: {
     if (as_str(p_vm, p_lhs, dest)) {
       res.status = RUNTIME_OK;
@@ -1305,6 +1473,12 @@ perform_as(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest,
 static inline void cleanup_frame(execution_state* p_exe, register_file* p_registers, call_frame* p_frame) {
   close_upvalues(p_exe, p_frame->registers_base);
   call_stack_remove(&p_exe->call_stack, p_exe->call_stack.count - 1, p_exe->call_stack.count - 1);
+  // the dying frame's try regions die with it: a stale record would address a
+  // reused frame index and hijack a later error into a dead window
+  while (p_exe->handlers.count > 0 &&
+         p_exe->handlers.data[p_exe->handlers.count - 1].frame >= p_exe->call_stack.count) {
+    p_exe->handlers.count--;
+  }
   // the register watermark must go back to the calller's frame top
   if (p_exe->call_stack.count > 0) {
     call_frame* caller = &p_exe->call_stack.data[p_exe->call_stack.count - 1];
@@ -1405,11 +1579,11 @@ static bool resolve_array_index(vm* p_vm, value p_index, uint32_t p_count, uint3
   if (IS_VALUE_NUMBER(p_index)) {
     const double d = VALUE_AS_NUMBER(p_index);
     if (!(d >= MIN_SAFE_INTEGER && d <= MAX_SAFE_INTEGER) || d != (double)(int64_t)d) {
-      runtime_error(p_vm, "array index must be a whole number, got %g.", d);
+      runtime_error(p_vm, OK_EK_INDEX, "array index must be a whole number, got %g.", d);
       return false;
     }
     if (d < 0 || d >= (double)p_count) {
-      runtime_error(p_vm, "index out of bounds: %g (len %u).", d, p_count);
+      runtime_error(p_vm, OK_EK_INDEX, "index out of bounds: %g (len %u).", d, p_count);
       return false;
     }
     *p_out = (uint32_t)d;
@@ -1418,13 +1592,13 @@ static bool resolve_array_index(vm* p_vm, value p_index, uint32_t p_count, uint3
   if (IS_VALUE_INT(p_index)) {
     const int64_t i = VALUE_AS_INT(p_index);
     if (i < 0 || (uint64_t)i >= (uint64_t)p_count) {
-      runtime_error(p_vm, "index out of bounds: %lld (len %u).", (long long)i, p_count);
+      runtime_error(p_vm, OK_EK_INDEX, "index out of bounds: %lld (len %u).", (long long)i, p_count);
       return false;
     }
     *p_out = (uint32_t)i;
     return true;
   }
-  runtime_error(p_vm, "array index must be a number.");
+  runtime_error(p_vm, OK_EK_INDEX, "array index must be a number.");
   return false;
 }
 
@@ -1437,35 +1611,35 @@ static bool for_operand_as_number(vm* p_vm, value p_value, const char* p_which, 
     *p_out = (double)VALUE_AS_INT(p_value);
     return true;
   }
-  runtime_error(p_vm, "%s must be a number.", p_which);
+  runtime_error(p_vm, OK_EK_TYPE, "%s must be a number.", p_which);
   return false;
 }
 
 static object_array* resolve_array_base(vm* p_vm, value p_base) {
   if (!value_is_object_type(p_base, OBJ_ARRAY)) {
-    runtime_error(p_vm, "invalid operand for '[]': expected an array or a map.");
+    runtime_error(p_vm, OK_EK_TYPE, "invalid operand for '[]': expected an array or a map.");
     return NULL;
   }
   return VALUE_AS_ARRAY(p_base);
 }
 
-// ---- map index paths (shared by OP_INDEX_GET / OP_INDEX_SET) ----
+// map index paths (shared by OP_INDEX_GET / OP_INDEX_SET)
 
 // the key gate every map write/read runs: null is the empty-slot encoding, and
-// only strings, numbers (int-tagged included) and booleans hash (docs/drafts/MAPS.md §1).
+// only strings, numbers (int-tagged included) and booleans hash.
 static bool map_key_check(vm* p_vm, value p_key) {
   if (IS_VALUE_STRICTLY_NULL(p_key)) {
-    runtime_error(p_vm, "map key cannot be null.");
+    runtime_error(p_vm, OK_EK_KEY, "map key cannot be null.");
     return false;
   }
   if (!map_key_is_legal(p_key)) {
-    runtime_error(p_vm, "invalid map key: only strings, numbers and booleans can be keys.");
+    runtime_error(p_vm, OK_EK_KEY, "invalid map key: only strings, numbers and booleans can be keys.");
     return false;
   }
   return true;
 }
 
-// R1: the strict read - a missing key is a hard error, get() is the lax path.
+// the strict read: a missing key is a hard error, get() is the lax path.
 // read-only and allocation-free (probes never allocate).
 static bool map_read(vm* p_vm, value p_map_value, value p_key, value* p_out) {
   if (!map_key_check(p_vm, p_key)) {
@@ -1473,14 +1647,14 @@ static bool map_read(vm* p_vm, value p_map_value, value p_key, value* p_out) {
   }
   value* slot = value_map_get(&VALUE_AS_MAP(p_map_value)->entries, p_key);
   if (slot == NULL) {
-    runtime_error(p_vm, "map key not found.");
+    runtime_error(p_vm, OK_EK_KEY, "map key not found.");
     return false;
   }
   *p_out = *slot;
   return true;
 }
 
-// insert-or-overwrite. the map lives in a register (rooted); key/value operands
+// insert-or-overwrite. the map lives in a register (rooted). key/value operands
 // are registers or constants (rooted via the frame / the function's constant
 // array), so a grow-triggered collection mid-set is safe: the tracer walks the
 // still-attached old arrays, and the new arrays are plain invisible memory.
@@ -1489,14 +1663,308 @@ static bool map_write(vm* p_vm, value p_map_value, value p_key, value p_value) {
     return false;
   }
   if (!object_map_set(VALUE_AS_MAP(p_map_value), p_key, p_value)) {
-    runtime_error(p_vm, "out of memory: failed to grow map.");
+    runtime_oom(p_vm, "out of memory: failed to grow map.");
     return false;
   }
   return true;
 }
 
-// the error return every opcode handler uses after runtime_error reported
-static interpret_result interpret_result_error(void) {
+// a script `throw v` hands the value back whole. a runtime-raised error materializes into
+// a {:kind: "...", :what: "..."} map. branchable, and the exact two fields the
+// 0.5.0 error object will wrap, so `e["what"]` code carries over. built only
+// when a consumer asks (a catch binder, ok_last_error): an uncaught error never pays for the map.
+static value materialize_error_value(vm* p_vm) {
+  execution_state* exe = p_vm->current_execution_state;
+  if (exe->error_is_script) {
+    return exe->error_value;
+  }
+  object_specs s = {p_vm->alloc, p_vm->objects_store};
+  object_map* map = create_object_map(&s);
+  if (map == NULL) {
+    return NULL_AS_VALUE(); // oom while building the error value: degrade to null, never recurse
+  }
+  gc_guard_up(p_vm->alloc->gc, OBJECT_AS_VALUE(map));
+  object_string* key_kind = create_object_string(ok_create_string_view("kind", 4, true), &s);
+  if (key_kind != NULL) {
+    gc_guard_up(p_vm->alloc->gc, OBJECT_AS_VALUE(key_kind));
+  }
+  object_string* value_kind =
+      key_kind != NULL
+          ? create_object_string(
+                ok_create_string_view(ok_error_kind_name(exe->error_kind), OK_STRING_VIEW_CALCULATE_LENGTH, true), &s)
+          : NULL;
+  if (value_kind != NULL) {
+    gc_guard_up(p_vm->alloc->gc, OBJECT_AS_VALUE(value_kind));
+  }
+  object_string* key_what = create_object_string(ok_create_string_view("what", 4, true), &s);
+  if (key_what != NULL) {
+    gc_guard_up(p_vm->alloc->gc, OBJECT_AS_VALUE(key_what));
+  }
+  object_string* value_what =
+      key_what != NULL
+          ? create_object_string(ok_create_string_view(exe->error_what, OK_STRING_VIEW_CALCULATE_LENGTH, true), &s)
+          : NULL;
+  if (value_what != NULL) {
+    gc_guard_up(p_vm->alloc->gc, OBJECT_AS_VALUE(value_what));
+  }
+  if (key_kind != NULL && value_kind != NULL) {
+    object_map_set(map, OBJECT_AS_VALUE(key_kind), OBJECT_AS_VALUE(value_kind));
+  }
+  if (key_what != NULL && value_what != NULL) {
+    object_map_set(map, OBJECT_AS_VALUE(key_what), OBJECT_AS_VALUE(value_what));
+  }
+  gc_guard_down(p_vm->alloc->gc);
+  gc_guard_down(p_vm->alloc->gc);
+  gc_guard_down(p_vm->alloc->gc);
+  gc_guard_down(p_vm->alloc->gc);
+  gc_guard_down(p_vm->alloc->gc);
+  return OBJECT_AS_VALUE(map);
+}
+
+// the defer machinery.
+// stage (put a thunk closure in a fresh frame at the register file top, above every compile-time register, so
+// nothing live is ever clobbered), scan (find tagged slots in a register
+// range and run them, lifo, descending), and the unwind integration below.
+// the two entry points that run script from C: OP_DEFER_RUN's arm (the
+// dispatch loop itself resumes into the thunk, OP_CALL-style) and the scan
+// (a nested run_until that returns when the thunk's frame pops).
+
+// stage a defer thunk at the register file top and call it, discard lane.
+// arity cannot fail (the compiler built the thunk). register-file growth
+// can oom (the hard lane). the slot was nil'd by the caller, so the closure
+// is otherwise unreferenced between that nil and top rising.
+// guarded here, the vm_interpret staging discipline.
+static bool stage_defer_thunk(vm* p_vm, execution_state* p_exe, register_file* p_reg, object_closure* p_thunk) {
+  const uint32_t staged = p_reg->top;
+  if (staged + 1u + p_thunk->function->registers > UINT16_MAX + 1u) {
+    runtime_error(p_vm, OK_EK_INTERNAL, "defer: register file exhausted.");
+    return false;
+  }
+  // the closure is rooted by the guard until call() appends its frame (the
+  // frame's own closure marking takes over), and never touches the register
+  // file as a plain value: the staging slot gets a NULL. this matters.
+  // top is the deepest live frame's window, which can sit below an outer frame's
+  // compile-time window (a callee reuses the caller's temp region). a thunk
+  // pointer parked at top would be swept while uncovered and then resurrected
+  // as a dangling mark when the outer frame's window re-covers the slot.
+  gc_guard_up(p_vm->alloc->gc, OBJECT_AS_VALUE(p_thunk));
+  if (staged + 1u > p_reg->array.capacity) {
+    // same contract as call()'s growth: fresh slots must read as null
+    const uint32_t target = staged + 1u + ((staged + 1u) >> 1u);
+    const uint32_t new_capacity = target > UINT16_MAX + 1u ? UINT16_MAX + 1u : target;
+    const uint32_t initialized_uptill = p_reg->array.capacity;
+    if (!register_array_grow(&p_reg->array, new_capacity)) {
+      gc_guard_down(p_vm->alloc->gc);
+      runtime_oom(p_vm, "out of memory: failed to grow register file.");
+      return false;
+    }
+    for (uint32_t i = initialized_uptill; i < new_capacity; ++i) {
+      p_reg->array.data[i] = NULL_AS_VALUE();
+    }
+  }
+  p_reg->array.data[staged] = NULL_AS_VALUE(); // the thunk's r0: written by its body or dead
+  p_reg->top = staged + 1;                     // call() raises this to the thunk's full window
+  const bool called = call(p_vm, p_exe, p_reg, p_thunk, staged, 0, 0);
+  gc_guard_down(p_vm->alloc->gc);
+  if (!called) {
+    return false;
+  }
+  // flag the pushed frame (call() clears it): both entry points. OP_DEFER_RUN's
+  // arm and the unwind scan. stage through here, so every defer thunk frame
+  // carries the mark the unwinder's cascade check reads
+  p_exe->call_stack.data[p_exe->call_stack.count - 1].defer_thunk = true;
+  return true;
+}
+
+// nil every pending defer in [p_from, p_uptill) without running any, the
+// cascade lane (a defer already failed; the chain stops) and the teardown
+// lane (the frames are dying regardless). keeps the invariant that no
+// tagged value ever outlives its scope's exit, whatever the exit was.
+static void nil_pending_defers(execution_state* p_exe, uint32_t p_from, uint32_t p_uptill) {
+  for (uint32_t at = p_uptill; at-- > p_from;) {
+    if (IS_VALUE_STRICTLY_DEFER(p_exe->registers.array.data[at])) {
+      p_exe->registers.array.data[at] = NULL_AS_VALUE();
+    }
+  }
+}
+
+// run every pending defer in [p_from, p_uptill), descending, lifo, because
+// later declarations hold higher registers (hidden locals allocate in order,
+// the slot last). a defer that fails (or anything it calls failing uncaught)
+// tears its leftover frames down, sets the cascade, nils the rest of the
+// range, and returns false: the in-flight error is the defer's now, and the
+// caller must restart its walk for it.
+static bool run_pending_defers(vm* p_vm, uint32_t p_from, uint32_t p_uptill) {
+  execution_state* exe = p_vm->current_execution_state;
+  register_file* reg = &exe->registers;
+  if (exe->error_hard) {
+    return true; // oom: no script may run, the hard lane owns the teardown
+  }
+  if (exe->defer_cascade) {
+    nil_pending_defers(exe, p_from, p_uptill);
+    return true;
+  }
+  // root the whole scanned range for the scan's duration: top is the
+  // throw-point's watermark, which can sit below the scanned frame's full
+  // compile-time window (the walk restores it only at the park). a tagged
+  // slot above top would be sweepable by the very collections the scan's
+  // own thunks trigger. every slot in a frame's window is null-or-valid
+  // (call()'s null-fill discipline), so raising top only ever roots more.
+  if (reg->top < p_uptill) {
+    reg->top = p_uptill;
+  }
+  for (uint32_t at = p_uptill; at-- > p_from;) {
+    value* slot = &reg->array.data[at];
+    if (!IS_VALUE_STRICTLY_DEFER(*slot)) {
+      continue;
+    }
+    object_closure* thunk = VALUE_AS_DEFER(*slot);
+    *slot = NULL_AS_VALUE(); // consumed: exactly once per scope instance
+    const uint32_t depth = exe->call_stack.count;
+    const uint32_t saved_top = reg->top;
+    if (!stage_defer_thunk(p_vm, exe, reg, thunk)) {
+      reg->top = saved_top;
+      if (!exe->error_hard) {
+        exe->defer_cascade = true;
+      }
+      nil_pending_defers(exe, p_from, at);
+      return !exe->error_hard;
+    }
+    // the thunk must run with a clean propagation lane: the in-flight error
+    // is parked here in C, and call_native's post-flight error_pending check
+    // cannot tell "raised inside the native" from "pending since before the
+    // native", without this, every deferred native call fails spuriously.
+    // has_error and error_value stay set: the in-flight value must keep
+    // rooting across the thunk's allocations either way.
+    const bool saved_pending = exe->error_pending;
+    exe->error_pending = false;
+    const interpret_result result = run_until(p_vm, depth);
+    if (result.status == RUNTIME_OK) {
+      // the thunk survived (its own catches, if any, consumed their errors):
+      // the in-flight error continues outward exactly as it was
+      exe->error_pending = saved_pending;
+    }
+    // on failure the lane holds the thunk's error: the replacement.
+    reg->top = saved_top;
+    if (result.status != RUNTIME_OK) {
+      // nothing inside the thunk caught it: tear its leftover frames down
+      // exactly like the unwinder's dying-frame loop, minus their defers
+      // (cascade. they are subsequent in the chain, nilled not run).
+      while (exe->call_stack.count > depth) {
+        call_frame* dying = &exe->call_stack.data[exe->call_stack.count - 1];
+        nil_pending_defers(exe, dying->registers_base, dying->registers_base + dying->closure->function->registers);
+        close_upvalues(exe, dying->registers_base);
+        exe->call_stack.count--;
+        while (exe->handlers.count > 0 && exe->handlers.data[exe->handlers.count - 1].frame >= exe->call_stack.count) {
+          exe->handlers.count--;
+        }
+      }
+      exe->defer_cascade = true;
+      nil_pending_defers(exe, p_from, at);
+      return false;
+    }
+  }
+  return true;
+}
+
+// the unwind. walk the handler
+// stack top-down, the first live record above this run_until's depth wins:
+// pop the frames above it (running their defers first, cleanup on the way
+// out is defer's whole job), consume the record, run the handler frame's
+// defers at/above the record's floor (before the catch, close upvalues above the floor, restore the
+// watermark to the handler frame's full window, materialize + park the
+// error value at the record's register, jump. records below the depth
+// belong to outer C levels. theirs to take, not ours.
+//
+// a defer failing anywhere in here returns false from its scan: the walk
+// restarts for the defer's error (it replaced the in-flight one).
+// the restarted walk can only find records, the failing defer's own scope did not consume.
+// the try whose catch was about to run never sees a defer's failure
+// (its record was consumed before the scan), but outer trys in the same frame can.
+// cascade: the remaining defers in the dying region are nilled, not run.
+// the resume state, returned BY VALUE: taking &frame/&ip in the FAIL_PATH
+// macro would make the dispatch loop's hottest locals address-taken (forced
+// to memory, measured +15% on numeric_for_sum). the struct keeps them register-promotable.
+typedef struct {
+  call_frame* frame;
+  uint32_t* ip;
+  bool caught;
+} unwind_resume;
+
+static unwind_resume __attribute__((noinline, cold)) attempt_unwind(vm* p_vm, uint32_t p_depth) {
+  execution_state* exe = p_vm->current_execution_state;
+  unwind_resume resume = {NULL, NULL, false};
+  if (exe->error_hard) {
+    return resume; // oom: not a value, not catchable. the hard lane already reported
+  }
+  while (exe->handlers.count > 0) {
+    // copied by value: the defer scans below run script, which can grow (and
+    // thus move) the handler array. a held pointer would dangle.
+    const handler_record taken = exe->handlers.data[exe->handlers.count - 1];
+    if (taken.frame < p_depth) {
+      break; // an outer C level's try: leave it for the outer walk
+    }
+    // cascade check: did this error pass through a defer invocation on
+    // its way here (raised in a thunk, or in anything a thunk called, and
+    // uncaught on the way)? then the chain stops. every scan below nils
+    // instead of running, and the error (the defer's) is what lands in the
+    // catch. a thunk frame that already returned normally is long gone, and
+    // an error from a SIBLING ordinary call never sees a live thunk frame, both correctly keep the chain alive.
+    for (uint32_t f = exe->call_stack.count; f-- > taken.frame + 1;) {
+      if (exe->call_stack.data[f].defer_thunk) {
+        exe->defer_cascade = true;
+        break;
+      }
+    }
+    // pop the frames above the handler's frame, defers first (their upvalues
+    // close after. one step of live code before the usual cleanup)
+    bool defer_failed = false;
+    while (exe->call_stack.count > taken.frame + 1) {
+      call_frame* dying = &exe->call_stack.data[exe->call_stack.count - 1];
+      if (!run_pending_defers(
+              p_vm, dying->registers_base, dying->registers_base + dying->closure->function->registers)) {
+        defer_failed = true;
+        break;
+      }
+      close_upvalues(exe, dying->registers_base);
+      exe->call_stack.count--;
+      while (exe->handlers.count > 0 && exe->handlers.data[exe->handlers.count - 1].frame >= exe->call_stack.count) {
+        exe->handlers.count--;
+      }
+    }
+    if (defer_failed) {
+      continue; // restart the walk for the defer's error (cascade is set)
+    }
+    // consume the record and restore the handler frame
+    exe->handlers.count--;
+    call_frame* fr = &exe->call_stack.data[taken.frame];
+    // the handler frame's own region: defers at/above the floor run before
+    // the catch. a failure here restarts the walk. the consumed record (the
+    // catch this frame was about to run) never sees it, outer records may.
+    if (!run_pending_defers(
+            p_vm, fr->registers_base + taken.floor, fr->registers_base + fr->closure->function->registers)) {
+      continue;
+    }
+    close_upvalues(exe, fr->registers_base + taken.floor);
+    exe->registers.top = fr->registers_base + fr->closure->function->registers;
+    const value error = materialize_error_value(p_vm);
+    exe->registers.array.data[fr->registers_base + taken.park] = error;
+    fr->ip = taken.catch_ip;
+    resume.frame = fr;
+    resume.ip = fr->ip;
+    resume.caught = true;
+    // consumed: the catch owns it now (and the run recovered: last_error
+    // reads nothing once a catch took it, and the defer chain un-cascades)
+    exe->error_pending = false;
+    exe->error_reported = false;
+    exe->has_error = false;
+    exe->defer_cascade = false;
+    return resume;
+  }
+  return resume;
+}
+
+static interpret_result error_interpret_result(void) {
   interpret_result result;
   result.status = RUNTIME_ERROR;
   result.top_level_return = NULL_AS_VALUE();
@@ -1511,6 +1979,34 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
   register word* ip = frame->ip;
 #define READ_WORD() (*ip++)
 #define JOIN_WORD(instruction) (((word2)READ_WORD() << 32u) | (word2)(instruction))
+  // the error exit. the loop owns the live ip. runtime_error
+  // only stashes (no print, no reset), so this is the one place where the
+  // live ip and the call stack still exist together. first unwind:
+  // a live handler record above this level's depth takes the error (frames pop,
+  // the value parks, the loop resumes at the catch). otherwise report (the
+  // innermost level prints; outer levels propagate silently) and fail.
+  // no reset, an outer C level may still catch. (before this, frame->ip was only
+  // synced in the four CALL arms, so every BIN_OP/INDEX/... error read the
+  // frame's ENTRY pointer and the report printed with no location at all.
+  // lua's lvm.c keeps the same invariant via savestate/Protect.
+  // a per-instruction store was measured at +10-18% on numeric_for_sum and declined.)
+#define FAIL_PATH()                                                                                                    \
+  do {                                                                                                                 \
+    frame->ip = ip;                                                                                                    \
+    if (exe->error_hard) {                                                                                             \
+      /* oom: uncatchable, prints from the live state with the synced ip */                                            \
+      return vm_report_error(p_vm);                                                                                    \
+    }                                                                                                                  \
+    const unwind_resume resume = attempt_unwind(p_vm, p_call_depth);                                                   \
+    if (resume.caught) {                                                                                               \
+      frame = resume.frame;                                                                                            \
+      ip = resume.ip;                                                                                                  \
+      goto next_instruction;                                                                                           \
+    }                                                                                                                  \
+    /* propagation: an outer script level may still catch, and the print belongs */                                    \
+    /* to the outermost C lane (ok_run prints) */                                                                      \
+    return error_interpret_result();                                                                                   \
+  } while (0)
 
   for (;;) {
 #if defined(OK_TRACE_EXECUTION)
@@ -1716,10 +2212,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
                       a,
                       p ? reg->top - (frame->registers_base + a + 1) : b,
                       c == 0 ? RETURN_COUNT_DYNAMIC : c - 1)) {
-        interpret_result result;
-        result.status = RUNTIME_ERROR;
-        result.top_level_return = NULL_AS_VALUE();
-        return result;
+        FAIL_PATH();
       }
       // not sure if exe is gonna be modified here or not (resume??) but we set it anyways
       exe = p_vm->current_execution_state;
@@ -1742,10 +2235,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
                       A,
                       p ? reg->top - (frame->registers_base + A + 1) : B,
                       C == 0 ? RETURN_COUNT_DYNAMIC : C - 1)) {
-        interpret_result result;
-        result.status = RUNTIME_ERROR;
-        result.top_level_return = NULL_AS_VALUE();
-        return result;
+        FAIL_PATH();
       }
       // not sure if exe is gonna be modified here or not (resume??) but we set it anyways
       exe = p_vm->current_execution_state;
@@ -1793,7 +2283,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const uint16_t bp = bprime_of(instruction);
       interpret_result result = create_closure(p_vm, exe, reg, frame, ap, bp);
       if (result.status != RUNTIME_OK) {
-        return result;
+        FAIL_PATH();
       }
       break;
     }
@@ -1803,7 +2293,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const uint16_t B = B_of(words);
       interpret_result result = create_closure(p_vm, exe, reg, frame, A, B);
       if (result.status != RUNTIME_OK) {
-        return result;
+        FAIL_PATH();
       }
       break;
     }
@@ -1813,7 +2303,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const uint16_t bp = bprime_of(instruction);
       interpret_result res = perform_not(p_vm, reg, frame, ap, resolve_operand(frame, reg, bp, p));
       if (res.status != RUNTIME_OK) {
-        return res;
+        FAIL_PATH();
       }
       break;
     }
@@ -1824,7 +2314,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const uint16_t B = B_of(words);
       interpret_result res = perform_not(p_vm, reg, frame, A, resolve_operand(frame, reg, B, p));
       if (res.status != RUNTIME_OK) {
-        return res;
+        FAIL_PATH();
       }
       break;
     }
@@ -1834,7 +2324,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const uint16_t bp = bprime_of(instruction);
       interpret_result res = perform_negate(p_vm, reg, frame, ap, resolve_operand(frame, reg, bp, p));
       if (res.status != RUNTIME_OK) {
-        return res;
+        FAIL_PATH();
       }
       break;
     }
@@ -1845,7 +2335,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const uint16_t B = B_of(words);
       interpret_result res = perform_negate(p_vm, reg, frame, A, resolve_operand(frame, reg, B, p));
       if (res.status != RUNTIME_OK) {
-        return res;
+        FAIL_PATH();
       }
       break;
     }
@@ -1856,7 +2346,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const uint8_t c = c_of(instruction);
       interpret_result res = perform_add(p_vm, reg, frame, a, REG_AT(b), resolve_operand(frame, reg, c, p));
       if (res.status != RUNTIME_OK) {
-        return res;
+        FAIL_PATH();
       }
       break;
     }
@@ -1870,7 +2360,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       interpret_result res =
           perform_add(p_vm, reg, frame, A, resolve_operand(frame, reg, B, q), resolve_operand(frame, reg, C, p));
       if (res.status != RUNTIME_OK) {
-        return res;
+        FAIL_PATH();
       }
       break;
     }
@@ -1881,7 +2371,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const uint8_t c = c_of(instruction);
       interpret_result res = perform_subtract(p_vm, reg, frame, a, REG_AT(b), resolve_operand(frame, reg, c, p));
       if (res.status != RUNTIME_OK) {
-        return res;
+        FAIL_PATH();
       }
       break;
     }
@@ -1895,7 +2385,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       interpret_result res =
           perform_subtract(p_vm, reg, frame, A, resolve_operand(frame, reg, B, q), resolve_operand(frame, reg, C, p));
       if (res.status != RUNTIME_OK) {
-        return res;
+        FAIL_PATH();
       }
       break;
     }
@@ -1906,7 +2396,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const uint8_t c = c_of(instruction);
       interpret_result res = perform_multiply(p_vm, reg, frame, a, REG_AT(b), resolve_operand(frame, reg, c, p));
       if (res.status != RUNTIME_OK) {
-        return res;
+        FAIL_PATH();
       }
       break;
     }
@@ -1920,7 +2410,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       interpret_result res =
           perform_multiply(p_vm, reg, frame, A, resolve_operand(frame, reg, B, q), resolve_operand(frame, reg, C, p));
       if (res.status != RUNTIME_OK) {
-        return res;
+        FAIL_PATH();
       }
       break;
     }
@@ -1931,7 +2421,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const uint8_t c = c_of(instruction);
       interpret_result res = perform_divide(p_vm, reg, frame, a, REG_AT(b), resolve_operand(frame, reg, c, p));
       if (res.status != RUNTIME_OK) {
-        return res;
+        FAIL_PATH();
       }
       break;
     }
@@ -1945,7 +2435,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       interpret_result res =
           perform_divide(p_vm, reg, frame, A, resolve_operand(frame, reg, B, q), resolve_operand(frame, reg, C, p));
       if (res.status != RUNTIME_OK) {
-        return res;
+        FAIL_PATH();
       }
       break;
     }
@@ -1956,7 +2446,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const uint8_t c = c_of(instruction);
       interpret_result res = perform_modulo(p_vm, reg, frame, a, REG_AT(b), resolve_operand(frame, reg, c, p));
       if (res.status != RUNTIME_OK) {
-        return res;
+        FAIL_PATH();
       }
       break;
     }
@@ -1970,7 +2460,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       interpret_result res =
           perform_modulo(p_vm, reg, frame, A, resolve_operand(frame, reg, B, q), resolve_operand(frame, reg, C, p));
       if (res.status != RUNTIME_OK) {
-        return res;
+        FAIL_PATH();
       }
       break;
     }
@@ -1981,7 +2471,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const uint8_t c = c_of(instruction);
       interpret_result res = perform_equal(p_vm, reg, frame, a, REG_AT(b), resolve_operand(frame, reg, c, p));
       if (res.status != RUNTIME_OK) {
-        return res;
+        FAIL_PATH();
       }
       break;
     }
@@ -1995,7 +2485,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       interpret_result res =
           perform_equal(p_vm, reg, frame, A, resolve_operand(frame, reg, B, q), resolve_operand(frame, reg, C, p));
       if (res.status != RUNTIME_OK) {
-        return res;
+        FAIL_PATH();
       }
       break;
     }
@@ -2006,7 +2496,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const uint8_t c = c_of(instruction);
       interpret_result res = perform_not_equal(p_vm, reg, frame, a, REG_AT(b), resolve_operand(frame, reg, c, p));
       if (res.status != RUNTIME_OK) {
-        return res;
+        FAIL_PATH();
       }
       break;
     }
@@ -2020,7 +2510,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       interpret_result res =
           perform_not_equal(p_vm, reg, frame, A, resolve_operand(frame, reg, B, q), resolve_operand(frame, reg, C, p));
       if (res.status != RUNTIME_OK) {
-        return res;
+        FAIL_PATH();
       }
       break;
     }
@@ -2031,7 +2521,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const uint8_t c = c_of(instruction);
       interpret_result res = perform_greater(p_vm, reg, frame, a, REG_AT(b), resolve_operand(frame, reg, c, p));
       if (res.status != RUNTIME_OK) {
-        return res;
+        FAIL_PATH();
       }
       break;
     }
@@ -2045,7 +2535,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       interpret_result res =
           perform_greater(p_vm, reg, frame, A, resolve_operand(frame, reg, B, q), resolve_operand(frame, reg, C, p));
       if (res.status != RUNTIME_OK) {
-        return res;
+        FAIL_PATH();
       }
       break;
     }
@@ -2056,7 +2546,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const uint8_t c = c_of(instruction);
       interpret_result res = perform_less(p_vm, reg, frame, a, REG_AT(b), resolve_operand(frame, reg, c, p));
       if (res.status != RUNTIME_OK) {
-        return res;
+        FAIL_PATH();
       }
       break;
     }
@@ -2070,7 +2560,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       interpret_result res =
           perform_less(p_vm, reg, frame, A, resolve_operand(frame, reg, B, q), resolve_operand(frame, reg, C, p));
       if (res.status != RUNTIME_OK) {
-        return res;
+        FAIL_PATH();
       }
       break;
     }
@@ -2081,7 +2571,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const uint8_t c = c_of(instruction);
       interpret_result res = perform_greater_equal(p_vm, reg, frame, a, REG_AT(b), resolve_operand(frame, reg, c, p));
       if (res.status != RUNTIME_OK) {
-        return res;
+        FAIL_PATH();
       }
       break;
     }
@@ -2095,7 +2585,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       interpret_result res = perform_greater_equal(
           p_vm, reg, frame, A, resolve_operand(frame, reg, B, q), resolve_operand(frame, reg, C, p));
       if (res.status != RUNTIME_OK) {
-        return res;
+        FAIL_PATH();
       }
       break;
     }
@@ -2106,7 +2596,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const uint8_t c = c_of(instruction);
       interpret_result res = perform_less_equal(p_vm, reg, frame, a, REG_AT(b), resolve_operand(frame, reg, c, p));
       if (res.status != RUNTIME_OK) {
-        return res;
+        FAIL_PATH();
       }
       break;
     }
@@ -2120,7 +2610,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       interpret_result res =
           perform_less_equal(p_vm, reg, frame, A, resolve_operand(frame, reg, B, q), resolve_operand(frame, reg, C, p));
       if (res.status != RUNTIME_OK) {
-        return res;
+        FAIL_PATH();
       }
       break;
     }
@@ -2131,7 +2621,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const uint8_t c = c_of(instruction);
       interpret_result res = perform_as(p_vm, reg, frame, a, REG_AT(b), resolve_goperand(p_vm, frame, reg, c, p));
       if (res.status != RUNTIME_OK) {
-        return res;
+        FAIL_PATH();
       }
       break;
     }
@@ -2145,7 +2635,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       interpret_result res =
           perform_as(p_vm, reg, frame, A, resolve_operand(frame, reg, B, q), resolve_goperand(p_vm, frame, reg, C, p));
       if (res.status != RUNTIME_OK) {
-        return res;
+        FAIL_PATH();
       }
       break;
     }
@@ -2173,11 +2663,8 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       REG_AT(a) = OBJECT_AS_VALUE(arr);
       break;
     oom_new:
-      runtime_error(p_vm, "out of memory: failed to allocate array.");
-      interpret_result result;
-      result.status = RUNTIME_ERROR;
-      result.top_level_return = NULL_AS_VALUE();
-      return result;
+      runtime_oom(p_vm, "out of memory: failed to allocate array.");
+      FAIL_PATH();
     }
     case OP_ARRAY_NEW_LONG: {
       const word2 words = JOIN_WORD(instruction);
@@ -2198,11 +2685,8 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       REG_AT(A) = OBJECT_AS_VALUE(arr);
       break;
     oom_new_long:
-      runtime_error(p_vm, "out of memory: failed to allocate array.");
-      interpret_result result;
-      result.status = RUNTIME_ERROR;
-      result.top_level_return = NULL_AS_VALUE();
-      return result;
+      runtime_oom(p_vm, "out of memory: failed to allocate array.");
+      FAIL_PATH();
     }
     case OP_MAP_NEW: {
       const uint8_t a = a_of(instruction);
@@ -2225,13 +2709,13 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       }
       gc_guard_down(p_vm->alloc->gc);
       if (!filled) {
-        return interpret_result_error(); // map_write already reported
+        FAIL_PATH(); // map_write already reported
       }
       REG_AT(a) = OBJECT_AS_VALUE(map);
       break;
     oom_map_new:
-      runtime_error(p_vm, "out of memory: failed to allocate map.");
-      return interpret_result_error();
+      runtime_oom(p_vm, "out of memory: failed to allocate map.");
+      FAIL_PATH();
     }
     case OP_MAP_NEW_LONG: {
       const word2 words = JOIN_WORD(instruction);
@@ -2250,13 +2734,13 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       }
       gc_guard_down(p_vm->alloc->gc);
       if (!filled) {
-        return interpret_result_error(); // map_write already reported
+        FAIL_PATH(); // map_write already reported
       }
       REG_AT(A) = OBJECT_AS_VALUE(map);
       break;
     oom_map_new_long:
-      runtime_error(p_vm, "out of memory: failed to allocate map.");
-      return interpret_result_error();
+      runtime_oom(p_vm, "out of memory: failed to allocate map.");
+      FAIL_PATH();
     }
     case OP_INDEX_GET: {
       const bool p = p_of(instruction);
@@ -2268,7 +2752,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       if (value_is_object_type(base, OBJ_MAP)) {
         value read;
         if (!map_read(p_vm, base, key, &read)) {
-          return interpret_result_error();
+          FAIL_PATH();
         }
         REG_AT(a) = read;
         break;
@@ -2276,7 +2760,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const object_array* arr = resolve_array_base(p_vm, base);
       uint32_t index = 0;
       if (arr == NULL || !resolve_array_index(p_vm, key, arr->values.count, &index)) {
-        return interpret_result_error();
+        FAIL_PATH();
       }
       REG_AT(a) = arr->values.data[index];
       break;
@@ -2292,7 +2776,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       if (value_is_object_type(base, OBJ_MAP)) {
         value read;
         if (!map_read(p_vm, base, key, &read)) {
-          return interpret_result_error();
+          FAIL_PATH();
         }
         REG_AT(A) = read;
         break;
@@ -2300,7 +2784,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const object_array* arr = resolve_array_base(p_vm, base);
       uint32_t index = 0;
       if (arr == NULL || !resolve_array_index(p_vm, key, arr->values.count, &index)) {
-        return interpret_result_error();
+        FAIL_PATH();
       }
       REG_AT(A) = arr->values.data[index];
       break;
@@ -2316,14 +2800,14 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
         // narrow SET has no room for a value-const flag (p is spent on the key):
         // the compiler materializes constant values, c is always a register here.
         if (!map_write(p_vm, base, key, REG_AT(c))) {
-          return interpret_result_error();
+          FAIL_PATH();
         }
         break;
       }
       const object_array* arr = resolve_array_base(p_vm, base);
       uint32_t index = 0;
       if (arr == NULL || !resolve_array_index(p_vm, key, arr->values.count, &index)) {
-        return interpret_result_error();
+        FAIL_PATH();
       }
       ((object_array*)arr)->values.data[index] = REG_AT(c);
       break;
@@ -2339,14 +2823,14 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const value key = resolve_operand(frame, reg, B, p);
       if (value_is_object_type(base, OBJ_MAP)) {
         if (!map_write(p_vm, base, key, resolve_operand(frame, reg, C, q))) {
-          return interpret_result_error();
+          FAIL_PATH();
         }
         break;
       }
       const object_array* arr = resolve_array_base(p_vm, base);
       uint32_t index = 0;
       if (arr == NULL || !resolve_array_index(p_vm, key, arr->values.count, &index)) {
-        return interpret_result_error();
+        FAIL_PATH();
       }
       ((object_array*)arr)->values.data[index] = resolve_operand(frame, reg, C, q);
       break;
@@ -2368,17 +2852,11 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       if (!for_operand_as_number(p_vm, REG_AT(B), "numeric for start", &start) ||
           !for_operand_as_number(p_vm, REG_AT(B + 1), "numeric for limit", &limit) ||
           !for_operand_as_number(p_vm, REG_AT(B + 2), "numeric for step", &step)) {
-        interpret_result result;
-        result.status = RUNTIME_ERROR;
-        result.top_level_return = NULL_AS_VALUE();
-        return result;
+        FAIL_PATH();
       }
       if (step == 0.0) {
-        runtime_error(p_vm, "numeric for step is zero.");
-        interpret_result result;
-        result.status = RUNTIME_ERROR;
-        result.top_level_return = NULL_AS_VALUE();
-        return result;
+        runtime_error(p_vm, OK_EK_VALUE, "numeric for step is zero.");
+        FAIL_PATH();
       }
 
       REG_AT(B) = NUMBER_AS_VALUE(start);
@@ -2399,7 +2877,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
         counter = VALUE_AS_NUMBER(REG_AT(B));
       } else if (!for_operand_as_number(p_vm, REG_AT(B), "numeric for counter", &counter)) {
         // mut counter: the body may reseat it to any value, keep the gate.
-        return interpret_result_error();
+        FAIL_PATH();
       }
       // only the counter is reachable by name
       const double limit = VALUE_AS_NUMBER(REG_AT(B + 1));
@@ -2420,8 +2898,8 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const value iterable = REG_AT(B);
       if (value_is_object_type(iterable, OBJ_ARRAY)) {
         if (p) {
-          runtime_error(p_vm, "array iteration binds one loop variable.");
-          return interpret_result_error();
+          runtime_error(p_vm, OK_EK_TYPE, "array iteration binds one loop variable.");
+          FAIL_PATH();
         }
         // cursor/end are written here and by ITER_LOOP only, always as plain
         // numbers: the back edge reads them raw with no tag gate.
@@ -2448,8 +2926,8 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
         }
         break;
       }
-      runtime_error(p_vm, "can only iterate over arrays and maps.");
-      return interpret_result_error();
+      runtime_error(p_vm, OK_EK_TYPE, "can only iterate over arrays and maps.");
+      FAIL_PATH();
     }
     case OP_ITER_GET: {
       const bool p = p_of(instruction); // p == 1: also write the value register
@@ -2492,8 +2970,8 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       // not bump the version and stay legal mid-iteration.
       object_map* map = VALUE_AS_MAP(iterable);
       if ((double)map->version != VALUE_AS_NUMBER(REG_AT(B + 2))) {
-        runtime_error(p_vm, "map changed size during iteration.");
-        return interpret_result_error();
+        runtime_error(p_vm, OK_EK_VALUE, "map changed size during iteration.");
+        FAIL_PATH();
       }
       uint32_t slot = (uint32_t)VALUE_AS_NUMBER(REG_AT(B + 1));
       for (++slot; slot < map->entries.capacity && IS_VALUE_STRICTLY_NULL(map->entries.keys[slot]); ++slot) {
@@ -2517,15 +2995,15 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       object_specs s = {p_vm->alloc, p_vm->objects_store};
       object_array* arr = create_object_array(&s);
       if (arr == NULL) {
-        runtime_error(p_vm, "out of memory: failed to allocate the varargs array.");
-        return interpret_result_error();
+        runtime_oom(p_vm, "out of memory: failed to allocate the varargs array.");
+        FAIL_PATH();
       }
       gc_guard_up(p_vm->alloc->gc, OBJECT_AS_VALUE(arr));
       const bool appended = count == 0 || value_array_append_n(&arr->values, &REG_AT(bp), count);
       gc_guard_down(p_vm->alloc->gc);
       if (!appended) {
-        runtime_error(p_vm, "out of memory: failed to allocate the varargs array.");
-        return interpret_result_error();
+        runtime_oom(p_vm, "out of memory: failed to allocate the varargs array.");
+        FAIL_PATH();
       }
       REG_AT(ap) = OBJECT_AS_VALUE(arr);
       break;
@@ -2536,7 +3014,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const uint8_t c = c_of(instruction);
       frame->ip = ip;
       if (!call_spread(p_vm, exe, reg, frame->registers_base, a, b, c == 0 ? RETURN_COUNT_DYNAMIC : (uint32_t)c - 1u)) {
-        return interpret_result_error();
+        FAIL_PATH();
       }
       exe = p_vm->current_execution_state;
       reg = &exe->registers;
@@ -2551,7 +3029,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const uint16_t C = C_of(words);
       frame->ip = ip;
       if (!call_spread(p_vm, exe, reg, frame->registers_base, A, B, C == 0 ? RETURN_COUNT_DYNAMIC : (uint32_t)C - 1u)) {
-        return interpret_result_error();
+        FAIL_PATH();
       }
       exe = p_vm->current_execution_state;
       reg = &exe->registers;
@@ -2570,69 +3048,274 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       }
       break;
     }
+    case OP_TRY_ENTER: {
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      handler_record rec;
+      rec.frame = exe->call_stack.count - 1;
+      rec.catch_ip = ip + A; // forward offset from the word after this 2w instruction
+      rec.park = B;
+      rec.floor = C;
+      if (!handler_stack_append(&exe->handlers, rec)) {
+        runtime_oom(p_vm, "out of memory: failed to grow the handler stack.");
+        FAIL_PATH();
+      }
+      break;
     }
+    case OP_TRY_EXIT: {
+      // leaving the protected region. the top record belongs to this frame
+      // by construction (the compiler pairs every ENTER it emits).
+      ASSERT(exe->handlers.count > 0 && exe->handlers.data[exe->handlers.count - 1].frame == exe->call_stack.count - 1);
+      exe->handlers.count--;
+      break;
+    }
+    case OP_THROW: {
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t A = A_of(words);
+      exe->error_pending = true;
+      exe->error_reported = false;
+      exe->error_hard = false;
+      exe->error_is_script = true; // the value is the error: any value, whole
+      exe->error_value = REG_AT(A);
+      exe->error_what[0] = '\0';
+      exe->error_kind = OK_EK_INTERNAL;
+      exe->has_error = true;
+      FAIL_PATH();
+      break;
+    }
+    case OP_DEFER_MARK: {
+      const uint16_t A = Alarge_of(instruction);
+      value* slot = &reg->array.data[frame->registers_base + A];
+      if (!IS_VALUE_STRICTLY_OBJECT(*slot) || object_get_type(VALUE_AS_OBJECT(*slot)) != OBJ_CLOSURE) {
+        runtime_error(p_vm, OK_EK_INTERNAL, "internal: defer mark on a non-closure.");
+        FAIL_PATH();
+        break;
+      }
+      *slot = DEFER_AS_VALUE((object_closure*)VALUE_AS_OBJECT(*slot));
+      break;
+    }
+    case OP_DEFER_RUN: {
+      const uint16_t A = Alarge_of(instruction);
+      value* slot = &reg->array.data[frame->registers_base + A];
+      if (IS_VALUE_STRICTLY_DEFER(*slot)) {
+        object_closure* thunk = VALUE_AS_DEFER(*slot);
+        *slot = NULL_AS_VALUE(); // consumed: exactly once per scope instance
+        frame->ip = ip;
+        if (!stage_defer_thunk(p_vm, exe, reg, thunk)) {
+          FAIL_PATH();
+          break;
+        }
+        // the OP_CALL refresh: the thunk's frame returned into this one, or
+        // an unwind resumed us elsewhere entirely
+        exe = p_vm->current_execution_state;
+        reg = &exe->registers;
+        frame = &exe->call_stack.data[exe->call_stack.count - 1];
+        ip = frame->ip;
+      }
+      // a null slot is the no-op: the defer statement never executed on
+      // this path (conditional defer, a loop iteration that skipped it)
+      break;
+    }
+    }
+  next_instruction:; // FAIL_PATH resumes here: the catch's first instruction is next
   }
 #undef READ_BYTE
 #undef READ_CONSTANT
 #undef BIN_OP
+#undef FAIL_PATH
 }
 
-void runtime_error(vm* p_vm, const char* p_fmt, ...) {
+// raise (catchable): stash kind + message into the error lane. no printing,
+// no reset, no allocation, those happen where the live ip and the call
+// stack still exist together (FAIL_PATH in the dispatch loop, which first
+// tries the unwind to a handler). a catch may yet consume this error, so
+// nothing observable may happen at raise time.
+void runtime_error(vm* p_vm, ok_error_kind p_kind, const char* p_fmt, ...) {
   execution_state* exe = p_vm->current_execution_state;
   va_list ap;
+  va_start(ap, p_fmt);
+  vsnprintf(exe->error_what, sizeof(exe->error_what), p_fmt, ap);
+  va_end(ap);
+  exe->error_kind = p_kind;
+  exe->error_is_script = false;
+  exe->error_hard = false;
+  exe->error_pending = true;
+  exe->error_reported = false;
+  exe->has_error = true;
+}
 
-  if (exe->call_stack.count > 0) {
-    call_frame* frame = &exe->call_stack.data[exe->call_stack.count - 1];
+// raise (hard): the oom lane. out of memory is not a value and not
+// catchable, prints immediately (from the live state, the report
+// path itself must not allocate) and resets: nothing may resume.
+void runtime_oom(vm* p_vm, const char* p_fmt, ...) {
+  execution_state* exe = p_vm->current_execution_state;
+  va_list ap;
+  va_start(ap, p_fmt);
+  vsnprintf(exe->error_what, sizeof(exe->error_what), p_fmt, ap);
+  va_end(ap);
+  exe->error_kind = OK_EK_INTERNAL;
+  exe->error_is_script = false;
+  exe->error_hard = true;
+  exe->error_pending = true;
+  exe->has_error = true;
+  // no print here: the raising arm's FAIL_PATH prints hard errors itself,
+  // from the live state, with the instruction's synced ip
+  // (printing here would read a stale frame->ip, the arm hasn't synced yet).
+}
 
-    size_t instruction = frame->ip - frame->closure->function->chunk.code.data - 1;
-
-    ok_line_info_repeated* info = chunk_find_line_info(&frame->closure->function->chunk, instruction);
-
-    if (info != NULL && p_vm->source != NULL) {
-      fprintf(stderr, "\n%s:%d:%d ", p_vm->source->path, info->line_info.line, info->line_info.offset);
+// the report's value half: a script `throw v` prints the value itself, in
+// the CLI's print formatting (numbers %g, true/false/null, raw string bytes,
+// per-type tags for other objects, the print hook's fallback lane). writes
+// into a caller buffer: the report path must not allocate.
+static int format_error_value(char* p_out, size_t p_capacity, value p_value) {
+  if (IS_VALUE_NUMBER(p_value)) {
+    return snprintf(p_out, p_capacity, "%g", VALUE_AS_NUMBER(p_value));
+  }
+  if (IS_VALUE_BOOL(p_value)) {
+    return snprintf(p_out, p_capacity, "%s", VALUE_AS_BOOL(p_value) ? "true" : "false");
+  }
+  if (IS_VALUE_STRICTLY_NULL(p_value)) {
+    return snprintf(p_out, p_capacity, "null");
+  }
+  if (IS_VALUE_STRICTLY_OBJECT(p_value)) {
+    switch (object_get_type(VALUE_AS_OBJECT(p_value))) {
+    case OBJ_STRING:
+      return snprintf(p_out, p_capacity, "%s", ((object_string*)VALUE_AS_OBJECT(p_value))->string.chars);
+    case OBJ_FUNCTION:
+      return snprintf(p_out, p_capacity, "<fu>");
+    case OBJ_CLOSURE:
+      return snprintf(p_out, p_capacity, "<closure>");
+    case OBJ_ARRAY:
+      return snprintf(p_out, p_capacity, "<array>");
+    case OBJ_MAP:
+      return snprintf(p_out, p_capacity, "<map>");
+    case OBJ_NATIVE_FUNCTION:
+      return snprintf(p_out, p_capacity, "<native function>");
+    case OBJ_NATIVE_VALUE:
+      return snprintf(p_out, p_capacity, "<native value>");
+    default:
+      return snprintf(p_out, p_capacity, "<object>");
     }
   }
+  return snprintf(p_out, p_capacity, "null");
+}
 
-  va_start(ap, p_fmt);
-  vfprintf(stderr, p_fmt, ap);
-  va_end(ap);
-  // the message must always be newline terminated: with an empty call stack
-  // (ok_call from C) no stack trace follows and the next terminal line would
-  // glue onto the error. %
-  fputc('\n', stderr);
+// report: the single point a runtime error prints. idempotent
+// via error_reported, an error that crossed a native ok_call hop reports
+// once (at the innermost FAIL_PATH that still sees the frames) and the
+// outer levels propagate silently. resetting closes every open upvalue
+// first: an error-path frame's captured locals must not stay open pointing
+// into a register file the next run reuses (stale-open-upvalue bug).
+static interpret_result __attribute__((cold)) vm_report_error(vm* p_vm) {
+  execution_state* exe = p_vm->current_execution_state;
+  interpret_result result = {.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
+  if (!exe->error_pending || exe->error_reported) {
+    return result;
+  }
+  exe->error_reported = true;
 
-  if (exe->call_stack.count > 0) {
-    fputs("stack trace (most recent call last):\n", stderr);
+  {
+    bool panic = false;
+    bool had_error = false;
+    // a script `throw v` reports the value itself ("uncaught error: <value>");
+    // a runtime-raised error reports its message text. both render through
+    // okdiag so the header and (when the source text is alive) the snippet stay one format.
+    char value_text[320];
+    const char* text = exe->error_what;
+    if (exe->error_is_script) {
+      char formatted[256];
+      format_error_value(formatted, sizeof(formatted), exe->error_value);
+      snprintf(value_text, sizeof(value_text), "uncaught error: %s", formatted);
+      text = value_text;
+    }
+    const ok_string_view message = ok_create_string_view(text, OK_STRING_VIEW_CALCULATE_LENGTH, true);
 
-    for (uint32_t i = 0; i < exe->call_stack.count; ++i) {
-      call_frame* frame = &exe->call_stack.data[i];
-
-      uint32_t instruction = frame->ip - frame->closure->function->chunk.code.data - 1;
-
+    if (exe->call_stack.count > 0) {
+      call_frame* frame = &exe->call_stack.data[exe->call_stack.count - 1];
+      size_t instruction = frame->ip - frame->closure->function->chunk.code.data - 1;
       ok_line_info_repeated* info = chunk_find_line_info(&frame->closure->function->chunk, instruction);
-
-      if (info != NULL && p_vm->source != NULL) {
-        fprintf(stderr,
-                "%s:%d:%d in %s.\n",
-                p_vm->source->path,
-                info->line_info.line,
-                info->line_info.offset,
-                frame->closure->function->name->string.chars);
+      // the source is the frame's (by chunk source id), not "the current
+      // run's": an A-compiled function still callable during source B's run
+      // reports A's path with A's line numbers. excerpts only when the text
+      // is alive (retained, or mid-run borrow).
+      const vm_source_entry* entry = vm_source_of(p_vm, frame->closure->function->chunk.source_id);
+      if (info != NULL && entry != NULL && entry->code != NULL) {
+        // the span is the token that authored the raising instruction: one
+        // caret on it. the snippet comes from the source text the renderer
+        // reads, the old code printed the token text as the line.
+        const ok_span span = {.line = info->line_info.line,
+                              .column = info->line_info.column,
+                              .offset = info->line_info.offset,
+                              .length = 1};
+        okdiag_report(&panic, &had_error, entry->path, entry->code, &span, false, REPORT_SEVERITY_ERROR, message, NULL);
+      } else if (info != NULL && entry != NULL) {
+        // right path + right line:col, no excerpt: the borrowed code expired
+        // (degraded, never wrong).
+        const ok_span span = {.line = info->line_info.line,
+                              .column = info->line_info.column,
+                              .offset = info->line_info.offset,
+                              .length = 1};
+        okdiag_report(&panic, &had_error, entry->path, NULL, &span, false, REPORT_SEVERITY_ERROR, message, NULL);
       } else {
-        fprintf(stderr,
-                "%s in %s.\n",
-                p_vm->source != NULL ? p_vm->source->path : "<host>",
-                frame->closure->function->name->string.chars);
+        okdiag_report(&panic, &had_error, "", NULL, NULL, false, REPORT_SEVERITY_ERROR, message, NULL);
+      }
+    } else {
+      okdiag_report(&panic, &had_error, "", NULL, NULL, false, REPORT_SEVERITY_ERROR, message, NULL);
+    }
+
+    if (exe->call_stack.count > 0) {
+      fputs("\nstack trace (most recent call last):\n", stderr);
+      for (uint32_t i = 0; i < exe->call_stack.count; ++i) {
+        call_frame* frame = &exe->call_stack.data[i];
+        uint32_t instruction = frame->ip - frame->closure->function->chunk.code.data - 1;
+        ok_line_info_repeated* info = chunk_find_line_info(&frame->closure->function->chunk, instruction);
+        const vm_source_entry* entry = vm_source_of(p_vm, frame->closure->function->chunk.source_id);
+        if (info != NULL && entry != NULL) {
+          fprintf(stderr,
+                  "%s:%u:%u in %s\n",
+                  entry->path,
+                  info->line_info.line,
+                  info->line_info.column,
+                  frame->closure->function->name->string.chars);
+        } else {
+          fprintf(stderr,
+                  "%s in %s\n",
+                  entry != NULL ? entry->path : "<host>",
+                  frame->closure->function->name->string.chars);
+        }
       }
     }
   }
+  return result;
+}
 
+// fonal reset: only at the outermost C boundary, when the error is
+// uncaught everywhere. closing every open upvalue first, an error-path
+// frame's captured locals must not stay open pointing into a register file
+// the next run reuses (stale-open-upvalue bug, found while building this lane).
+// the handler stack empties with the frames it tags.
+// the uncaught defer sweep runs first: every frame's pending defers, innermost
+// frame first, descending registers within a frame, cleanup on the way out
+// is defer's whole job, and the report already printed (the sweep's stdout
+// lands after it). a defer failing during the sweep cascades: the rest are
+// skipped, the lane keeps the failing defer's error (ok_last_error reads the
+// replacement). oom never sweeps (the hard lane).
+static void reset_error_state(vm* p_vm) {
+  execution_state* exe = p_vm->current_execution_state;
+  if (!exe->error_hard && exe->call_stack.count > 0) {
+    for (uint32_t f = exe->call_stack.count; f-- > 0;) {
+      call_frame* fr = &exe->call_stack.data[f];
+      (void)run_pending_defers(p_vm, fr->registers_base, fr->registers_base + fr->closure->function->registers);
+      // cascade stops the chain. the teardown below is unconditional
+    }
+  }
+  close_upvalues(exe, 0);
   exe->registers.top = 0;
   exe->call_stack.count = 0;
-  // mark the error as pending: interpretation must not resume after this
-  // point without propagating the failure (call_native checks this when a
-  // native returns. vm_call/vm_interpret consume it at the outermost C boundary).
-  exe->error_pending = true;
+  exe->handlers.count = 0;
+  exe->defer_cascade = false;
 }
 
 static inline bool call(vm* p_vm,
@@ -2651,27 +3334,38 @@ static inline bool call(vm* p_vm,
     const uint32_t floor = (uint32_t)(fu->arity - fu->ndefaults) - 1u;
     if (p_argc < floor) {
       runtime_error(p_vm,
-                    "invalid call to '%s': expected at least %u arguments, got: %d.",
+                    OK_EK_ARITY,
+                    "invalid call to '%s': expected at least %u argument%s, got %u.",
                     fu->name->string.chars,
                     floor,
+                    s_if_plural(floor),
                     p_argc);
       return false;
     }
   } else if (p_argc < (uint32_t)(fu->arity - fu->ndefaults) || p_argc > fu->arity) {
     if (fu->ndefaults == 0) {
-      runtime_error(
-          p_vm, "invalid call to '%s': expected %d arguments, got: %d.", fu->name->string.chars, fu->arity, p_argc);
+      runtime_error(p_vm,
+                    OK_EK_ARITY,
+                    "invalid call to '%s': expected %u argument%s, got %u.",
+                    fu->name->string.chars,
+                    fu->arity,
+                    s_if_plural(fu->arity),
+                    p_argc);
     } else if (p_argc < fu->arity - fu->ndefaults) {
       runtime_error(p_vm,
-                    "invalid call to '%s': expected at least %d arguments, got: %d.",
+                    OK_EK_ARITY,
+                    "invalid call to '%s': expected at least %u argument%s, got %u.",
                     fu->name->string.chars,
                     fu->arity - fu->ndefaults,
+                    s_if_plural(fu->arity - fu->ndefaults),
                     p_argc);
     } else {
       runtime_error(p_vm,
-                    "invalid call to '%s': expected at most %d arguments, got: %d.",
+                    OK_EK_ARITY,
+                    "invalid call to '%s': expected at most %u argument%s, got %u.",
                     fu->name->string.chars,
                     fu->arity,
+                    s_if_plural(fu->arity),
                     p_argc);
     }
     return false;
@@ -2684,9 +3378,11 @@ static inline bool call(vm* p_vm,
   // no check, the results are dropped. the dynamic lane (ok_call) takes all.
   if (p_retc != RETURN_COUNT_DYNAMIC && p_retc >= 1 && p_retc != (uint32_t)fu->results) {
     runtime_error(p_vm,
-                  "invalid call to '%s': it returns %u values, %u were requested here.",
+                  OK_EK_ARITY,
+                  "invalid call to '%s': it returns %u value%s, %u were requested here.",
                   fu->name->string.chars,
                   fu->results,
+                  s_if_plural(fu->results),
                   p_retc);
     return false;
   }
@@ -2703,7 +3399,7 @@ static inline bool call(vm* p_vm,
     // the register file is 16-bit-addressable: a varargs call can stage more
     // arguments than the file has slots. hard error, not a clamp. a clamp
     // would silently truncate the window VA_PACK reads.
-    runtime_error(p_vm, "invalid call to '%s': too many arguments.", fu->name->string.chars);
+    runtime_error(p_vm, OK_EK_ARITY, "invalid call to '%s': too many arguments.", fu->name->string.chars);
     return false;
   }
   if (frame_top > p_reg->array.capacity) {
@@ -2716,7 +3412,7 @@ static inline bool call(vm* p_vm,
     // grow. null-filling from 0 here would wipe the caller's live registers.
     const uint32_t initialized_uptill = p_reg->array.capacity;
     if (!register_array_grow(&p_reg->array, new_capacity)) {
-      runtime_error(p_vm, "out of memory: failed to grow register file.");
+      runtime_oom(p_vm, "out of memory: failed to grow register file.");
       return false;
     }
     // fresh registers must read as null: realloc'd memory is garbage
@@ -2749,6 +3445,7 @@ static inline bool call(vm* p_vm,
   frame.return_base = p_callee;
   frame.return_count = p_retc;
   frame.argc = p_argc;
+  frame.defer_thunk = false;
   return call_stack_append(&p_exe->call_stack, frame);
 }
 
@@ -2761,9 +3458,11 @@ static inline bool call_native(vm* p_vm,
                                uint32_t p_retc) {
   if (p_native->arity != OK_NATIVE_ARITY_ANY && p_argc != p_native->arity) {
     runtime_error(p_vm,
-                  "invalid call to native '%s': expected %d arguments, got: %d.",
+                  OK_EK_ARITY,
+                  "invalid call to native '%s': expected %u argument%s, got %u.",
                   p_native->name.chars,
                   p_native->arity,
+                  s_if_plural(p_native->arity),
                   p_argc);
     return false;
   }
@@ -2781,7 +3480,7 @@ static inline bool call_native(vm* p_vm,
   value result = p_native->function(p_vm->ok, p_argc, args_stash);
   p_exe->native_call_depth--;
   if (p_exe->native_has_error) {
-    runtime_error(p_vm, "%s", p_exe->native_error_message.chars);
+    runtime_error(p_vm, OK_EK_NATIVE, "%s", p_exe->native_error_message.chars);
     p_exe->native_has_error = false;
     string_deinit(&p_exe->native_error_message, p_vm->alloc);
     return false;
@@ -2836,7 +3535,7 @@ static bool call_spread(vm* p_vm,
   const uint32_t array_at = p_base + p_callee + p_fixed + 1u;
   const value spread = p_reg->array.data[array_at];
   if (!IS_VALUE_ARRAY(spread)) {
-    runtime_error(p_vm, "can only spread an array.");
+    runtime_error(p_vm, OK_EK_TYPE, "can only spread an array.");
     return false;
   }
   object_array* arr = VALUE_AS_ARRAY(spread);
@@ -2845,7 +3544,7 @@ static bool call_spread(vm* p_vm,
   if (need > UINT16_MAX + 1u || (uint32_t)p_fixed + len > UINT16_MAX) {
     // the register file is 16-bit-addressable and argc is 16-bit: this is the
     // boundary, before any slot is written.
-    runtime_error(p_vm, "too many arguments to spread.");
+    runtime_error(p_vm, OK_EK_ARITY, "too many arguments to spread.");
     return false;
   }
   if (need > p_reg->array.capacity) {
@@ -2854,7 +3553,7 @@ static bool call_spread(vm* p_vm,
     const uint32_t new_capacity = target > UINT16_MAX + 1u ? UINT16_MAX + 1u : target;
     const uint32_t initialized_uptill = p_reg->array.capacity;
     if (!register_array_grow(&p_reg->array, new_capacity)) {
-      runtime_error(p_vm, "out of memory: failed to grow register file.");
+      runtime_oom(p_vm, "out of memory: failed to grow register file.");
       return false;
     }
     for (uint32_t i = initialized_uptill; i < new_capacity; ++i) {
@@ -2899,7 +3598,7 @@ static bool call_value(vm* p_vm,
     }
   }
 invalid_call:
-  runtime_error(p_vm, "invalid call: value is not callable");
+  runtime_error(p_vm, OK_EK_TYPE, "invalid call: value is not callable.");
   return false;
 }
 
@@ -2909,13 +3608,13 @@ static interpret_result create_closure(
   object_specs s = {p_vm->alloc, p_vm->objects_store};
   object_closure* closure = create_object_closure(function, &s);
   if (closure == NULL) {
-    runtime_error(p_vm, "out of memory: failed to allocate closure object.");
+    runtime_oom(p_vm, "out of memory: failed to allocate closure object.");
     interpret_result result = {.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
     return result;
   }
   p_reg->array.data[p_frame->registers_base + p_dest] = OBJECT_AS_VALUE(closure);
   if (function->upvalues.count > 0 && !upvalue_array_grow(&closure->upvalues, function->upvalues.count)) {
-    runtime_error(p_vm, "out of memory: failed to allocate closure upvalues.");
+    runtime_oom(p_vm, "out of memory: failed to allocate closure upvalues.");
     interpret_result result = {.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
     return result;
   }
@@ -2937,7 +3636,7 @@ static interpret_result create_closure(
       status = upvalue_array_append(&closure->upvalues, p_frame->closure->upvalues.data[desc.index]);
     }
     if (!status) {
-      runtime_error(p_vm, "out of memory: failed to allocate closure upvalue.");
+      runtime_oom(p_vm, "out of memory: failed to allocate closure upvalue.");
       interpret_result result = {.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
       return result;
     }
@@ -2959,7 +3658,7 @@ static object_upvalue* capture_upvalue(vm* p_vm, execution_state* p_exe, uint32_
   object_specs s = {p_vm->alloc, p_vm->objects_store};
   object_upvalue* captured = create_object_upvalue(p_register, &s);
   if (captured == NULL) {
-    runtime_error(p_vm, "out of memory: failed to allocate memory for upvalue.");
+    runtime_oom(p_vm, "out of memory: failed to allocate memory for upvalue.");
     return NULL;
   }
   captured->next = upvalue;
@@ -2981,6 +3680,8 @@ static void close_upvalues(execution_state* p_exe, uint32_t p_uptill) {
 }
 
 ARRAY_DEFINE_DEFAULT(register_array, value, ARRAY_DEFAULT_TYPE_DEINIT)
+ARRAY_DEFINE_DEFAULT(vm_sources, vm_source_entry, ARRAY_DEFAULT_TYPE_DEINIT)
+ARRAY_DEFINE_DEFAULT(handler_stack, handler_record, ARRAY_DEFAULT_TYPE_DEINIT)
 ARRAY_DEFINE_DEFAULT(call_stack, call_frame, ARRAY_DEFAULT_TYPE_DEINIT);
 
 void register_file_init(register_file* p_registers, allocators* p_alloc) {

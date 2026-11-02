@@ -1,0 +1,43 @@
+fu close(tag) {
+  print("closing " + tag);
+  return true;
+}
+fu boom() {
+  throw "kapow";
+  return true;
+}
+
+// the defer runs BEFORE the catch that receives the error
+try {
+  {
+    defer close("guarded");
+    boom();
+  }
+  print("unreachable");
+} catch e {
+  print("caught: " + e); // expect: closing guarded
+}
+// expect: caught: kapow
+
+// defers of the try body run before the catch, LIFO
+try {
+  defer close("first");
+  defer close("second");
+  throw "x";
+} catch e {
+  print("caught x"); // expect: closing second
+}
+// expect: closing first
+// expect: caught x
+
+// across calls: the callee's defers run before the caller's catch
+fu inner() {
+  defer close("inner-cleanup");
+  throw "from-inner";
+}
+try {
+  inner();
+} catch e {
+  print("caller caught: " + e); // expect: closing inner-cleanup
+}
+// expect: caller caught: from-inner

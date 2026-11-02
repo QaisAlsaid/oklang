@@ -42,6 +42,7 @@ target_sources(ok PRIVATE
   src/okchunk.c
   src/okcompiler.c
   src/okdebug.c
+  src/okdiag.c
   src/okglobals_store.c
   src/oklexer.c
   src/okmm.c

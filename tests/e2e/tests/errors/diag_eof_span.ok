@@ -1,0 +1,1 @@
+let z =  // expect error: expected an expression. (at end of file)

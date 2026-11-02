@@ -1,0 +1,2 @@
+let x = 1;
+defer x; // expect error: 'defer' schedules a call, like: defer close(file).

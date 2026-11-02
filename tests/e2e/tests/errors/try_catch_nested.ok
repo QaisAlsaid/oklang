@@ -1,0 +1,11 @@
+try {
+  try {
+    throw "inner";
+  } catch e {
+    print(e); // expect: inner
+    throw "outer";
+  }
+} catch e2 {
+  print(e2); // expect: outer
+}
+print("done"); // expect: done

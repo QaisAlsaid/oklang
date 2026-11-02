@@ -66,9 +66,7 @@ typedef enum {
   AST_RETURN_STATEMENT,
   AST_THROW_STATEMENT,
   AST_TRY_STATEMENT,
-  AST_CATCH_STATEMENT,
-  AST_FINALIZE_STATEMENT,
-  AST_TRY_CATCH_STATEMENT,
+  AST_DEFER_STATEMENT,
   AST_EOF_STATEMENT,
   AST_RANGE_PURE_STATEMENT_END = AST_EOF_STATEMENT,
 
@@ -581,6 +579,63 @@ void ast_return_statement_init(ast_return_statement* p_return,
 void ast_return_statement_deinit(ast_return_statement* p_return);
 bool ast_return_statement_print(const ast_return_statement* p_return);
 string ast_return_statement_asprint(const ast_return_statement* p_return);
+
+// `throw expr;` the value is the error, any value. a NULL expression
+// is the bare rethrow `throw;`, legal only inside a catch block
+// (checked at compile: the compiler knows the enclosing catch's parked-error register).
+typedef struct {
+  ast_statement statement;
+  ast_expression* expression; // nullable: bare rethrow
+} ast_throw_statement;
+
+void ast_throw_statement_init(ast_throw_statement* p_throw,
+                              ast_expression* p_expression,
+                              token p_token,
+                              ast_specs* p_specs);
+void ast_throw_statement_deinit(ast_throw_statement* p_throw);
+bool ast_throw_statement_print(const ast_throw_statement* p_throw);
+string ast_throw_statement_asprint(const ast_throw_statement* p_throw);
+
+// `try { B } catch e { H }` the catch binder is an immutable local scoped to the
+// statement. a NULL catch_binding is the bare `catch { }`. the try block
+// must be followed by a catch clause (the parser enforces it).
+typedef struct {
+  ast_statement statement;
+  ast_statement* body;
+  ast_binding* catch_binding; // nullable: `catch { }` discards the value
+  ast_statement* catch_body;  // nullable (never: the parser requires one)
+} ast_try_statement;
+
+void ast_try_statement_init(ast_try_statement* p_try, token p_token, ast_specs* p_specs);
+void ast_try_statement_deinit(ast_try_statement* p_try);
+bool ast_try_statement_print(const ast_try_statement* p_try);
+string ast_try_statement_asprint(const ast_try_statement* p_try);
+
+// `defer f(a, b)` / `deferr f(a, b)` the callee and the arguments are evaluated at the defer site into hidden locals
+// (a snapshot: reassigning `a` afterwards does not change what the deferred call sees),
+// and what runs at scope exit is `thunk` a lambda over the  hidden names, built by the parser and compiled by the
+// ordinary lambda path. `is_err` marks deferr: identical registration, but the scope's normal exits kill the slot
+// instead of running it (the unwind scan runs both).
+typedef struct {
+  ast_statement statement;
+  ast_call_expression* call;      // the original call
+  ast_function_expression* thunk; // fu() { <hidden>(<hidden>...) } over the names
+  char* names;
+  ok_string_view slot_name;
+  bool is_err;
+} ast_defer_statement;
+
+void ast_defer_statement_init(ast_defer_statement* p_defer,
+                              token p_token,
+                              ast_call_expression* p_call,
+                              ast_function_expression* p_thunk,
+                              char* p_names,
+                              ok_string_view p_slot_name,
+                              bool p_is_err,
+                              ast_specs* p_specs);
+void ast_defer_statement_deinit(ast_defer_statement* p_defer);
+bool ast_defer_statement_print(const ast_defer_statement* p_defer);
+string ast_defer_statement_asprint(const ast_defer_statement* p_defer);
 
 typedef struct {
   ast_declaration declaration;

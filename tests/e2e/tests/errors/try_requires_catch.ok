@@ -1,0 +1,3 @@
+try {
+  print(1); // expect error: expected 'catch' after try block.
+}
