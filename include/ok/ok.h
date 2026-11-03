@@ -52,6 +52,7 @@ bool ok_value_is_bool(ok_value p_value);
 bool ok_value_is_number(ok_value p_value);
 bool ok_value_is_object(ok_value p_value);
 bool ok_value_is_string(ok_value p_value);
+bool ok_value_is_coro(ok_value p_value);
 
 bool ok_value_as_bool(ok_value p_value);
 double ok_value_as_number(ok_value p_value);
@@ -190,6 +191,58 @@ bool ok_class_define_native_method(ok* p_ok,
 // seal the class (C15): builds the flat field map and freezes the tables.
 // after this, definitions are refused forever.
 bool ok_class_freeze(ok* p_ok, ok_value p_class);
+
+/* coroutines (embedder side) */
+
+// the lifecycle ok_coro_status reports. a dead coro answers null on resume
+// (R21); errors kill the coro and fail the resume call (R22).
+enum {
+  OK_CORO_READY = 0,
+  OK_CORO_SUSPENDED = 1,
+  OK_CORO_RUNNING = 2,
+  OK_CORO_DEAD = 3,
+};
+
+// coro(fu) from C. p_body must be a script closure (a fu or lambda value);
+// a bound method, a native, or anything else is refused with a null return,
+// as is allocation failure. the body does NOT run until the first resume.
+// the result is not rooted: ok_root it like an ok_array_new result.
+ok_value ok_coro_new(ok* p_ok, ok_value p_body);
+
+// the game-loop primitive: while (running) { ok_coro_resume(...); render(); }
+// drives one suspension segment of the coro. true + *p_out = the yielded
+// value, or the body's final value when it completes. false = the body died
+// by error: at the host boundary the lane lands in ok_last_error (nothing
+// prints), inside a native the enclosing call fails instead - exactly
+// ok_call's discipline. a dead coro answers true + null; a running one
+// errors. p_arg lands in the body's parameter (first resume) or the parked
+// yield/suspend expression's result slot (later resumes); pass p_has_arg =
+// false to send null. the coro is guarded for the duration of the call;
+// *p_out follows the same rooting contract as an ok_call result.
+bool ok_coro_resume(ok* p_ok, ok_value p_coro, ok_value p_arg, bool p_has_arg, ok_value* p_out);
+
+// OK_CORO_READY / _SUSPENDED / _RUNNING / _DEAD. UINT32_MAX for any value
+// that is not a coro (check ok_value_is_coro first if the provenance is in
+// doubt).
+uint32_t ok_coro_status(ok* p_ok, ok_value p_coro);
+
+// the coro currently running, as a value. meaningful inside a native (or a
+// print callback) invoked from a coro's body; null on the main state, which
+// is also what the host sees between runs. root it if you keep it past your
+// next allocation.
+ok_value ok_coro_current(ok* p_ok);
+
+// a native parks its caller: request suspension at the native's own return
+// boundary. only valid inside a native callback whose caller chain down to
+// the coro's frame is pure bytecode - the same boundaries OP_YIELD enforces
+// (not on the main state, not under an operator method / constructor /
+// error-unwind defer, not across another native call). a granted request
+// parks the coro when the native returns: the native's result goes out to
+// the resumer (the resume's *p_out), and the next resume's argument lands in
+// the call's result register - the yield contract, one boundary later.
+// false = refused (the error lane explains, the call fails into script
+// catch), or the call site is not a native at all.
+bool ok_native_suspend(ok* p_ok);
 
 /* output */
 

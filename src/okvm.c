@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "okvm.h"
+#include "ok/ok.h"
 #if defined(OK_PARANOID)
 #define OK_TRACE_EXECUTION
 #endif // defined(OK_PARANOID)
@@ -141,6 +142,7 @@ void vm_init(vm* p_vm, vm_specs p_specs) {
   p_vm->current_execution_state->has_error = false;
   p_vm->current_execution_state->error_what[0] = '\0';
   p_vm->current_execution_state->native_call_depth = 0;
+  p_vm->current_execution_state->native_suspend_pending = false;
   p_vm->current_execution_state->owner_coro = NULL; // the vm's own state: no coro owns it
   p_vm->current_execution_state->yield_barrier = 0;
   p_vm->current_execution_state->yield_barrier_kind = 0;
@@ -637,6 +639,7 @@ static execution_state* coro_state_create(vm* p_vm, object_coro* p_coro) {
   state->has_error = false;
   state->error_what[0] = '\0';
   state->native_call_depth = 0;
+  state->native_suspend_pending = false;
   state->owner_coro = p_coro;
   state->yield_barrier = 0;
   state->yield_barrier_kind = 0;
@@ -867,6 +870,137 @@ bool vm_define_coro_surface(vm* p_vm) {
   status &=
       object_class_define_native_method(klass, ok_create_string_view("status", 6, true), 1, native_coro_status, true, &specs);
   return status;
+}
+
+// =========================== the coro C API (patch 42) ===========================
+//
+// ok.h's embedder surface over the same engine the natives drive: create,
+// drive, inspect, and the one piece of machinery a script cannot express -
+// a native parking its caller. the wrappers keep ok_call's C boundary
+// discipline: errors land in the boundary's lane (ok_last_error at depth
+// 0, the enclosing call's failure inside a native), values cross as plain
+// words, rooting past each call is the host's job.
+
+// the ok.h status enum and the internal coro_status must stay index-parallel
+// (ok_coro_status returns the internal word unchecked).
+typedef char ok_coro_status_is_index_parallel[(OK_CORO_READY == (int)CORO_READY &&
+                                                OK_CORO_SUSPENDED == (int)CORO_SUSPENDED &&
+                                                OK_CORO_RUNNING == (int)CORO_RUNNING &&
+                                                OK_CORO_DEAD == (int)CORO_DEAD)
+                                                   ? 1
+                                                   : -1];
+
+// the park half of ok_native_suspend, shared by every call-completion arm
+// that can finish a suspend-requesting native (OP_CALL x4, OP_INVOKE,
+// OP_SUPER_INVOKE - the operator / constructor / unwind lanes are refused
+// at request time by the barrier, so they never reach a park). the native's
+// result already sits in the window at p_result (a frame-relative register
+// index); it goes OUT to the resumer, the coro parks in place, and the next
+// resume's argument lands in that same register - the yield contract, one
+// boundary later.
+static interpret_result native_suspend_park(execution_state* p_exe,
+                                             register_file* p_reg,
+                                             call_frame* p_frame,
+                                             uint16_t p_result) {
+  p_exe->native_suspend_pending = false;
+  object_coro* coro = p_exe->owner_coro;
+  coro->resume_target = p_result;
+  coro->status = CORO_SUSPENDED;
+  return (interpret_result){.status = RUNTIME_SUSPENDED,
+                            .top_level_return = p_reg->array.data[p_frame->registers_base + p_result]};
+}
+
+ok_value ok_coro_new(ok* p_ok, ok_value p_body) {
+  vm* p_vm = ok_vm(p_ok);
+  if (!IS_VALUE_CLOSURE(p_body)) {
+    return NULL_AS_VALUE();
+  }
+  object_specs specs = {p_vm->alloc, p_vm->objects_store};
+  gc_guard_up(p_vm->alloc->gc, p_body); // the coro rides the guard until the caller roots it
+  object_coro* coro = create_object_coro(VALUE_AS_CLOSURE(p_body), &specs);
+  gc_guard_down(p_vm->alloc->gc);
+  if (coro == NULL) {
+    return NULL_AS_VALUE();
+  }
+  return OBJECT_AS_VALUE(coro);
+}
+
+bool ok_coro_resume(ok* p_ok, ok_value p_coro, ok_value p_arg, bool p_has_arg, ok_value* p_out) {
+  vm* p_vm = ok_vm(p_ok);
+  if (!IS_VALUE_CORO(p_coro)) {
+    *p_out = NULL_AS_VALUE();
+    return false;
+  }
+  // the coro may be unrooted host state for the whole drive: the guard
+  // covers exactly the window in which the host holds no reference the
+  // collector can see (the drive itself swaps the states, the parked
+  // resumer's registers keep the script-lane receiver alive the same way).
+  gc_guard_up(p_vm->alloc->gc, p_coro);
+  value out;
+  const bool drove = coro_drive(p_vm, VALUE_AS_CORO(p_coro), p_has_arg, p_arg, &out);
+  gc_guard_down(p_vm->alloc->gc);
+  if (!drove) {
+    // the lane (transplanted to this boundary's state) carries the error:
+    // consumed here at depth 0 for ok_last_error, left pending inside a
+    // native so the enclosing call fails - vm_call's exact discipline.
+    if (p_vm->current_execution_state->native_call_depth == 0) {
+      vm_error(p_vm, false);
+    }
+    *p_out = NULL_AS_VALUE();
+    return false;
+  }
+  *p_out = out;
+  return true;
+}
+
+uint32_t ok_coro_status(ok* p_ok, ok_value p_coro) {
+  (void)p_ok;
+  if (!IS_VALUE_CORO(p_coro)) {
+    return UINT32_MAX;
+  }
+  return VALUE_AS_CORO(p_coro)->status;
+}
+
+ok_value ok_coro_current(ok* p_ok) {
+  vm* p_vm = ok_vm(p_ok);
+  object_coro* coro = p_vm->current_execution_state->owner_coro;
+  if (coro == NULL) {
+    return NULL_AS_VALUE();
+  }
+  return OBJECT_AS_VALUE(coro);
+}
+
+bool ok_native_suspend(ok* p_ok) {
+  vm* p_vm = ok_vm(p_ok);
+  execution_state* exe = p_vm->current_execution_state;
+  if (exe->native_call_depth == 0) {
+    return false; // not inside a native: there is no return boundary to park at
+  }
+  if (exe->owner_coro == NULL) {
+    runtime_error(p_vm, OK_EK_VALUE, "cannot suspend outside a coroutine.");
+    return false;
+  }
+  if (exe->native_call_depth > 1) {
+    runtime_error(p_vm, OK_EK_VALUE, "cannot suspend across a native call.");
+    return false;
+  }
+  if (exe->yield_barrier > 0) {
+    switch ((yield_barrier_kind)exe->yield_barrier_kind) {
+    case YIELD_BARRIER_CONSTRUCTOR:
+      runtime_error(p_vm, OK_EK_VALUE, "cannot suspend from inside a constructor.");
+      break;
+    case YIELD_BARRIER_OPERATOR:
+      runtime_error(p_vm, OK_EK_VALUE, "cannot suspend from inside an operator method.");
+      break;
+    case YIELD_BARRIER_DEFER:
+    default:
+      runtime_error(p_vm, OK_EK_VALUE, "cannot suspend from inside a defer.");
+      break;
+    }
+    return false;
+  }
+  exe->native_suspend_pending = true;
+  return true;
 }
 static bool entry_visible_from(const method_entry* p_entry, const call_frame* p_frame);
 static interpret_result error_interpret_result(void);
@@ -3632,6 +3766,9 @@ static void* ok_dispatch_table[OP__COUNT] = {
       reg = &exe->registers;
       frame = &exe->call_stack.data[exe->call_stack.count - 1];
       ip = frame->ip;
+      if (exe->native_suspend_pending) {
+        return native_suspend_park(exe, reg, frame, a);
+      }
       DISPATCH();
     }
     CASE(OP_CALL_LONG): {
@@ -3655,6 +3792,9 @@ static void* ok_dispatch_table[OP__COUNT] = {
       reg = &exe->registers;
       frame = &exe->call_stack.data[exe->call_stack.count - 1];
       ip = frame->ip;
+      if (exe->native_suspend_pending) {
+        return native_suspend_park(exe, reg, frame, A);
+      }
       DISPATCH();
     }
     CASE(OP_RETURN): {
@@ -4645,6 +4785,9 @@ static void* ok_dispatch_table[OP__COUNT] = {
       reg = &exe->registers;
       frame = &exe->call_stack.data[exe->call_stack.count - 1];
       ip = frame->ip;
+      if (exe->native_suspend_pending) {
+        return native_suspend_park(exe, reg, frame, a);
+      }
       DISPATCH();
     }
     CASE(OP_CALL_SPREAD_LONG): {
@@ -4660,6 +4803,9 @@ static void* ok_dispatch_table[OP__COUNT] = {
       reg = &exe->registers;
       frame = &exe->call_stack.data[exe->call_stack.count - 1];
       ip = frame->ip;
+      if (exe->native_suspend_pending) {
+        return native_suspend_park(exe, reg, frame, A);
+      }
       DISPATCH();
     }
     CASE(OP_PRINT): {
@@ -5872,6 +6018,9 @@ static void* ok_dispatch_table[OP__COUNT] = {
         reg = &exe->registers;
         frame = &exe->call_stack.data[exe->call_stack.count - 1];
         ip = frame->ip;
+        if (exe->native_suspend_pending) {
+          return native_suspend_park(exe, reg, frame, A);
+        }
         DISPATCH();
       }
       frame->ip = ip;
@@ -5932,6 +6081,9 @@ static void* ok_dispatch_table[OP__COUNT] = {
         reg = &exe->registers;
         frame = &exe->call_stack.data[exe->call_stack.count - 1];
         ip = frame->ip;
+        if (exe->native_suspend_pending) {
+          return native_suspend_park(exe, reg, frame, A);
+        }
         DISPATCH();
       }
       // stage the receiver (register 0) as the call window base, then the

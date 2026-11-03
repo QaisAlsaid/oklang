@@ -487,7 +487,7 @@ int main() {
     if m.square(7) != 49 { print "bad: square"; }
     if m.add(1, 2) != 3 { print "bad: add"; }
     if not (m is Math) { print "bad: is"; }
-    if not isinstance(m, Object) { print "bad: root"; }
+    if not isinstance(m, object) { print "bad: root"; }
     // the bound native method carries its receiver
     let sq = m.square;
     if sq(6) != 36 { print "bad: bound"; }

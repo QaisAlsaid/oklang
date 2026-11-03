@@ -106,6 +106,16 @@ typedef struct execution_state {
   uint8_t yield_barrier;
   uint8_t yield_barrier_kind;
 
+  // set by ok_native_suspend inside a native, consumed by the dispatch
+  // loop's native call-completion arms (OP_CALL / OP_CALL_SPREAD /
+  // OP_INVOKE / OP_SUPER_INVOKE): the requesting native's result goes out
+  // to the resumer, the coro parks exactly like OP_YIELD would, and the
+  // next resume's argument lands in the call's result register. the
+  // request-time validation (coro owner, yield barrier, native depth)
+  // guarantees no completion arm outside those four can ever see it set,
+  // so the flag never outlives the native flight that raised it.
+  bool native_suspend_pending;
+
   // the parked-resumer chain head, see vm.resume_parked below.
   struct execution_state* next_parked;
 

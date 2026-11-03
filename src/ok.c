@@ -716,6 +716,10 @@ bool ok_value_is_string(ok_value p_value) {
   return IS_VALUE_STRING(p_value);
 }
 
+bool ok_value_is_coro(ok_value p_value) {
+  return IS_VALUE_CORO(p_value);
+}
+
 bool ok_value_as_bool(ok_value p_value) {
   return VALUE_AS_BOOL(p_value);
 }
