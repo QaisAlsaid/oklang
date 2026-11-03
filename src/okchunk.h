@@ -397,6 +397,13 @@ typedef enum {
                          //                          an if/while condition, the bool never materializes in a named
                          //                          register (the perform lands it in the lhs temp, which the jump
                          //                          consumes). polarity p matches OP_JUMP_IF.
+  OP_YIELD,               // w:    (p, a', b')     -> suspend the running coroutine: the value p then k[b']
+                         //                          otherwise r[b'] goes OUT to the resumer, and the NEXT
+                         //                          resume's argument lands in r[a'] (the yield expression's
+                         //                          own result register). the frame parks in place - no pops, no
+                         //                          upvalue closes, no defers - and the run_until driving the
+                         //                          coroutine returns RUNTIME_SUSPENDED with the value.
+  OP_YIELD_LONG,          // 2w:   (p, A, B)       -> same, wide; ip += w
   OP__COUNT,             // sentinel: the number of opcodes; must remain LAST (the threaded
                          // dispatch table is sized by it).
 } opcode;
@@ -691,6 +698,7 @@ static inline uint32_t opcode_word_count(opcode p_op) {
   case OP_STRICT_EQUAL_LONG:
   case OP_IS_LONG:
   case OP_JUMP_IF_CMP:
+  case OP_YIELD_LONG:
     return 2;
   case OP_GET_MEMBER:
   case OP_INVOKE:

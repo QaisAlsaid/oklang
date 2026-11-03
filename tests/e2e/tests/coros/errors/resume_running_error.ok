@@ -1,0 +1,9 @@
+// re-entrancy: resuming a running coro (here: itself, through a glob the
+// body can reach) is the one drive error.
+glob let mut self_coro = null;
+let c = coro(fu() {
+  self_coro.resume();
+  return 0;
+});
+self_coro = c;
+print(c.resume()); // expect error: resume of a running coroutine.

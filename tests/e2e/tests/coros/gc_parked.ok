@@ -1,0 +1,27 @@
+// the collector must walk a parked coro's state like a live vm's (registers,
+// call stack closures, open upvalues) and the parked resumer's too. the
+// churn between resumes forces collections (every allocation, under the
+// aggressive gate) while both sides hold live values.
+let c = coro(fu() {
+  let keep = ["a", "b", "c"];
+  let mut n = 0;
+  while n < 3 {
+    yield keep[n];
+    n = n + 1;
+  }
+  return len(keep);
+});
+print(c.resume()); // expect: a
+let mut junk = 0;
+let mut i = 0;
+while i < 300 {
+  let trash = [i, i + 1, i + 2];
+  let m = {"k": i, "v": trash};
+  junk = junk + len(m["v"]) - 2;
+  i = i + 1;
+}
+print(junk);       // expect: 300
+print(c.resume()); // expect: b
+print(c.resume()); // expect: c
+print(c.resume()); // expect: 3
+print(c.status()); // expect: dead

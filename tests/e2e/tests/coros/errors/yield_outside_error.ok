@@ -1,0 +1,8 @@
+// yield is coro-only: a plain function called from main that yields is the
+// compile-time-impossible, runtime-honest refusal (any function can BECOME a
+// coro body, so the check lives in the opcode handler).
+fu plain() {
+  yield 1;
+  return 2;
+}
+print(plain()); // expect error: yield outside a coroutine.

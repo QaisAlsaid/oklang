@@ -595,6 +595,11 @@ static bool compile_null_expression(compiler* p_compiler,
                                     _register p_dest,
                                     uint32_t p_requested_count,
                                     expression_result* p_out);
+static bool compile_yield_expression(compiler* p_compiler,
+                                     ast_yield_expression* p_yield,
+                                     _register p_dest,
+                                     uint32_t p_requested_count,
+                                     expression_result* p_out);
 static bool compile_function_expression(compiler* p_compiler,
                                         ast_function_expression* p_fu,
                                         _register p_dest,
@@ -882,6 +887,9 @@ static bool compile_expression(compiler* p_compiler,
     break;
   case AST_NULL_EXPRESSION:
     result = compile_null_expression(p_compiler, (ast_null_expression*)p_expression, p_dest, p_requested_count, p_out);
+    break;
+  case AST_YIELD_EXPRESSION:
+    result = compile_yield_expression(p_compiler, (ast_yield_expression*)p_expression, p_dest, p_requested_count, p_out);
     break;
   case AST_THIS_EXPRESSION:
     result = compile_this_expression(p_compiler, (ast_this_expression*)p_expression, p_dest, p_requested_count, p_out);
@@ -5089,6 +5097,57 @@ static bool compile_null_expression(compiler* p_compiler,
     return false;
   }
   p_out->count = p_requested_count;
+  p_out->type = EXPRESSION_VALUE;
+  p_out->lvalue = (lvalue){LVALUE_INVALID};
+  p_out->value = (location){p_dest.index, LOCATION_KIND_REGISTER, LOCATION_OK};
+  return true;
+}
+
+// `yield [value]` - the coroutine suspend point. the out-value compiles
+// into a temp (constants stay fused, p selects the pool), then one OP_YIELD:
+// a' is the frame-relative register the NEXT resume's argument lands in (the
+// expression's own result register), b' the out-value's source. the
+// expression's result is whatever that resume stages there - p_out points at
+// p_dest, a value only the runtime fills. never skipped for the discard lane:
+// `yield v;` as a statement still computes v and still parks.
+static bool compile_yield_expression(compiler* p_compiler,
+                                     ast_yield_expression* p_yield,
+                                     _register p_dest,
+                                     uint32_t p_requested_count,
+                                     expression_result* p_out) {
+  (void)p_requested_count; // yield is single-valued whatever the context asks
+  ast_node* author = (ast_node*)p_yield;
+  register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
+  const uint32_t checkpoint = regalloc->temp_top;
+  _register value_reg;
+  if (!register_allocator_allocate_temp(regalloc, &value_reg)) {
+    report_oom(p_compiler, author);
+    return false;
+  }
+  expression_result value_res;
+  if (!compile_expression(p_compiler, p_yield->value, value_reg, 1, &value_res)) {
+    return false;
+  }
+  bool is_constant = false;
+  if (!materialize_if_not_common(p_compiler, &is_constant, &value_res.value, author)) {
+    return false;
+  }
+  // the source is a constant index or a register index; p tells the handler which
+  if (p_dest.index > aprime_MAX || value_res.value.index > bprime_MAX) {
+    if (!emit_word2(p_compiler,
+                    encode_OPPABCQ(OP_YIELD_LONG, is_constant, p_dest.index, value_res.value.index, 0, 0),
+                    author)) {
+      report_oom(p_compiler, author);
+      return false;
+    }
+  } else if (!emit_word(p_compiler,
+                        encode_oppabprime(OP_YIELD, is_constant, p_dest.index, value_res.value.index),
+                        author)) {
+    report_oom(p_compiler, author);
+    return false;
+  }
+  register_allocator_reset_temps(regalloc, checkpoint);
+  p_out->count = 1;
   p_out->type = EXPRESSION_VALUE;
   p_out->lvalue = (lvalue){LVALUE_INVALID};
   p_out->value = (location){p_dest.index, LOCATION_KIND_REGISTER, LOCATION_OK};

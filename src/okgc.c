@@ -191,29 +191,7 @@ static bool mark_value(gc* p_gc, value p_value) {
   return true;
 }
 
-static bool mark_vm(gc* p_gc) {
-  vm* vm = p_gc->vm;
-  execution_state* exe = vm->current_execution_state;
-  // the hierarchy roots: Object, Class, and the cached lookup names are
-  // referenced only here, so this mark is what keeps them immortal.
-  if (!mark_object(p_gc, (object*)vm->object_singleton) || !mark_object(p_gc, (object*)vm->class_singleton) ||
-      !mark_object(p_gc, (object*)vm->static_call_name) || !mark_object(p_gc, (object*)vm->init_method_name)) {
-    return false;
-  }
-  for (uint32_t i = 0; i < CLASS_OP_COUNT; ++i) {
-    // [CALL] aliases static_call_name; marking twice is a no-op either way.
-    if (!mark_object(p_gc, (object*)vm->op_names[i])) {
-      return false;
-    }
-  }
-  // the seven builtin singletons root here exactly like Object and Class:
-  // nothing else references them at startup, and every classof() answer
-  // funnels through one of them.
-  for (uint32_t i = 0; i < OK_BUILTIN_COUNT; ++i) {
-    if (!mark_object(p_gc, (object*)vm->builtin_classes[i])) {
-      return false;
-    }
-  }
+static bool mark_execution_state(gc* p_gc, execution_state* exe) {
   // a script-thrown value sits in the error lane from raise until the host
   // clears it (ok_last_error keeps it readable past the failed run/call).
   // across C boundaries where allocation happens, so it must root like a
@@ -235,6 +213,44 @@ static bool mark_vm(gc* p_gc) {
   }
   for (object_upvalue* up = exe->open_upvalues; up != NULL; up = up->next) {
     if (!mark_object(p_gc, (object*)up)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool mark_vm(gc* p_gc) {
+  vm* vm = p_gc->vm;
+  execution_state* exe = vm->current_execution_state;
+  // the hierarchy roots: Object, Class, and the cached lookup names are
+  // referenced only here, so this mark is what keeps them immortal.
+  if (!mark_object(p_gc, (object*)vm->object_singleton) || !mark_object(p_gc, (object*)vm->class_singleton) ||
+      !mark_object(p_gc, (object*)vm->static_call_name) || !mark_object(p_gc, (object*)vm->init_method_name)) {
+    return false;
+  }
+  for (uint32_t i = 0; i < CLASS_OP_COUNT; ++i) {
+    // [CALL] aliases static_call_name; marking twice is a no-op either way.
+    if (!mark_object(p_gc, (object*)vm->op_names[i])) {
+      return false;
+    }
+  }
+  // the builtin singletons root here exactly like Object and Class:
+  // nothing else references them at startup, and every classof() answer
+  // funnels through one of them.
+  for (uint32_t i = 0; i < OK_BUILTIN_COUNT; ++i) {
+    if (!mark_object(p_gc, (object*)vm->builtin_classes[i])) {
+      return false;
+    }
+  }
+  if (!mark_execution_state(p_gc, exe)) {
+    return false;
+  }
+  // the parked resumers: while a resume runs a coroutine's state, the states
+  // it suspended root here - their registers and call stacks hold live
+  // values the coro still reads when it yields back (a swapped-out state is
+  // invisible to the current-state walk above, this is its stand-in).
+  for (execution_state* parked = vm->resume_parked; parked != NULL; parked = parked->next_parked) {
+    if (!mark_execution_state(p_gc, parked)) {
       return false;
     }
   }
@@ -410,7 +426,11 @@ static bool trace_object(gc* p_gc, object* p_object) {
     break;
   }
   case OBJ_UPVALUE: {
-    if (!mark_value(p_gc, ((object_upvalue*)p_object)->closed)) {
+    // the closed snapshot, plus the owner pin: an open cell captured in a
+    // coro keeps that coro (and its register file) alive through the
+    // upvalue, exactly like a live register would
+    object_upvalue* upvalue = (object_upvalue*)p_object;
+    if (!mark_value(p_gc, upvalue->closed) || !mark_value(p_gc, upvalue->owner)) {
       return false;
     }
     break;
@@ -522,6 +542,20 @@ static bool trace_object(gc* p_gc, object* p_object) {
     // the entry lives inside the receiver's (or the receiver class's) frozen
     // table: marking the receiver roots the table that owns the entry.
     if (!mark_value(p_gc, ((object_bound_method*)p_object)->receiver)) {
+      return false;
+    }
+    break;
+  }
+  case OBJ_CORO: {
+    // a parked (or ready) coroutine: the body closure, plus the whole owned
+    // execution state walked exactly like a live vm's - registers, call
+    // stack closures, open upvalues, the error lane. a RUNNING coro's state
+    // is the vm's current one (marked as itself, twice-marked is a no-op).
+    object_coro* coro = (object_coro*)p_object;
+    if (!mark_object(p_gc, (object*)coro->body)) {
+      return false;
+    }
+    if (coro->state != NULL && !mark_execution_state(p_gc, coro->state)) {
       return false;
     }
     break;

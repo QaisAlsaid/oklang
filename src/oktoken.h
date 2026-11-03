@@ -88,7 +88,8 @@
   X(TOKEN_CATCH, "catch")                                                                                              \
   X(TOKEN_THROW, "throw")                                                                                              \
   X(TOKEN_DEFER, "defer")                                                                                              \
-  X(TOKEN_DEFERR, "deferr")
+  X(TOKEN_DEFERR, "deferr")                                                                                             \
+  X(TOKEN_YIELD, "yield")
 
 typedef enum {
   TOKEN_ERROR = 0,
@@ -176,6 +177,7 @@ typedef enum {
   TOKEN_THROW,
   TOKEN_DEFER,
   TOKEN_DEFERR,
+  TOKEN_YIELD,
 } token_type;
 
 typedef struct {

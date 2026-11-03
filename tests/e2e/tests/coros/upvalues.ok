@@ -1,0 +1,33 @@
+// upvalues across the coro boundary. cells captured in the resumer resolve
+// through the vm's own register file even while the coro's state is current
+// (the shared-cell semantics: both sides see each other's writes), and cells
+// captured INSIDE the coro resolve through the coro's state - a closure that
+// escapes a parked coro pins the coro (and its register file) alive through
+// the upvalue's trace until the cell closes.
+let mut shared = 10;
+let c = coro(fu() {
+  print(shared);          // read the resumer's cell
+  shared = shared + 1;    // write it back
+  yield 1;
+  print(shared);          // see the resumer's mid-park write
+  return 0;
+});
+print(c.resume()); // expect: 10
+// expect: 1
+shared = 99;
+print(c.resume()); // expect: 99
+// expect: 0
+print(shared);     // expect: 99
+
+// the escaped closure: captures a cell of the coro's own frame
+let mut esc = null;
+let p = coro(fu() {
+  let x = 7;
+  esc = fu() { return x + 1; };
+  yield 1;
+  return 0;
+});
+print(p.resume()); // expect: 1
+print(esc());      // expect: 8
+print(p.resume()); // expect: 0
+print(esc());      // expect: 8

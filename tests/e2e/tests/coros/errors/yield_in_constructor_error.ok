@@ -1,0 +1,12 @@
+// a yield from inside a constructor can never resume honestly: the
+// construction lane's C frame (construct_instance) holds the instance
+// publishing and the watermark restore after the nested run_until returns.
+class K {
+  fu init() {
+    yield 1;
+  }
+}
+let c = coro(fu() {
+  return K();
+});
+print(c.resume()); // expect error: cannot yield from inside a constructor.

@@ -1,0 +1,37 @@
+// defers at suspend are PARKED, not run (the frames stay exactly as they
+// were); they run at the coro's death, lifo - normal completion runs them in
+// bytecode at the scope exits, error death runs them in the death sweep.
+fu close(tag) {
+  print("closing " + tag);
+  return true;
+}
+let c = coro(fu() {
+  defer close("a");
+  defer close("b");
+  yield 1;
+  print("mid");
+  return "end";
+});
+print(c.resume()); // expect: 1
+print(c.resume()); // expect: mid
+// expect: closing b
+// expect: closing a
+// expect: end
+
+// a defer that yields on the NORMAL exit lane is bytecode-driven (the
+// OP_DEFER_RUN arm stages the thunk in the same dispatch loop): the coro
+// parks mid-cleanup and the chain finishes on the next resume.
+fu ydef() {
+  yield "from-defer";
+  print("defer tail");
+  return true;
+}
+let d = coro(fu() {
+  defer ydef();
+  print("body before return");
+  return 2;
+});
+print(d.resume()); // expect: body before return
+// expect: from-defer
+print(d.resume()); // expect: defer tail
+// expect: 2

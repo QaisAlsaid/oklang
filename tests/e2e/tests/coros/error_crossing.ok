@@ -1,0 +1,49 @@
+// R22 + the transplant: an error inside a coro runs the body's defers (the
+// death sweep, on the coro's own state), then crosses to the resumer's lane -
+// the resume call site is where a catch sees it, and the coro is dead after.
+fu say(what) {
+  print(what);
+  return true;
+}
+
+let c = coro(fu() {
+  defer say("cleanup ran");
+  yield 1;
+  throw "boom";
+});
+print(c.resume()); // expect: 1
+try {
+  print(c.resume()); // the defer runs inside this call, before the catch
+} catch e {
+  // expect: cleanup ran
+  print("caught: " + e as str); // expect: caught: boom
+}
+print(c.status()); // expect: dead
+print(c.resume()); // expect: null
+
+// a runtime-raised error crosses the same way (kind + text, not a thrown value)
+let r = coro(fu() {
+  yield 1;
+  return [1][5];
+});
+print(r.resume()); // expect: 1
+try {
+  print(r.resume());
+} catch e {
+  print("kind: " + e["kind"] as str); // expect: kind: index
+}
+print(r.status()); // expect: dead
+
+// an error the body catches itself never leaves: the coro survives
+let s = coro(fu() {
+  try {
+    throw "inner";
+  } catch e {
+    print("inside caught: " + e as str);
+  }
+  yield 1;
+  return "ok";
+});
+print(s.resume()); // expect: inside caught: inner
+// expect: 1
+print(s.resume()); // expect: ok

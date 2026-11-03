@@ -291,6 +291,8 @@ static token_type lookup_identifier(lexer* p_lexer) {
     }
     break;
   }
+  case 'y':
+    return check_keyword(p_lexer, 1, 4, "ield", TOKEN_YIELD);
   case 'o': {
     if (p_lexer->current - p_lexer->start > 1) {
       switch (p_lexer->start[1]) {

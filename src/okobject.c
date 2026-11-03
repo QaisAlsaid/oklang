@@ -240,6 +240,7 @@ static void object_upvalue_deinit(object_upvalue* p_object_upvalue, object_specs
   p_object_upvalue->closed = NULL_AS_VALUE();
   p_object_upvalue->next = NULL;
   p_object_upvalue->info = 0;
+  p_object_upvalue->owner = NULL_AS_VALUE(); // the vm's own state until a capture says otherwise
   object_deinit(&p_object_upvalue->object);
 }
 
@@ -249,6 +250,10 @@ void object_upvalue_set_location(object_upvalue* p_upvalue, uint32_t p_location)
 
 void object_upvalue_set_closed(object_upvalue* p_upvalue) {
   p_upvalue->info |= UINT32_C(1) << 24;
+}
+
+void object_upvalue_set_owner(object_upvalue* p_upvalue, value p_owner) {
+  p_upvalue->owner = p_owner;
 }
 
 uint32_t object_upvalue_get_location(object_upvalue* p_upvalue) {
@@ -664,6 +669,7 @@ static const char* const builtin_class_names[OK_BUILTIN_COUNT] = {
     "map",
     "function",
     "nil",
+    "coro",
 };
 
 const char* builtin_class_name(builtin_class_id p_id) {
@@ -780,6 +786,81 @@ bool object_class_define_native_method(object_class* p_class,
   return set;
 }
 
+// the static-table sibling: one door, the same discipline (the guard window,
+// the pub-survival and signature contract against the ancestors' STATICS, one
+// name one owner). the receiver of a static native is the class value itself,
+// which is exactly how the coro constructor wants its argv laid out.
+bool object_class_define_native_static_method(object_class* p_class,
+                                              ok_string_view p_name,
+                                              uint16_t p_arity,
+                                              ok_native_fn p_fn,
+                                              bool p_pub,
+                                              object_specs* p_specs) {
+  if (p_class->frozen) {
+    return false; // sealed (C15); the caller reports its own flavor
+  }
+  if (p_fn == NULL || p_name.chars == NULL) {
+    return false;
+  }
+  object_string* name = create_object_string(p_name, p_specs);
+  if (name == NULL) {
+    return false;
+  }
+  if (!gc_guard_up(p_specs->alloc->gc, OBJECT_AS_VALUE(name))) {
+    return false;
+  }
+  bool pub = p_pub;
+  const method_entry* inherited = NULL;
+  for (const object_class* c = p_class->parent; c != NULL; c = c->parent) {
+    inherited = method_map_get(&c->statics, name);
+    if (inherited != NULL) {
+      break;
+    }
+  }
+  if (inherited != NULL) {
+    if (inherited->pub && !p_pub) {
+      gc_guard_down(p_specs->alloc->gc);
+      return false; // no quiet narrowing of a pub ancestor
+    }
+    if (inherited->pub) {
+      pub = true; // pub survives overrides
+    }
+    if (method_entry_dispatch_argc(inherited) != (uint32_t)p_arity - 1u) {
+      gc_guard_down(p_specs->alloc->gc);
+      return false; // the signature contract
+    }
+  }
+  if (method_map_get(&p_class->statics, name) != NULL) {
+    gc_guard_down(p_specs->alloc->gc);
+    return false;
+  }
+  method_entry entry;
+  entry.closure = NULL;
+  entry.native = p_fn;
+  entry.name = name;
+  entry.arity = p_arity;
+  entry.owner = p_class;
+  entry.is_native = 1;
+  entry.pub = pub;
+  const bool set = method_map_set(&p_class->statics, name, entry);
+  gc_guard_down(p_specs->alloc->gc);
+  return set;
+}
+
+object_coro* create_object_coro(object_closure* p_body, object_specs* p_specs) {
+  object_coro* coro = (object_coro*)p_specs->alloc->allocate(p_specs->alloc, sizeof(object_coro));
+  if (coro == NULL) {
+    return NULL;
+  }
+  object_init(&coro->object, OBJ_CORO);
+  coro->body = p_body;
+  coro->state = NULL;
+  coro->resume_target = 0;
+  coro->status = CORO_READY;
+  object_store_append(p_specs->store, (object*)coro);
+  return coro;
+}
+
 void object_dispatch_deinit(object* p_object, object_specs* p_specs) {
   switch (object_get_type(p_object)) {
   case OBJ_STRING:
@@ -816,6 +897,17 @@ void object_dispatch_deinit(object* p_object, object_specs* p_specs) {
   case OBJ_BOUND_METHOD:
     object_deinit(p_object);
     break;
+  case OBJ_CORO: {
+    // a parked coro's state dies with the object (a dead one already
+    // released its state at death - state is NULL)
+    object_coro* coro = (object_coro*)p_object;
+    if (coro->state != NULL) {
+      okvm_execution_state_dispose(coro->state, p_specs->alloc);
+      coro->state = NULL;
+    }
+    object_deinit(p_object);
+    break;
+  }
   }
 }
 
@@ -879,6 +971,11 @@ void object_debug_print(object* p_object) {
   case OBJ_BOUND_METHOD: {
     const object_bound_method* bound = (const object_bound_method*)p_object;
     printf("<method %s>", bound->entry->name->string.chars);
+    break;
+  }
+  case OBJ_CORO: {
+    const object_coro* coro = (const object_coro*)p_object;
+    printf("<coro %s>", coro_status_name(coro->status));
     break;
   }
   }

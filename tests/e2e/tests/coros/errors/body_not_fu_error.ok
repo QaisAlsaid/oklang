@@ -1,0 +1,3 @@
+// the coro body must be a plain fu (a closure value); numbers, classes,
+// natives and bound methods are refused with the honest message.
+print(coro(5)); // expect error: the coro body must be a fu.

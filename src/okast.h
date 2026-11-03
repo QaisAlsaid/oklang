@@ -49,7 +49,8 @@ typedef enum {
   AST_SUBSCRIPT_EXPRESSION,
   AST_FUNCTION_EXPRESSION,
   AST_SPREAD_EXPRESSION,
-  AST_RANGE_EXPRESSION_END = AST_SPREAD_EXPRESSION,
+  AST_YIELD_EXPRESSION,
+  AST_RANGE_EXPRESSION_END = AST_YIELD_EXPRESSION,
 
   AST_RANGE_STATEMENT_BEGIN,
   AST_RANGE_PURE_STATEMENT_BEGIN,
@@ -475,6 +476,24 @@ void ast_spread_expression_init(ast_spread_expression* p_spread,
 void ast_spread_expression_deinit(ast_spread_expression* p_spread);
 bool ast_spread_expression_print(const ast_spread_expression* p_spread);
 string ast_spread_expression_asprint(const ast_spread_expression* p_spread);
+
+// `yield [value]` - a coroutine's suspend point, an expression both ways:
+// the value goes out to the resumer, the next resume's argument is the
+// expression's own result. the parser fills a NULL value with a synthesized
+// null expression, so the compiler always has an operand (bare `yield` is
+// `yield null`).
+typedef struct {
+  ast_expression expression;
+  ast_expression* value;
+} ast_yield_expression;
+
+void ast_yield_expression_init(ast_yield_expression* p_yield,
+                               const token p_token,
+                               ast_expression* p_value,
+                               ast_specs* p_specs);
+void ast_yield_expression_deinit(ast_yield_expression* p_yield);
+bool ast_yield_expression_print(const ast_yield_expression* p_yield);
+string ast_yield_expression_asprint(const ast_yield_expression* p_yield);
 
 typedef struct {
   ast_statement statement;

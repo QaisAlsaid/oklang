@@ -1,0 +1,46 @@
+// R20-R24: the coro surface. coro(fu) constructs (the body does NOT run),
+// resume drives, yield is the two-way channel (the value goes out, the next
+// resume's argument is the yield expression's own result), the body's final
+// return is the last resume's value, a dead coro answers null (R21), and
+// status() spells the lifecycle.
+let c = coro(fu(n) {
+  print("start " + n as str);
+  let mut i = 0;
+  while i < n {
+    let got = yield i;
+    print("got " + got as str);
+    i = i + 1;
+  }
+  return "done";
+});
+print(c.status());          // expect: ready
+print(c);                   // expect: <coro ready>
+print(c.resume(2));         // expect: start 2
+// expect: 0
+print(c.resume("hello"));   // expect: got hello
+// expect: 1
+print(c.status());          // expect: suspended
+print(c.resume());          // expect: got null
+// expect: done
+print(c.resume());          // expect: null
+print(c.status());          // expect: dead
+print(c);                   // expect: <coro dead>
+print(c.resume());          // expect: null
+print(c.resume("x"));       // expect: null
+
+// the bare form: yield; is yield null; - and `return yield;` parks on the
+// way out (null), the NEXT resume's argument is the return value
+let b = coro(fu() {
+  yield;
+  return yield;
+});
+print(b.resume());   // expect: null
+print(b.resume());   // expect: null
+print(b.resume(42)); // expect: 42
+
+// the class value itself
+print(coro);                // expect: <class coro>
+print(classof(c) === coro); // expect: true
+print(c is coro);           // expect: true
+print(isinstance(c, coro)); // expect: true
+print(coro is Class);       // expect: true

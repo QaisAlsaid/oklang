@@ -72,6 +72,7 @@ static ast_expression* parse_string(parser* p_parser, token p_trigger);
 static ast_expression* parse_number(parser* p_parser, token p_trigger);
 static ast_expression* parse_boolean(parser* p_parser, token p_trigger);
 static ast_expression* parse_null(parser* p_parser, token p_trigger);
+static ast_expression* parse_yield(parser* p_parser, token p_trigger);
 static ast_expression* parse_function(parser* p_parser, token p_trigger);
 // static ast_expression* parse_this(parser* p_parser, token p_trigger);
 // static ast_expression* parse_super(parser* p_parser, token p_trigger);
@@ -176,6 +177,7 @@ static const parse_rule parse_rules[] = {
     [TOKEN_THROW] = {NULL, NULL, PREC_NONE},
     [TOKEN_DEFER] = {NULL, NULL, PREC_NONE},
     [TOKEN_DEFERR] = {NULL, NULL, PREC_NONE},
+    [TOKEN_YIELD] = {parse_yield, NULL, PREC_NONE},
 };
 
 void parser_init(parser* p_parser, parser_specs p_specs) {
@@ -329,6 +331,13 @@ ast_expression* parse_expression(parser* p_parser, precedence p_precedence) {
     tok = p_parser->previous;
     lookahead = p_parser->current;
     left = infix_rule.infix(p_parser, left, infix_rule.precedence, false, tok);
+    if (left == NULL) {
+      // a failed infix is a failed expression: continuing the loop would hand
+      // the next infix a NULL left (a call node with a null callable was
+      // exactly the crash this guard removed - found by a defer parse error
+      // inside a fu body reaching an open paren afterwards)
+      return NULL;
+    }
     lookahead = p_parser->current;
   }
   return left;
@@ -478,6 +487,68 @@ ast_expression* parse_null(parser* p_parser, token p_trigger) {
   ast_specs s = {alloc};
   ast_null_expression_init(null, p_trigger, &s);
   return (ast_expression*)null;
+}
+
+// can p_type begin an expression? the yield value's presence test: `yield;`,
+// `yield)`, `yield,` and friends are the bare form (null out), anything that
+// can start an expression is the value.
+static bool token_starts_expression(token_type p_type) {
+  switch (p_type) {
+  case TOKEN_IDENTIFIER:
+  case TOKEN_NUMBER:
+  case TOKEN_STRING:
+  case TOKEN_LEFT_PAREN:
+  case TOKEN_LEFT_BRACE:
+  case TOKEN_LEFT_BRACKET:
+  case TOKEN_MINUS:
+  case TOKEN_PLUS:
+  case TOKEN_BANG:
+  case TOKEN_NOT:
+  case TOKEN_FU:
+  case TOKEN_SUPER:
+  case TOKEN_THIS:
+  case TOKEN_NULL:
+  case TOKEN_TRUE:
+  case TOKEN_FALSE:
+  case TOKEN_YIELD:
+    return true;
+  default:
+    return false;
+  }
+}
+
+// `yield [value]` - the coroutine suspend point. a prefix expression: the
+// value (when present) parses as a full expression, so `yield a + b;` hands
+// out `a + b` and `let x = yield f();` parks inside the call's result. the
+// bare form synthesizes a null node, keeping the compiler's operand
+// unconditional (`yield` is `yield null`).
+ast_expression* parse_yield(parser* p_parser, token p_trigger) {
+  allocators* alloc = p_parser->alloc;
+  ast_expression* value = NULL;
+  if (token_starts_expression(p_parser->current.type)) {
+    advance(p_parser); // the value's first token into previous
+    value = parse_expression(p_parser, PREC_NONE);
+    if (value == NULL) {
+      return NULL;
+    }
+  } else {
+    value = parse_null(p_parser, p_trigger);
+    if (value == NULL) {
+      return NULL;
+    }
+  }
+  ast_yield_expression* yield_expr = (ast_yield_expression*)alloc->allocate(alloc, sizeof(ast_yield_expression));
+  if (yield_expr == NULL) {
+    error_at(p_parser,
+             p_trigger,
+             ok_create_string_view("failed to allocate memory for yield node.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    ast_dispatch_deinit((ast_node*)value);
+    alloc->release(alloc, value);
+    return NULL;
+  }
+  ast_specs s = {alloc};
+  ast_yield_expression_init(yield_expr, p_trigger, value, &s);
+  return (ast_expression*)yield_expr;
 }
 
 static ast_expression* parse_function(parser* p_parser, token p_trigger) {

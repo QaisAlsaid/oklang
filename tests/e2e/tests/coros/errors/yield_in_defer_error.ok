@@ -1,0 +1,13 @@
+// a yield from a defer running on the UNWIND lane (an error is in flight):
+// the scan's C frame holds the rest of the cascade. the normal scope-exit
+// lane is bytecode-driven and parks fine (see defers.ok) - this is the
+// error-path half.
+fu bad() {
+  yield 1;
+  return true;
+}
+let c = coro(fu() {
+  defer bad();
+  throw "x";
+});
+print(c.resume()); // expect error: cannot yield from inside a defer.

@@ -1,0 +1,19 @@
+// a coro resumed from inside another coro: the resume native runs under the
+// outer coro's state, swaps to the inner's, and swaps back - the outer's
+// parked frames root through the resumer chain while the inner runs.
+let inner = coro(fu() {
+  yield "i1";
+  return "idone";
+});
+let outer = coro(fu() {
+  print("outer got: " + inner.resume());
+  yield "o1";
+  print("outer got: " + inner.resume());
+  return "odone";
+});
+print(outer.resume());  // expect: outer got: i1
+// expect: o1
+print(outer.resume());  // expect: outer got: idone
+// expect: odone
+print(inner.status());  // expect: dead
+print(outer.status());  // expect: dead

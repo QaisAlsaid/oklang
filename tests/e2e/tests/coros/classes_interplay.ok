@@ -1,0 +1,42 @@
+// classes and coros compose both ways: instances constructed and held inside
+// a coro survive parks (their registers are the coro's state), and methods
+// called inside the body run in the coro's call tree (a yield under one
+// suspends the coro - the method frame parks with the rest).
+class Counter {
+  let mut n = 0;
+  fu init(n) { this.n = n; }
+  pub fu bump() {
+    this.n = this.n + 1;
+    return this.n;
+  }
+  pub fu value() { return this.n; }
+}
+let c = coro(fu() {
+  let k = Counter(10);
+  yield k.bump();
+  yield k.bump();
+  return k.value();
+});
+print(c.resume()); // expect: 11
+print(c.resume()); // expect: 12
+print(c.resume()); // expect: 12
+
+// a bound method value as the drive of an ordinary call inside the body
+let d = coro(fu() {
+  let k = Counter(0);
+  let b = k.bump;
+  yield b();
+  return b();
+});
+print(d.resume()); // expect: 1
+print(d.resume()); // expect: 2
+
+// construction inside the coro (no yield in the constructor - that lane is
+// barred, its own error test)
+let e = coro(fu() {
+  let k = Counter(5);
+  yield k.value();
+  return "made";
+});
+print(e.resume()); // expect: 5
+print(e.resume()); // expect: made

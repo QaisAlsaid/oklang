@@ -1,0 +1,15 @@
+// the running window: status() inside the body (through a glob the body can
+// reach) reports "running" - re-entrancy is what the status guards against.
+glob let mut me = null;
+let c = coro(fu() {
+  print(me.status());
+  yield 1;
+  return 0;
+});
+me = c;
+print(c.status());  // expect: ready
+print(c.resume());  // expect: running
+// expect: 1
+print(c.status());  // expect: suspended
+print(c.resume());  // expect: 0
+print(c.status());  // expect: dead

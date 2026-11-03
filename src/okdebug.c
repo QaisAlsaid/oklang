@@ -122,6 +122,8 @@ static const char* const OPCODE_NAMES[] = {
     "IS",
     "IS_LONG",
     "JUMP_IF_CMP",
+    "YIELD",
+    "YIELD_LONG",
 };
 typedef char opcode_names_in_sync[(sizeof(OPCODE_NAMES) / sizeof(OPCODE_NAMES[0]) == (size_t)OP__COUNT) ? 1 : -1];
 
@@ -466,6 +468,12 @@ uint32_t debug_disassemble_instruction(disassembler* p_disassembler, uint32_t p_
     break;
   case OP_DEFER_RUN:
     printf("defer run r%u", Alarge_of(instruction));
+    break;
+  case OP_YIELD:
+    printf("yield r%u -> r%u (resume arg)", bp, ap);
+    break;
+  case OP_YIELD_LONG:
+    printf("yield r%u -> r%u (resume arg)", B, A);
     break;
   case OP_RETURN:
     if (bp == 0) {

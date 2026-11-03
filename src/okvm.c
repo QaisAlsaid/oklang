@@ -69,6 +69,7 @@ static bool call_value(vm* p_vm,
                        uint32_t p_retc);
 static object_upvalue* capture_upvalue(vm* p_vm, execution_state* p_exe, uint32_t p_register);
 static void close_upvalues(execution_state* p_exe, uint32_t p_uptill);
+static inline value* upvalue_cell(vm* p_vm, execution_state* p_exe, object_upvalue* p_upvalue);
 static interpret_result run_until(vm* p_vm, uint32_t p_call_depth);
 static inline bool call(vm* p_vm,
                         execution_state* p_exe,
@@ -128,6 +129,8 @@ void vm_init(vm* p_vm, vm_specs p_specs) {
   }
   // TODO: temp
   p_vm->current_execution_state = p_vm->alloc->allocate(p_vm->alloc, sizeof(execution_state));
+  p_vm->main_state = p_vm->current_execution_state;
+  p_vm->resume_parked = NULL;
   p_vm->current_execution_state->open_upvalues = NULL;
   p_vm->current_execution_state->native_has_error = false;
   p_vm->current_execution_state->error_pending = false;
@@ -140,6 +143,10 @@ void vm_init(vm* p_vm, vm_specs p_specs) {
   p_vm->current_execution_state->error_what[0] = '\0';
   p_vm->current_execution_state->native_call_depth = 0;
   p_vm->current_execution_state->defer_cascade = false;
+  p_vm->current_execution_state->owner_coro = NULL; // the vm's own state: no coro owns it
+  p_vm->current_execution_state->yield_barrier = 0;
+  p_vm->current_execution_state->yield_barrier_kind = 0;
+  p_vm->current_execution_state->next_parked = NULL;
   handler_stack_init(&p_vm->current_execution_state->handlers, p_vm->alloc);
   string_init(&p_vm->current_execution_state->native_error_message, NULL, 0, false, p_vm->alloc);
   register_file_init_warm(&p_vm->current_execution_state->registers, STACK_SIZE, p_specs.alloc);
@@ -581,8 +588,290 @@ static inline bool call_native_method(vm* p_vm,
   return true;
 }
 
-// forward declarations for the operator dispatch lane (definitions sit after
-// entry_visible_from, which they share with the member/invoke paths).
+// ============================== coroutines (R20-R24) ==============================
+//
+// a coro is an object that owns an execution_state: the same register file /
+// call stack / handler stack shape the vm's own state has. resume SWAPS the
+// vm's current state for the coro's, parks the resumer on vm.resume_parked
+// (the collector walks every parked state like the current one - their
+// registers and frames are live values), and drives the coro with a plain
+// run_until(0). OP_YIELD parks the top frame in place (no pops, no upvalue
+// closes, no defers) and returns RUNTIME_SUSPENDED straight out of THAT
+// run_until - the yield barrier guarantees no C-driven nested run_until sits
+// between the two, so suspension never has to cross a C frame (the discipline
+// lua calls "not yielding across a C-call boundary", enforced as an error).
+//
+// death: a returned body (or one that errored) frees the state - a dead coro
+// costs its object and nothing else. errors transplant to the resumer's lane
+// (after the R22 death sweep ran the body's defers on the coro's own state),
+// so the resume call site is where a catch sees them, and an uncaught one
+// propagates outward through the resumer's own levels like any native
+// failure. no scheduler, no transfer: a coro is driven by whoever holds it.
+
+typedef enum {
+  YIELD_BARRIER_CONSTRUCTOR = 0,
+  YIELD_BARRIER_OPERATOR,
+  YIELD_BARRIER_DEFER,
+} yield_barrier_kind;
+
+static const char* coro_status_names[4] = {"ready", "suspended", "running", "dead"};
+
+const char* coro_status_name(uint8_t p_status) {
+  return p_status <= (uint8_t)CORO_DEAD ? coro_status_names[p_status] : "dead";
+}
+
+// a fresh, all-empty state owned by p_coro. the register file warms at a
+// small window; the body's own call() grows it on demand. every slot in a
+// warm file reads null, which is the invariant mark_execution_state walks on.
+static execution_state* coro_state_create(vm* p_vm, object_coro* p_coro) {
+  allocators* alloc = p_vm->alloc;
+  execution_state* state = (execution_state*)alloc->allocate(alloc, sizeof(execution_state));
+  if (state == NULL) {
+    return NULL;
+  }
+  state->open_upvalues = NULL;
+  state->native_has_error = false;
+  state->error_pending = false;
+  state->error_reported = false;
+  state->error_hard = false;
+  state->error_is_script = false;
+  state->error_value = NULL_AS_VALUE();
+  state->error_kind = OK_EK_INTERNAL;
+  state->has_error = false;
+  state->error_what[0] = '\0';
+  state->native_call_depth = 0;
+  state->defer_cascade = false;
+  state->owner_coro = p_coro;
+  state->yield_barrier = 0;
+  state->yield_barrier_kind = 0;
+  state->next_parked = NULL;
+  handler_stack_init(&state->handlers, alloc);
+  string_init(&state->native_error_message, NULL, 0, false, alloc);
+  register_file_init_warm(&state->registers, 16, alloc);
+  call_stack_init(&state->call_stack, alloc);
+  return state;
+}
+
+// the state teardown, shared by death (coro_drive) and the object sweep
+// (object_dispatch_deinit's OBJ_CORO arm, through the header declaration).
+void okvm_execution_state_dispose(execution_state* p_state, allocators* p_alloc) {
+  call_stack_deinit(&p_state->call_stack, p_alloc);
+  register_file_deinit(&p_state->registers);
+  handler_stack_deinit(&p_state->handlers, p_alloc);
+  string_deinit(&p_state->native_error_message, p_alloc);
+  p_alloc->release(p_alloc, p_state);
+}
+
+// move the dying coro's error lane onto the resumer's. the resumer is
+// executing a native call with a clean lane (nothing in flight), so the
+// overwrite is total: kind, text, thrown value, the hard flag, and the
+// pending/reported bookkeeping all cross, and the source clears - its state
+// dies right after and nothing may read a moved lane.
+static void transplant_error_lane(execution_state* p_from, execution_state* p_to) {
+  memcpy(p_to->error_what, p_from->error_what, sizeof(p_to->error_what));
+  p_to->error_kind = p_from->error_kind;
+  p_to->error_value = p_from->error_value;
+  p_to->error_is_script = p_from->error_is_script;
+  p_to->error_hard = p_from->error_hard;
+  p_to->error_pending = p_from->error_pending;
+  p_to->error_reported = p_from->error_reported;
+  p_to->has_error = p_from->has_error;
+  p_from->error_pending = false;
+  p_from->error_hard = false;
+  p_from->has_error = false;
+  p_from->error_reported = false;
+  p_from->error_value = NULL_AS_VALUE();
+}
+
+// the resume driver. returns false with the error transplanted to the
+// resumer's lane (the resume call itself fails there - catchable at the call
+// site); true with *p_out as the yielded value (suspension) or the body's
+// final value (completion). a dead coro answers null (R21), a running one
+// errors (re-entrancy, however the chain reached it).
+static bool coro_drive(vm* p_vm, object_coro* p_coro, bool p_has_arg, value p_arg, value* p_out) {
+  execution_state* resumer = p_vm->current_execution_state;
+  switch ((coro_status)p_coro->status) {
+  case CORO_DEAD:
+    *p_out = NULL_AS_VALUE(); // R21: the iterator-exhausted shape
+    return true;
+  case CORO_RUNNING:
+    runtime_error(p_vm, OK_EK_VALUE, "resume of a running coroutine.");
+    return false;
+  case CORO_READY:
+  case CORO_SUSPENDED:
+    break;
+  }
+  if (p_coro->state == NULL) {
+    p_coro->state = coro_state_create(p_vm, p_coro);
+    if (p_coro->state == NULL) {
+      runtime_oom(p_vm, "out of memory: failed to allocate a coroutine state.");
+      return false;
+    }
+  }
+  execution_state* cs = p_coro->state;
+
+  // park the resumer, swap in the coro. from here until the swap-back, the
+  // collector roots the resumer through vm.resume_parked (its parked
+  // registers and frames are live - the coro reads them again when it yields
+  // back) and the coro through current_execution_state, like any state.
+  resumer->next_parked = p_vm->resume_parked;
+  p_vm->resume_parked = resumer;
+  p_vm->current_execution_state = cs;
+
+  bool staged_ok = true;
+  if (p_coro->status == CORO_READY) {
+    // the first resume: stage the body closure at window slot 0, the resume
+    // argument (when given) above it - the body's own parameters, exactly a
+    // call's shape - then let call_value do arity/defaults/varargs. the
+    // window rides the gc guard until the pushed frame roots the closure
+    // (call's own discipline), and reg->top covers both slots meanwhile.
+    register_file* reg = &cs->registers;
+    gc_guard_up(p_vm->alloc->gc, OBJECT_AS_VALUE(p_coro->body));
+    reg->array.data[0] = OBJECT_AS_VALUE(p_coro->body);
+    reg->array.data[1] = p_has_arg ? p_arg : NULL_AS_VALUE();
+    reg->top = 2;
+    staged_ok = call_value(p_vm, cs, reg, 0, 0, p_has_arg ? 1u : 0u, 1u);
+    gc_guard_down(p_vm->alloc->gc);
+  } else {
+    // a suspended coro: the top frame is the yielder (nothing ran since the
+    // park), and the argument lands in the register the parked OP_YIELD
+    // named - the yield expression's own result slot.
+    call_frame* yielder = &cs->call_stack.data[cs->call_stack.count - 1];
+    cs->registers.array.data[yielder->registers_base + p_coro->resume_target] = p_arg;
+  }
+
+  interpret_result result = {.status = RUNTIME_OK, .top_level_return = NULL_AS_VALUE()};
+  if (staged_ok) {
+    p_coro->status = CORO_RUNNING;
+    result = run_until(p_vm, 0);
+  } else {
+    // the staging itself failed (the body's arity contract, an oom): the
+    // error is already on the coro's state and no frame was ever pushed -
+    // the same death lane takes it (sweep is a no-op, the transplant is the
+    // resume call's failure)
+    result.status = RUNTIME_ERROR;
+  }
+
+  if (result.status == RUNTIME_ERROR) {
+    // the coro died by error. the R22 death sweep runs FIRST, on the coro's
+    // own state (still current): the propagation lane left the frames
+    // unpopped, and reset_error_state runs their defers exactly like an
+    // uncaught error at top level - innermost first, a failing defer
+    // cascades and replaces the lane. the resumer stays parked while the
+    // sweep's thunks allocate.
+    reset_error_state(p_vm);
+    // then the lane crosses (before the state dies - a moved lane, not a
+    // shared one), the state goes away, and the resume call fails in the
+    // resumer exactly where a catch can take it
+    transplant_error_lane(cs, resumer);
+    p_vm->current_execution_state = resumer;
+    p_vm->resume_parked = resumer->next_parked;
+    resumer->next_parked = NULL;
+    p_coro->status = CORO_DEAD;
+    p_coro->state = NULL;
+    okvm_execution_state_dispose(cs, p_vm->alloc);
+    return false;
+  }
+
+  // swap back + unpark, always
+  p_vm->current_execution_state = resumer;
+  p_vm->resume_parked = resumer->next_parked;
+  resumer->next_parked = NULL;
+
+  if (result.status == RUNTIME_SUSPENDED) {
+    // the OP_YIELD handler parked the frame and set the status
+    *p_out = result.top_level_return;
+    return true;
+  }
+
+  // RUNTIME_OK: the body returned. the defers already ran in bytecode (the
+  // compiler's scope exits), the state tears down, the value crosses.
+  p_coro->status = CORO_DEAD;
+  p_coro->state = NULL;
+  okvm_execution_state_dispose(cs, p_vm->alloc);
+  *p_out = result.top_level_return;
+  return true;
+}
+
+// `coro(fu)` - the overridden static operator (): argv[0] is the class value
+// itself, argv[1] the body. the body must be a plain closure (a fu or
+// lambda); a bound method or a native is refused with the honest message.
+static ok_value native_coro_construct(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  vm* p_vm = ok_vm(p_ok);
+  if (p_argc != 2 || !IS_VALUE_CLOSURE(p_argv[1])) {
+    runtime_error(p_vm, OK_EK_TYPE, "the coro body must be a fu.");
+    return NULL_AS_VALUE();
+  }
+  object_specs specs = {p_vm->alloc, p_vm->objects_store};
+  object_closure* body = VALUE_AS_CLOSURE(p_argv[1]);
+  gc_guard_up(p_vm->alloc->gc, p_argv[1]); // the coro rides the guard until the caller's window adopts it
+  object_coro* coro = create_object_coro(body, &specs);
+  gc_guard_down(p_vm->alloc->gc);
+  if (coro == NULL) {
+    runtime_oom(p_vm, "out of memory: failed to allocate a coroutine.");
+    return NULL_AS_VALUE();
+  }
+  return OBJECT_AS_VALUE(coro);
+}
+
+// `c.resume([v])` - the drive call. the first resume's argument (when given)
+// becomes the body's own argument; a suspended resume's argument lands in the
+// parked yield expression. resume returns the yielded value, or the body's
+// final value when it completes.
+static ok_value native_coro_resume(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  vm* p_vm = ok_vm(p_ok);
+  if (p_argc < 1 || p_argc > 2) {
+    runtime_error(p_vm,
+                  OK_EK_ARITY,
+                  "invalid call to method 'resume' of class 'coro': expected at most 1 argument, got %u.",
+                  (unsigned)(p_argc - 1u));
+    return NULL_AS_VALUE();
+  }
+  if (!IS_VALUE_CORO(p_argv[0])) {
+    runtime_error(p_vm, OK_EK_TYPE, "resume: the receiver is not a coro.");
+    return NULL_AS_VALUE();
+  }
+  object_coro* coro = VALUE_AS_CORO(p_argv[0]);
+  value out;
+  if (!coro_drive(p_vm, coro, p_argc == 2, p_argc == 2 ? p_argv[1] : NULL_AS_VALUE(), &out)) {
+    return NULL_AS_VALUE(); // the lane (transplanted to the resumer) carries the error
+  }
+  return out;
+}
+
+// `c.status()` - "ready" | "suspended" | "running" | "dead". interned
+// spellings: the interner's canoncial strings are immortal and shared, so a
+// status poll in a loop allocates nothing after the first call.
+static ok_value native_coro_status(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  vm* p_vm = ok_vm(p_ok);
+  if (p_argc != 1 || !IS_VALUE_CORO(p_argv[0])) {
+    runtime_error(p_vm, OK_EK_TYPE, "status: the receiver is not a coro.");
+    return NULL_AS_VALUE();
+  }
+  object_specs specs = {p_vm->alloc, p_vm->objects_store};
+  object_string* name = string_interner_intern(
+      p_vm->interner,
+      ok_create_string_view(coro_status_name(VALUE_AS_CORO(p_argv[0])->status), OK_STRING_VIEW_CALCULATE_LENGTH, true),
+      &specs);
+  if (name == NULL) {
+    runtime_oom(p_vm, "out of memory: failed to intern a status name.");
+    return NULL_AS_VALUE();
+  }
+  return OBJECT_AS_VALUE(name);
+}
+
+bool vm_define_coro_surface(vm* p_vm) {
+  object_specs specs = {p_vm->alloc, p_vm->objects_store};
+  object_class* klass = p_vm->builtin_classes[OK_BUILTIN_CORO];
+  bool status = true;
+  status &= object_class_define_native_static_method(
+      klass, ok_create_string_view("operator ()", 11, true), 2, native_coro_construct, /*p_pub*/ true, &specs);
+  status &= object_class_define_native_method(
+      klass, ok_create_string_view("resume", 6, true), OK_NATIVE_ARITY_ANY, native_coro_resume, true, &specs);
+  status &=
+      object_class_define_native_method(klass, ok_create_string_view("status", 6, true), 1, native_coro_status, true, &specs);
+  return status;
+}
 static bool entry_visible_from(const method_entry* p_entry, const call_frame* p_frame);
 static interpret_result error_interpret_result(void);
 static interpret_result dispatch_operator_method(vm* p_vm,
@@ -1258,6 +1547,15 @@ static inline bool object_as_str(vm* p_vm, object* p_obj, value* p_result) {
     }
     return as_str_printed(p_vm, str, p_result);
   }
+  case OBJ_CORO: {
+    object_coro* coro = (object_coro*)p_obj;
+    string str = asprint(p_vm->alloc, "<coro %s>", coro_status_name(coro->status));
+    if (str.chars == NULL) {
+      runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert coro to string.");
+      return false;
+    }
+    return as_str_printed(p_vm, str, p_result);
+  }
   }
   runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert unknown object to string.");
   return false;
@@ -1437,6 +1735,8 @@ object_class* vm_classof(vm* p_vm, ok_value p_value) {
     return p_vm->builtin_classes[OK_BUILTIN_ARRAY];
   case OBJ_MAP:
     return p_vm->builtin_classes[OK_BUILTIN_MAP];
+  case OBJ_CORO:
+    return p_vm->builtin_classes[OK_BUILTIN_CORO];
   case OBJ_CLOSURE:
   case OBJ_NATIVE_FUNCTION:
   case OBJ_BOUND_METHOD:
@@ -1671,8 +1971,7 @@ return_1_from_frame(vm* p_vm, execution_state* p_exe, call_frame* p_frame, uint1
     break;
   }
   case RETURNED_UPVALUE: {
-    registers->array.data[p_frame->return_base] =
-        *object_upvalue_get_value(p_frame->closure->upvalues.data[p_index], registers->array.data);
+    registers->array.data[p_frame->return_base] = *upvalue_cell(p_vm, p_exe, p_frame->closure->upvalues.data[p_index]);
     break;
   }
   case RETURNED_REGISTER: {
@@ -1975,7 +2274,16 @@ static bool run_pending_defers(vm* p_vm, uint32_t p_from, uint32_t p_uptill) {
     // rooting across the thunk's allocations either way.
     const bool saved_pending = exe->error_pending;
     exe->error_pending = false;
+    // the yield barrier: a defer thunk is a C-driven region (the chain scan
+    // holds the rest of the cascade in this C frame) - a yield from inside
+    // it could never resume honestly, so OP_YIELD refuses it
+    const uint8_t saved_barrier = exe->yield_barrier;
+    if (exe->yield_barrier == 0) {
+      exe->yield_barrier_kind = YIELD_BARRIER_DEFER;
+    }
+    exe->yield_barrier++;
     const interpret_result result = run_until(p_vm, depth);
+    exe->yield_barrier = saved_barrier;
     if (result.status == RUNTIME_OK) {
       // the thunk survived (its own catches, if any, consumed their errors):
       // the in-flight error continues outward exactly as it was
@@ -2217,7 +2525,17 @@ static interpret_result dispatch_operator_method(vm* p_vm,
     p_reg->top = saved_top;
     return error_interpret_result();
   }
+  // the yield barrier: an operator method is a C-driven region (the result
+  // copy back into the caller's register happens in THIS C frame after the
+  // nested run_until returns) - a yield from under it could never resume
+  // honestly, so OP_YIELD refuses it
+  const uint8_t saved_barrier = exe->yield_barrier;
+  if (exe->yield_barrier == 0) {
+    exe->yield_barrier_kind = YIELD_BARRIER_OPERATOR;
+  }
+  exe->yield_barrier++;
   const interpret_result result = run_until(p_vm, depth);
+  exe->yield_barrier = saved_barrier;
   p_reg->top = saved_top;
   if (result.status != RUNTIME_OK) {
     return result;
@@ -2627,7 +2945,18 @@ static bool run_method_to_completion(vm* p_vm, object_closure* p_closure, value 
     reg->top = saved_top;
     return false;
   }
+  // the yield barrier: the construction lane (field initializer thunks,
+  // init methods) is a C-driven region - construct_instance publishes the
+  // instance and restores the watermark in ITS C frame after this run_until
+  // returns, so a yield from inside a constructor could never resume
+  // honestly. OP_YIELD refuses it.
+  const uint8_t saved_barrier = exe->yield_barrier;
+  if (exe->yield_barrier == 0) {
+    exe->yield_barrier_kind = YIELD_BARRIER_CONSTRUCTOR;
+  }
+  exe->yield_barrier++;
   const interpret_result result = run_until(p_vm, depth);
+  exe->yield_barrier = saved_barrier;
   reg->top = saved_top;
   if (result.status != RUNTIME_OK) {
     return false;
@@ -2966,6 +3295,8 @@ static void* ok_dispatch_table[OP__COUNT] = {
   [OP_IS] = &&L_OP_IS,
   [OP_IS_LONG] = &&L_OP_IS_LONG,
   [OP_JUMP_IF_CMP] = &&L_OP_JUMP_IF_CMP,
+  [OP_YIELD] = &&L_OP_YIELD,
+  [OP_YIELD_LONG] = &&L_OP_YIELD_LONG,
   // the four pre-patch NAME forms never dispatch: the freeze pass rewrites
   // every one before member code can run. the switch build silently skips an
   // un-rewritten stray (no case label, no default); aliasing them to NOP
@@ -3186,26 +3517,23 @@ static void* ok_dispatch_table[OP__COUNT] = {
     CASE(OP_LOAD_UPVALUE): {
       uint16_t ap = aprime_of(instruction);
       uint16_t bp = bprime_of(instruction);
-      REG_AT(ap) = *object_upvalue_get_value(
-          frame->closure->upvalues.data[bp],
-          reg->array.data); // upvalue locations are absolute in the register file, they are not frame relative
+      REG_AT(ap) = *upvalue_cell(p_vm, exe,
+                                 frame->closure->upvalues.data[bp]); // upvalue locations index the OWNER's register array
       DISPATCH();
     }
     CASE(OP_LOAD_UPVALUE_LONG): {
       const word2 words = JOIN_WORD(instruction);
       const uint16_t A = A_of(words);
       const uint16_t B = B_of(words);
-      REG_AT(A) = *object_upvalue_get_value(
-          frame->closure->upvalues.data[B],
-          reg->array.data); // upvalue locations are absolute in the register file, they are not frame relative
+      REG_AT(A) = *upvalue_cell(p_vm, exe,
+                               frame->closure->upvalues.data[B]); // upvalue locations index the OWNER's register array
       DISPATCH();
     }
     CASE(OP_STORE_UPVALUE): {
       const bool p = p_of(instruction);
       const uint16_t ap = aprime_of(instruction);
       const uint16_t bp = bprime_of(instruction);
-      *object_upvalue_get_value(frame->closure->upvalues.data[ap], reg->array.data) =
-          resolve_operand(frame, reg, bp, p);
+      *upvalue_cell(p_vm, exe, frame->closure->upvalues.data[ap]) = resolve_operand(frame, reg, bp, p);
       DISPATCH();
     }
     CASE(OP_STORE_UPVALUE_LONG): {
@@ -3213,7 +3541,7 @@ static void* ok_dispatch_table[OP__COUNT] = {
       const bool p = p_of(instruction);
       const uint16_t A = A_of(words);
       const uint16_t B = B_of(words);
-      *object_upvalue_get_value(frame->closure->upvalues.data[A], reg->array.data) = resolve_operand(frame, reg, B, p);
+      *upvalue_cell(p_vm, exe, frame->closure->upvalues.data[A]) = resolve_operand(frame, reg, B, p);
       DISPATCH();
     }
     CASE(OP_CLOSE_UPVALUES): {
@@ -3299,6 +3627,89 @@ static void* ok_dispatch_table[OP__COUNT] = {
       frame = &exe->call_stack.data[exe->call_stack.count - 1];
       ip = frame->ip;
       DISPATCH();
+    }
+    // the coroutine suspend point. the guards first (outside a coro, or
+    // under a C-driven region / native hop: the yields that could never
+    // resume honestly), then the park: the value goes out, the frame's ip
+    // stays synced past this word, the resume-target register index rides
+    // the coro, the status flips, and THIS run_until - the coro's resume
+    // driver, the barriers guarantee no other - returns RUNTIME_SUSPENDED
+    // with the value. no pops, no upvalue closes, no defers: a parked coro
+    // is its frames, exactly as they were.
+    CASE(OP_YIELD): {
+      const bool p = p_of(instruction);
+      const uint16_t ap = aprime_of(instruction);
+      const uint16_t bp = bprime_of(instruction);
+      object_coro* coro = exe->owner_coro;
+      frame->ip = ip;
+      if (coro == NULL) {
+        runtime_error(p_vm, OK_EK_VALUE, "yield outside a coroutine.");
+        FAIL_PATH();
+        DISPATCH();
+      }
+      if (exe->yield_barrier > 0) {
+        switch ((yield_barrier_kind)exe->yield_barrier_kind) {
+        case YIELD_BARRIER_CONSTRUCTOR:
+          runtime_error(p_vm, OK_EK_VALUE, "cannot yield from inside a constructor.");
+          break;
+        case YIELD_BARRIER_OPERATOR:
+          runtime_error(p_vm, OK_EK_VALUE, "cannot yield from inside an operator method.");
+          break;
+        case YIELD_BARRIER_DEFER:
+        default:
+          runtime_error(p_vm, OK_EK_VALUE, "cannot yield from inside a defer.");
+          break;
+        }
+        FAIL_PATH();
+        DISPATCH();
+      }
+      if (exe->native_call_depth > 0) {
+        runtime_error(p_vm, OK_EK_VALUE, "cannot yield across a native call.");
+        FAIL_PATH();
+        DISPATCH();
+      }
+      const value out = resolve_operand(frame, reg, bp, p);
+      coro->resume_target = ap;
+      coro->status = CORO_SUSPENDED;
+      return (interpret_result){.status = RUNTIME_SUSPENDED, .top_level_return = out};
+    }
+    CASE(OP_YIELD_LONG): {
+      const word2 words = JOIN_WORD(instruction);
+      const bool p = p_of(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      object_coro* coro = exe->owner_coro;
+      frame->ip = ip;
+      if (coro == NULL) {
+        runtime_error(p_vm, OK_EK_VALUE, "yield outside a coroutine.");
+        FAIL_PATH();
+        DISPATCH();
+      }
+      if (exe->yield_barrier > 0) {
+        switch ((yield_barrier_kind)exe->yield_barrier_kind) {
+        case YIELD_BARRIER_CONSTRUCTOR:
+          runtime_error(p_vm, OK_EK_VALUE, "cannot yield from inside a constructor.");
+          break;
+        case YIELD_BARRIER_OPERATOR:
+          runtime_error(p_vm, OK_EK_VALUE, "cannot yield from inside an operator method.");
+          break;
+        case YIELD_BARRIER_DEFER:
+        default:
+          runtime_error(p_vm, OK_EK_VALUE, "cannot yield from inside a defer.");
+          break;
+        }
+        FAIL_PATH();
+        DISPATCH();
+      }
+      if (exe->native_call_depth > 0) {
+        runtime_error(p_vm, OK_EK_VALUE, "cannot yield across a native call.");
+        FAIL_PATH();
+        DISPATCH();
+      }
+      const value out = resolve_operand(frame, reg, B, p);
+      coro->resume_target = A;
+      coro->status = CORO_SUSPENDED;
+      return (interpret_result){.status = RUNTIME_SUSPENDED, .top_level_return = out};
     }
     CASE(OP_CLOSURE): {
       const uint16_t ap = aprime_of(instruction);
@@ -6077,6 +6488,11 @@ static object_upvalue* capture_upvalue(vm* p_vm, execution_state* p_exe, uint32_
     runtime_oom(p_vm, "out of memory: failed to allocate memory for upvalue.");
     return NULL;
   }
+  // the owner pin: a cell captured in a coro's state resolves through the
+  // coro (traced via the upvalue), a cell captured in the vm's own state
+  // stays null-owner (resolved through vm->main_state)
+  object_upvalue_set_owner(captured,
+                           p_exe->owner_coro != NULL ? OBJECT_AS_VALUE(p_exe->owner_coro) : NULL_AS_VALUE());
   captured->next = upvalue;
   if (prev == NULL) {
     p_exe->open_upvalues = captured;
@@ -6091,8 +6507,32 @@ static void close_upvalues(execution_state* p_exe, uint32_t p_uptill) {
     object_upvalue* upvalue = p_exe->open_upvalues;
     upvalue->closed = p_exe->registers.array.data[object_upvalue_get_location(upvalue)];
     object_upvalue_set_closed(upvalue);
+    object_upvalue_set_owner(upvalue, NULL_AS_VALUE()); // a snapshot needs no owner pin
     p_exe->open_upvalues = upvalue->next;
   }
+}
+
+// an open upvalue's location indexes its OWNER's register array, never the
+// running state's: a coro reads cells captured in its resumer (null owner,
+// the vm's own state) and cells it captured itself (the owner coro, pinned
+// alive through the upvalue's trace). closed cells never touch a window.
+static inline value* upvalue_cell(vm* p_vm, execution_state* p_exe, object_upvalue* p_upvalue) {
+  if (object_upvalue_is_closed(p_upvalue)) {
+    return &p_upvalue->closed;
+  }
+  value* window;
+  if (IS_VALUE_CORO(p_upvalue->owner)) {
+    object_coro* owner_coro = VALUE_AS_CORO(p_upvalue->owner);
+    // a dead owner's cells are all closed (death closes everything), so the
+    // fallback window is never actually read - it only keeps the resolve total
+    window = owner_coro->state != NULL ? owner_coro->state->registers.array.data
+                                       : p_vm->main_state->registers.array.data;
+  } else if (p_exe == p_vm->main_state) {
+    window = p_exe->registers.array.data; // the fast lane: running in the owning state
+  } else {
+    window = p_vm->main_state->registers.array.data;
+  }
+  return &window[object_upvalue_get_location(p_upvalue)];
 }
 
 ARRAY_DEFINE_DEFAULT(register_array, value, ARRAY_DEFAULT_TYPE_DEINIT)

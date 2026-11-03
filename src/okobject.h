@@ -26,6 +26,7 @@
 #define IS_VALUE_CLASS(value) value_is_object_type(value, OBJ_CLASS)
 #define IS_VALUE_INSTANCE(value) value_is_object_type(value, OBJ_INSTANCE)
 #define IS_VALUE_BOUND_METHOD(value) value_is_object_type(value, OBJ_BOUND_METHOD)
+#define IS_VALUE_CORO(value) value_is_object_type(value, OBJ_CORO)
 
 #define VALUE_AS_STRING(value) ((object_string*)VALUE_AS_OBJECT(value))
 #define VALUE_AS_FUNCTION(value) ((object_function*)VALUE_AS_OBJECT(value))
@@ -38,6 +39,7 @@
 #define VALUE_AS_CLASS(value) ((object_class*)VALUE_AS_OBJECT(value))
 #define VALUE_AS_INSTANCE(value) ((object_instance*)VALUE_AS_OBJECT(value))
 #define VALUE_AS_BOUND_METHOD(value) ((object_bound_method*)VALUE_AS_OBJECT(value))
+#define VALUE_AS_CORO(value) ((object_coro*)VALUE_AS_OBJECT(value))
 // the defer tag's payload is an object_closure*, but it is not an object-tagged value.
 // unwrap through the payload directly (the tag check is IS_VALUE_STRICTLY_DEFER, never IS_VALUE_CLOSURE).
 #define VALUE_AS_DEFER(value) ((object_closure*)(uintptr_t)(VALUE_PAYLOAD(value)))
@@ -59,6 +61,7 @@ typedef enum {
   OBJ_CLASS,
   OBJ_INSTANCE,
   OBJ_BOUND_METHOD,
+  OBJ_CORO,
 } object_type;
 
 struct object {
@@ -131,10 +134,18 @@ typedef struct object_upvalue {
   uint32_t info; // 24 bit index into the stack + 1 bit for is_closed
   value closed;
   struct object_upvalue* next;
+  // the capture's owner: the null value = the vm's own state, otherwise the
+  // coro object whose state the location indexes. TRACED through the
+  // upvalue, so a closure that escaped a parked coro keeps the coro (and its
+  // register file) alive while its captured cells are still open - the
+  // upvalue-cell read resolves the owner's array, never the running state's.
+  // cleared at close (a snapshot needs no owner).
+  value owner;
 } object_upvalue;
 
 void object_upvalue_set_location(object_upvalue* p_upvalue, uint32_t p_location);
 void object_upvalue_set_closed(object_upvalue* p_upvalue);
+void object_upvalue_set_owner(object_upvalue* p_upvalue, value p_owner);
 uint32_t object_upvalue_get_location(object_upvalue* p_upvalue);
 bool object_upvalue_is_closed(object_upvalue* p_upvalue);
 value* object_upvalue_get_value(object_upvalue* p_upvalue, value* p_frame_window);
@@ -273,7 +284,9 @@ const char* class_operator_spelling(class_operator p_op);
 // carry no methods in v0.5.0 - nothing existed as a function builtin to
 // mirror, and the ruling is no new stdlib). int and float share
 // `num` (the box detail is not a class difference); `nil` is null's class
-// and null is its sole instance.
+// and null is its sole instance. `coro` (R20-R24) joins them as the eighth:
+// the coroutine lane's class value, constructed through its native static
+// `operator ()`.
 typedef enum {
   OK_BUILTIN_STR = 0,
   OK_BUILTIN_NUM,
@@ -282,6 +295,7 @@ typedef enum {
   OK_BUILTIN_MAP,
   OK_BUILTIN_FUNCTION,
   OK_BUILTIN_NIL,
+  OK_BUILTIN_CORO,
   OK_BUILTIN_COUNT,
 } builtin_class_id;
 
@@ -349,6 +363,17 @@ bool object_class_define_native_method(object_class* p_class,
                                        bool p_pub,
                                        object_specs* p_specs);
 
+// the static-table sibling: append one native STATIC method (the receiver is
+// the class value itself). the same freeze seal and signature contract the
+// methods table carries, one table over. the coro constructor
+// (`coro(fu)`, the overridden static `operator ()`) rides this door.
+bool object_class_define_native_static_method(object_class* p_class,
+                                              ok_string_view p_name,
+                                              uint16_t p_arity,
+                                              ok_native_fn p_fn,
+                                              bool p_pub,
+                                              object_specs* p_specs);
+
 // definition-time: append one own field. false = OOM or a redeclaration
 // (p_previous_owner names the ancestor that already declared it).
 bool object_class_add_field(object_class* p_class,
@@ -413,6 +438,40 @@ typedef struct {
 } object_bound_method;
 
 object_bound_method* create_object_bound_method(value p_receiver, const method_entry* p_entry, object_specs* p_specs);
+
+// the coroutine lifecycle, as status() spells it
+typedef enum {
+  CORO_READY = 0,     // constructed, never resumed: the body has not started
+  CORO_SUSPENDED,     // parked at a yield: frames alive, resumable
+  CORO_RUNNING,       // inside a resume call right now: resuming again errors
+  CORO_DEAD,          // returned or died by error: resume answers null
+} coro_status;
+
+// a coroutine: a closure plus, once first resumed, its own execution state
+// (register file, call stack, handler stack - the same shape the vm's main
+// state has). the state is allocated lazily at the first resume and released
+// at death, so a created-but-never-run coro costs one object. while parked the
+// object roots the state: the collector traces it like a live vm
+// (see mark_execution_state).
+struct execution_state; // okvm.h
+
+typedef struct object_coro {
+  object object;
+  object_closure* body;
+  struct execution_state* state; // NULL until the first resume, NULL again after death
+  uint16_t resume_target;         // the parked yield's result register (frame-relative)
+  uint8_t status;                 // coro_status
+} object_coro;
+
+object_coro* create_object_coro(object_closure* p_body, object_specs* p_specs);
+
+// the status word status() spells and print shows ("ready" .. "dead")
+const char* coro_status_name(uint8_t p_status);
+
+// release a coroutine's execution state (its arrays and its own allocation).
+// defined in okvm.c where the state's layout lives; declared here so the
+// object teardown can call it without including okvm.h.
+void okvm_execution_state_dispose(struct execution_state* p_state, allocators* p_alloc);
 
 void object_dispatch_deinit(object* p_object, object_specs* p_specs);
 void objects_list_deinit(object* p_head, object_specs* p_specs);

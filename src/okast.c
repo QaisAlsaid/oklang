@@ -35,6 +35,7 @@
   X(AST_SUBSCRIPT_EXPRESSION, ast_subscript_expression)                                                                \
   X(AST_FUNCTION_EXPRESSION, ast_function_expression)                                                                  \
   X(AST_SPREAD_EXPRESSION, ast_spread_expression)                                                                      \
+  X(AST_YIELD_EXPRESSION, ast_yield_expression)                                                                      \
   X(AST_EMPTY_STATEMENT, ast_empty_statement)                                                                          \
   X(AST_EXPRESSION_STATEMENT, ast_expression_statement)                                                                \
   X(AST_PRINT_STATEMENT, ast_print_statement)                                                                          \
@@ -857,6 +858,38 @@ void ast_spread_expression_deinit(ast_spread_expression* p_spread) {
 bool ast_spread_expression_print(const ast_spread_expression* p_spread) {
   bool res = ast_dispatch_print((ast_node*)p_spread->inner);
   res &= printf("...") > 0;
+  return res;
+}
+
+void ast_yield_expression_init(ast_yield_expression* p_yield,
+                               const token p_token,
+                               ast_expression* p_value,
+                               ast_specs* p_specs) {
+  ast_expression_init(&p_yield->expression, AST_YIELD_EXPRESSION, p_token, p_specs);
+  p_yield->value = p_value;
+}
+
+void ast_yield_expression_deinit(ast_yield_expression* p_yield) {
+  allocators* alloc = p_yield->expression.node.alloc;
+  if (p_yield->value != NULL) {
+    ast_dispatch_deinit((ast_node*)p_yield->value);
+    alloc->release(alloc, p_yield->value);
+    p_yield->value = NULL;
+  }
+  ast_expression_deinit(&p_yield->expression);
+}
+
+bool ast_yield_expression_print(const ast_yield_expression* p_yield) {
+  bool res = printf("yield ") > 0;
+  res &= ast_dispatch_print((ast_node*)p_yield->value);
+  return res;
+}
+
+string ast_yield_expression_asprint(const ast_yield_expression* p_yield) {
+  allocators* alloc = p_yield->expression.node.alloc;
+  string value_str = ast_dispatch_asprint((ast_node*)p_yield->value);
+  string res = asprint(alloc, "yield %s", value_str.chars);
+  string_deinit(&value_str, alloc);
   return res;
 }
 

@@ -1,0 +1,8 @@
+// the body's own arity is a plain call contract: the first resume's argument
+// is the body's argument, so a one-parameter body resumed bare is the
+// ordinary too-few-arguments error (defaults and varargs work the same as
+// any call).
+let c = coro(fu(a) {
+  return a;
+});
+print(c.resume()); // expect error: invalid call to 'fu': expected 1 argument, got 0.

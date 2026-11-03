@@ -1,0 +1,6 @@
+// resume takes at most one value in (the yield expression's result).
+let c = coro(fu() {
+  yield 1;
+  return 2;
+});
+print(c.resume(1, 2)); // expect error: invalid call to method 'resume' of class 'coro': expected at most 1 argument, got 2.

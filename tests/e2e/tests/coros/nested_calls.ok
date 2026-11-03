@@ -1,0 +1,20 @@
+// the coro's call tree is the coro's: a yield from a function the body called
+// suspends the WHOLE coro (what makes it a coroutine, not a generator loop).
+// inner(10) runs inside the coro's frames - its two yields park the coro,
+// its return value is just the call's result in the body.
+fu inner(a) {
+  yield a;
+  yield a + 1;
+  return a + 2;
+}
+let c = coro(fu() {
+  let r1 = inner(10);
+  let r2 = yield "mid";
+  print("r2: " + r2 as str);
+  return r1 + r2;
+});
+print(c.resume());  // expect: 10
+print(c.resume());  // expect: 11
+print(c.resume());  // expect: mid
+print(c.resume(5)); // expect: r2: 5
+// expect: 17

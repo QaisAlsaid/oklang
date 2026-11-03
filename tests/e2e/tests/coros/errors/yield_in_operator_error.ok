@@ -1,0 +1,14 @@
+// a yield from inside an operator method dispatch: the operator lane's C
+// frame (dispatch_operator_method) copies the result into the caller's
+// register after the nested run_until returns - a parked operator has no
+// honest resume.
+class K {
+  pub fu operator +(o) {
+    yield 1;
+    return 2;
+  }
+}
+let c = coro(fu() {
+  return K() + 1;
+});
+print(c.resume()); // expect error: cannot yield from inside an operator method.

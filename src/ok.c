@@ -28,6 +28,12 @@ struct ok {
   bool dump_skip_run;
 };
 
+// the vm's natives receive the ok* per the native ABI and reach the vm through
+// here (the struct above is this file's own business)
+vm* ok_vm(ok* p_ok) {
+  return &p_ok->vm;
+}
+
 // the core builtins are receiver-first native functions: `len(a)` and
 // `a.len()` are one C entry, mounted twice (free function + method on the
 // array/map class singletons). str carries no methods in v0.5.0 - nothing
@@ -304,6 +310,10 @@ static bool ok_define_builtin_surfaces(ok* p_ok) {
                                                 /*p_pub*/ true,
                                                 &specs);
   }
+  // the coro surface (R20-R24): the native static `operator ()`
+  // (construction), `resume`, and `status`, mounted before the seal like
+  // every other builtin's methods
+  status &= vm_define_coro_surface(&p_ok->vm);
   for (uint32_t i = 0; i < OK_BUILTIN_COUNT; ++i) {
     // the seal (C15): from here the builtin tables are frozen like every
     // script class's, which is what the fast lanes depend on.
@@ -345,6 +355,7 @@ static const seed_entry top_level_seeds[] = {
     {"map", SEED_BUILTIN_CLASS, OK_BUILTIN_MAP},
     {"function", SEED_BUILTIN_CLASS, OK_BUILTIN_FUNCTION},
     {"nil", SEED_BUILTIN_CLASS, OK_BUILTIN_NIL},
+    {"coro", SEED_BUILTIN_CLASS, OK_BUILTIN_CORO},
     {"Object", SEED_OBJECT, OK_BUILTIN_COUNT},
     {"Class", SEED_CLASS, OK_BUILTIN_COUNT},
 };

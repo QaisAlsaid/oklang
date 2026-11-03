@@ -82,12 +82,31 @@ typedef struct {
 
 ARRAY_DECLARE_DEFAULT(call_stack, call_frame)
 
-typedef struct {
+typedef struct execution_state {
   call_stack call_stack;
   register_file registers;
   object_upvalue* open_upvalues;
   string native_error_message;
   bool native_has_error;
+
+  // the coroutine ownership tag: NULL on the vm's own state, the running
+  // coro on a state a resume swapped in. OP_YIELD reads it to know whether
+  // the executing frame belongs to a coroutine at all (a plain function
+  // called from main that yields is the "yield outside a coroutine" error).
+  struct object_coro* owner_coro;
+
+  // the yield barrier: >0 while script runs inside a C-driven region whose
+  // C frame holds result bookkeeping after the nested run_until returns (an
+  // operator method dispatch, a construction lane, a defer thunk). a yield
+  // from under such a region can never resume honestly - the C code that
+  // would receive the suspended result is gone - so OP_YIELD refuses it,
+  // same discipline as lua's C-call boundary. the kind names the outermost
+  // region for the error message.
+  uint8_t yield_barrier;
+  uint8_t yield_barrier_kind;
+
+  // the parked-resumer chain head, see vm.resume_parked below.
+  struct execution_state* next_parked;
 
   // the error lane. runtime_error RAISES into it. the dispatch loop's error
   // exit (FAIL_PATH) attempts the unwind to a handler first, and only then
@@ -128,6 +147,16 @@ typedef struct {
 
 struct vm {
   execution_state* current_execution_state;
+  // the vm's own state (the one vm_init allocated), kept by handle: upvalue
+  // cells captured there resolve their window through it even while a resume
+  // has swapped current to a coro's state
+  execution_state* main_state;
+  // the resumer chain: while a resume runs a coroutine's state, the states it
+  // suspended (its resumer, and the resumer's resumer, ...) root here - the
+  // collector walks every one of them like the current state (their parked
+  // registers and frames are live values the coro may still read when it
+  // yields back). LIFO push/pop inside coro_drive.
+  execution_state* resume_parked;
   // the string interner: canonical compiler-made names. rooted via the gc's
   // interner watch; the vm interns its startup spellings here so they
   // pointer-match the compiler's constants (member probes hit on ==).
@@ -168,6 +197,11 @@ struct vm {
 typedef enum {
   RUNTIME_OK,
   RUNTIME_ERROR,
+  // a coroutine parked at a yield: only the resume driver's run_until ever
+  // produces it (the yield barrier keeps every nested run_until from ever
+  // seeing a suspension), and only coro_drive consumes it - the yielded
+  // value rides top_level_return.
+  RUNTIME_SUSPENDED,
 } runtime_status;
 
 typedef struct {
@@ -192,6 +226,11 @@ typedef struct {
 } interpret_specs;
 
 void vm_init(vm* p_vm, vm_specs p_specs);
+
+// the ok* -> vm* reach-through for natives defined in the vm's own
+// translation unit (the coro surface: the native ABI hands them an ok*, and
+// the ok struct is private to ok.c). defined there.
+vm* ok_vm(ok* p_ok);
 // create Object/Class and the cached lookup names. call exactly once, after
 // the gc watches the vm (see the comment on the implementation).
 bool vm_init_singletons(vm* p_vm);
@@ -221,6 +260,12 @@ bool vm_native_throw(vm* p_vm, ok_value p_value);
 // lane's builtin singleton (native values -> Object, bound methods ->
 // function; both noted in the classes record). total: never NULL.
 object_class* vm_classof(vm* p_vm, ok_value p_value);
+
+// mount the coro surface (R20-R24): the native static `operator ()`
+// (construction, `coro(fu)`) and the `resume`/`status` methods on the coro
+// builtin class. call before the builtin seal (ok_define_builtin_surfaces
+// freezes the tables right after).
+bool vm_define_coro_surface(vm* p_vm);
 
 // the chain-walk half of the family (C12): is p_value an instance of
 // p_target or one of its descendants (Object at the root matches everything).
