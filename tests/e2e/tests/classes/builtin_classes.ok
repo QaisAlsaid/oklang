@@ -1,19 +1,19 @@
 // the builtin class singletons as global values (C10): one per lane under
-// Object, one metaclass for all of them. they are ordinary values - store
+// object, one metaclass for all of them. they are ordinary values - store
 // them, pass them, compare them by identity.
-print(num is Class); // expect: true
-print(str is Class); // expect: true
-print(bool is Class); // expect: true
-print(array is Class); // expect: true
-print(map is Class); // expect: true
-print(function is Class); // expect: true
-print(nil is Class); // expect: true
-print(Object is Class); // expect: true
-print(classof(str) === Class); // expect: true
+print(num is type); // expect: true
+print(str is type); // expect: true
+print(bool is type); // expect: true
+print(array is type); // expect: true
+print(map is type); // expect: true
+print(function is type); // expect: true
+print(nil is type); // expect: true
+print(object is type); // expect: true
+print(classof(str) === type); // expect: true
 // under the root
-print(isinstance(str, Object)); // expect: true
-print(isinstance(nil, Object)); // expect: true
-print(isinstance(Object, Object)); // expect: true
+print(isinstance(str, object)); // expect: true
+print(isinstance(nil, object)); // expect: true
+print(isinstance(object, object)); // expect: true
 // identity comparison, the right semantics for class values
 print(str == str); // expect: true
 print(str == num); // expect: false

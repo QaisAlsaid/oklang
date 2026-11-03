@@ -1,0 +1,22 @@
+fu close(tag) {
+  print("close " + tag);
+  return true;
+}
+fu boom() {
+  throw "cleanup-failed";
+  return true;
+}
+
+// R22 + continuation: a coro dying by error runs its defers on its own
+// state before the lane transplants to the resumer - and a failing
+// defer among them does not stop the rest of the chain
+fu body() {
+  defer close("survivor");
+  defer boom();
+  return 1;
+}
+
+let c = coro(body);
+c.resume();
+// expect: close survivor
+// expect error: uncaught error: cleanup-failed

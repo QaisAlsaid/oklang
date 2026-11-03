@@ -43,4 +43,4 @@ print(coro);                // expect: <class coro>
 print(classof(c) === coro); // expect: true
 print(c is coro);           // expect: true
 print(isinstance(c, coro)); // expect: true
-print(coro is Class);       // expect: true
+print(coro is type);       // expect: true

@@ -74,9 +74,10 @@ typedef struct {
   uint32_t return_count;
   uint16_t argc; // set by call(): the callee's own prologue (defaults ladder) reads it
   // set by stage_defer_thunk: this frame runs a defer thunk. the unwinder
-  // reads it to decide the cascade. an error that passed through a defer
-  // invocation (raised in the thunk or anything under it, uncaught on the way)
-  // stops the defer chain: subsequent defers in the dying region are nilled.
+  // reads it as the chronology marker: an in-flight error that passed
+  // through a flagged frame was raised by a defer, which makes it the
+  // chain's FIRST failure - subsequent defer failures drop against it
+  // instead of replacing it.
   bool defer_thunk;
 } call_frame;
 
@@ -135,12 +136,6 @@ typedef struct execution_state {
   bool error_pending;
   uint32_t native_call_depth;
 
-  // the defer cascade: once a defer fails during an unwind scan, subsequent
-  // defers in the dying region are nilled, not run
-  // (one failure stops the cleanup chain. the failing defer's error replaces the in-flight one).
-  // cleared when a catch takes an error, when the lane is cleared, and at the final reset.
-  bool defer_cascade;
-
   // the live try regions, vm-wide, frame-tagged (see handler_record).
   handler_stack handlers;
 } execution_state;
@@ -161,16 +156,16 @@ struct vm {
   // interner watch; the vm interns its startup spellings here so they
   // pointer-match the compiler's constants (member probes hit on ==).
   string_interner* interner;
-  // the two singletons every hierarchy funnels into: Object (the root, the
-  // default parent) and Class (the class of every class value - there is
+  // the two singletons every hierarchy funnels into: object (the root, the
+  // default parent) and type (the class of every class value - there is
   // exactly one metaclass, no tower). created at vm_init, traced via mark_vm.
   struct object_class* object_singleton;
   struct object_class* class_singleton;
   // the seven builtin class singletons (C10), index-parallel to
-  // builtin_class_id: str/num/bool/array/map/function/nil, all under Object,
+  // builtin_class_id: str/num/bool/array/map/function/nil, all under object,
   // sealed by ok_define_builtin_surfaces after their native method tables
   // are mounted. every value's classof() lands on one of these (or on
-  // Class, or on a user class). traced via mark_vm like the two above.
+  // type, or on a user class). traced via mark_vm like the two above.
   struct object_class* builtin_classes[OK_BUILTIN_COUNT];
   // the cached spelling of the static call operator, so constructing through
   // a class value never allocates its lookup name. rooted like the singletons.
@@ -231,7 +226,7 @@ void vm_init(vm* p_vm, vm_specs p_specs);
 // translation unit (the coro surface: the native ABI hands them an ok*, and
 // the ok struct is private to ok.c). defined there.
 vm* ok_vm(ok* p_ok);
-// create Object/Class and the cached lookup names. call exactly once, after
+// create object/type and the cached lookup names. call exactly once, after
 // the gc watches the vm (see the comment on the implementation).
 bool vm_init_singletons(vm* p_vm);
 void vm_deinit(vm* p_vm);
@@ -256,8 +251,8 @@ void vm_clear_error(vm* p_vm);
 bool vm_native_throw(vm* p_vm, ok_value p_value);
 
 // classof (C10): the one class value every value is an instance of.
-// instances -> their class, class values -> Class, everything else -> its
-// lane's builtin singleton (native values -> Object, bound methods ->
+// instances -> their class, class values -> type, everything else -> its
+// lane's builtin singleton (native values -> object, bound methods ->
 // function; both noted in the classes record). total: never NULL.
 object_class* vm_classof(vm* p_vm, ok_value p_value);
 
@@ -268,7 +263,7 @@ object_class* vm_classof(vm* p_vm, ok_value p_value);
 bool vm_define_coro_surface(vm* p_vm);
 
 // the chain-walk half of the family (C12): is p_value an instance of
-// p_target or one of its descendants (Object at the root matches everything).
+// p_target or one of its descendants (object at the root matches everything).
 bool vm_is_instance(vm* p_vm, ok_value p_value, const object_class* p_target);
 
 #endif // OK_VM_H

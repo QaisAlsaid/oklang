@@ -11,20 +11,20 @@ print([1] is array); // expect: true
 print({:} is map); // expect: true
 print(null is nil); // expect: true
 print(len is function); // expect: true
-class Animal : Object {}
+class Animal : object {}
 class Dog : Animal {}
 let d = Dog();
 print(d is Dog); // expect: true
 // the exact-class ruling, pinned: `is` answers "what box", not "what family"
 print(d is Animal); // expect: false
-print(d is Object); // expect: false
+print(d is object); // expect: false
 print(isinstance(d, Animal)); // expect: true
-print(isinstance(d, Object)); // expect: true
+print(isinstance(d, object)); // expect: true
 // every class value is an instance of the one metaclass
-print(Dog is Class); // expect: true
-print(Object is Class); // expect: true
-print(Class is Class); // expect: true
-print(d is Class); // expect: false
+print(Dog is type); // expect: true
+print(object is type); // expect: true
+print(type is type); // expect: true
+print(d is type); // expect: false
 print(d is num); // expect: false
 // where it reads right: the guard
 fu check(v) {

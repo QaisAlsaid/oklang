@@ -32,4 +32,4 @@ kid().twice("x"); // expect: x
 glob let inst = cc();
 print(inst is cc); // expect: true
 print(classof(inst) === cc); // expect: true
-print(classof(cc) === Class); // expect: true
+print(classof(cc) === type); // expect: true

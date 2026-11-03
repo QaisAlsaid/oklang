@@ -79,7 +79,6 @@ static inline bool call(vm* p_vm,
                         uint16_t p_argc,
                         uint32_t p_retc);
 static bool stage_defer_thunk(vm* p_vm, execution_state* p_exe, register_file* p_reg, object_closure* p_thunk);
-static void nil_pending_defers(execution_state* p_exe, uint32_t p_from, uint32_t p_uptill);
 static bool run_pending_defers(vm* p_vm, uint32_t p_from, uint32_t p_uptill);
 static interpret_result create_closure(
     vm* p_vm, execution_state* p_exe, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, uint16_t p_src);
@@ -142,7 +141,6 @@ void vm_init(vm* p_vm, vm_specs p_specs) {
   p_vm->current_execution_state->has_error = false;
   p_vm->current_execution_state->error_what[0] = '\0';
   p_vm->current_execution_state->native_call_depth = 0;
-  p_vm->current_execution_state->defer_cascade = false;
   p_vm->current_execution_state->owner_coro = NULL; // the vm's own state: no coro owns it
   p_vm->current_execution_state->yield_barrier = 0;
   p_vm->current_execution_state->yield_barrier_kind = 0;
@@ -211,7 +209,7 @@ static object_string* intern_vm_string(vm* p_vm, const char* p_chars) {
 bool vm_init_singletons(vm* p_vm) {
   object_specs specs = {p_vm->alloc, p_vm->objects_store};
   gc* gc = p_vm->alloc->gc;
-  object_string* object_name = intern_vm_string(p_vm, "Object");
+  object_string* object_name = intern_vm_string(p_vm, "object");
   if (object_name == NULL) {
     return false;
   }
@@ -225,7 +223,7 @@ bool vm_init_singletons(vm* p_vm) {
   }
   // the root is born complete: no fields, no methods, frozen empty.
   object_class_freeze(p_vm->object_singleton);
-  object_string* class_name = intern_vm_string(p_vm, "Class");
+  object_string* class_name = intern_vm_string(p_vm, "type");
   if (class_name == NULL) {
     return false;
   }
@@ -256,7 +254,7 @@ bool vm_init_singletons(vm* p_vm) {
     p_vm->op_names[i] = intern_vm_string(p_vm, class_operator_spelling((class_operator)i));
   }
   p_vm->op_names[CLASS_OP_CALL] = p_vm->static_call_name;
-  // the seven builtin singletons (C10): under Object, created UNFROZEN here -
+  // the seven builtin singletons (C10): under object, created UNFROZEN here -
   // the native method surface is mounted by ok_define_builtin_surfaces (the
   // C-side step that owns their freeze, so the tables fill before the seal).
   // the name rides the guard stack only across the class creation that
@@ -370,7 +368,6 @@ void vm_clear_error(vm* p_vm) {
   exe->error_reported = false;
   exe->error_is_script = false;
   exe->error_hard = false;
-  exe->defer_cascade = false;
   exe->error_value = NULL_AS_VALUE();
 }
 
@@ -640,7 +637,6 @@ static execution_state* coro_state_create(vm* p_vm, object_coro* p_coro) {
   state->has_error = false;
   state->error_what[0] = '\0';
   state->native_call_depth = 0;
-  state->defer_cascade = false;
   state->owner_coro = p_coro;
   state->yield_barrier = 0;
   state->yield_barrier_kind = 0;
@@ -756,9 +752,9 @@ static bool coro_drive(vm* p_vm, object_coro* p_coro, bool p_has_arg, value p_ar
     // the coro died by error. the R22 death sweep runs FIRST, on the coro's
     // own state (still current): the propagation lane left the frames
     // unpopped, and reset_error_state runs their defers exactly like an
-    // uncaught error at top level - innermost first, a failing defer
-    // cascades and replaces the lane. the resumer stays parked while the
-    // sweep's thunks allocate.
+    // uncaught error at top level - innermost first, chains continue past a
+    // failing defer, the first failure replaces the lane. the resumer stays
+    // parked while the sweep's thunks allocate.
     reset_error_state(p_vm);
     // then the lane crosses (before the state dies - a moved lane, not a
     // shared one), the state goes away, and the resume call fails in the
@@ -1701,9 +1697,9 @@ static ok_value as_bool(vm* p_vm, value p_value, value* p_result) {
 }
 
 // classof (C10): every value is an instance of exactly one class. instances
-// carry theirs, class values are all Class, every other object maps to its
+// carry theirs, class values are all type, every other object maps to its
 // lane's builtin singleton. native values (opaque embedder payloads) sit
-// directly under Object, and bound methods count as function - both are
+// directly under object, and bound methods count as function - both are
 // recorded in the classes draft as the two judgment calls.
 object_class* vm_classof(vm* p_vm, ok_value p_value) {
   if (IS_VALUE_NUMBER(p_value) || IS_VALUE_INT(p_value)) {
@@ -1742,8 +1738,8 @@ object_class* vm_classof(vm* p_vm, ok_value p_value) {
   case OBJ_BOUND_METHOD:
     return p_vm->builtin_classes[OK_BUILTIN_FUNCTION];
   default:
-    // native values are opaque payloads: Object directly. raw protos and
-    // upvalues never surface as values; if one ever does, Object is the
+    // native values are opaque payloads: object directly. raw protos and
+    // upvalues never surface as values; if one ever does, object is the
     // honest total answer.
     return p_vm->object_singleton;
   }
@@ -2206,39 +2202,64 @@ static bool stage_defer_thunk(vm* p_vm, execution_state* p_exe, register_file* p
     return false;
   }
   // flag the pushed frame (call() clears it): both entry points. OP_DEFER_RUN's
-  // arm and the unwind scan. stage through here, so every defer thunk frame
-  // carries the mark the unwinder's cascade check reads
+  // arm and the unwind scan. the flag is the chronology marker the unwinder
+  // reads to tell "the in-flight error IS a defer failure" from "an original
+  // error a defer may replace"
   p_exe->call_stack.data[p_exe->call_stack.count - 1].defer_thunk = true;
   return true;
 }
 
-// nil every pending defer in [p_from, p_uptill) without running any, the
-// cascade lane (a defer already failed; the chain stops) and the teardown
-// lane (the frames are dying regardless). keeps the invariant that no
-// tagged value ever outlives its scope's exit, whatever the exit was.
-static void nil_pending_defers(execution_state* p_exe, uint32_t p_from, uint32_t p_uptill) {
-  for (uint32_t at = p_uptill; at-- > p_from;) {
-    if (IS_VALUE_STRICTLY_DEFER(p_exe->registers.array.data[at])) {
-      p_exe->registers.array.data[at] = NULL_AS_VALUE();
-    }
-  }
+// the first failure of a defer chain is the error that propagates when the
+// chain is done: a failing defer's error replaces the in-flight one, and
+// LATER failures in the same chain are dropped in the first's favor (the
+// first error is the reportable one - zig/go doctrine, continuation plus a
+// deterministic winner). the value rides a gc guard between the failure and
+// the chain's end: the lane itself carries the later thunk's error in that
+// window, so the first failure's value would otherwise be unrooted.
+typedef struct {
+  char what[512];
+  ok_error_kind kind;
+  value value;
+  bool is_script;
+  bool reported;
+  bool has_error;
+} defer_chain_failure;
+
+static void defer_chain_failure_capture(const execution_state* p_exe, defer_chain_failure* p_out) {
+  memcpy(p_out->what, p_exe->error_what, sizeof(p_out->what));
+  p_out->kind = p_exe->error_kind;
+  p_out->value = p_exe->error_value;
+  p_out->is_script = p_exe->error_is_script;
+  p_out->reported = p_exe->error_reported;
+  p_out->has_error = p_exe->has_error;
+}
+
+static void defer_chain_failure_restore(execution_state* p_exe, const defer_chain_failure* p_failure) {
+  memcpy(p_exe->error_what, p_failure->what, sizeof(p_exe->error_what));
+  p_exe->error_kind = p_failure->kind;
+  p_exe->error_value = p_failure->value;
+  p_exe->error_is_script = p_failure->is_script;
+  p_exe->error_reported = p_failure->reported;
+  p_exe->has_error = p_failure->has_error;
+  p_exe->error_pending = true; // a failure in flight, by construction
 }
 
 // run every pending defer in [p_from, p_uptill), descending, lifo, because
 // later declarations hold higher registers (hidden locals allocate in order,
 // the slot last). a defer that fails (or anything it calls failing uncaught)
-// tears its leftover frames down, sets the cascade, nils the rest of the
-// range, and returns false: the in-flight error is the defer's now, and the
-// caller must restart its walk for it.
-static bool run_pending_defers(vm* p_vm, uint32_t p_from, uint32_t p_uptill) {
+// DOES NOT stop the chain: the remaining defers still run (zig/go doctrine -
+// cleanup must not be lost to a cleanup error), the failing thunk's own
+// callees are torn down with THEIR defers run, and the FIRST failure's error
+// is what the caller sees when the scan returns false. oom is the one
+// stop-everything lane (error_hard: no script may run after it).
+// p_in_flight_is_defer: the in-flight error was raised by a defer (the
+// chronology marker) - it is the chain's first by definition, later failures
+// drop against it instead of replacing it.
+static bool run_pending_defers_ex(vm* p_vm, uint32_t p_from, uint32_t p_uptill, bool p_in_flight_is_defer) {
   execution_state* exe = p_vm->current_execution_state;
   register_file* reg = &exe->registers;
   if (exe->error_hard) {
     return true; // oom: no script may run, the hard lane owns the teardown
-  }
-  if (exe->defer_cascade) {
-    nil_pending_defers(exe, p_from, p_uptill);
-    return true;
   }
   // root the whole scanned range for the scan's duration: top is the
   // throw-point's watermark, which can sit below the scanned frame's full
@@ -2249,67 +2270,108 @@ static bool run_pending_defers(vm* p_vm, uint32_t p_from, uint32_t p_uptill) {
   if (reg->top < p_uptill) {
     reg->top = p_uptill;
   }
+  defer_chain_failure first;
+  bool first_captured = false; // the accounting: the chain's first is known
+  bool chain_failed = false;   // the control: a NEW failure happened in THIS call
+  bool first_guarded = false;
+  if (p_in_flight_is_defer && exe->error_pending) {
+    // the in-flight is the chain's first by chronology - captured for the
+    // drop accounting only: it propagates through the walk that is already
+    // delivering it, this scan must not report it as its own failure (the
+    // dying-frame loop would restart without popping, a livelock)
+    first_captured = true;
+    defer_chain_failure_capture(exe, &first);
+    first_guarded = gc_guard_up(p_vm->alloc->gc, first.value);
+  }
   for (uint32_t at = p_uptill; at-- > p_from;) {
-    value* slot = &reg->array.data[at];
-    if (!IS_VALUE_STRICTLY_DEFER(*slot)) {
+    if (!IS_VALUE_STRICTLY_DEFER(reg->array.data[at])) {
       continue;
     }
-    object_closure* thunk = VALUE_AS_DEFER(*slot);
-    *slot = NULL_AS_VALUE(); // consumed: exactly once per scope instance
+    object_closure* thunk = VALUE_AS_DEFER(reg->array.data[at]);
+    reg->array.data[at] = NULL_AS_VALUE(); // consumed: exactly once per scope instance
     const uint32_t depth = exe->call_stack.count;
     const uint32_t saved_top = reg->top;
-    if (!stage_defer_thunk(p_vm, exe, reg, thunk)) {
-      reg->top = saved_top;
-      if (!exe->error_hard) {
-        exe->defer_cascade = true;
+    bool thunk_failed = false;
+    if (stage_defer_thunk(p_vm, exe, reg, thunk)) {
+      // the thunk must run with a clean propagation lane: the in-flight error
+      // is parked here in C, and call_native's post-flight error_pending check
+      // cannot tell "raised inside the native" from "pending since before the
+      // native", without this, every deferred native call fails spuriously.
+      // has_error and error_value stay set: the in-flight value must keep
+      // rooting across the thunk's allocations either way.
+      const bool saved_pending = exe->error_pending;
+      exe->error_pending = false;
+      // the yield barrier: a defer thunk is a C-driven region (the chain scan
+      // holds the rest of the cascade and the first-failure bookkeeping in
+      // this C frame) - a yield from inside it could never resume honestly,
+      // so OP_YIELD refuses it
+      const uint8_t saved_barrier = exe->yield_barrier;
+      if (exe->yield_barrier == 0) {
+        exe->yield_barrier_kind = YIELD_BARRIER_DEFER;
       }
-      nil_pending_defers(exe, p_from, at);
-      return !exe->error_hard;
+      exe->yield_barrier++;
+      const interpret_result result = run_until(p_vm, depth);
+      exe->yield_barrier = saved_barrier;
+      if (result.status == RUNTIME_OK) {
+        // the thunk survived (its own catches, if any, consumed their errors):
+        // the in-flight error continues outward exactly as it was
+        exe->error_pending = saved_pending;
+      } else {
+        thunk_failed = true; // nothing inside the thunk caught it
+      }
+    } else {
+      thunk_failed = true; // the staging itself failed (register exhaustion, oom)
     }
-    // the thunk must run with a clean propagation lane: the in-flight error
-    // is parked here in C, and call_native's post-flight error_pending check
-    // cannot tell "raised inside the native" from "pending since before the
-    // native", without this, every deferred native call fails spuriously.
-    // has_error and error_value stay set: the in-flight value must keep
-    // rooting across the thunk's allocations either way.
-    const bool saved_pending = exe->error_pending;
-    exe->error_pending = false;
-    // the yield barrier: a defer thunk is a C-driven region (the chain scan
-    // holds the rest of the cascade in this C frame) - a yield from inside
-    // it could never resume honestly, so OP_YIELD refuses it
-    const uint8_t saved_barrier = exe->yield_barrier;
-    if (exe->yield_barrier == 0) {
-      exe->yield_barrier_kind = YIELD_BARRIER_DEFER;
-    }
-    exe->yield_barrier++;
-    const interpret_result result = run_until(p_vm, depth);
-    exe->yield_barrier = saved_barrier;
-    if (result.status == RUNTIME_OK) {
-      // the thunk survived (its own catches, if any, consumed their errors):
-      // the in-flight error continues outward exactly as it was
-      exe->error_pending = saved_pending;
-    }
-    // on failure the lane holds the thunk's error: the replacement.
     reg->top = saved_top;
-    if (result.status != RUNTIME_OK) {
-      // nothing inside the thunk caught it: tear its leftover frames down
-      // exactly like the unwinder's dying-frame loop, minus their defers
-      // (cascade. they are subsequent in the chain, nilled not run).
-      while (exe->call_stack.count > depth) {
-        call_frame* dying = &exe->call_stack.data[exe->call_stack.count - 1];
-        nil_pending_defers(exe, dying->registers_base, dying->registers_base + dying->closure->function->registers);
-        close_upvalues(exe, dying->registers_base);
-        exe->call_stack.count--;
-        while (exe->handlers.count > 0 && exe->handlers.data[exe->handlers.count - 1].frame >= exe->call_stack.count) {
-          exe->handlers.count--;
-        }
-      }
-      exe->defer_cascade = true;
-      nil_pending_defers(exe, p_from, at);
-      return false;
+    if (!thunk_failed) {
+      continue;
     }
+    if (exe->error_hard) {
+      break; // oom inside the thunk: the hard lane owns the rest, stop here
+    }
+    // tear the failing thunk's leftover frames down exactly like the
+    // unwinder's dying-frame loop, except their defers RUN (the doctrine:
+    // cleanup on the way out, whatever failed - a failing defer must not
+    // orphan the cleanup of the frames it was unwinding through)
+    while (exe->call_stack.count > depth) {
+      call_frame* dying = &exe->call_stack.data[exe->call_stack.count - 1];
+      (void)run_pending_defers_ex(p_vm, dying->registers_base, dying->registers_base + dying->closure->function->registers, true);
+      // the in-flight at this point is the failing thunk's own error: the
+      // nested chain treats it as the first (nested failures drop against
+      // it, and the outer first - captured before or below - wins over
+      // whatever it left)
+      close_upvalues(exe, dying->registers_base);
+      exe->call_stack.count--;
+      while (exe->handlers.count > 0 && exe->handlers.data[exe->handlers.count - 1].frame >= exe->call_stack.count) {
+        exe->handlers.count--;
+      }
+    }
+    if (!first_captured) {
+      first_captured = true;
+      defer_chain_failure_capture(exe, &first);
+      // the guard may be full at pathological chain recursion depth; the
+      // chain still continues (stopping cleanup is the bug being fixed), the
+      // unguarded first value is the accepted cost of that corner
+      first_guarded = gc_guard_up(p_vm->alloc->gc, first.value);
+    } else {
+      // a later failure: its error is dropped, the first goes back in the
+      // lane so the next thunk's park/restore and the final propagation
+      // keep seeing the first
+      defer_chain_failure_restore(exe, &first);
+    }
+    chain_failed = true; // a new failure in this call, whatever the accounting
+  }
+  if (chain_failed) {
+    if (first_guarded) {
+      gc_guard_down(p_vm->alloc->gc);
+    }
+    return false; // the lane holds the first failure
   }
   return true;
+}
+
+static bool run_pending_defers(vm* p_vm, uint32_t p_from, uint32_t p_uptill) {
+  return run_pending_defers_ex(p_vm, p_from, p_uptill, false);
 }
 
 // the unwind. walk the handler
@@ -2321,12 +2383,13 @@ static bool run_pending_defers(vm* p_vm, uint32_t p_from, uint32_t p_uptill) {
 // error value at the record's register, jump. records below the depth
 // belong to outer C levels. theirs to take, not ours.
 //
-// a defer failing anywhere in here returns false from its scan: the walk
-// restarts for the defer's error (it replaced the in-flight one).
-// the restarted walk can only find records, the failing defer's own scope did not consume.
+// a defer failing anywhere in here returns false from its scan AFTER
+// running the whole chain (continuation doctrine): the walk restarts for
+// the first failure's error with the bookkeeping intact (consumed slots
+// re-scan as no-ops, the restart is idempotent).
+// the restarted walk can only find records the failing defer's own scope did not consume.
 // the try whose catch was about to run never sees a defer's failure
 // (its record was consumed before the scan), but outer trys in the same frame can.
-// cascade: the remaining defers in the dying region are nilled, not run.
 // the resume state, returned BY VALUE: taking &frame/&ip in the FAIL_PATH
 // macro would make the dispatch loop's hottest locals address-taken (forced
 // to memory, measured +15% on numeric_for_sum). the struct keeps them register-promotable.
@@ -2349,15 +2412,16 @@ static unwind_resume __attribute__((noinline, cold)) attempt_unwind(vm* p_vm, ui
     if (taken.frame < p_depth) {
       break; // an outer C level's try: leave it for the outer walk
     }
-    // cascade check: did this error pass through a defer invocation on
-    // its way here (raised in a thunk, or in anything a thunk called, and
-    // uncaught on the way)? then the chain stops. every scan below nils
-    // instead of running, and the error (the defer's) is what lands in the
-    // catch. a thunk frame that already returned normally is long gone, and
-    // an error from a SIBLING ordinary call never sees a live thunk frame, both correctly keep the chain alive.
+    // the chronology marker: did the in-flight error pass through a defer
+    // invocation on its way here (raised in a thunk, or in anything a thunk
+    // called, uncaught on the way)? then it IS a defer failure - the chain's
+    // first by definition, and the scans below drop later failures against
+    // it instead of letting them replace it. an error from a SIBLING ordinary
+    // call never sees a live thunk frame and stays replaceable.
+    bool in_flight_is_defer = false;
     for (uint32_t f = exe->call_stack.count; f-- > taken.frame + 1;) {
       if (exe->call_stack.data[f].defer_thunk) {
-        exe->defer_cascade = true;
+        in_flight_is_defer = true;
         break;
       }
     }
@@ -2366,8 +2430,8 @@ static unwind_resume __attribute__((noinline, cold)) attempt_unwind(vm* p_vm, ui
     bool defer_failed = false;
     while (exe->call_stack.count > taken.frame + 1) {
       call_frame* dying = &exe->call_stack.data[exe->call_stack.count - 1];
-      if (!run_pending_defers(
-              p_vm, dying->registers_base, dying->registers_base + dying->closure->function->registers)) {
+      if (!run_pending_defers_ex(
+              p_vm, dying->registers_base, dying->registers_base + dying->closure->function->registers, in_flight_is_defer)) {
         defer_failed = true;
         break;
       }
@@ -2378,7 +2442,7 @@ static unwind_resume __attribute__((noinline, cold)) attempt_unwind(vm* p_vm, ui
       }
     }
     if (defer_failed) {
-      continue; // restart the walk for the defer's error (cascade is set)
+      continue; // restart the walk for the defer's error (its chain already ran)
     }
     // consume the record and restore the handler frame
     exe->handlers.count--;
@@ -2386,8 +2450,8 @@ static unwind_resume __attribute__((noinline, cold)) attempt_unwind(vm* p_vm, ui
     // the handler frame's own region: defers at/above the floor run before
     // the catch. a failure here restarts the walk. the consumed record (the
     // catch this frame was about to run) never sees it, outer records may.
-    if (!run_pending_defers(
-            p_vm, fr->registers_base + taken.floor, fr->registers_base + fr->closure->function->registers)) {
+    if (!run_pending_defers_ex(
+            p_vm, fr->registers_base + taken.floor, fr->registers_base + fr->closure->function->registers, in_flight_is_defer)) {
       continue;
     }
     close_upvalues(exe, fr->registers_base + taken.floor);
@@ -2399,11 +2463,10 @@ static unwind_resume __attribute__((noinline, cold)) attempt_unwind(vm* p_vm, ui
     resume.ip = fr->ip;
     resume.caught = true;
     // consumed: the catch owns it now (and the run recovered: last_error
-    // reads nothing once a catch took it, and the defer chain un-cascades)
+    // reads nothing once a catch took it)
     exe->error_pending = false;
     exe->error_reported = false;
     exe->has_error = false;
-    exe->defer_cascade = false;
     return resume;
   }
   return resume;
@@ -4698,7 +4761,7 @@ static void* ok_dispatch_table[OP__COUNT] = {
         parent = p_vm->object_singleton;
       }
       if (parent == NULL) {
-        runtime_error(p_vm, OK_EK_INTERNAL, "class Object is missing.");
+        runtime_error(p_vm, OK_EK_INTERNAL, "class object is missing.");
         FAIL_PATH();
         DISPATCH();
       }
@@ -6070,23 +6133,33 @@ static interpret_result __attribute__((cold)) vm_report_error(vm* p_vm) {
 // the uncaught defer sweep runs first: every frame's pending defers, innermost
 // frame first, descending registers within a frame, cleanup on the way out
 // is defer's whole job, and the report already printed (the sweep's stdout
-// lands after it). a defer failing during the sweep cascades: the rest are
-// skipped, the lane keeps the failing defer's error (ok_last_error reads the
-// replacement). oom never sweeps (the hard lane).
+// lands after it). a defer failing during the sweep does not stop it: every
+// chain completes, and the lane keeps the FIRST failing defer's error
+// (ok_last_error reads the replacement). oom never sweeps (the hard lane).
 static void reset_error_state(vm* p_vm) {
   execution_state* exe = p_vm->current_execution_state;
   if (!exe->error_hard && exe->call_stack.count > 0) {
+    // the chronology marker, once for the whole sweep: an uncaught error that
+    // was raised by a defer (a normal-exit defer failing with no handler
+    // above it) is the chain's first - the sweep's own failures drop against it
+    bool in_flight_is_defer = false;
+    for (uint32_t f = exe->call_stack.count; f-- > 0;) {
+      if (exe->call_stack.data[f].defer_thunk) {
+        in_flight_is_defer = true;
+        break;
+      }
+    }
     for (uint32_t f = exe->call_stack.count; f-- > 0;) {
       call_frame* fr = &exe->call_stack.data[f];
-      (void)run_pending_defers(p_vm, fr->registers_base, fr->registers_base + fr->closure->function->registers);
-      // cascade stops the chain. the teardown below is unconditional
+      (void)run_pending_defers_ex(p_vm, fr->registers_base, fr->registers_base + fr->closure->function->registers, in_flight_is_defer);
+      // every frame's chain completes (continuation); a failure's first error
+      // stays in the lane for ok_last_error. the teardown below is unconditional
     }
   }
   close_upvalues(exe, 0);
   exe->registers.top = 0;
   exe->call_stack.count = 0;
   exe->handlers.count = 0;
-  exe->defer_cascade = false;
 }
 
 static inline bool call(vm* p_vm,

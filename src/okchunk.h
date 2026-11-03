@@ -318,7 +318,7 @@ typedef enum {
                          //                          and call it, discard lane. a null slot is a no-op: the defer statement never executed on this
                          //                          path (conditional defer, loop iteration that skipped it).
   OP_CLASS,              // 2w:   (A, B, C)       -> r[A] = new class named k[B], parent r[C] (a class value;
-                         //                          null means Object). tables start empty and unfrozen.
+                         //                          null means object). tables start empty and unfrozen.
   OP_DEFINE_FIELD,       // 2w:   (p, A, B, C)    -> class r[A] gains field k[C]; p == 1: no initializer,
                          //                          else r[B] is a thunk closure run with the fresh instance
                          //                          as its receiver at construction time.

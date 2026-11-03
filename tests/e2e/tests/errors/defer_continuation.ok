@@ -1,0 +1,68 @@
+fu close(tag) {
+  print("close " + tag);
+  return true;
+}
+fu boom(tag) {
+  print("boom " + tag);
+  throw "failed-" + tag;
+  return true;
+}
+
+// a failing defer does not stop the chain (zig/go doctrine): the
+// remaining defers still run, lifo, and the first failure's error is
+// the one that lands in the catch
+try {
+  {
+    defer close("first");
+    defer boom("second");
+  }
+} catch e {
+  print("caught: " + e);
+}
+// expect: boom second
+// expect: close first
+// expect: caught: failed-second
+
+// multiple failures: the FIRST failure to run (lifo order) wins; the
+// later failures are dropped in its favor. the try's record was consumed
+// while the first failure was being delivered, so the second failure
+// escapes it uncaught - that lane lives in defer_continuation_uncaught.ok
+
+// the failing defer's own callees get their cleanup too: teardown of
+// the frames it was unwinding through runs their defers
+fu cleanup_callee() {
+  defer close("callee-cleanup");
+  throw "callee-threw";
+  return true;
+}
+try {
+  {
+    defer close("outer-first");
+    defer cleanup_callee();
+  }
+} catch e {
+  print("caught: " + e);
+}
+// expect: close callee-cleanup
+// expect: close outer-first
+// expect: caught: callee-threw
+
+// deferr rides the same continuation: on the error path defer and
+// deferr slots run lifo interleaved by declaration, a failing one does
+// not stop the rest. the defer-owning function cannot catch its own
+// defer's failure (its record was consumed), so the try lives outside
+fu scope() {
+  {
+    deferr boom("late");
+    defer close("early");
+    throw "original";
+  }
+}
+try {
+  scope();
+} catch e {
+  print("caught: " + e);
+}
+// expect: close early
+// expect: boom late
+// expect: caught: failed-late

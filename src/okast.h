@@ -761,7 +761,7 @@ string ast_function_declaration_asprint(const ast_function_declaration* p_fu);
 // `class Name : Parent { members }`. members are let declarations (fields,
 // the binding's value is the per-instance initializer) and function
 // declarations (methods; DECLARATION_PUB marks `pub fu`). the parent is an
-// arbitrary expression evaluated at definition time (null = Object).
+// arbitrary expression evaluated at definition time (null = object).
 typedef struct {
   ast_declaration declaration;
   token name;

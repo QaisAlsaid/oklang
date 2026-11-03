@@ -63,7 +63,7 @@ static ok_value native_classof(ok* p_ok, uint8_t p_argc, const ok_value* p_argv)
 }
 
 // isinstance(v, C) (C12): the chain walk - true when C is classof(v) or one
-// of its ancestors (Object at the root matches everything, including null
+// of its ancestors (object at the root matches everything, including null
 // through nil). the exact-class check is `classof(v) == C` or the `is`
 // operator; this is the family question.
 static ok_value native_isinstance(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
@@ -326,7 +326,7 @@ static bool ok_define_builtin_surfaces(ok* p_ok) {
 // the value array can never drift apart (the old two hand-built arrays were
 // position-paired by discipline alone). natives pull their hidden " name"
 // global (the space prefix is what hides them); builtin classes pull the vm
-// singletons; Object and Class ride the same walk.
+// singletons; object and type ride the same walk.
 typedef enum {
   SEED_NATIVE,       // the value is hidden-global " <name>" (a native fn)
   SEED_BUILTIN_CLASS, // the value is vm->builtin_classes[class_id]
@@ -356,8 +356,8 @@ static const seed_entry top_level_seeds[] = {
     {"function", SEED_BUILTIN_CLASS, OK_BUILTIN_FUNCTION},
     {"nil", SEED_BUILTIN_CLASS, OK_BUILTIN_NIL},
     {"coro", SEED_BUILTIN_CLASS, OK_BUILTIN_CORO},
-    {"Object", SEED_OBJECT, OK_BUILTIN_COUNT},
-    {"Class", SEED_CLASS, OK_BUILTIN_COUNT},
+    {"object", SEED_OBJECT, OK_BUILTIN_COUNT},
+    {"type", SEED_CLASS, OK_BUILTIN_COUNT},
 };
 
 static top_level_declarations ok_get_top_level_declarations(ok* p_ok, bool* p_error) {
@@ -397,7 +397,7 @@ static value_array ok_get_top_level_values(ok* p_ok, bool* p_error) {
       temp = OBJECT_AS_VALUE(p_ok->vm.builtin_classes[seed->class_id]);
       break;
     case SEED_OBJECT:
-      // Object and Class have no global storage; the vm singletons are
+      // object and type have no global storage; the vm singletons are
       // the values (seeded fresh every run, rooted by mark_vm in between)
       temp = OBJECT_AS_VALUE(p_ok->vm.object_singleton);
       break;
@@ -505,7 +505,7 @@ bool ok_value_is_class(ok_value p_value) {
 }
 
 // a C-defined class: created unfrozen (define its native methods, then
-// ok_class_freeze). p_parent is a class value, or a null value for Object.
+// ok_class_freeze). p_parent is a class value, or a null value for object.
 // returns a null value on failure. the returned class is NOT rooted - the
 // definition-sequence calls below guard it across their own allocations,
 // but if you allocate anything else in between (or keep it past the

@@ -1,5 +1,5 @@
 // classof + isinstance (C12): plain builtin functions, rebindable like the
-// rest. classof(null) === nil, classof(Class) === Class - the one self-loop.
+// rest. classof(null) === nil, classof(type) === type - the one self-loop.
 print(classof(1) == num); // expect: true
 print(classof(1.5) == num); // expect: true
 print(classof("x") == str); // expect: true
@@ -8,9 +8,9 @@ print(classof([1]) == array); // expect: true
 print(classof({:}) == map); // expect: true
 print(classof(len) == function); // expect: true
 print(classof(null) === nil); // expect: true
-print(classof(Class) === Class); // expect: true
-print(classof(num) === Class); // expect: true
-class Animal : Object {}
+print(classof(type) === type); // expect: true
+print(classof(num) === type); // expect: true
+class Animal : object {}
 class Dog : Animal {}
 let d = Dog();
 print(classof(d) == Dog); // expect: true
@@ -18,11 +18,11 @@ print(classof(d) == Animal); // expect: false
 // isinstance walks the chain; the root matches everything
 print(isinstance(d, Dog)); // expect: true
 print(isinstance(d, Animal)); // expect: true
-print(isinstance(d, Object)); // expect: true
-print(isinstance(null, Object)); // expect: true
+print(isinstance(d, object)); // expect: true
+print(isinstance(null, object)); // expect: true
 print(isinstance(null, nil)); // expect: true
-print(isinstance(1, Object)); // expect: true
-print(isinstance(Class, Class)); // expect: true
-print(isinstance(num, Object)); // expect: true
+print(isinstance(1, object)); // expect: true
+print(isinstance(type, type)); // expect: true
+print(isinstance(num, object)); // expect: true
 print(isinstance(d, str)); // expect: false
 print(isinstance(1, num)); // expect: true

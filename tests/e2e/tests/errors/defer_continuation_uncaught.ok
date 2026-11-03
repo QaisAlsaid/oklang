@@ -1,0 +1,26 @@
+fu close(tag) {
+  print("closing " + tag);
+  return true;
+}
+fu boom() {
+  throw "cleanup-failed";
+  return true;
+}
+
+// uncaught: a failing defer does not orphan the rest of the cleanup -
+// every remaining defer runs before the interpreter gives up (the old
+// cascade halted here: ok_close was skipped)
+{
+  defer close("first");
+  defer boom();
+}
+// expect: closing first
+// expect error: uncaught error: cleanup-failed
+
+// two failing defers, no handler: both run, the FIRST failure to run
+// (lifo) is the error that is reported
+{
+  defer boom();
+  defer boom();
+}
+// expect error: uncaught error: cleanup-failed

@@ -222,7 +222,7 @@ static bool mark_execution_state(gc* p_gc, execution_state* exe) {
 static bool mark_vm(gc* p_gc) {
   vm* vm = p_gc->vm;
   execution_state* exe = vm->current_execution_state;
-  // the hierarchy roots: Object, Class, and the cached lookup names are
+  // the hierarchy roots: object, type, and the cached lookup names are
   // referenced only here, so this mark is what keeps them immortal.
   if (!mark_object(p_gc, (object*)vm->object_singleton) || !mark_object(p_gc, (object*)vm->class_singleton) ||
       !mark_object(p_gc, (object*)vm->static_call_name) || !mark_object(p_gc, (object*)vm->init_method_name)) {
@@ -234,7 +234,7 @@ static bool mark_vm(gc* p_gc) {
       return false;
     }
   }
-  // the builtin singletons root here exactly like Object and Class:
+  // the builtin singletons root here exactly like object and type:
   // nothing else references them at startup, and every classof() answer
   // funnels through one of them.
   for (uint32_t i = 0; i < OK_BUILTIN_COUNT; ++i) {
