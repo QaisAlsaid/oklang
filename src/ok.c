@@ -6,30 +6,18 @@
 #include "okcompiler.h"
 #include "okdebug.h"
 #include "okgc.h"
+#include "okmodules.h"
 #include "okobject.h"
 #include "okobject_store.h"
 #include "okparser.h"
 #include "okspecs.h"
+#include "okstate.h"
 #include "okutils.h"
 #include "okvalue.h"
 #include "okvm.h"
 
-struct ok {
-  object_store objects_store;
-  globals_store globals_store;
-  string_interner interner;
-  compiler compiler;
-  vm vm;
-  gc gc;
-  ok_source source;
-  allocators alloc;
-  ok_allocators raw_alloc;
-  bool dump_bytecode;
-  bool dump_skip_run;
-};
-
 // the vm's natives receive the ok* per the native ABI and reach the vm through
-// here (the struct above is this file's own business)
+// here (struct ok lives in okstate.h since OR-1 - the module driver shares it)
 vm* ok_vm(ok* p_ok) {
   return &p_ok->vm;
 }
@@ -360,7 +348,7 @@ static const seed_entry top_level_seeds[] = {
     {"type", SEED_CLASS, OK_BUILTIN_COUNT},
 };
 
-static top_level_declarations ok_get_top_level_declarations(ok* p_ok, bool* p_error) {
+top_level_declarations ok_get_top_level_declarations(ok* p_ok, bool* p_error) {
   top_level_declarations decls;
   top_level_declarations_init(&decls, &p_ok->alloc);
   for (uint32_t i = 0; i < sizeof(top_level_seeds) / sizeof(top_level_seeds[0]); ++i) {
@@ -374,7 +362,7 @@ static top_level_declarations ok_get_top_level_declarations(ok* p_ok, bool* p_er
   return decls;
 }
 
-static value_array ok_get_top_level_values(ok* p_ok, bool* p_error) {
+value_array ok_get_top_level_values(ok* p_ok, bool* p_error) {
   value_array vals;
   value_array_init(&vals, &p_ok->alloc);
 
@@ -441,6 +429,13 @@ ok* ok_create(ok_specs p_specs) {
                                    .interner = &okay->interner};
   compiler_init(&okay->compiler, compiler_specs);
   gc_watch_compiler(&okay->gc, &okay->compiler);
+  // OR-1: the module system - registry, loader (the fs default), and the
+  // gc watch that roots loaded modules' namespaces and the pending roots.
+  // initialized before the vm: vm_init allocates, and under aggressive gc
+  // a collection there must mark a VALID (empty) module system - the
+  // singleton failures' ok_free paths see one too.
+  ok_modules_init(&okay->modules, okay, &okay->alloc);
+  gc_watch_modules(&okay->gc, &okay->modules);
   vm_specs vm_specs = {.alloc = &okay->alloc,
                        .globals_store = &okay->globals_store,
                        .objects_store = &okay->objects_store,
@@ -464,18 +459,18 @@ ok* ok_create(ok_specs p_specs) {
   return okay;
 }
 
-static ok_result ok_run_inner(ok* p_ok, uint32_t p_source_id);
+static ok_result ok_run_inner(ok* p_ok, uint32_t p_source_id, parse_result* p_parsed, ok_import_bindings p_imports);
 
 // stamp the freshly compiled tree with its source id: the main function and
 // every nested proto (function protos live in the constants arrays).
 // proto trees grow downward only (a proto's constants are built before it is finished),
 // so the walk terminates. shared protos stamp idempotently.
-static void stamp_source_ids(object_function* p_function, uint32_t p_source_id) {
+void ok_stamp_source_ids(object_function* p_function, uint32_t p_source_id) {
   p_function->chunk.source_id = p_source_id;
   for (uint32_t i = 0; i < p_function->chunk.constants.count; ++i) {
     const value v = p_function->chunk.constants.data[i];
     if (IS_VALUE_FUNCTION(v)) {
-      stamp_source_ids(VALUE_AS_FUNCTION(v), p_source_id);
+      ok_stamp_source_ids(VALUE_AS_FUNCTION(v), p_source_id);
     }
   }
 }
@@ -489,7 +484,52 @@ ok_result ok_run(ok* p_ok, ok_source p_source) {
     return OK_INIT_ERROR;
   }
   p_ok->source = p_source;
-  const ok_result result = ok_run_inner(p_ok, source_id);
+
+  // OR-1: the module graph phase. the TU parses once here (ok_run_inner
+  // reuses the tree); if it has imports, the module system resolves and
+  // initializes the whole graph before the compile - the bindings arrive
+  // as constants, and the compiler resolves nothing at run time.
+  parser parser;
+  parser_specs parser_specs = {.alloc = &p_ok->alloc, .source = &p_ok->source};
+  parser_init(&parser, parser_specs);
+  parse_result parsed = parser_parse(&parser);
+  ok_result result = OK;
+  ok_import_binding_array bindings;
+  ok_import_binding_array_init(&bindings, &p_ok->alloc);
+  if (parsed.status != PARSE_OK) {
+    result = OK_PARSE_ERROR;
+  } else {
+#if defined(OK_TRACE_AST)
+    gc_pause(&p_ok->gc);
+    printf("--- ast ---\n");
+    ast_dispatch_print((ast_node*)parsed.root);
+    printf("--- ast ---");
+    fflush(stdout);
+    gc_resume(&p_ok->gc);
+#endif // defined(OK_TRACE_AST)
+    bool has_imports = false;
+    for (uint32_t i = 0; i < parsed.root->statements.count; ++i) {
+      if (parsed.root->statements.data[i]->node.node_type == AST_IMPORT_STATEMENT) {
+        has_imports = true;
+        break;
+      }
+    }
+    if (has_imports) {
+      // the per-run windows reset: the previous run's roots and names are
+      // adopted by its compiled constants, and its bindings are spent.
+      p_ok->modules.pending_roots.count = 0;
+      for (uint32_t i = 0; i < p_ok->modules.name_arena_count; ++i) {
+        free(p_ok->modules.name_arena[i]);
+      }
+      p_ok->modules.name_arena_count = 0;
+      result = ok_modules_prepare(&p_ok->modules, parsed.root, &p_ok->source, &bindings);
+    }
+  }
+  if (result == OK) {
+    result = ok_run_inner(p_ok, source_id, &parsed, (ok_import_bindings){bindings.data, bindings.count});
+  }
+  ok_import_binding_array_deinit(&bindings, &p_ok->alloc);
+  parse_result_deinit(&parsed);
   vm_end_source(&p_ok->vm, source_id);
   return result;
 }
@@ -583,42 +623,30 @@ void ok_clear_error(ok* p_ok) {
   vm_clear_error(&p_ok->vm);
 }
 
-static ok_result ok_run_inner(ok* p_ok, uint32_t p_source_id) {
-  parser parser;
-  parser_specs specs = {.alloc = &p_ok->alloc, .source = &p_ok->source};
-  parser_init(&parser, specs);
-  parse_result parse_result = parser_parse(&parser);
-  if (parse_result.status != PARSE_OK) {
-    parse_result_deinit(&parse_result);
-    return OK_PARSE_ERROR;
-  }
-
-#if defined(OK_TRACE_AST)
-  gc_pause(&p_ok->gc);
-  printf("--- ast ---\n");
-  ast_dispatch_print((ast_node*)parse_result.root);
-  printf("--- ast ---");
-  fflush(stdout);
-  gc_resume(&p_ok->gc);
-#endif // defined(OK_TRACE_AST)
-
+static ok_result ok_run_inner(ok* p_ok, uint32_t p_source_id, parse_result* p_parsed, ok_import_bindings p_imports) {
+  // the entry compile: a plain TU (module mode is the loader's lane). the
+  // parse came in from ok_run's graph phase - one parse per run, ever.
   compile_specs compile_specs;
-  compile_specs.root = parse_result.root;
+  compile_specs.root = p_parsed->root;
   compile_specs.source = &p_ok->source;
   bool err = false;
   compile_specs.top_level_declarations = ok_get_top_level_declarations(p_ok, &err);
   if (err) {
     return OK_INIT_ERROR;
   }
+  compile_specs.imports = p_imports;
+  compile_specs.is_module = false;
+  compile_specs.module_path = ok_create_string_view(NULL, 0, false);
   compile_result compile_result = compiler_compile(&p_ok->compiler, compile_specs);
   top_level_declarations_deinit(&compile_specs.top_level_declarations, &p_ok->alloc);
-  parse_result_deinit(&parse_result);
   if (compile_result.status != COMPILE_OK) {
+    module_exports_deinit(&compile_result.exports, &p_ok->alloc);
     return OK_COMPILE_ERROR;
   }
+  module_exports_deinit(&compile_result.exports, &p_ok->alloc); // the entry exports nothing
   // the freshly compiled tree remembers its source:
   // main + every nested proto. runtime reports read it back per frame
-  stamp_source_ids(compile_result.function, p_source_id);
+  ok_stamp_source_ids(compile_result.function, p_source_id);
   if (p_ok->dump_bytecode) {
     gc_pause(&p_ok->gc);
     disassembler disassembler;
@@ -666,6 +694,7 @@ void ok_set_print(ok* p_ok, ok_print_fn p_cb, void* p_ctx) {
 }
 
 void ok_free(ok* p_ok) {
+  ok_modules_deinit(&p_ok->modules);
   vm_deinit(&p_ok->vm);
   compiler_deinit(&p_ok->compiler);
   string_interner_deinit(&p_ok->interner);

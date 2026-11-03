@@ -5,6 +5,7 @@
 
 #include "okcompiler.h"
 #include "okglobals_store.h"
+#include "okmodules.h"
 #include "okobject_store.h"
 #include "okvalue.h"
 #include "okvm.h"
@@ -29,6 +30,7 @@ void gc_init(gc* p_gc, object_store* p_heap, allocators* p_alloc) {
   p_gc->object_store = p_heap;
   p_gc->vm = NULL;
   p_gc->interner = NULL;
+  p_gc->modules = NULL;
   p_gc->alloc = p_alloc;
   p_gc->raw_alloc_wrapper = create_raw_allocators_wrapper(p_alloc->raw_allocators);
   p_gc->allocated_bytes = 0;
@@ -139,6 +141,10 @@ void gc_watch_globals(gc* p_gc, globals_store* p_globals) {
 
 void gc_watch_interner(gc* p_gc, string_interner* p_interner) {
   p_gc->interner = p_interner;
+}
+
+void gc_watch_modules(gc* p_gc, module_system* p_modules) {
+  p_gc->modules = p_modules;
 }
 
 bool gc_collect(gc* p_gc, size_t p_predict, size_t p_old) {
@@ -276,6 +282,28 @@ static bool mark_globals_store(gc* p_gc) {
   return true;
 }
 
+static bool mark_value_array(gc* p_gc, value_array* p_array) {
+  for (uint32_t i = 0; i < p_array->count; ++i) {
+    if (!mark_value(p_gc, p_array->data[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// OR-1: the module registry's namespaces and the pending-roots window (the
+// roots a TU built but its constants have not adopted yet). the canonical
+// path strings and the namespace classes ride through the instances.
+static bool mark_modules(gc* p_gc) {
+  module_system* modules = p_gc->modules;
+  for (uint32_t i = 0; i < modules->loaded.count; ++i) {
+    if (!mark_value(p_gc, modules->loaded.data[i].namespace)) {
+      return false;
+    }
+  }
+  return mark_value_array(p_gc, &modules->pending_roots);
+}
+
 static bool mark(gc* p_gc) {
   if (p_gc->vm != NULL && !mark_vm(p_gc)) {
     return false;
@@ -284,6 +312,9 @@ static bool mark(gc* p_gc) {
     return false;
   }
   if (p_gc->globals_store != NULL && !mark_globals_store(p_gc)) {
+    return false;
+  }
+  if (p_gc->modules != NULL && !mark_modules(p_gc)) {
     return false;
   }
   // the interner is deliberately NOT marked: it is a weak set (D20). its
@@ -298,15 +329,6 @@ static bool mark(gc* p_gc) {
   for (uint32_t i = 0; i < p_gc->roots.count; ++i) {
     // freed slots hold tagged null and mark_value's strict check skips them.
     if (!mark_value(p_gc, p_gc->roots.data[i])) {
-      return false;
-    }
-  }
-  return true;
-}
-
-static bool mark_value_array(gc* p_gc, value_array* p_array) {
-  for (uint32_t i = 0; i < p_array->count; ++i) {
-    if (!mark_value(p_gc, p_array->data[i])) {
       return false;
     }
   }

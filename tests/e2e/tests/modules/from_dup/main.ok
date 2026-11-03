@@ -1,0 +1,2 @@
+from "./lib.ok" import version, version;
+// expect error:

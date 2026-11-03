@@ -1,0 +1,4 @@
+import "./d02.ok";
+
+pub let depth = 1;
+print "d01 up";

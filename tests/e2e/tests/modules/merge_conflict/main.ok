@@ -1,0 +1,4 @@
+// a path cannot bind a module and a namespace at once (M13)
+import "./x";
+import "./x/y";
+// expect error: import path conflict

@@ -1,0 +1,5 @@
+// the error reports the module's own file and line
+import "./lib.ok";
+
+lib.boom();
+// expect error: lib.ok:2:

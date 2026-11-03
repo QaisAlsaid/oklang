@@ -1,0 +1,4 @@
+import "./glib.ok";
+
+print injected; // expect: 42
+print glib.local; // expect: 1

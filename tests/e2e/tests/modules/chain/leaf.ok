@@ -1,0 +1,2 @@
+pub let name = "leaf";
+print "leaf up";

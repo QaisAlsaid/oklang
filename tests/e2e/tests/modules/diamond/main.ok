@@ -1,0 +1,7 @@
+// the registry dedups: shared's top level runs ONCE even though two modules
+// import it
+// expect: shared once
+import "./left.ok";
+import "./right.ok";
+
+print left.l + right.r; // expect: 3

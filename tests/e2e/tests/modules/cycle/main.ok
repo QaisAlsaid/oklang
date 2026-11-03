@@ -1,0 +1,3 @@
+// a cycle is in the importer's graph design - a hard error (M13)
+import "./a.ok";
+// expect error: circular import

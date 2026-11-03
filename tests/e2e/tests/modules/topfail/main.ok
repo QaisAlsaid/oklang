@@ -1,0 +1,2 @@
+import "./lib.ok";
+// expect error: while loading this module (its top level failed).

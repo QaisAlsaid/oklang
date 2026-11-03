@@ -59,6 +59,7 @@ target_sources(ok PRIVATE
   src/okglobals_store.c
   src/oklexer.c
   src/okmm.c
+  src/okmodules.c
   src/okobject.c
   src/okobject_store.c
   src/okoperator.c

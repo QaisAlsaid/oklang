@@ -1663,7 +1663,11 @@ static inline bool object_as_str(vm* p_vm, object* p_obj, value* p_result) {
   }
   case OBJ_INSTANCE: {
     object_instance* inst = (object_instance*)p_obj;
-    string str = asprint(p_vm->alloc, "<instance %s>", inst->klass->name->string.chars);
+    // OR-1: a module namespace prints as what it is. the class name is the
+    // canonical path for modules, the root segment for root namespaces.
+    string str = asprint(p_vm->alloc,
+                         inst->klass->module_namespace ? "<module %s>" : "<instance %s>",
+                         inst->klass->name->string.chars);
     if (str.chars == NULL) {
       runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert instance to string.");
       return false;
@@ -5574,6 +5578,16 @@ static void* ok_dispatch_table[OP__COUNT] = {
       object_string* name = VALUE_AS_STRING(frame->closure->function->chunk.constants.data[C]);
       if (IS_VALUE_INSTANCE(recv)) {
         object_instance* inst = VALUE_AS_INSTANCE(recv);
+        // OR-1: module namespaces are immutable from script - their fields are
+        // the exports, sealed by the loader before anyone sees the value.
+        if (inst->klass->module_namespace) {
+          runtime_error(p_vm,
+                        OK_EK_VALUE,
+                        "module namespaces are immutable: '%s' is an export, not an assignable field.",
+                        name->string.chars);
+          FAIL_PATH();
+          DISPATCH();
+        }
         const field_entry* field = object_class_find_field(inst->klass, name);
         if (field == NULL) {
           runtime_error(p_vm,
@@ -5778,18 +5792,22 @@ static void* ok_dispatch_table[OP__COUNT] = {
       }
       const field_entry* field = object_class_find_field(klass, name);
       if (field != NULL) {
-        // visibility: the calling hierarchy must contain the field's defining
-        // segment (class-wide privacy, the C++ ring)
-        const object_class* seg = field_defining_segment(klass, field->slot);
-        const object_class* caller = frame->closure->owner;
-        if (seg == NULL || caller == NULL || !object_class_is_a(caller, seg)) {
-          runtime_error(p_vm,
-                        OK_EK_TYPE,
-                        "field '%s' of class '%s' is not visible here.",
-                        name->string.chars,
-                        klass->name->string.chars);
-          FAIL_PATH();
-          DISPATCH();
+        // OR-1: a module namespace's fields are its exports - public by
+        // doctrine (M9); the visibility ring does not apply.
+        if (!klass->module_namespace) {
+          // visibility: the calling hierarchy must contain the field's defining
+          // segment (class-wide privacy, the C++ ring)
+          const object_class* seg = field_defining_segment(klass, field->slot);
+          const object_class* caller = frame->closure->owner;
+          if (seg == NULL || caller == NULL || !object_class_is_a(caller, seg)) {
+            runtime_error(p_vm,
+                          OK_EK_TYPE,
+                          "field '%s' of class '%s' is not visible here.",
+                          name->string.chars,
+                          klass->name->string.chars);
+            FAIL_PATH();
+            DISPATCH();
+          }
         }
         const mic_entry filled = {OBJECT_AS_VALUE(klass), NULL, field->slot, 1, 0};
         mic_fill(cache, &filled);
@@ -5819,6 +5837,16 @@ static void* ok_dispatch_table[OP__COUNT] = {
           DISPATCH();
         }
         REG_AT(A) = OBJECT_AS_VALUE(bound);
+        DISPATCH();
+      }
+      if (klass->module_namespace) {
+        // OR-1: the teaching miss for module namespaces.
+        runtime_error(p_vm,
+                      OK_EK_TYPE,
+                      "module '%s' has no export '%s'.",
+                      klass->name->string.chars,
+                      name->string.chars);
+        FAIL_PATH();
         DISPATCH();
       }
       runtime_error(p_vm,
@@ -5897,6 +5925,22 @@ static void* ok_dispatch_table[OP__COUNT] = {
             ip = frame->ip;
             DISPATCH();
           }
+          // OR-1: a module namespace's export can be any callable value - a
+          // class (instantiation), later a native (OR-3). the general call
+          // lane takes them; closures took the fast path above.
+          if (inst->klass->module_namespace) {
+            REG_AT(A) = callable;
+            frame->ip = ip;
+            if (!call_value(p_vm, exe, reg, frame->registers_base, A, B, takes_one ? 1u : 0u)) {
+              FAIL_PATH();
+              DISPATCH();
+            }
+            exe = p_vm->current_execution_state;
+            reg = &exe->registers;
+            frame = &exe->call_stack.data[exe->call_stack.count - 1];
+            ip = frame->ip;
+            DISPATCH();
+          }
           runtime_error(p_vm,
                         OK_EK_TYPE,
                         "field holds a value that is not callable in this position.");
@@ -5959,7 +6003,10 @@ static void* ok_dispatch_table[OP__COUNT] = {
             const field_entry* field = object_class_find_field(klass, name);
             const object_class* caller = frame->closure->owner;
             const object_class* seg = field != NULL ? field_defining_segment(klass, field->slot) : NULL;
-            if (field != NULL && seg != NULL && caller != NULL && object_class_is_a(caller, seg)) {
+            // OR-1: a module namespace's exports are public (M9) - the ring
+            // does not apply; `mod.export(args)` is the hot import path.
+            if (field != NULL &&
+                (klass->module_namespace || (seg != NULL && caller != NULL && object_class_is_a(caller, seg)))) {
               value callable = inst->fields[field->slot];
               if (IS_VALUE_CLOSURE(callable)) {
                 const mic_entry filled = {OBJECT_AS_VALUE(klass), NULL, field->slot, 1, 0};
@@ -5977,11 +6024,41 @@ static void* ok_dispatch_table[OP__COUNT] = {
                 ip = frame->ip;
                 DISPATCH();
               }
+              // OR-1: a module namespace's export can be any callable value -
+              // a class (instantiation), later a native (OR-3). the general
+              // call lane takes them; closures took the fast path above. the
+              // cache still holds the slot: the field is immutable, only the
+              // value's kind varies per export.
+              if (klass->module_namespace) {
+                const mic_entry filled = {OBJECT_AS_VALUE(klass), NULL, field->slot, 1, 0};
+                mic_fill(cache, &filled);
+                REG_AT(A) = callable;
+                frame->ip = ip;
+                if (!call_value(p_vm, exe, reg, frame->registers_base, A, B, takes_one ? 1u : 0u)) {
+                  FAIL_PATH();
+                  DISPATCH();
+                }
+                exe = p_vm->current_execution_state;
+                reg = &exe->registers;
+                frame = &exe->call_stack.data[exe->call_stack.count - 1];
+                ip = frame->ip;
+                DISPATCH();
+              }
               runtime_error(p_vm,
                             OK_EK_TYPE,
                             "field '%s' of class '%s' holds a value that is not callable.",
                             name->string.chars,
                             klass->name->string.chars);
+              FAIL_PATH();
+              DISPATCH();
+            }
+            if (klass->module_namespace) {
+              // OR-1: the teaching miss for module namespaces.
+              runtime_error(p_vm,
+                            OK_EK_TYPE,
+                            "module '%s' has no export '%s'.",
+                            klass->name->string.chars,
+                            name->string.chars);
               FAIL_PATH();
               DISPATCH();
             }

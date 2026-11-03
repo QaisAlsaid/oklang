@@ -1,0 +1,2 @@
+import "./b.ok";
+pub let a = 1;

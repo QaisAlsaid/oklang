@@ -1,0 +1,7 @@
+// M5: import "a/b" binds the root `a`; a second import under the same root
+// merges into the same namespace. re-importing the same module is a no-op.
+import "./a/one";
+import "./a/two";
+import "./a/one";
+
+print a.one.x + a.two.y; // expect: 3

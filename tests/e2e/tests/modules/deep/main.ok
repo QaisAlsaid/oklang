@@ -1,0 +1,26 @@
+// a 20-deep chain loads depth-first: d20's top level first, d01 last,
+// then main. deeper than the gc guard stack (16) - the loader must
+// balance its guards across the recursion.
+// expect: d20 up
+// expect: d19 up
+// expect: d18 up
+// expect: d17 up
+// expect: d16 up
+// expect: d15 up
+// expect: d14 up
+// expect: d13 up
+// expect: d12 up
+// expect: d11 up
+// expect: d10 up
+// expect: d09 up
+// expect: d08 up
+// expect: d07 up
+// expect: d06 up
+// expect: d05 up
+// expect: d04 up
+// expect: d03 up
+// expect: d02 up
+// expect: d01 up
+import "./d01.ok";
+
+print d01.depth; // expect: 1

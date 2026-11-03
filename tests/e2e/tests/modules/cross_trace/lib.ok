@@ -1,0 +1,3 @@
+pub fu boom() {
+  throw "boom from lib";
+}

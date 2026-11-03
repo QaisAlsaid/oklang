@@ -1,0 +1,3 @@
+// bare names walk OKPATH only
+import "definitely-not-here";
+// expect error: module not found.

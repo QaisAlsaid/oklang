@@ -68,6 +68,7 @@ typedef enum {
   AST_THROW_STATEMENT,
   AST_TRY_STATEMENT,
   AST_DEFER_STATEMENT,
+  AST_IMPORT_STATEMENT,
   AST_EOF_STATEMENT,
   AST_RANGE_PURE_STATEMENT_END = AST_EOF_STATEMENT,
 
@@ -703,6 +704,42 @@ void ast_defer_statement_init(ast_defer_statement* p_defer,
 void ast_defer_statement_deinit(ast_defer_statement* p_defer);
 bool ast_defer_statement_print(const ast_defer_statement* p_defer);
 string ast_defer_statement_asprint(const ast_defer_statement* p_defer);
+
+// one imported symbol of a `from "p" import a, b as c;` - the name as spelled
+// in the importing module, plus the local alias when `as` renames it.
+typedef struct {
+  token name;  // the exported symbol's identifier
+  token alias; // alias.type == TOKEN_IDENTIFIER when present, else TOKEN_ERROR
+} ast_import_specifier;
+
+ARRAY_DECLARE_DEFAULT(ast_import_specifier_list, ast_import_specifier)
+
+// `import "a/b";` / `import "a/b" as c;` / `from "a/b" import x, y as z;`
+// (OR-1, M1/M2/M5). the path is the raw STRING token - the view strips the
+// quotes exactly like a string literal. the statement is only created at
+// module top level (parse_root); anywhere else the parser refuses it. the
+// compiler never resolves it: the module system resolved the whole graph
+// before this TU compiled, and hands the bindings over via compile_specs.
+typedef struct {
+  ast_statement statement;
+  token path;                          // the quoted path (quotes included, like string tokens)
+  bool has_alias;                     // `import "p" as name;`
+  token alias;                        // the alias identifier when has_alias
+  ast_import_specifier_list symbols;  // `from` form only; empty for path imports
+} ast_import_statement;
+
+void ast_import_statement_init(ast_import_statement* p_import,
+                               token p_token,
+                               token p_path,
+                               ast_import_specifier_list p_symbols,
+                               bool p_has_alias,
+                               token p_alias,
+                               ast_specs* p_specs);
+void ast_import_statement_deinit(ast_import_statement* p_import);
+bool ast_import_statement_print(const ast_import_statement* p_import);
+string ast_import_statement_asprint(const ast_import_statement* p_import);
+// the path literal's contents (no quotes), same convention as string expressions.
+ok_string_view ast_import_statement_path(const ast_import_statement* p_import);
 
 typedef struct {
   ast_declaration declaration;

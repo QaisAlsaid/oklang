@@ -1,0 +1,4 @@
+import "./d19.ok";
+
+pub let depth = 18;
+print "d18 up";

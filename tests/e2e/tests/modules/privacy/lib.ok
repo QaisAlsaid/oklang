@@ -1,0 +1,2 @@
+let secret = "private";
+pub let open = "open";

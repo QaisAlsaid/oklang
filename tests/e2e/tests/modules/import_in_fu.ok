@@ -1,0 +1,5 @@
+fu f() {
+  import "./nowhere.ok";
+}
+f();
+// expect error: imports are only legal at module top level.

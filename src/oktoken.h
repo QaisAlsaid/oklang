@@ -57,6 +57,7 @@
   X(TOKEN_STRING, "string")                                                                                            \
   X(TOKEN_PRINT, "print")                                                                                              \
   X(TOKEN_IMPORT, "import")                                                                                            \
+  X(TOKEN_FROM, "from")                                                                                                \
   X(TOKEN_AS, "as")                                                                                                    \
   X(TOKEN_IS, "is")                                                                                                    \
   X(TOKEN_FU, "fu")                                                                                                    \
@@ -145,6 +146,7 @@ typedef enum {
 
   TOKEN_PRINT,
   TOKEN_IMPORT,
+  TOKEN_FROM,
   TOKEN_AS,
   TOKEN_IS,
   TOKEN_FU,

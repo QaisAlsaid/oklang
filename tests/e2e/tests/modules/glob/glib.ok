@@ -1,0 +1,3 @@
+// a module may glob-inject process globals (the deliberate side-effect door)
+glob let injected = 42;
+pub let local = 1;

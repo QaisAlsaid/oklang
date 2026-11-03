@@ -1,0 +1,3 @@
+// the std/ root is reserved (M8) and re-homes with OR-2
+import "std/io";
+// expect error: the standard library is not module-shaped yet

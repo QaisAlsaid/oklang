@@ -1,0 +1,2 @@
+import "a/";
+// expect error: ends with '/'

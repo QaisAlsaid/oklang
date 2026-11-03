@@ -468,6 +468,7 @@ static void object_class_init(object_class* p_class,
     p_class->op_cache[i] = NULL;
   }
   p_class->frozen = false;
+  p_class->module_namespace = false;
 }
 
 static void object_class_deinit(object_class* p_class, object_specs* p_specs) {
@@ -977,7 +978,8 @@ void object_debug_print(object* p_object) {
     break;
   }
   case OBJ_INSTANCE: {
-    printf("<instance %s>", ((object_instance*)p_object)->klass->name->string.chars);
+    printf(((object_instance*)p_object)->klass->module_namespace ? "<module %s>" : "<instance %s>",
+           ((object_instance*)p_object)->klass->name->string.chars);
     break;
   }
   case OBJ_BOUND_METHOD: {

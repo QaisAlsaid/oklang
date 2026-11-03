@@ -1,0 +1,3 @@
+import "./lib.ok";
+print lib.nope;
+// expect error: has no export 'nope'

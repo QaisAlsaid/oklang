@@ -21,6 +21,7 @@ struct gc {
   object_store* object_store;
   globals_store* globals_store;
   string_interner* interner;
+  module_system* modules;
   grays grays;
   // embedder-owned strong references (ok_root). unlike the guard stack these
   // are long lived and unordered, so: growable (raw allocators), null-slot + freelist recycling.
@@ -58,5 +59,6 @@ void gc_watch_vm(gc* p_gc, vm* p_vm);
 void gc_watch_compiler(gc* p_gc, compiler* p_compiler);
 void gc_watch_globals(gc* p_gc, globals_store* p_globals);
 void gc_watch_interner(gc* p_gc, string_interner* p_interner);
+void gc_watch_modules(gc* p_gc, module_system* p_modules);
 
 #endif // OK_GC_H

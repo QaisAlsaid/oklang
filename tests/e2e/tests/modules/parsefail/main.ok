@@ -1,0 +1,3 @@
+// the module's parse error carries the module's own path and line
+import "./lib.ok";
+// expect error: lib.ok:2:

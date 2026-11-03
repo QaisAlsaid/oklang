@@ -1,0 +1,7 @@
+// init order is depth-first: leaf's top level, then mid's, then this file's
+// expect: leaf up
+// expect: mid up
+import "./mid.ok";
+
+print "main up"; // expect: main up
+print mid.name; // expect: mid

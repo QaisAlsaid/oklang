@@ -1,0 +1,5 @@
+// okpath: roots
+// bare names walk OKPATH: plug/ok resolves under the declared root
+import "plug/ok";
+
+print plug.ok.v; // expect: 9

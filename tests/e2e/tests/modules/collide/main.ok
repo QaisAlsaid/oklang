@@ -1,0 +1,5 @@
+// the root binding is a scoped binding like any let: redeclaring is the
+// usual duplicate-binding error
+import "./lib.ok";
+let lib = 5;
+// expect error:

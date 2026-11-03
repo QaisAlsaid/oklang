@@ -1,0 +1,4 @@
+import "./leaf.ok";
+
+pub let name = "mid";
+print "mid up";

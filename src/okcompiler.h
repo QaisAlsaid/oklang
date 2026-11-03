@@ -245,6 +245,37 @@ typedef struct {
 } compile_context;
 
 ARRAY_DECLARE_DEFAULT(compile_contexts, compile_context)
+
+// OR-1 modules: one pub top-level export of the TU being compiled. the
+// compiler records name + the local's register; the epilogue it emits stores
+// the register to the hidden global " module:<canon>:<name>" after the user's
+// top level ran, and the loader reads it back to fill the namespace object.
+typedef struct {
+  ok_string_view name;   // the export's display name (the namespace field name)
+  uint16_t local;        // the top-level local's register index
+  global_id hidden;      // the mangled hidden global (allocated at the epilogue)
+} module_export;
+
+ARRAY_DECLARE_DEFAULT(module_exports, module_export)
+
+// one resolved import binding, prepared by the module system (okmodules.c)
+// BEFORE the importing TU compiles - the compiler never resolves anything,
+// it only binds what the table hands it, in statement order (M4: the whole
+// graph is compile-time; by the time this TU compiles every imported module
+// is initialized and its exports are live values). the values are borrowed:
+// the module registry (or the pending-roots window) roots them.
+typedef struct {
+  ok_string_view name;  // the local binding: the root (or alias), or the symbol
+  value value;          // the root namespace / module value / export value
+  bool merge;           // a path import whose root is already bound in this scope
+                        // (M5 root merging): no redeclaration, no code
+} ok_import_binding;
+
+typedef struct {
+  const ok_import_binding* data;
+  uint32_t count;
+} ok_import_bindings;
+
 struct compiler {
   ok_source* source;
   allocators* alloc;
@@ -257,6 +288,15 @@ struct compiler {
   compile_contexts contexts;
   bool had_error;
   bool panic;
+  // OR-1 modules: the resolved import bindings for the TU being compiled
+  // (borrowed from compile_specs; consumed in statement order).
+  ok_import_bindings imports;
+  uint32_t imports_next;
+  // OR-1: this TU is a module - pub top-level declarations become exports,
+  // and an early top-level return is refused (the epilogue must run).
+  bool is_module;
+  ok_string_view module_path;
+  module_exports exports;
 };
 
 typedef enum {
@@ -267,6 +307,11 @@ typedef enum {
 typedef struct {
   compile_status status;
   object_function* function;
+  // OR-1 modules: valid when the specs said is_module; the driver reads the
+  // hidden globals after the run and builds the namespace object from it.
+  // the array is the caller's to deinit (module_exports_deinit) -
+  // compiler_compile always leaves it initialized.
+  module_exports exports;
 } compile_result;
 
 ARRAY_DECLARE_DEFAULT(top_level_declarations, variable_declaration);
@@ -282,6 +327,15 @@ typedef struct {
   ok_source* source;
   ast_root* root;
   top_level_declarations top_level_declarations;
+  // OR-1: the import bindings, in statement order (may be empty/NULL for a
+  // TU with no imports - the common single-file case pays nothing).
+  ok_import_bindings imports;
+  // OR-1: module mode - this TU is an imported module (pub exports + the
+  // epilogue + the no-early-return rule). the entry file is not one.
+  bool is_module;
+  // the module's canonical path (module mode only): the hidden-global
+  // mangling prefix " module:<canon>:<name>".
+  ok_string_view module_path;
 } compile_specs;
 
 void compiler_init(compiler* compiler, compiler_specs p_specs);

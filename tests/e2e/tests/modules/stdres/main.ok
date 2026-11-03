@@ -1,0 +1,4 @@
+// in a module-world TU the std root is reserved (M8)
+import "./lib.ok";
+let std = 1;
+// expect error: the name 'std' is reserved

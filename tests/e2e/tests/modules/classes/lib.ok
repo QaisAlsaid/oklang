@@ -1,0 +1,9 @@
+// a pub class is an export like any value
+pub class Counter {
+  let mut count = 0;
+
+  pub fu bump() {
+    count = count + 1;
+    return count;
+  }
+}

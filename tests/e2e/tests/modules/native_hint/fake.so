@@ -1,0 +1,2 @@
+not a real shared object: a placeholder so the resolver's native candidate
+fires. native loading lands with OR-3 (the sandbox + the loader).

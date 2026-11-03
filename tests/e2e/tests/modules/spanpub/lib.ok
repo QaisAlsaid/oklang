@@ -1,0 +1,5 @@
+pub fu pair() {
+  return 3, 4;
+}
+
+pub let (a, b) = pair();

@@ -1,0 +1,2 @@
+import "./shared.ok";
+pub let l = 1;

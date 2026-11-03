@@ -1,0 +1,3 @@
+// the 404 must teach: every location and form tried
+import "./definitely_not_here";
+// expect error: module not found.

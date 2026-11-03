@@ -1,0 +1,4 @@
+// namespaces are sealed by the loader before anyone sees the value
+import "./lib.ok";
+lib.version = 2;
+// expect error: module namespaces are immutable

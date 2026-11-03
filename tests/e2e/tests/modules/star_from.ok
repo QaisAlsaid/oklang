@@ -1,0 +1,2 @@
+from "./lib.ok" import *;
+// expect error: star imports are rejected

@@ -1,0 +1,5 @@
+import "./lib.ok";
+
+print lib.tick(); // expect: 1
+print lib.tick(); // expect: 2
+print lib.tick(); // expect: 3

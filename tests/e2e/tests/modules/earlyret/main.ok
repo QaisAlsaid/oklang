@@ -1,0 +1,3 @@
+// the export epilogue must run: a module top level cannot return early
+import "./lib.ok";
+// expect error: a module top level cannot return

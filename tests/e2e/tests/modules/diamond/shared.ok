@@ -1,0 +1,2 @@
+print "shared once";
+pub let s = 5;

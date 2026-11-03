@@ -1,0 +1,9 @@
+import "./lib.ok" as l;
+
+// the module value is an ordinary value: pass it, store it, index it
+fu version_of(m) {
+  return m.version;
+}
+print version_of(l); // expect: 1
+let mods = [l];
+print mods[0].version; // expect: 1

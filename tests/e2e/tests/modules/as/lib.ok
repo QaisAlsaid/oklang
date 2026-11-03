@@ -1,0 +1,5 @@
+pub fu greet(name) {
+  return "hi " + name;
+}
+
+pub let version = 1;

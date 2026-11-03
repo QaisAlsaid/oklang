@@ -186,6 +186,9 @@ ARRAY_DEFINE_DEFAULT(scopes, scope, scope_deinit)
 ARRAY_DEFINE_DEFAULT(compile_contexts, compile_context, compile_context_deinit)
 ARRAY_DEFINE_DEFAULT(uint16_array, uint16_t, ARRAY_DEFAULT_TYPE_DEINIT)
 ARRAY_DEFINE_DEFAULT(loop_stack, loop_context, loop_context_deinit)
+// OR-1: the module export table (the type lives in okcompiler.h, the
+// compiler is its one producer)
+ARRAY_DEFINE_DEFAULT(module_exports, module_export, ARRAY_DEFAULT_TYPE_DEINIT)
 
 static void error_at_noted_located(compiler* p_compiler,
                                    const ast_node* p_author,
@@ -499,6 +502,7 @@ add_local(compiler* p_compiler, const variable_declaration p_declration, bool p_
 
 static bool compile_root(compiler* p_compiler, ast_root* p_root);
 static bool compile_statement(compiler* p_compiler, ast_statement* p_statement);
+static bool compile_import_statement(compiler* p_compiler, ast_import_statement* p_import);
 static bool compile_expression(compiler* p_compiler,
                                ast_expression* p_expression,
                                _register p_dest,
@@ -527,6 +531,15 @@ static bool compile_access_expression(compiler* p_compiler,
 
 static bool compile_expression_statement(compiler* p_compiler, ast_expression_statement* p_expression_statement);
 static bool compile_eof_statement(compiler* p_compiler, ast_eof_statement* p_eof);
+// OR-1: the helpers the import/export paths share with the declaration
+// compilers (defined further down, declared here so compile_root's neighbors
+// can use them in the file's layout order).
+static bool materialize_value(compiler* p_compiler, _register p_dest, location p_value, ast_node* p_author);
+static bool write_global(compiler* p_compiler, global_id p_global, expression_result p_value, ast_node* p_author);
+static location declare_variable(compiler* p_compiler, const variable_declaration p_declration, ast_node* p_node);
+static bool register_for_location(compiler* p_compiler, location p_location, _register* p_dest);
+static bool emit_module_exports(compiler* p_compiler, ast_node* p_author);
+static bool define_local(compiler* p_compiler, location p_local, expression_result p_value, ast_node* p_author);
 static bool compile_print_statement(compiler* p_compiler, ast_print_statement* p_print);
 static bool compile_compound_statement(compiler* p_compiler, ast_compound_statement* p_compound);
 static bool compile_if_statement(compiler* p_compiler, ast_if_statement* p_if);
@@ -642,6 +655,11 @@ void compiler_init(compiler* p_compiler, compiler_specs p_specs) {
   p_compiler->alloc = p_specs.alloc;
   p_compiler->globals_store = p_specs.globals_store;
   p_compiler->interner = p_specs.interner;
+  p_compiler->imports = (ok_import_bindings){NULL, 0};
+  p_compiler->imports_next = 0;
+  p_compiler->is_module = false;
+  p_compiler->module_path = ok_create_string_view(NULL, 0, false);
+  module_exports_init(&p_compiler->exports, p_compiler->alloc);
   compile_contexts_init(&p_compiler->contexts, p_compiler->alloc);
 }
 
@@ -651,6 +669,11 @@ void compiler_deinit(compiler* p_compiler) {
   p_compiler->globals_store = NULL;
   p_compiler->had_error = false;
   p_compiler->panic = false;
+  p_compiler->imports = (ok_import_bindings){NULL, 0};
+  p_compiler->imports_next = 0;
+  p_compiler->is_module = false;
+  p_compiler->module_path = ok_create_string_view(NULL, 0, false);
+  module_exports_deinit(&p_compiler->exports, p_compiler->alloc);
   compile_contexts_deinit(&p_compiler->contexts, p_compiler->alloc);
 }
 
@@ -658,7 +681,12 @@ compile_result compiler_compile(compiler* p_compiler, compile_specs p_specs) {
   compile_result result;
   result.function = NULL;
   result.status = COMPILE_ERROR;
+  module_exports_init(&result.exports, p_compiler->alloc);
   p_compiler->source = p_specs.source;
+  p_compiler->imports = p_specs.imports;
+  p_compiler->imports_next = 0;
+  p_compiler->is_module = p_specs.is_module;
+  p_compiler->module_path = p_specs.module_path;
   variable_declaration decl = {.identifier = "", .flags = VARIABLE_DECLRATION_FLAGS_NONE};
   if (!begin_context(p_compiler,
                      ok_create_string_view("<main>", OK_STRING_VIEW_CALCULATE_LENGTH, true),
@@ -694,6 +722,15 @@ compile_result compiler_compile(compiler* p_compiler, compile_specs p_specs) {
   // its defers (and its upvalue closes) are live code. ending it after the return would make
   // the whole epilogue dead bytes. a top-level `defer` would never run.
   res &= end_scope(p_compiler, (ast_node*)p_specs.root); // user top-level scope
+  // OR-1 (M9): the module epilogue - after the user's top level ran (its
+  // defers included), every pub export's register is stored to its hidden
+  // global for the loader to harvest. the registers persist past the scope
+  // end (locals are compile-time; the frame's slots survive until the
+  // return), and an early top-level return is refused in module mode, so
+  // every export is live here.
+  if (p_compiler->is_module) {
+    res &= emit_module_exports(p_compiler, (ast_node*)p_specs.root);
+  }
   res &= emit_default_return(p_compiler, (ast_node*)p_specs.root);
   res &= end_scope(p_compiler, (ast_node*)p_specs.root); // hidden scope
   res &= end_scope(p_compiler, (ast_node*)p_specs.root);
@@ -708,6 +745,10 @@ compile_result compiler_compile(compiler* p_compiler, compile_specs p_specs) {
     disassembler_deinit(&disassembler);
 #endif // defined (OK_DEBUG_DUMP_CODE)
   }
+  // move the exports table into the result before the between-runs reset
+  // deinits the compiler's copy (the driver reads it after the run).
+  result.exports = p_compiler->exports;
+  module_exports_init(&p_compiler->exports, p_compiler->alloc);
 ret: {
   // the between-runs reset: same wiring, fresh state. the interner rides
   // along (a NULL here survived the cli's one-script-per-process shape and
@@ -762,6 +803,172 @@ static bool compile_root(compiler* p_compiler, ast_root* p_root) {
   return res;
 }
 
+// OR-1: is the compiler walking the user top level of <main>? the three
+// scopes there are [outer, hidden-seeds, user]; class bodies and methods add
+// contexts, blocks and loops add scopes. this is where pub means "export".
+static bool at_module_top_level(compiler* p_compiler) {
+  return p_compiler->contexts.count == 1 && current_context(p_compiler)->scopes.count == 3;
+}
+
+// OR-1 (M8): the reserved root. a top-level binding named `std` would shadow
+// the standard library's namespace; the reservation has teeth only in TUs
+// that participate in the module world (a module, or any file with imports)
+// - a standalone script keeps every name.
+static bool name_is_reserved_root(compiler* p_compiler, const ok_string_view p_name) {
+  if (p_name.chars == NULL || ok_string_view_get_length(&p_name) != 3 || memcmp(p_name.chars, "std", 3) != 0) {
+    return false;
+  }
+  return p_compiler->is_module || p_compiler->imports.count > 0;
+}
+
+// OR-1 (M9): a pub top-level declaration in a module becomes an export: the
+// name and its register land in the exports table; compiler_compile's
+// epilogue stores them to the hidden globals the loader harvests. this is
+// also the choke point for pub-in-the-wrong-place, the vestigial `export`
+// keyword (pub is the rule), and the std reservation.
+static bool record_module_export_if_pub(compiler* p_compiler,
+                                        const ok_string_view p_name,
+                                        location p_variable,
+                                        ast_node* p_author,
+                                        ast_declaration_modifiers_t p_modifiers) {
+  if (!at_module_top_level(p_compiler)) {
+    if ((p_modifiers & (DECLARATION_PUB | DECLARATION_EXPORT)) != 0) {
+      error_at(p_compiler,
+               p_author,
+               ok_create_string_view("'pub' is a module top-level modifier.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      return false;
+    }
+    return true;
+  }
+  if ((p_modifiers & DECLARATION_EXPORT) != 0) {
+    error_at(p_compiler,
+             p_author,
+             ok_create_string_view("the export rule is 'pub' (M9), not 'export'.",
+                                   OK_STRING_VIEW_CALCULATE_LENGTH,
+                                   true));
+    return false;
+  }
+  if (name_is_reserved_root(p_compiler, p_name)) {
+    error_at(p_compiler,
+             p_author,
+             ok_create_string_view("the name 'std' is reserved for the standard library's namespace.",
+                                   OK_STRING_VIEW_CALCULATE_LENGTH,
+                                   true));
+    return false;
+  }
+  if ((p_modifiers & DECLARATION_PUB) == 0 || !p_compiler->is_module) {
+    return true; // pub in the entry file is legal and meaningless there - or no pub at all
+  }
+  if (p_variable.kind != LOCATION_KIND_REGISTER) {
+    return true; // unreachable: pub+glob is a parse error
+  }
+  module_export entry;
+  entry.name = p_name;
+  entry.local = (uint16_t)p_variable.index;
+  entry.hidden = (global_id){0, GLOBAL_FLAG_NONE, GLOBAL_OK};
+  if (!module_exports_append(&p_compiler->exports, entry)) {
+    report_oom(p_compiler, p_author);
+    return false;
+  }
+  return true;
+}
+
+// OR-1 (M9): the module export epilogue. emitted after the user top-level
+// scope ends and before the fall-off return: for every recorded pub export,
+// allocate the hidden global " module:<canon>:<name>" (leading space =
+// invisible to script, the seed natives' convention) and store the local's
+// register into it. the loader reads these back after the module's main ran
+// and fills the namespace object - the globals trick one level up.
+static bool emit_module_exports(compiler* p_compiler, ast_node* p_author) {
+  for (uint32_t i = 0; i < p_compiler->exports.count; ++i) {
+    module_export* entry = &p_compiler->exports.data[i];
+    string mangled = asprint(p_compiler->alloc,
+                             " module:%.*s:%.*s",
+                             ok_string_view_get_length(&p_compiler->module_path),
+                             p_compiler->module_path.chars,
+                             ok_string_view_get_length(&entry->name),
+                             entry->name.chars);
+    if (mangled.chars == NULL) {
+      report_oom(p_compiler, p_author);
+      return false;
+    }
+    const global_id glob = globals_store_add(
+        p_compiler->globals_store,
+        ok_create_string_view(mangled.chars, (uint32_t)string_get_length(&mangled), false),
+        GLOBAL_FLAG_NONE);
+    string_deinit(&mangled, p_compiler->alloc);
+    if (!IS_GLOBAL_VALID(glob)) {
+      report_oom(p_compiler, p_author);
+      return false;
+    }
+    entry->hidden = glob;
+    expression_result value;
+    value.type = EXPRESSION_VALUE;
+    value.value = (location){entry->local, LOCATION_KIND_REGISTER, LOCATION_OK};
+    value.lvalue = (lvalue){0};
+    value.count = 1;
+    if (!write_global(p_compiler, glob, value, p_author)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// OR-1: bind one import value as a local (the root/alias/symbol name) with a
+// constant load. the value is a live object (a namespace instance, a class,
+// a closure) riding the constant pool; it is rooted elsewhere (the module
+// registry or the pending-roots window), so the push needs no guard across
+// the constants array's growth. define_local (not a bare materialize) so the
+// binding leaves the uninitialized state - resolution skips uninitialized
+// locals, the `let x; { let x = x; }` rule.
+static bool bind_import_value(compiler* p_compiler, ok_string_view p_name, value p_value, ast_node* p_author) {
+  variable_declaration vardecl = {.identifier = p_name, .flags = VARIABLE_DECLRATION_FLAGS_NONE};
+  location variable = declare_variable(p_compiler, vardecl, p_author);
+  if (variable.error != LOCATION_OK) {
+    return false; // the usual duplicate-binding error, naming the import site
+  }
+  constant con = add_constant(p_compiler, p_value, p_author);
+  if (!IS_CONSTANT_VALID(con)) {
+    return false;
+  }
+  expression_result value;
+  value.type = EXPRESSION_VALUE;
+  value.value = (location){CONSTANT_RAW_INDEX(con), LOCATION_KIND_CONSTANT, LOCATION_OK};
+  value.lvalue = (lvalue){0};
+  value.count = 1;
+  return define_local(p_compiler, variable, value, p_author);
+}
+
+// OR-1 (M2/M4/M5): the import statement. the module system resolved the
+// whole graph before this TU compiled; this only consumes the prepared
+// binding table in statement order. a path import is one binding (its root,
+// or the aliased module value); a from-import is one binding per symbol. a
+// merge binding (the root is already bound - M5's root merging) emits
+// nothing: the root namespace object already carries the new stem.
+static bool compile_import_statement(compiler* p_compiler, ast_import_statement* p_import) {
+  ast_node* author = (ast_node*)p_import;
+  const uint32_t bindings_needed = p_import->symbols.count == 0 ? 1 : p_import->symbols.count;
+  if (p_compiler->imports_next + bindings_needed > p_compiler->imports.count) {
+    // cannot happen: the driver prepared the table from this very parse tree
+    error_at(p_compiler,
+             author,
+             ok_create_string_view("internal error: the import binding table is out of sync.",
+                                   OK_STRING_VIEW_CALCULATE_LENGTH,
+                                   true));
+    return false;
+  }
+  for (uint32_t i = 0; i < bindings_needed; ++i) {
+    const ok_import_binding* binding = &p_compiler->imports.data[p_compiler->imports_next++];
+    if (binding->merge) {
+      continue;
+    }
+    if (!bind_import_value(p_compiler, binding->name, binding->value, author)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 static bool compile_statement(compiler* p_compiler, ast_statement* p_statement) {
   ASSERT_MSG(p_statement->node.node_type >= AST_RANGE_STATEMENT_BEGIN &&
                  p_statement->node.node_type <= AST_RANGE_STATEMENT_END,
@@ -814,6 +1021,9 @@ static bool compile_statement(compiler* p_compiler, ast_statement* p_statement) 
     break;
   case AST_DEFER_STATEMENT:
     result = compile_defer_statement(p_compiler, (ast_defer_statement*)p_statement);
+    break;
+  case AST_IMPORT_STATEMENT:
+    result = compile_import_statement(p_compiler, (ast_import_statement*)p_statement);
     break;
   case AST_LET_DECLARATION:
     result = compile_let_declration(p_compiler, (ast_let_declaration*)p_statement);
@@ -1349,6 +1559,9 @@ static bool compile_let_declration(compiler* p_compiler, ast_let_declaration* p_
   if (variable.error != LOCATION_OK) {
     return false;
   }
+  if (!record_module_export_if_pub(p_compiler, name, variable, (ast_node*)p_let, p_let->declaration.modifiers)) {
+    return false;
+  }
   expression_result value;
   _register dest;
   if (!register_for_location(p_compiler, variable, &dest)) {
@@ -1386,6 +1599,14 @@ static bool compile_let_declaration_span(compiler* p_compiler, ast_let_declarati
   if (!IS_REGISTER_VALID(window)) {
     return false;
   }
+  // OR-1 (M9): each span binding is an export candidate like any top-level let.
+  if (!record_module_export_if_pub(p_compiler,
+                                   decl0.identifier,
+                                   (location){window.index, LOCATION_KIND_REGISTER, LOCATION_OK},
+                                   (ast_node*)p_let->span_bindings.data[0],
+                                   p_let->declaration.modifiers)) {
+    return false;
+  }
   // the call, requesting exactly n results.
   // (call() compares against the callee's inferred span. strictness check lives there).
   expression_result value;
@@ -1404,6 +1625,13 @@ static bool compile_let_declaration_span(compiler* p_compiler, ast_let_declarati
       return false;
     }
     ASSERT_MSG(slot.index == window.index + i, "span binding left the result window.");
+    if (!record_module_export_if_pub(p_compiler,
+                                     decl.identifier,
+                                     (location){slot.index, LOCATION_KIND_REGISTER, LOCATION_OK},
+                                     (ast_node*)p_let->span_bindings.data[i],
+                                     p_let->declaration.modifiers)) {
+      return false;
+    }
   }
   return true;
 }
@@ -1415,6 +1643,9 @@ static bool compile_function_declaration(compiler* p_compiler, ast_function_decl
       .flags = variable_declaration_flags_from_modifiers(p_fu->declaration.modifiers, p_fu->binding->modifiers)};
   location variable = declare_variable(p_compiler, vardecl, (ast_node*)p_fu);
   if (variable.error != LOCATION_OK) {
+    return false;
+  }
+  if (!record_module_export_if_pub(p_compiler, name, variable, (ast_node*)p_fu, p_fu->declaration.modifiers)) {
     return false;
   }
   expression_result value;
@@ -1530,6 +1761,9 @@ static bool compile_class_declaration(compiler* p_compiler, ast_class_declaratio
     varloc = (location){glob.index, LOCATION_KIND_GLOBAL, IS_GLOBAL_VALID(glob) ? LOCATION_OK : LOCATION_INVALID};
   }
   if (varloc.error != LOCATION_OK) {
+    return false;
+  }
+  if (!record_module_export_if_pub(p_compiler, name_view, varloc, author, p_class->declaration.modifiers)) {
     return false;
   }
   _register klass_reg;
@@ -3369,6 +3603,19 @@ static bool record_return_span(compiler* p_compiler, ast_return_statement* p_ret
 }
 
 static bool compile_return_statement(compiler* p_compiler, ast_return_statement* p_return) {
+  // OR-1: a module's top level cannot return early - the export epilogue
+  // that compiler_compile emits at the scope's end would be skipped and the
+  // module would silently export nulls. the entry file keeps the classic
+  // script freedom; lambdas and methods inside a module are unaffected
+  // (they compile in their own contexts).
+  if (p_compiler->is_module && p_compiler->contexts.count == 1) {
+    error_at(p_compiler,
+             (ast_node*)p_return,
+             ok_create_string_view("a module top level cannot return: its exports are its pub declarations.",
+                                   OK_STRING_VIEW_CALCULATE_LENGTH,
+                                   true));
+    return false;
+  }
   const uint32_t count = p_return->returned.count;
   if (!record_return_span(p_compiler, p_return, count == 0 ? 1 : count)) {
     return false;

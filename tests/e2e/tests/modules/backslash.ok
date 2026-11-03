@@ -1,0 +1,3 @@
+// forward slashes only, windows included
+import "a\\b";
+// expect error: forward slashes only

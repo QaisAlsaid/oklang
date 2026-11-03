@@ -1,0 +1,2 @@
+import "./fake";
+// expect error: native loading lands with OR-3

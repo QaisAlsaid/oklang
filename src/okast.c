@@ -50,6 +50,7 @@
   X(AST_THROW_STATEMENT, ast_throw_statement)                                                                          \
   X(AST_TRY_STATEMENT, ast_try_statement)                                                                              \
   X(AST_DEFER_STATEMENT, ast_defer_statement)                                                                          \
+  X(AST_IMPORT_STATEMENT, ast_import_statement)                                                                        \
   X(AST_EOF_STATEMENT, ast_eof_statement)                                                                              \
   X(AST_LET_DECLARATION, ast_let_declaration)                                                                          \
   X(AST_FUNCTION_DECLARATION, ast_function_declaration)                                                                \
@@ -1672,6 +1673,65 @@ string ast_defer_statement_asprint(const ast_defer_statement* p_defer) {
   string res = asprint(alloc, "%s %s", p_defer->is_err ? "deferr" : "defer", call.chars);
   string_deinit(&call, alloc);
   return res;
+}
+
+ARRAY_DEFINE_DEFAULT(ast_import_specifier_list, ast_import_specifier, ARRAY_DEFAULT_TYPE_DEINIT)
+
+void ast_import_statement_init(ast_import_statement* p_import,
+                               token p_token,
+                               token p_path,
+                               ast_import_specifier_list p_symbols,
+                               bool p_has_alias,
+                               token p_alias,
+                               ast_specs* p_specs) {
+  ast_statement_init(&p_import->statement, AST_IMPORT_STATEMENT, p_token, p_specs);
+  p_import->path = p_path;
+  p_import->has_alias = p_has_alias;
+  p_import->alias = p_alias;
+  p_import->symbols = p_symbols;
+}
+
+void ast_import_statement_deinit(ast_import_statement* p_import) {
+  allocators* alloc = p_import->statement.node.alloc;
+  ast_import_specifier_list_deinit(&p_import->symbols, alloc);
+  ast_statement_deinit(&p_import->statement);
+}
+
+bool ast_import_statement_print(const ast_import_statement* p_import) {
+  return printf("import") > 0;
+}
+
+string ast_import_statement_asprint(const ast_import_statement* p_import) {
+  allocators* alloc = p_import->statement.node.alloc;
+  const ok_string_view path = ast_import_statement_path(p_import);
+  string res = asprint(alloc, "import \"%.*s\"", ok_string_view_get_length(&path), path.chars);
+  if (res.chars == NULL) {
+    return res;
+  }
+  if (p_import->has_alias) {
+    string joined = asprint(alloc, "%s as %.*s", res.chars, p_import->alias.length, p_import->alias.start);
+    string_deinit(&res, alloc);
+    res = joined;
+  }
+  for (uint32_t i = 0; i < p_import->symbols.count && res.chars != NULL; ++i) {
+    const ast_import_specifier* spec = &p_import->symbols.data[i];
+    const bool has_alias = spec->alias.type == TOKEN_IDENTIFIER;
+    string part = asprint(alloc,
+                          "%s %.*s%s%.*s",
+                          res.chars,
+                          spec->name.length,
+                          spec->name.start,
+                          has_alias ? " as " : "",
+                          has_alias ? spec->alias.length : 0,
+                          has_alias ? spec->alias.start : "");
+    string_deinit(&res, alloc);
+    res = part;
+  }
+  return res;
+}
+
+ok_string_view ast_import_statement_path(const ast_import_statement* p_import) {
+  return ok_create_string_view(p_import->path.start + 1, p_import->path.length - 2, false);
 }
 
 void ast_let_declaration_init(ast_let_declaration* p_let,

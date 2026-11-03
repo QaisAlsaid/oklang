@@ -1,0 +1,3 @@
+// from-imports see pub exports only (M9)
+from "./lib.ok" import secret;
+// expect error: has no pub export 'secret'

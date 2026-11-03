@@ -356,6 +356,13 @@ struct object_class {
   // costs no instruction words.
   const struct method_entry* op_cache[CLASS_OP_COUNT];
   bool frozen;
+  // OR-1 modules: this class describes a module namespace (or a root
+  // namespace). its instances are the module values: field reads are PUBLIC
+  // (the visibility ring does not apply - the exports are the surface), and
+  // field writes from script are refused (namespaces are immutable once
+  // sealed; the loader fills the slots from C before anyone sees the value).
+  // set only by the module system (okmodules.c) on freshly created classes.
+  bool module_namespace;
 };
 
 object_class* create_object_class(object_string* p_name, object_class* p_parent, object_specs* p_specs);

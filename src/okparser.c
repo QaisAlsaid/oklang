@@ -35,6 +35,12 @@ static ast_return_statement* parse_return_statement(parser* p_parser);
 static ast_throw_statement* parse_throw_statement(parser* p_parser);
 static ast_try_statement* parse_try_statement(parser* p_parser);
 static ast_defer_statement* parse_defer_statement(parser* p_parser, bool p_is_err);
+static ast_import_statement* parse_import_statement(parser* p_parser);
+static ast_import_statement* parse_from_import_statement(parser* p_parser);
+// OR-1 (M1): the import path's syntax, checked at the parse site so the error
+// points at the literal. forward slashes only, no absolute paths, no empty
+// segments. './' and '../' prefixes are the file-relative lane.
+static bool import_path_is_wellformed(const ok_string_view p_path, const char** p_reason);
 
 static ast_bindings_list parse_bindings_list(parser* p_parser,
                                              ast_binding_modifiers_t p_allowed_binds,
@@ -290,7 +296,17 @@ ast_root* parse_root(parser* p_parser) {
   ast_specs s = {alloc};
   ast_root_init(root, trigger, &s);
   while (advance(p_parser) && p_parser->previous.type != TOKEN_EOF) {
-    ast_statement* statement = try_parse_declaration(p_parser);
+    ast_statement* statement = NULL;
+    // imports are module-top-level-only (OR-1): parse_root is the one place
+    // they are born. every other route (blocks, class bodies, for-inits)
+    // refuses them in parse_statement with the teaching error.
+    if (p_parser->previous.type == TOKEN_IMPORT) {
+      statement = (ast_statement*)parse_import_statement(p_parser);
+    } else if (p_parser->previous.type == TOKEN_FROM) {
+      statement = (ast_statement*)parse_from_import_statement(p_parser);
+    } else {
+      statement = try_parse_declaration(p_parser);
+    }
     if (statement != NULL && statement->node.node_type != AST_EMPTY_STATEMENT) {
       ast_statements_list_append(&root->statements, statement);
     } else if (statement != NULL && statement->node.node_type == AST_EMPTY_STATEMENT) {
@@ -991,6 +1007,12 @@ ast_statement* parse_statement(parser* p_parser) {
     return (ast_statement*)parse_defer_statement(p_parser, false);
   case TOKEN_DEFERR:
     return (ast_statement*)parse_defer_statement(p_parser, true);
+  case TOKEN_IMPORT:
+  case TOKEN_FROM:
+    error_at(p_parser,
+             p_parser->previous,
+             ok_create_string_view("imports are only legal at module top level.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL;
   case TOKEN_CATCH:
     error_at(p_parser,
              p_parser->previous,
@@ -1137,9 +1159,11 @@ ast_let_declaration* parse_let_declaration(parser* p_parser,
   allocators* alloc = p_parser->alloc;
   const token let_tok = p_parser->previous;
   // static is a class-member modifier: fields only exist in class bodies.
-  // pub is never allowed on a let - fields are not the surface, methods are.
+  // pub (OR-1, M9) is the module-export modifier: top level only - inside a
+  // class body fields are still not the surface, methods are.
   const ast_declaration_modifiers_t let_allowed_decl_mods =
-      DECLARATION_GLOB | DECLARATION_EXPORT | (p_in_class_body ? DECLARATION_STATIC : 0);
+      DECLARATION_GLOB | DECLARATION_EXPORT |
+      (p_in_class_body ? DECLARATION_STATIC : DECLARATION_PUB);
   if ((p_declaration_modifiers & ~let_allowed_decl_mods) != 0) {
     string mods_str = ast_declaration_modifiers_asprint(p_declaration_modifiers, alloc);
     string message = asprint(alloc,
@@ -1153,6 +1177,17 @@ ast_let_declaration* parse_let_declaration(parser* p_parser,
     string_deinit(&mods_str, alloc);
     string_deinit(&note, alloc);
     string_deinit(&allowed_str, alloc);
+    return NULL;
+  }
+  // OR-1 (M9): pub marks a module's exports. it never combines with glob -
+  // a glob binding is process-global, the export surface is the module's own.
+  if ((p_declaration_modifiers & (DECLARATION_PUB | DECLARATION_GLOB)) == (DECLARATION_PUB | DECLARATION_GLOB)) {
+    error_at(p_parser,
+             let_tok,
+             ok_create_string_view("a glob declaration cannot be pub: 'glob' bindings are process-global, the export "
+                                   "surface is the module's.",
+                                   OK_STRING_VIEW_CALCULATE_LENGTH,
+                                   true));
     return NULL;
   }
   const ast_binding_modifiers_t binding_mods = parse_binding_modifiers(p_parser, BINDING_MUT);
@@ -1256,7 +1291,9 @@ ast_let_declaration* parse_let_declaration_span(parser* p_parser,
                                                 ast_binding_modifiers_t p_binding_mods) {
   allocators* alloc = p_parser->alloc;
   const token let_tok = p_parser->previous;
-  if (p_declaration_modifiers != DECLARATION_NONE) {
+  // OR-1 (M9): pub marks every binding of the span as a module export; the
+  // other declaration modifiers stay illegal on a destructuring let.
+  if ((p_declaration_modifiers & ~DECLARATION_PUB) != 0) {
     string mods_str = ast_declaration_modifiers_asprint(p_declaration_modifiers, alloc);
     string message = asprint(alloc, "illegal declaration modifier(s): [%s] on a destructuring let.", mods_str.chars);
     error_at_noted(p_parser,
@@ -1469,7 +1506,8 @@ ast_function_declaration* parse_function_declaration(parser* p_parser,
   allocators* alloc = p_parser->alloc;
   token fu_tok = p_parser->previous;
   const ast_declaration_modifiers_t fu_allowed_decl_mods =
-      DECLARATION_GLOB | DECLARATION_EXPORT | (p_in_class_body ? (DECLARATION_PUB | DECLARATION_STATIC) : 0);
+      DECLARATION_GLOB | DECLARATION_EXPORT |
+      (p_in_class_body ? (DECLARATION_PUB | DECLARATION_STATIC) : DECLARATION_PUB);
   if ((p_declaration_modifiers & ~fu_allowed_decl_mods) != 0) {
     string mods_str = ast_declaration_modifiers_asprint(p_declaration_modifiers, alloc);
     string message = asprint(alloc,
@@ -1666,7 +1704,7 @@ ast_expression* parse_super(parser* p_parser, token p_trigger) {
 ast_class_declaration* parse_class_declaration(parser* p_parser, ast_declaration_modifiers_t p_modifiers) {
   allocators* alloc = p_parser->alloc;
   token class_tok = p_parser->previous;
-  const ast_declaration_modifiers_t class_allowed_decl_mods = DECLARATION_GLOB | DECLARATION_EXPORT;
+  const ast_declaration_modifiers_t class_allowed_decl_mods = DECLARATION_GLOB | DECLARATION_EXPORT | DECLARATION_PUB;
   if ((p_modifiers & ~class_allowed_decl_mods) != 0) {
     string mods_str = ast_declaration_modifiers_asprint(p_modifiers, alloc);
     string message = asprint(alloc, "illegal declaration modifier(s): [%s] in class declaration.", mods_str.chars);
@@ -2879,6 +2917,234 @@ fail_thunk_list:
 fail_expression:
   ast_dispatch_deinit((ast_node*)expression);
   alloc->release(alloc, expression);
+  return NULL;
+}
+
+// OR-1 (M1): the path literal's shape. the reasons are full sentences so the
+// parse error reads as a lesson, not a code. returns false with *p_reason set.
+static bool import_path_is_wellformed(const ok_string_view p_path, const char** p_reason) {
+  const uint64_t length = ok_string_view_get_length(&p_path);
+  if (length == 0) {
+    *p_reason = "the import path is empty.";
+    return false;
+  }
+  if (p_path.chars[0] == '/') {
+    *p_reason = "absolute filesystem paths are not import paths: resolve against the importing file, OKPATH, or the "
+                "embedder's roots.";
+    return false;
+  }
+  if (p_path.chars[length - 1] == '/') {
+    *p_reason = "the import path ends with '/'.";
+    return false;
+  }
+  for (uint64_t i = 0; i < length; ++i) {
+    if (p_path.chars[i] == '\\') {
+      *p_reason = "import paths use forward slashes only (windows included).";
+      return false;
+    }
+    if (p_path.chars[i] == '/' && i + 1 < length && p_path.chars[i + 1] == '/') {
+      *p_reason = "the import path has an empty segment ('//').";
+      return false;
+    }
+  }
+  return true;
+}
+
+// `import "a/b";` / `import "a/b" as c;` (OR-1, M1/M2/M5). previous = 'import'.
+// the quoted path is the whole surface - the python-plain form is not the
+// language, and the error for it teaches the quoting.
+static ast_import_statement* parse_import_statement(parser* p_parser) {
+  allocators* alloc = p_parser->alloc;
+  const token import_tok = p_parser->previous;
+  if (p_parser->current.type == TOKEN_ASTERISK) {
+    error_at(p_parser,
+             p_parser->current,
+             ok_create_string_view("star imports are rejected: name what you import.",
+                                   OK_STRING_VIEW_CALCULATE_LENGTH,
+                                   true));
+    return NULL;
+  }
+  if (p_parser->current.type != TOKEN_STRING) {
+    if (p_parser->current.type == TOKEN_IDENTIFIER) {
+      error_at_noted(p_parser,
+                     p_parser->current,
+                     ok_create_string_view("expected a quoted import path.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                     ok_create_string_view("spell it import \"a/b\"; - the python-plain form is not the language.",
+                                           OK_STRING_VIEW_CALCULATE_LENGTH,
+                                           true));
+    } else {
+      error_at(p_parser,
+               p_parser->current,
+               ok_create_string_view("expected a quoted import path after 'import'.",
+                                     OK_STRING_VIEW_CALCULATE_LENGTH,
+                                     true));
+    }
+    return NULL;
+  }
+  advance(p_parser); // the path literal into previous
+  const token path_tok = p_parser->previous;
+  const ok_string_view path = ok_create_string_view(path_tok.start + 1, path_tok.length - 2, false);
+  const char* reason = NULL;
+  if (!import_path_is_wellformed(path, &reason)) {
+    error_at(p_parser, path_tok, ok_create_string_view(reason, OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL;
+  }
+  bool has_alias = false;
+  token alias_tok;
+  alias_tok.type = TOKEN_ERROR;
+  alias_tok.start = "";
+  alias_tok.length = 0;
+  alias_tok.line_info = path_tok.line_info;
+  if (p_parser->current.type == TOKEN_AS) {
+    advance(p_parser); // 'as'
+    if (p_parser->current.type != TOKEN_IDENTIFIER) {
+      error_at(p_parser,
+               p_parser->current,
+               ok_create_string_view("expected an identifier after 'as'.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      return NULL;
+    }
+    advance(p_parser);
+    alias_tok = p_parser->previous;
+    has_alias = true;
+  }
+  if (p_parser->current.type != TOKEN_SEMICOLON) {
+    error_at(p_parser,
+             p_parser->current,
+             ok_create_string_view("expected ';' after import statement.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL;
+  }
+  advance(p_parser);
+  ast_import_statement* node = (ast_import_statement*)alloc->allocate(alloc, sizeof(ast_import_statement));
+  if (node == NULL) {
+    error_at(p_parser,
+             import_tok,
+             ok_create_string_view("failed to allocate memory for import node.",
+                                   OK_STRING_VIEW_CALCULATE_LENGTH,
+                                   true));
+    return NULL;
+  }
+  ast_import_specifier_list empty;
+  ast_import_specifier_list_init(&empty, alloc);
+  ast_specs s = {alloc};
+  ast_import_statement_init(node, import_tok, path_tok, empty, has_alias, alias_tok, &s);
+  return node;
+}
+
+// `from "a/b" import x, y as z;` (OR-1, M2/M8/M9). previous = 'from'.
+static ast_import_statement* parse_from_import_statement(parser* p_parser) {
+  allocators* alloc = p_parser->alloc;
+  const token from_tok = p_parser->previous;
+  if (p_parser->current.type != TOKEN_STRING) {
+    if (p_parser->current.type == TOKEN_IDENTIFIER) {
+      error_at_noted(p_parser,
+                     p_parser->current,
+                     ok_create_string_view("expected a quoted import path after 'from'.",
+                                           OK_STRING_VIEW_CALCULATE_LENGTH,
+                                           true),
+                     ok_create_string_view("spell it from \"a/b\" import x; - the python-plain form is not the language.",
+                                           OK_STRING_VIEW_CALCULATE_LENGTH,
+                                           true));
+    } else {
+      error_at(p_parser,
+               p_parser->current,
+               ok_create_string_view("expected a quoted import path after 'from'.",
+                                     OK_STRING_VIEW_CALCULATE_LENGTH,
+                                     true));
+    }
+    return NULL;
+  }
+  advance(p_parser); // the path literal into previous
+  const token path_tok = p_parser->previous;
+  const ok_string_view path = ok_create_string_view(path_tok.start + 1, path_tok.length - 2, false);
+  const char* reason = NULL;
+  if (!import_path_is_wellformed(path, &reason)) {
+    error_at(p_parser, path_tok, ok_create_string_view(reason, OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL;
+  }
+  if (p_parser->current.type != TOKEN_IMPORT) {
+    error_at(p_parser,
+             p_parser->current,
+             ok_create_string_view("expected 'import' after the from path.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL;
+  }
+  advance(p_parser); // 'import'
+  ast_import_specifier_list symbols;
+  ast_import_specifier_list_init(&symbols, alloc);
+  if (p_parser->current.type == TOKEN_ASTERISK) {
+    error_at(p_parser,
+             p_parser->current,
+             ok_create_string_view("star imports are rejected: name what you import.",
+                                   OK_STRING_VIEW_CALCULATE_LENGTH,
+                                   true));
+    goto fail;
+  }
+  for (;;) {
+    if (p_parser->current.type != TOKEN_IDENTIFIER) {
+      error_at(p_parser,
+               p_parser->current,
+               ok_create_string_view("expected an imported name.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      goto fail;
+    }
+    advance(p_parser);
+    ast_import_specifier spec;
+    spec.name = p_parser->previous;
+    spec.alias.type = TOKEN_ERROR;
+    spec.alias.start = "";
+    spec.alias.length = 0;
+    spec.alias.line_info = spec.name.line_info;
+    if (p_parser->current.type == TOKEN_AS) {
+      advance(p_parser); // 'as'
+      if (p_parser->current.type != TOKEN_IDENTIFIER) {
+        error_at(p_parser,
+                 p_parser->current,
+                 ok_create_string_view("expected an identifier after 'as'.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+        goto fail;
+      }
+      advance(p_parser);
+      spec.alias = p_parser->previous;
+    }
+    if (!ast_import_specifier_list_append(&symbols, spec)) {
+      error_at(p_parser,
+               from_tok,
+               ok_create_string_view("failed to allocate memory for import list.",
+                                     OK_STRING_VIEW_CALCULATE_LENGTH,
+                                     true));
+      goto fail;
+    }
+    if (p_parser->current.type == TOKEN_COMMA) {
+      advance(p_parser); // ','
+      continue;
+    }
+    break;
+  }
+  if (p_parser->current.type != TOKEN_SEMICOLON) {
+    error_at(p_parser,
+             p_parser->current,
+             ok_create_string_view("expected ';' after from-import statement.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    goto fail;
+  }
+  advance(p_parser);
+  {
+    ast_import_statement* node = (ast_import_statement*)alloc->allocate(alloc, sizeof(ast_import_statement));
+    if (node == NULL) {
+      error_at(p_parser,
+               from_tok,
+               ok_create_string_view("failed to allocate memory for import node.",
+                                     OK_STRING_VIEW_CALCULATE_LENGTH,
+                                     true));
+      goto fail;
+    }
+    token no_alias;
+    no_alias.type = TOKEN_ERROR;
+    no_alias.start = "";
+    no_alias.length = 0;
+    no_alias.line_info = from_tok.line_info;
+    ast_specs s = {alloc};
+    ast_import_statement_init(node, from_tok, path_tok, symbols, false, no_alias, &s);
+    return node;
+  }
+fail:
+  ast_import_specifier_list_deinit(&symbols, alloc);
   return NULL;
 }
 

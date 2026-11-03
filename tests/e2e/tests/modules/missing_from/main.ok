@@ -1,0 +1,2 @@
+from "./lib.ok" import nope;
+// expect error: has no pub export 'nope'

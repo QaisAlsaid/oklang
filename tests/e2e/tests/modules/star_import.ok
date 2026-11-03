@@ -1,0 +1,3 @@
+// star imports are rejected (M8): name what you import
+import *;
+// expect error: star imports are rejected

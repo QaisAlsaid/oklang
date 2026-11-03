@@ -11,5 +11,6 @@ typedef struct object_store object_store;
 typedef struct vm vm;
 typedef struct compiler compiler;
 typedef struct globals_store globals_store;
+typedef struct module_system module_system;
 
 #endif // OK_SRC_FWD_H

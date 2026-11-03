@@ -1,0 +1,2 @@
+from lib import x;
+// expect error: expected a quoted import path after 'from'

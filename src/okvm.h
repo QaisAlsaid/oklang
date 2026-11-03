@@ -38,13 +38,15 @@ typedef enum {
 
 const char* ok_error_kind_name(ok_error_kind p_kind);
 
-// one per ok_run, appended for the run's lifetime. the path is always ok's (copied):
-// a chunk can name its source after the run that compiled it ended.
-// the code is the caller's buffer for the duration of the run and NULL after,
-// unless retention is on (ok_retain_source). then it's an ok-owned copy,
-// alive until ok_free. this is the v1 of the multi-source:
-// right path + right lines always, source references when the text is alive,
-// never a. the 0.7.0 registry (keyed, deduped) will replaces it.
+// one entry per compiled TU: the entry file's run, plus one per loaded
+// module (OR-1) - appended at each load, alive until ok_free. the path is
+// always ok's (copied): a chunk can name its source after the run that
+// compiled it ended. the code is the caller's buffer for the duration of the
+// run and NULL after, unless retention is on (ok_retain_source). then it's
+// an ok-owned copy, alive until ok_free. right path + right lines always,
+// source references when the text is alive. the keyed, deduped registry
+// lives in the module system (okmodules.c, canonical paths) - this table
+// stays the flat per-TU source record.
 typedef struct {
   char* path;
   const char* code;

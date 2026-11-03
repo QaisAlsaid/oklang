@@ -39,11 +39,12 @@ int decode_system_status(int status) {
   return status;
 }
 
-run_result run_oklang(const std::string_view path, const std::string_view okpath) {
+run_result run_oklang(const std::string_view path, const std::string_view okpath, const std::string_view okpath_value) {
   std::stringstream cmd;
   std::string stdout_file = "out.log";
   std::string stderr_file = "err.log";
-  cmd << "\"" << okpath << "\" " << "\"" << path << "\" > " << stdout_file << " 2> " << stderr_file;
+  cmd << "OKPATH=\"" << okpath_value << "\" \"" << okpath << "\" "
+      << "\"" << path << "\" > " << stdout_file << " 2> " << stderr_file;
 
   std::string cmd_str = cmd.str();
   int ret = system(cmd_str.c_str());
@@ -100,6 +101,53 @@ bool is_quarantined(const std::filesystem::path& path) {
   return false;
 }
 
+// OR-1 module tests: a directory holding main.ok is ONE test case - main.ok
+// is the entry, every other .ok under it is a fixture. any ancestor directory
+// up to the tests root that holds a main.ok claims the file (except the entry
+// itself); test directories are never nested, so the walk stays trivial.
+bool is_fixture(const std::filesystem::path& path, const std::filesystem::path& tests_root) {
+  for (std::filesystem::path dir = path.parent_path(); dir != tests_root && !dir.empty(); dir = dir.parent_path()) {
+    const std::filesystem::path entry = dir / "main.ok";
+    if (entry != path && std::filesystem::exists(entry)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// the `// okpath: a:b` directive: colon-separated import roots, each resolved
+// against the test file's directory, exported as OKPATH for this one run.
+std::string parse_okpath(const std::filesystem::path& path) {
+  std::regex okpath_re(R"(//\s*okpath:\s*(.*))");
+  std::ifstream fs(path);
+  std::string line;
+  while (std::getline(fs, line)) {
+    std::smatch match;
+    if (std::regex_search(line, match, okpath_re)) {
+      const std::string value = match[1].str();
+      const std::filesystem::path dir = path.parent_path();
+      std::string expanded;
+      size_t start = 0;
+      for (;;) {
+        const size_t colon = value.find(':', start);
+        const std::string part = value.substr(start, colon == std::string::npos ? std::string::npos : colon - start);
+        if (!part.empty()) {
+          if (!expanded.empty()) {
+            expanded += ":";
+          }
+          expanded += (dir / part).string();
+        }
+        if (colon == std::string::npos) {
+          break;
+        }
+        start = colon + 1;
+      }
+      return expanded;
+    }
+  }
+  return "";
+}
+
 int main(int argc, char** argv) {
   bool has_debug_build = false;
   if (argc < 3) {
@@ -131,9 +179,14 @@ int main(int argc, char** argv) {
       std::println("{}[SKIP]{}: {}", COLOR_BLUE, COLOR_RESET, test_path);
       continue;
     }
+    if (is_fixture(entry.path(), tests_path)) {
+      skipped++;
+      continue;
+    }
 
+    const std::string okpath_value = parse_okpath(entry.path());
     auto tc = parse_test_file(test_path);
-    auto rr = run_oklang(test_path, okpath);
+    auto rr = run_oklang(test_path, okpath, okpath_value);
 
     if (!tc.has_expectation) {
       std::println("{}[NOTOK]{}: '{}'", COLOR_RED, COLOR_RESET, test_path);

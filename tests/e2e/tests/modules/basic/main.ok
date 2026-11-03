@@ -1,0 +1,4 @@
+import "./lib.ok";
+
+print lib.greet("ok"); // expect: hi ok
+print lib.version; // expect: 1

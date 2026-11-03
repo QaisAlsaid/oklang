@@ -1,0 +1,2 @@
+import "./s.ok";
+// expect error: circular import

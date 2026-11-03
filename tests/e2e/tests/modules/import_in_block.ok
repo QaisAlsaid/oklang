@@ -1,0 +1,5 @@
+// imports are module-top-level-only (M4): blocks refuse them
+if (true) {
+  import "./nowhere.ok";
+}
+// expect error: imports are only legal at module top level.

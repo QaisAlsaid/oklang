@@ -1,0 +1,4 @@
+// a standalone script keeps every name: the std reservation has teeth only
+// in module-world TUs (a module, or any file with imports)
+let std = 1;
+print std; // expect: 1

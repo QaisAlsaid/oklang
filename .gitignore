@@ -1,3 +1,5 @@
 build/
 .cache/
 build*/
+out.log
+err.log

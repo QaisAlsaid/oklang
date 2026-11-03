@@ -1,0 +1,7 @@
+// the exported closure captures a private module local (an upvalue)
+let mut count = 0;
+
+pub fu tick() {
+  count = count + 1;
+  return count;
+}

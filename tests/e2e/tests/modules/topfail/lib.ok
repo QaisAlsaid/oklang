@@ -1,0 +1,2 @@
+throw "lib top level failed";
+pub let x = 1;

@@ -1,0 +1,3 @@
+// python-plain is not the language: the path is a quoted string
+import lib;
+// expect error: expected a quoted import path

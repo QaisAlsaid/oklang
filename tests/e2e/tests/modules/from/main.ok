@@ -1,0 +1,4 @@
+from "./lib.ok" import greet, version as ver;
+
+print greet("ok"); // expect: hi ok
+print ver; // expect: 1

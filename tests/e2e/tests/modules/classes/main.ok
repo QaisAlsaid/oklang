@@ -1,0 +1,5 @@
+import "./lib.ok";
+
+let c = lib.Counter();
+print c.bump(); // expect: 1
+print c.bump(); // expect: 2

@@ -1,0 +1,4 @@
+if (true) {
+  pub let x = 1;
+}
+// expect error: 'pub' is a module top-level modifier.

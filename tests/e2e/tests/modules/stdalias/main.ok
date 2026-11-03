@@ -1,0 +1,2 @@
+from "./lib.ok" import version as std;
+// expect error: the name 'std' is reserved
