@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#define OK_GC_EXPOSE
 #include "okgc.h"
 #include "okobject.h"
 #include "okobject_store.h"
@@ -156,7 +157,7 @@ static void object_string_deinit(object_string* p_object_string, object_specs* p
   object_deinit(&p_object_string->object);
 }
 
-object_string* create_object_string(const ok_string_view p_string, object_specs* p_specs) {
+object_string* create_object_string_uninterned(const ok_string_view p_string, object_specs* p_specs) {
   object_string* object_str = (object_string*)p_specs->alloc->allocate(p_specs->alloc, sizeof(object_string));
   if (object_str == NULL) {
     return NULL;
@@ -164,6 +165,17 @@ object_string* create_object_string(const ok_string_view p_string, object_specs*
   object_string_init(object_str, p_string, p_specs);
   object_store_append(p_specs->store, (object*)object_str);
   return object_str;
+}
+
+object_string* create_object_string(const ok_string_view p_string, object_specs* p_specs) {
+  // D20's one door: every string creation lands here and canonicalizes. the
+  // gc's interner watch is the channel (set in ok_create before the vm, the
+  // compiler, or any singleton can allocate a string); the interner's own
+  // miss path takes the bare creator above, so there is no re-entry.
+  if (p_specs->alloc->gc != NULL && p_specs->alloc->gc->interner != NULL) {
+    return string_interner_intern(p_specs->alloc->gc->interner, p_string, p_specs);
+  }
+  return create_object_string_uninterned(p_string, p_specs);
 }
 
 static void object_function_init(object_function* p_object_function,

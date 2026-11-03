@@ -276,19 +276,6 @@ static bool mark_globals_store(gc* p_gc) {
   return true;
 }
 
-static bool mark_interner(gc* p_gc) {
-  // strong roots: every canonical string is immortal by design (see the
-  // lifetime policy on the struct) - identical to the lifetimes they already
-  // hold as chunk constants or class-table keys.
-  for (uint32_t i = 0; i < p_gc->interner->capacity; ++i) {
-    object_string* entry = p_gc->interner->slots[i];
-    if (entry != NULL && !mark_value(p_gc, OBJECT_AS_VALUE(entry))) {
-      return false;
-    }
-  }
-  return true;
-}
-
 static bool mark(gc* p_gc) {
   if (p_gc->vm != NULL && !mark_vm(p_gc)) {
     return false;
@@ -299,9 +286,10 @@ static bool mark(gc* p_gc) {
   if (p_gc->globals_store != NULL && !mark_globals_store(p_gc)) {
     return false;
   }
-  if (p_gc->interner != NULL && !mark_interner(p_gc)) {
-    return false;
-  }
+  // the interner is deliberately NOT marked: it is a weak set (D20). its
+  // dead entries are removed by sweep's pre-pass instead, and its live
+  // entries stay alive through whatever else references them (chunk
+  // constants, class tables, registers, host roots).
   for (uint32_t i = 0; i < p_gc->guard_count; ++i) {
     if (!mark_value(p_gc, p_gc->guarded[i])) {
       return false;
@@ -325,8 +313,31 @@ static bool mark_value_array(gc* p_gc, value_array* p_array) {
   return true;
 }
 
+// the interner's dead-entry pass (D20): the table is a WEAK set - mark
+// never walks it - so its unmarked entries must leave BEFORE the object walk
+// frees them (a freed canonical string would dangle in a probe chain).
+// removal is backward-shift: a shifted-in entry can land in the slot just
+// examined, so the walk re-examines the same index after a removal. each
+// removal decrements count, so the loop always terminates.
+static bool sweep_interner(gc* p_gc) {
+  string_interner* interner = p_gc->interner;
+  uint32_t i = 0;
+  while (i < interner->capacity) {
+    object_string* entry = interner->slots[i];
+    if (entry == NULL || object_is_marked((object*)entry)) {
+      i += 1u;
+      continue;
+    }
+    string_interner_remove_at(interner, i);
+  }
+  return true;
+}
+
 static bool sweep(gc* p_gc) {
   if (p_gc->object_store == NULL) {
+    return false;
+  }
+  if (p_gc->interner != NULL && !sweep_interner(p_gc)) {
     return false;
   }
   object* prev = NULL;

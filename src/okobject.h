@@ -85,7 +85,19 @@ typedef struct {
                // so map keys (and any future hashed user) never re-walk the bytes.
 } object_string;
 
+// the single choke point (D20): EVERY ok string routes through the interner
+// - literals, concatenation results, conversions, class/method names,
+// host-created values. identical content is one canonical object, so ===
+// is content truth and probe tables hit the pointer fast path. reaches the
+// interner through the gc's watch (alloc->gc->interner, live from ok_create
+// before any string can exist); the NULL fallback is the bare creator
+// (reachable in principle only before ok_create, which creates no strings).
+// the result is NOT rooted by the weak table: root it like any fresh object.
 object_string* create_object_string(const ok_string_view p_string, object_specs* p_specs);
+
+// the bare allocation, no interner. the interner's own miss path (a canonical
+// object must not re-enter the interner) and nothing else.
+object_string* create_object_string_uninterned(const ok_string_view p_string, object_specs* p_specs);
 
 typedef struct {
   ok_index index;
@@ -248,8 +260,10 @@ typedef struct method_entry {
   uint8_t pub;
 } method_entry;
 
-// name-keyed method table: object_string* keys, content-compared probes
-// (constants are not interned across chunks), cached hashes.
+// name-keyed method table: object_string* keys. all keys are interner
+// canonicals now (D20), so probes hit on the pointer; the content compare
+// stays as the belt for any pre-create fallback string (there are none in
+// practice). cached hashes.
 MAP_DECLARE(method_map, object_string*, method_entry, const object_string*)
 
 // the overloadable operator surface, as seen by the dispatch arms. each

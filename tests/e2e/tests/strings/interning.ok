@@ -1,0 +1,37 @@
+// D20: every string is interned - identical content settles on one canonical
+// object, so === (raw word identity) is content truth for strings.
+print('a' === 'a'); // expect: true
+print("a" === 'a'); // expect: true
+print('a' === 'b'); // expect: false
+print('' === ''); // expect: true
+// runtime-built equals literal
+print(('a' + 'b') === 'ab'); // expect: true
+let x = 'he';
+let y = 'llo';
+print((x + y) === 'hello'); // expect: true
+// distinct builds of the same content agree
+print((x + y) === ('hel' + 'lo')); // expect: true
+// conversions land on the canonical object too
+print((12 as str) === '12'); // expect: true
+print((2.5 as str) === '2.5'); // expect: true
+print((true as str) === 'true'); // expect: true
+// == and != unchanged (value equality was already content-based)
+print('ab' == 'ab'); // expect: true
+print('a' != 'b'); // expect: true
+// the negated identity composes through !
+print(!('a' === 'a')); // expect: false
+print(!('a' === 'b')); // expect: true
+// compound-assign builds are canonical too
+let mut s = 'x';
+s += 'y';
+print(s === 'xy'); // expect: true
+// strings fetched from arrays join the same canon
+let arr = ['x', 'y'];
+print((arr[0] + arr[1]) === 'xy'); // expect: true
+// map keys: canonical or not, probing is by content
+let m = {'k': 1};
+print(m['k' + '']); // expect: 1
+// different content never collides; strings never equal other types
+print('ab' === 'ba'); // expect: false
+print('1' === 1); // expect: false
+print('' === null); // expect: false

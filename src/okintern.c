@@ -133,8 +133,10 @@ object_string* string_interner_intern(string_interner* p_interner, ok_string_vie
   }
   // miss: create the canonical object, then insert. the creation may collect
   // (aggressive mode); the new string is unrooted until the slot assignment
-  // below, and the assignment itself cannot allocate.
-  object_string* fresh = create_object_string(p_view, p_specs);
+  // below, and the assignment itself cannot allocate. the bare creator is
+  // load-bearing here: the public create_object_string routes through the
+  // interner, and a canonical object must not re-enter it.
+  object_string* fresh = create_object_string_uninterned(p_view, p_specs);
   if (fresh == NULL) {
     return NULL;
   }
@@ -144,4 +146,38 @@ object_string* string_interner_intern(string_interner* p_interner, ok_string_vie
   p_interner->hashes[i] = hash;
   p_interner->count += 1u;
   return fresh;
+}
+
+void string_interner_remove_at(string_interner* p_interner, uint32_t p_slot) {
+  // the collector's deletion: p_slot is a slot the sweep is standing on (its
+  // entry is known unmarked), so there is nothing to probe. the algorithm is
+  // the okmap family's backward-shift: the freed slot pulls backward any
+  // following entry whose probe chain crosses it, keeping every survivor
+  // reachable from its home slot. no tombstones, no rehash.
+  if (p_interner->capacity == 0 || p_slot >= p_interner->capacity || p_interner->slots[p_slot] == NULL) {
+    return; // defensive only: the sweep never hands us an empty slot
+  }
+  const uint32_t mask = p_interner->capacity - 1u;
+  uint32_t hole = p_slot;
+  for (;;) {
+    p_interner->slots[hole] = NULL;
+    uint32_t k = hole;
+    for (;;) {
+      k = (k + 1u) & mask;
+      if (p_interner->slots[k] == NULL) { // cluster ended: the hole is final
+        p_interner->count -= 1u;
+        return;
+      }
+      const uint32_t home = (uint32_t)p_interner->hashes[k] & mask;
+      // the entry at k may fill the hole iff its home is at-or-before the
+      // hole: distance(home -> k) >= distance(hole -> k), cyclically.
+      // otherwise keep walking.
+      if (((k - home) & mask) >= ((k - hole) & mask)) {
+        break;
+      }
+    }
+    p_interner->slots[hole] = p_interner->slots[k];
+    p_interner->hashes[hole] = p_interner->hashes[k];
+    hole = k;
+  }
 }

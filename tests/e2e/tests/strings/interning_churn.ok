@@ -1,0 +1,29 @@
+// churn: unique strings created and dropped each iteration. the interner is
+// a weak set (D20): dropped canonicals leave at the next sweep, so the loop
+// must stay correct no matter how many collections ran (the aggressive-gc
+// and asan gates are the real judges of that).
+let mut keep = '';
+for let i = 0 : 500 {
+  let s = 'item-' + i as str;
+  if i == 499 {
+    keep = s;
+  }
+}
+print(keep === 'item-499'); // expect: true
+// rebirth: the same content rebuilt after churn is one object again
+let again = 'item-' + 499 as str;
+print(again === keep); // expect: true
+// repeated growth, then compared against the equal literal
+let mut acc = '';
+for let i = 0 : 8 {
+  acc += 'ab';
+}
+print(acc === 'abababababababab'); // expect: true
+print((acc + '') === acc); // expect: true
+// interning survives a map round trip under churn
+let mut table = {:};
+for let i = 0 : 100 {
+  table['key' + i as str] = i;
+}
+print(table['key' + 42 as str]); // expect: 42
+print(table['key' + 7 as str] == 7); // expect: true

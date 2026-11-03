@@ -19,7 +19,7 @@ if a == 3 { print "eq-k"; } // expect: eq-k
 if a == b { print "eq-bad"; }
 if a != b { print "neq-reg"; } // expect: neq-reg
 if a != 3 { print "neq-bad"; }
-if "x" === "x" { print "seq-same"; } // distinct literal words: never taken
+if "x" === "x" { print "seq-same"; } // expect: seq-same
 if 1 === 1.0 { print "seq-num"; } // expect: seq-num
 if 1 === 2 { print "seq-bad"; }
 

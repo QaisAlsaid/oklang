@@ -11,10 +11,12 @@ print(null === null); // expect: true
 print(true === true); // expect: true
 print(true === 1); // expect: false
 print(null === false); // expect: false
-// strings: same allocation, not same content
-print("a" === "a"); // expect: false
+// strings: one canonical object per content (D20 interning), so identity
+// is content truth - but never crosses a type boundary
+print("a" === "a"); // expect: true
 let s = "a";
 print(s === s); // expect: true
+print(("a" + "b") === "ab"); // expect: true
 // heap values: the allocation is the identity
 let arr = [1];
 print(arr === arr); // expect: true

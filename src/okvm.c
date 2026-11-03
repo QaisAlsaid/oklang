@@ -839,8 +839,10 @@ static ok_value native_coro_resume(ok* p_ok, uint8_t p_argc, const ok_value* p_a
 }
 
 // `c.status()` - "ready" | "suspended" | "running" | "dead". interned
-// spellings: the interner's canoncial strings are immortal and shared, so a
-// status poll in a loop allocates nothing after the first call.
+// spellings: canonical objects shared with any other holder of the same
+// content (=== identity), and a poll loop reuses the live entry without
+// allocating. the interner is a weak set (D20): a status name nothing holds
+// dies at the next sweep and the next poll simply re-interns it.
 static ok_value native_coro_status(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
   vm* p_vm = ok_vm(p_ok);
   if (p_argc != 1 || !IS_VALUE_CORO(p_argv[0])) {

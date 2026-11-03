@@ -3522,11 +3522,11 @@ static bool compile_string_expression(compiler* p_compiler,
   }
   allocators* alloc = p_compiler->alloc;
   object_specs s = {alloc, p_compiler->objects_store};
-  // literals stay UN-interned: === is word identity (C11) and identical
-  // literals must remain distinct words. interning covers NAMES (member,
-  // class, method spellings) - the lookup lane - never values. (interning
-  // literals too would flip `"a" === "a"` to true: a contract change that
-  // needs Q's ruling, not a perf patch's side effect.)
+  // literals intern like every string (D20, Q's ruling on the C11 note that
+  // used to live here): identical content is one canonical object, so
+  // `"a" === "a"` - and === against any runtime-built equal - is true. ===
+  // itself is still raw word identity; interning is what makes the words
+  // agree. the guard below stays load-bearing: the weak table roots nothing.
   object_string* object_str = create_object_string(parsed_str, &s);
   if (object_str == NULL) {
     report_oom(p_compiler, (ast_node*)p_string);
