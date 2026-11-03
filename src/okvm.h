@@ -4,6 +4,7 @@
 #include "okarray.h"
 #include "okchunk.h"
 #include "okfwd.h"
+#include "okintern.h"
 #include "okobject.h"
 
 ARRAY_DECLARE_DEFAULT(register_array, value)
@@ -127,6 +128,10 @@ typedef struct {
 
 struct vm {
   execution_state* current_execution_state;
+  // the string interner: canonical compiler-made names. rooted via the gc's
+  // interner watch; the vm interns its startup spellings here so they
+  // pointer-match the compiler's constants (member probes hit on ==).
+  string_interner* interner;
   // the two singletons every hierarchy funnels into: Object (the root, the
   // default parent) and Class (the class of every class value - there is
   // exactly one metaclass, no tower). created at vm_init, traced via mark_vm.
@@ -177,6 +182,7 @@ typedef struct {
   globals_store* globals_store;
   allocators* alloc;
   ok* ok;
+  string_interner* interner;
 } vm_specs;
 
 typedef struct {

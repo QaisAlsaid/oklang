@@ -1,0 +1,69 @@
+// the fused condition lane: a direct comparison in an if/while/for condition
+// compiles to one instruction (OP_JUMP_IF_CMP) instead of the binop's bool +
+// OP_JUMP_IF pair. this file pins the semantics of every fusable comparator
+// through all three statement forms, with both operands in every home (local
+// register, constant, expression temp) - the fusion must be invisible.
+let a = 3;
+let b = 7;
+let n = 4;
+
+// if with every comparator, constant and register rhs
+if a < b { print "lt-reg"; } // expect: lt-reg
+if a < 10 { print "lt-k"; } // expect: lt-k
+if a <= 3 { print "le-reg"; } // expect: le-reg
+if a <= 2 { print "le-bad"; }
+if b > a { print "gt-reg"; } // expect: gt-reg
+if b > 99 { print "gt-bad"; }
+if b >= 7 { print "ge-reg"; } // expect: ge-reg
+if a == 3 { print "eq-k"; } // expect: eq-k
+if a == b { print "eq-bad"; }
+if a != b { print "neq-reg"; } // expect: neq-reg
+if a != 3 { print "neq-bad"; }
+if "x" === "x" { print "seq-same"; } // distinct literal words: never taken
+if 1 === 1.0 { print "seq-num"; } // expect: seq-num
+if 1 === 2 { print "seq-bad"; }
+
+// else arm through the fused jump
+if a > b { print "bad-then"; } else { print "good-else"; } // expect: good-else
+
+// while with a fused bound: the loop runs and exits
+let mut i = 0;
+while i < n { i = i + 1; }
+print i; // expect: 4
+
+// while whose fused condition is false from the start
+let mut j = 0;
+while j < 0 { j = 9; }
+print j; // expect: 0
+
+// while with register bound and a non-constant step
+let mut k = 0;
+let limit = 3;
+while k < limit { k = k + 2; }
+print k; // expect: 4
+
+// c-style for with a fused condition
+let mut total = 0;
+for let mut f = 0; f < 5; f = f + 1 { total = total + f; }
+print total; // expect: 10
+
+// the comparison operands can be expressions staging in temps
+if a + 1 < b * 2 { print "expr-temps"; } // expect: expr-temps
+
+// strings compare by content through the fused lane too
+let s = "hello";
+if s == "hello" { print "str-eq"; } // expect: str-eq
+if s != "world" { print "str-neq"; } // expect: str-neq
+
+// the local on the left survives the fused compare (the vm restores it)
+let mut counter = 0;
+while counter < 3 { counter = counter + 1; }
+print counter; // expect: 3
+
+// conditions that do NOT fuse keep working: logical operators, negation,
+// bare truthiness
+let flag = true;
+if flag { print "bare"; } // expect: bare
+if !(a > b) { print "negated"; } // expect: negated
+if a < b and b < 10 { print "and-lane"; } // expect: and-lane
+if a > b or b > a { print "or-lane"; } // expect: or-lane

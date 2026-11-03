@@ -151,6 +151,19 @@ typedef struct {
   uint8_t recv_is_class;
 } mic_entry;
 
+// the site's storage: a small probe chain instead of a single entry, so a
+// polymorphic site (two receiver classes alternating at one call) stops
+// thrashing. probe order is declaration order; a miss fills the first empty
+// way, and a full set evicts round-robin via the hand. ways stay valid
+// forever under the freeze seal (entries are read-only snapshots of sealed
+// tables), so eviction is a performance decision, never a correctness one.
+#define OK_MIC_WAYS 3
+
+typedef struct {
+  mic_entry ways[OK_MIC_WAYS];
+  uint8_t hand;
+} mic_cache;
+
 typedef index_wrapper mic_slot;
 
 enum {
@@ -160,7 +173,7 @@ enum {
 
 #define IS_MIC_VALID(mw) ((mw).errors == MIC_OK)
 
-ARRAY_DECLARE_DEFAULT(mic_entries, mic_entry)
+ARRAY_DECLARE_DEFAULT(mic_caches, mic_cache)
 
 // clang-format off
 typedef enum {
@@ -378,7 +391,30 @@ typedef enum {
                          //                          exact-class probe, classof+identity fused, no global involved.
                          //                          the operand must be a class value
   OP_IS_LONG,            // 2w:   (p, A, B, C, q) -> r[A] = classof(q then k[B] otherwise r[B]) === (p then k[C] otherwise r[C]); ip += w
+  OP_JUMP_IF_CMP,        // 2w:   (p, A, B, C, Q, cmp) -> jump += A when (p == 1) == truthy(r[B] CMP (Q then k[C] otherwise r[C])),
+                         //                          CMP selected by the 3-bit cmp lane. the compare+jump fusion's
+                         //                          condition half: the compiler emits it for a DIRECT comparison in
+                         //                          an if/while condition, the bool never materializes in a named
+                         //                          register (the perform lands it in the lhs temp, which the jump
+                         //                          consumes). polarity p matches OP_JUMP_IF.
+  OP__COUNT,             // sentinel: the number of opcodes; must remain LAST (the threaded
+                         // dispatch table is sized by it).
 } opcode;
+
+// the fused compare+jump's comparator lane. ids are stable bytecode surface:
+// they ride the 3-bit cmp field of OP_JUMP_IF_CMP.
+typedef enum {
+  CMP_EQUALS = 0,
+  CMP_NOT_EQUAL,
+  CMP_LESS,
+  CMP_LESS_EQUAL,
+  CMP_GREATER,
+  CMP_GREATER_EQUAL,
+  CMP_STRICT_EQUAL,
+  CMP_IS,
+} comparison;
+
+bool comparison_is_valid(uint8_t p_cmp);
 
 // clang-format on
 
@@ -425,6 +461,7 @@ ARRAY_DECLARE_DEFAULT(identifiers, string)
 #define B_MASK UINT64_C(0x000000ffff000000)  // 16 bit width
 #define C_MASK UINT64_C(0x00ffff0000000000)  // 16 bit width
 #define Q_MASK UINT64_C(0x0100000000000000)  // 1 bit width
+#define CMP_MASK UINT64_C(0x0e00000000000000) // 3 bit width (OP_JUMP_IF_CMP's comparator)
 
 #define OP_LOFFSET 0u
 #define P_LOFFSET (OP_LOFFSET + 7u)
@@ -432,6 +469,7 @@ ARRAY_DECLARE_DEFAULT(identifiers, string)
 #define B_LOFFSET (A_LOFFSET + 16u)
 #define C_LOFFSET (B_LOFFSET + 16u)
 #define Q_LOFFSET (C_LOFFSET + 16u)
+#define CMP_LOFFSET (Q_LOFFSET + 1u)
 
 #define a_MAX UINT8_MAX
 #define b_MAX a_MAX
@@ -542,6 +580,16 @@ static inline uint16_t Q_of(const word2 p_word) {
   return (p_word & Q_MASK) >> Q_LOFFSET;
 }
 
+static inline uint8_t cmp_of(const word2 p_word) {
+  return (uint8_t)((p_word & CMP_MASK) >> CMP_LOFFSET);
+}
+
+static inline word2 encode_OPPABCQC(
+    const opcode p_OP, const bool p_P, const uint16_t p_A, const uint16_t p_B, const uint16_t p_C, const bool p_Q,
+    const uint8_t p_cmp) {
+  return encode_OPPABCQ(p_OP, p_P, p_A, p_B, p_C, p_Q) | (((word2)p_cmp << CMP_LOFFSET) & CMP_MASK);
+}
+
 // chunks reference their source by index into the vm's source table.
 // UINT32_MAX = unstamped: a chunk compiled outside ok_run.
 // none today, but the guard keeps reports honest instead of accidentally reading entry 0.
@@ -552,11 +600,12 @@ struct chunk {
   identifiers identifiers;
   value_array constants;
   source_info source_info;
-  // per-site monomorphic inline caches, addressed by the mic word of
-  // OP_INVOKE / OP_GET_MEMBER. the klass values are gc-traced with the
-  // chunk (the function tracer walks them); the raw method pointers
-  // beneath them are sound because class tables freeze at definition end.
-  mic_entries mic;
+  // per-site polymorphic inline caches (the probe chain), addressed by the
+  // mic word of OP_INVOKE / OP_GET_MEMBER. the klass values are gc-traced
+  // with the chunk (the function tracer walks every way); the raw method
+  // pointers beneath them are sound because class tables freeze at
+  // definition end.
+  mic_caches mic;
   // index into the vm's source table (VM_SOURCE_UNSTAMPED until ok_run stamps the freshly compiled tree).
   // runtime reports read the frame's chunk's entry
   uint32_t source_id;
@@ -641,6 +690,7 @@ static inline uint32_t opcode_word_count(opcode p_op) {
   case OP_METHOD_NOT_ASSIGNABLE_LONG:
   case OP_STRICT_EQUAL_LONG:
   case OP_IS_LONG:
+  case OP_JUMP_IF_CMP:
     return 2;
   case OP_GET_MEMBER:
   case OP_INVOKE:

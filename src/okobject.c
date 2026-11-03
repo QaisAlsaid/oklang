@@ -61,6 +61,11 @@ bool map_value_key_equals(value p_probe, value p_key) {
     if (!IS_VALUE_STRING(p_key)) {
       return false;
     }
+    // interned strings (literals, and everything else the compiler made)
+    // settle here; runtime-built strings fall through to the content compare
+    if (p_probe == p_key) {
+      return true;
+    }
     // the cached-hash fast reject already ran in find_slot (hashes[i] == hash)
     const object_string* left = VALUE_AS_STRING(p_probe);
     const object_string* right = VALUE_AS_STRING(p_key);
@@ -386,9 +391,12 @@ object_map* create_object_map(object_specs* p_specs) {
 #define SM_KEY_IS_EMPTY(k) ((k) == NULL)
 #define SM_KEY_SET_EMPTY(k) (*(k) = NULL)
 #define SM_PROBE_HASH(p) ((p)->hash)
+// interned keys (everything the compiler or the vm startup made) settle on
+// the pointer compare; runtime-built probes fall through to content.
 #define SM_PROBE_MATCHES(p, k)                                                                                \
-  (string_get_length(&(p)->string) == string_get_length(&(k)->string) &&                                     \
-   memcmp((p)->string.chars, (k)->string.chars, string_get_length(&(p)->string)) == 0)
+  ((p) == (k) ||                                                                                              \
+   (string_get_length(&(p)->string) == string_get_length(&(k)->string) &&                                     \
+    memcmp((p)->string.chars, (k)->string.chars, string_get_length(&(p)->string)) == 0))
 #define SM_KEY_CLONE(p, a) (p)
 #define SM_NO_DEINIT(k, a) ((void)0)
 

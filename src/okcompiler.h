@@ -7,6 +7,7 @@
 #include "okfwd.h"
 #include "okglobals_store.h"
 #include "okindex.h"
+#include "okintern.h"
 #include "okmap.h"
 #include "okobject.h"
 #include "okobject_store.h"
@@ -249,6 +250,10 @@ struct compiler {
   allocators* alloc;
   object_store* objects_store;
   globals_store* globals_store;
+  // the string interner: every compiler-made string constant goes through
+  // it, so member/class/method names canonicalize and runtime probes hit
+  // the pointer fast path. the table outlives the compiler (ok owns both).
+  string_interner* interner;
   compile_contexts contexts;
   bool had_error;
   bool panic;
@@ -270,6 +275,7 @@ typedef struct {
   allocators* alloc;
   object_store* objects_store;
   globals_store* globals_store;
+  string_interner* interner;
 } compiler_specs;
 
 typedef struct {

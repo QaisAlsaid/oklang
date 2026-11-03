@@ -28,6 +28,7 @@ void gc_init(gc* p_gc, object_store* p_heap, allocators* p_alloc) {
   p_gc->globals_store = NULL;
   p_gc->object_store = p_heap;
   p_gc->vm = NULL;
+  p_gc->interner = NULL;
   p_gc->alloc = p_alloc;
   p_gc->raw_alloc_wrapper = create_raw_allocators_wrapper(p_alloc->raw_allocators);
   p_gc->allocated_bytes = 0;
@@ -56,6 +57,7 @@ void gc_deinit(gc* p_gc) {
   p_gc->globals_store = NULL;
   p_gc->object_store = NULL;
   p_gc->vm = NULL;
+  p_gc->interner = NULL;
   p_gc->allocated_bytes = 0;
   p_gc->next = 1024 * 1024; // 1mb
   p_gc->is_paused = true;
@@ -133,6 +135,10 @@ void gc_watch_compiler(gc* p_gc, compiler* p_compiler) {
 
 void gc_watch_globals(gc* p_gc, globals_store* p_globals) {
   p_gc->globals_store = p_globals;
+}
+
+void gc_watch_interner(gc* p_gc, string_interner* p_interner) {
+  p_gc->interner = p_interner;
 }
 
 bool gc_collect(gc* p_gc, size_t p_predict, size_t p_old) {
@@ -254,6 +260,19 @@ static bool mark_globals_store(gc* p_gc) {
   return true;
 }
 
+static bool mark_interner(gc* p_gc) {
+  // strong roots: every canonical string is immortal by design (see the
+  // lifetime policy on the struct) - identical to the lifetimes they already
+  // hold as chunk constants or class-table keys.
+  for (uint32_t i = 0; i < p_gc->interner->capacity; ++i) {
+    object_string* entry = p_gc->interner->slots[i];
+    if (entry != NULL && !mark_value(p_gc, OBJECT_AS_VALUE(entry))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 static bool mark(gc* p_gc) {
   if (p_gc->vm != NULL && !mark_vm(p_gc)) {
     return false;
@@ -262,6 +281,9 @@ static bool mark(gc* p_gc) {
     return false;
   }
   if (p_gc->globals_store != NULL && !mark_globals_store(p_gc)) {
+    return false;
+  }
+  if (p_gc->interner != NULL && !mark_interner(p_gc)) {
     return false;
   }
   for (uint32_t i = 0; i < p_gc->guard_count; ++i) {
@@ -364,10 +386,13 @@ static bool trace_object(gc* p_gc, object* p_object) {
     }
     // the per-site inline caches hold class values (and through them, the
     // frozen tables their raw entry pointers index): the chunk owns their
-    // rooting, a class can outlive every register that named it.
+    // rooting, a class can outlive every register that named it. every way
+    // of the probe chain roots its own key.
     for (uint32_t i = 0; i < fu->chunk.mic.count; ++i) {
-      if (!mark_value(p_gc, fu->chunk.mic.data[i].klass)) {
-        return false;
+      for (uint32_t w = 0; w < OK_MIC_WAYS; ++w) {
+        if (!mark_value(p_gc, fu->chunk.mic.data[i].ways[w].klass)) {
+          return false;
+        }
       }
     }
     break;

@@ -1,0 +1,70 @@
+// the polymorphic inline cache: one call site, several receiver classes
+// alternating. the 3-way probe chain must keep every lane hitting (the old
+// single-entry mic thrashed on exactly this shape). five classes so the
+// chain also exercises round-robin eviction - and correctness never depends
+// on which entry won the slot.
+class A { pub fu tag() { return 1; } }
+class B { pub fu tag() { return 2; } }
+class C { pub fu tag() { return 3; } }
+class D { pub fu tag() { return 4; } }
+class E { pub fu tag() { return 5; } }
+
+let objs = [A(), B(), C(), D(), E()];
+let mut sum = 0;
+let mut round = 0;
+while round < 3 {
+  let mut idx = 0;
+  while idx < 5 {
+    sum = sum + objs[idx].tag();
+    idx = idx + 1;
+  }
+  round = round + 1;
+}
+print sum; // expect: 45
+
+// mixed lanes at one site: instance receivers, class receivers (statics),
+// and a builtin receiver (the native lane) - the cache keys them apart.
+class Meta {
+  pub static fu who() { return 10; }
+  pub fu mine() { return 20; }
+}
+let m = Meta();
+let mut acc = 0;
+let mut q = 0;
+while q < 2 {
+  acc = acc + m.mine();
+  acc = acc + Meta.who();
+  acc = acc + [1, 2, 3, 4].len();
+  q = q + 1;
+}
+print acc; // expect: 68
+
+// fields at a polymorphic site: three classes with the same field name at
+// different slots (inheritance shifts the layout) - the cache carries the
+// per-class slot.
+class Base { let x = 0; fu init(x) { this.x = x; } pub fu getx() { return x; } }
+class Mid : Base {}
+class Leaf : Mid { let y = 0; fu init(x, y) { super(x); this.y = y; } pub fu sum() { return getx() + y; } }
+let shapes = [Base(1), Mid(2), Leaf(3, 4)];
+let mut fields = 0;
+let mut w = 0;
+while w < 3 {
+  fields = fields + shapes[w].getx(); // the method, not the private field
+  w = w + 1;
+}
+print fields; // expect: 6
+print Leaf(3, 4).sum(); // expect: 7
+
+// a field-then-method flip at one site (the shadow shape): reads are
+// field-first, call sites are method-first. the probe runs from inside the
+// ring (fields are hierarchy-internal, the C++ ring).
+class Shadow {
+  let mut f = 0;
+  pub fu f() { return 99; }
+  fu init() { f = 5; }
+  pub fu probe() { return f; }        // the field (read lane)
+  pub fu probe_call() { return this.f(); } // the method (explicit call lane)
+}
+let sh = Shadow();
+print sh.probe(); // expect: 5
+print sh.probe_call(); // expect: 99

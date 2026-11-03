@@ -1,0 +1,40 @@
+// the fused comparison's operator dispatch: `if (a == b)` where the left
+// operand's class defines operator == must dispatch exactly like the value
+// binop would. same for the ordered comparisons inside conditions.
+class Version {
+  let major = 0;
+  let minor = 0;
+  fu init(major, minor) { this.major = major; this.minor = minor; }
+  pub fu operator ==(o) { return major == o.major and minor == o.minor; }
+  pub fu operator <(o) { return major < o.major or (major == o.major and minor < o.minor); }
+  pub fu key() { return major + minor; }
+}
+let v1 = Version(1, 0);
+let v2 = Version(1, 0);
+let v3 = Version(2, 1);
+
+// == dispatches through the fused if
+if v1 == v2 { print "eq-dispatch"; } // expect: eq-dispatch
+if v1 == v3 { print "eq-bad"; }
+
+// the negated form of a dispatched ==
+if v1 == v3 { print "neq-bad"; } else { print "neq-else"; } // expect: neq-else
+
+// < dispatches through the fused while bound
+let mut count = 0;
+let mut cur = Version(0, 3);
+while cur < v3 {
+  count = count + 1;
+  cur = Version(count, 3);
+}
+print count; // expect: 2
+
+// the same operators through the value lane (non-fused) agree
+print(v1 == v2); // expect: true
+print(v1 < v3); // expect: true
+print(v3 < v1); // expect: false
+
+// dispatch errors surface from the fused lane with the right message
+class NoCompare { pub fu tag() { return 1; } }
+let x = NoCompare();
+if x < 5 { print "unreachable"; } // expect error: invalid operands for binary '<'

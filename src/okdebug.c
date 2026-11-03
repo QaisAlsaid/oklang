@@ -121,8 +121,21 @@ static const char* const OPCODE_NAMES[] = {
     "STRICT_EQUAL_LONG",
     "IS",
     "IS_LONG",
+    "JUMP_IF_CMP",
 };
-typedef char opcode_names_in_sync[(sizeof(OPCODE_NAMES) / sizeof(OPCODE_NAMES[0]) == (size_t)OP_IS_LONG + 1) ? 1 : -1];
+typedef char opcode_names_in_sync[(sizeof(OPCODE_NAMES) / sizeof(OPCODE_NAMES[0]) == (size_t)OP__COUNT) ? 1 : -1];
+
+// the fused comparator lane's spellings, index-parallel to the comparison enum.
+static const char* const COMPARISON_NAMES[] = {
+    "==",
+    "!=",
+    "<",
+    "<=",
+    ">",
+    ">=",
+    "===",
+    "is",
+};
 
 static const char* binop_symbol(const opcode p_op) {
   switch (p_op) {
@@ -336,6 +349,16 @@ uint32_t debug_disassemble_instruction(disassembler* p_disassembler, uint32_t p_
   case OP_JUMP_IF_SET:
     printf("-> %04u when %s(r%u); r%u = r%u", p_offset + 2 + A, p ? "truthy" : "falsy", B, C, B);
     break;
+  case OP_JUMP_IF_CMP: {
+    const uint8_t cmp = cmp_of(joined);
+    const char* spelling = cmp <= (uint8_t)CMP_IS ? COMPARISON_NAMES[cmp] : "<corrupt>";
+    if (q) {
+      printf("-> %04u when %s(r%u %s k%u)", p_offset + 2 + A, p ? "truthy" : "falsy", B, spelling, C);
+    } else {
+      printf("-> %04u when %s(r%u %s r%u)", p_offset + 2 + A, p ? "truthy" : "falsy", B, spelling, C);
+    }
+    break;
+  }
   case OP_LOAD_NULL:
     printf("null -> r%u x%u", A, B);
     break;

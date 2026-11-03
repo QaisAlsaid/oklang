@@ -17,6 +17,7 @@
 struct ok {
   object_store objects_store;
   globals_store globals_store;
+  string_interner interner;
   compiler compiler;
   vm vm;
   gc gc;
@@ -419,12 +420,21 @@ ok* ok_create(ok_specs p_specs) {
 
   globals_store_init(&okay->globals_store, &okay->alloc);
   gc_watch_globals(&okay->gc, &okay->globals_store);
-  compiler_specs compiler_specs = {
-      .alloc = &okay->alloc, .objects_store = &okay->objects_store, .globals_store = &okay->globals_store};
+  // the interner precedes both consumers (compiler + vm): they only store
+  // the pointer, but the gc watch must be live before either interns.
+  string_interner_init(&okay->interner, &okay->alloc);
+  gc_watch_interner(&okay->gc, &okay->interner);
+  compiler_specs compiler_specs = {.alloc = &okay->alloc,
+                                   .objects_store = &okay->objects_store,
+                                   .globals_store = &okay->globals_store,
+                                   .interner = &okay->interner};
   compiler_init(&okay->compiler, compiler_specs);
   gc_watch_compiler(&okay->gc, &okay->compiler);
-  vm_specs vm_specs = {
-      .alloc = &okay->alloc, .globals_store = &okay->globals_store, .objects_store = &okay->objects_store, .ok = okay};
+  vm_specs vm_specs = {.alloc = &okay->alloc,
+                       .globals_store = &okay->globals_store,
+                       .objects_store = &okay->objects_store,
+                       .ok = okay,
+                       .interner = &okay->interner};
   vm_init(&okay->vm, vm_specs);
   gc_watch_vm(&okay->gc, &okay->vm);
   // the singletons need mark_vm live before they exist: their only root is
@@ -647,6 +657,7 @@ void ok_set_print(ok* p_ok, ok_print_fn p_cb, void* p_ctx) {
 void ok_free(ok* p_ok) {
   vm_deinit(&p_ok->vm);
   compiler_deinit(&p_ok->compiler);
+  string_interner_deinit(&p_ok->interner);
   globals_store_deinit(&p_ok->globals_store);
   object_store_deinit(&p_ok->objects_store);
   gc_deinit(&p_ok->gc);

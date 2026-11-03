@@ -13,6 +13,7 @@ option(OK_ENABLE_SANITIZERS "Enable ASan" OFF)
 option(OK_PARANOID "Enable additional logging" OFF)
 option(OK_PEDANTIC "Enable additional failure checking" OFF)
 option(OK_AGGRESSIVE_GC "Trigger garbage collection on every allocation" OFF)
+option(OK_PURE "Strictly portable C: no compiler extensions (switch dispatch, no threaded code)" OFF)
 
 if(OK_BUILD_SHARED)
   set(OK_LIBRARY_TYPE SHARED)
@@ -36,6 +37,18 @@ if (OK_PEDANTIC)
     target_compile_definitions(ok PUBLIC OK_PEDANTIC)
 endif()
 
+# the perf switches ride on compiler extensions (labels-as-values for the
+# threaded dispatch loop). cmake auto-detects GNU/Clang and enables them
+# unless OK_PURE is set - the portability gate that keeps a strict-C build
+# (and msvc, and the wasm targets without the extension) on the classic
+# switch, one code path, two dispatch modes, the e2e suite runs on both.
+if (NOT OK_PURE AND (CMAKE_C_COMPILER_ID STREQUAL "GNU" OR CMAKE_C_COMPILER_ID MATCHES "Clang"))
+    target_compile_definitions(ok PRIVATE OK_THREADED_DISPATCH)
+    message(STATUS "threaded dispatch: ON (GNU extensions detected; -DOK_PURE=ON to disable)")
+elseif (OK_PURE)
+    message(STATUS "threaded dispatch: OFF (OK_PURE: strictly portable C)")
+endif()
+
 target_sources(ok PRIVATE
   src/ok.c
   src/okast.c
@@ -57,6 +70,7 @@ target_sources(ok PRIVATE
   src/okstring.c
   src/okspecs.c
   src/okgc.c
+  src/okintern.c
 )
 
 if(CMAKE_BUILD_TYPE STREQUAL "Coverage")

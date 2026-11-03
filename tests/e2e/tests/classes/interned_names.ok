@@ -1,0 +1,53 @@
+// the string interner: compiler-made names canonicalize so member probes hit
+// the pointer fast path. this pins the OBSERVABLE contracts that must not
+// change when interning is on: identical spellings resolve to one method,
+// distinct-but-equal runtime strings still compare by content, and ===
+// stays word identity (literals are NOT interned - two occurrences of the
+// same literal are distinct words).
+class Names {
+  pub fu len() { return 42; } // a method spelled like a builtin
+  pub fu get() { return 1; }
+}
+let ns = Names();
+print(ns.len()); // expect: 42
+print len(ns); // expect error: invalid argument: 'len' expects an array or a map.
+
+// the same method name on many classes: every lookup finds its own
+class One { pub fu who() { return 1; } }
+class Two { pub fu who() { return 2; } }
+class Three : One { pub fu who2() { return who() + 30; } }
+print One().who(); // expect: 1
+print Two().who(); // expect: 2
+print Three().who2(); // expect: 31
+
+// canonical operator spellings: definition and dispatch sites agree across
+// whitespace spellings (the parser normalizes, the interner canonicalizes)
+class Spaced {
+  let v = 0;
+  fu init(v) { this.v = v; }
+  pub fu operator +(o) { return Spaced(v + o.v); }
+  pub fu operator  <  (o) { return v < o.v; }
+  pub fu get() { return v; }
+}
+print (Spaced(1) + Spaced(2)).get(); // expect: 3
+print Spaced(1) < Spaced(2); // expect: true
+
+// runtime-built strings compare by CONTENT against literals and each other
+let lit = "abc";
+let built = "ab" + "c";
+print(lit == built); // expect: true
+print(built == "abc"); // expect: true
+print(built != "xyz"); // expect: true
+
+// map keys: a literal key and a runtime-built equal key address one entry
+let m = { "k": 1 };
+m["b" + "uilt"] = 2;
+print(m["k"]); // expect: 1
+print(m["built"]); // expect: 2
+print(m["b" + "uilt"]); // expect: 2
+
+// === stays word identity: two literal occurrences are distinct words even
+// when the content matches (interning covers NAMES, never literal values)
+print("same" === "same"); // expect: false
+let s = "same";
+print(s === s); // expect: true

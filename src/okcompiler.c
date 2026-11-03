@@ -346,7 +346,8 @@ begin_context(compiler* p_compiler, ok_string_view p_name, function_type p_type,
   compile_context ctx;
   allocators* alloc = p_compiler->alloc;
   object_specs s = {alloc, p_compiler->objects_store};
-  object_string* obj_str = create_object_string(p_name, &s);
+  // function names intern: same spelling, same object, forever
+  object_string* obj_str = string_interner_intern(p_compiler->interner, p_name, &s);
   if (obj_str == NULL) {
     report_oom(p_compiler, p_author);
     return false;
@@ -635,6 +636,7 @@ void compiler_init(compiler* p_compiler, compiler_specs p_specs) {
   p_compiler->panic = false;
   p_compiler->alloc = p_specs.alloc;
   p_compiler->globals_store = p_specs.globals_store;
+  p_compiler->interner = p_specs.interner;
   compile_contexts_init(&p_compiler->contexts, p_compiler->alloc);
 }
 
@@ -702,9 +704,13 @@ compile_result compiler_compile(compiler* p_compiler, compile_specs p_specs) {
 #endif // defined (OK_DEBUG_DUMP_CODE)
   }
 ret: {
+  // the between-runs reset: same wiring, fresh state. the interner rides
+  // along (a NULL here survived the cli's one-script-per-process shape and
+  // died on the embed test's second ok_run - the gates earn their keep).
   compiler_specs specs = {.alloc = p_compiler->alloc,
                           .objects_store = p_compiler->objects_store,
-                          .globals_store = p_compiler->globals_store};
+                          .globals_store = p_compiler->globals_store,
+                          .interner = p_compiler->interner};
   compiler_deinit(p_compiler);
   compiler_init(p_compiler, specs);
   return result;
@@ -1424,7 +1430,9 @@ static constant add_name_constant(compiler* p_compiler, token p_name, ast_node* 
 // carry a synthesized spelling ("operator +") that no single token spans.
 static constant add_string_constant(compiler* p_compiler, ok_string_view p_name, ast_node* p_author) {
   object_specs specs = {p_compiler->alloc, p_compiler->objects_store};
-  object_string* name = create_object_string(p_name, &specs);
+  // interned: the canonical spelling for this content, so member probes hit
+  // the pointer fast path and repeated spellings share one object.
+  object_string* name = string_interner_intern(p_compiler->interner, p_name, &specs);
   if (name == NULL) {
     report_oom(p_compiler, p_author);
     return (constant){0, 0, CONSTANT_ALLOCATION_FAILED};
@@ -1542,7 +1550,7 @@ static bool compile_class_declaration(compiler* p_compiler, ast_class_declaratio
       return false;
     }
   }
-  object_string* name_str = create_object_string(name_view, &obj_specs);
+  object_string* name_str = string_interner_intern(p_compiler->interner, name_view, &obj_specs);
   if (name_str == NULL) {
     report_oom(p_compiler, author);
     return false;
@@ -1946,7 +1954,7 @@ static location resolve_variable(compiler* p_compiler, const ok_string_view p_id
   // binding. globals lose to statics.
   if (current_context(p_compiler)->sees_statics) {
     object_specs specs = {p_compiler->alloc, p_compiler->objects_store};
-    object_string* name = create_object_string(p_identifier, &specs);
+    object_string* name = string_interner_intern(p_compiler->interner, p_identifier, &specs);
     if (name == NULL) {
       report_oom(p_compiler, p_author);
       return invalid;
@@ -1965,7 +1973,7 @@ static location resolve_variable(compiler* p_compiler, const ok_string_view p_id
   // the global). captured enclosing names won above; globals lose to fields.
   if (current_context(p_compiler)->sees_fields) {
     object_specs specs = {p_compiler->alloc, p_compiler->objects_store};
-    object_string* name = create_object_string(p_identifier, &specs);
+    object_string* name = string_interner_intern(p_compiler->interner, p_identifier, &specs);
     if (name == NULL) {
       report_oom(p_compiler, p_author);
       return invalid;
@@ -2109,7 +2117,7 @@ static lvalue resolve_lvalue(compiler* p_compiler, ast_expression* p_lvalue_expr
       if (self.error == LOCATION_OK && self.kind == LOCATION_KIND_REGISTER && self.index == 0) {
         object_specs specs = {p_compiler->alloc, p_compiler->objects_store};
         ok_string_view name_view = ast_access_expression_name(access);
-        object_string* name = create_object_string(name_view, &specs);
+        object_string* name = string_interner_intern(p_compiler->interner, name_view, &specs);
         if (name == NULL) {
           report_oom(p_compiler, author);
           return (lvalue){LVALUE_INVALID};
@@ -2140,7 +2148,7 @@ static lvalue resolve_lvalue(compiler* p_compiler, ast_expression* p_lvalue_expr
     }
     object_specs specs = {p_compiler->alloc, p_compiler->objects_store};
     ok_string_view name_view = ast_access_expression_name(access);
-    object_string* name = create_object_string(name_view, &specs);
+    object_string* name = string_interner_intern(p_compiler->interner, name_view, &specs);
     if (name == NULL) {
       report_oom(p_compiler, author);
       return (lvalue){LVALUE_INVALID};
@@ -2533,6 +2541,108 @@ static bool emit_incomplete_jump_if_set(
   return true;
 }
 
+// the fused condition lane (the compare+jump fusion's condition half, the
+// "branch no materialize" sizing): a DIRECT comparison as an if/while/for
+// condition emits one instruction instead of the binop's bool + OP_JUMP_IF
+// pair. the operands keep their natural homes - a local's register is used
+// as-is (the vm saves and restores it around the result), a constant rhs
+// rides the k-operand - so the fused shape adds zero staging. every other
+// condition shape (logical operators, negation, plain values) returns
+// UNSUPPORTED having emitted nothing, and the caller runs the generic path.
+typedef enum {
+  FUSED_CONDITION_UNSUPPORTED,
+  FUSED_CONDITION_OK,
+  FUSED_CONDITION_ERROR,
+} fused_condition_result;
+
+static fused_condition_result compile_fused_condition_jump(
+    compiler* p_compiler, ast_expression* p_condition, bool p_truthy, uint32_t* p_out, ast_node* p_author) {
+  if (p_condition->node.node_type != AST_INFIX_BINARY_EXPRESSION) {
+    return FUSED_CONDITION_UNSUPPORTED;
+  }
+  ast_infix_binary_expression* binexpr = (ast_infix_binary_expression*)p_condition;
+  comparison cmp;
+  switch (binexpr->_operator) {
+  case OPERATOR_BIN_EQUALS:
+    cmp = CMP_EQUALS;
+    break;
+  case OPERATOR_BIN_BANG_EQUAL:
+    cmp = CMP_NOT_EQUAL;
+    break;
+  case OPERATOR_BIN_LESS:
+    cmp = CMP_LESS;
+    break;
+  case OPERATOR_BIN_LESS_EQUAL:
+    cmp = CMP_LESS_EQUAL;
+    break;
+  case OPERATOR_BIN_GREATER:
+    cmp = CMP_GREATER;
+    break;
+  case OPERATOR_BIN_GREATER_EQUAL:
+    cmp = CMP_GREATER_EQUAL;
+    break;
+  case OPERATOR_BIN_STRICT_EQUALS:
+    cmp = CMP_STRICT_EQUAL;
+    break;
+  case OPERATOR_BIN_IS:
+    cmp = CMP_IS;
+    break;
+  default:
+    return FUSED_CONDITION_UNSUPPORTED;
+  }
+  register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
+  // temps for the operands the compiler cannot address in place (constants
+  // never load, locals keep their registers, expressions stage here)
+  _register lhs_dest;
+  if (!register_allocator_allocate_temp(regalloc, &lhs_dest)) {
+    report_oom(p_compiler, p_author);
+    return FUSED_CONDITION_ERROR;
+  }
+  expression_result lhs;
+  if (!compile_expression(p_compiler, binexpr->left, lhs_dest, 1, &lhs)) {
+    return FUSED_CONDITION_ERROR;
+  }
+  _register rhs_dest;
+  if (!register_allocator_allocate_temp(regalloc, &rhs_dest)) {
+    report_oom(p_compiler, p_author);
+    return FUSED_CONDITION_ERROR;
+  }
+  expression_result rhs;
+  if (!compile_expression(p_compiler, binexpr->right, rhs_dest, 1, &rhs)) {
+    return FUSED_CONDITION_ERROR;
+  }
+  // the lhs lands in a register (its temp, or the local it already is); the
+  // rhs may stay a constant - the same operand policy the value binops use.
+  if (!materialize_into_if_not_register(p_compiler, &lhs.value, lhs_dest, p_author)) {
+    return FUSED_CONDITION_ERROR;
+  }
+  bool is_rhs_const = false;
+  if (!materialize_into_if_not_common(
+          p_compiler, &is_rhs_const, LOCATION_KIND_CONSTANT, &rhs.value, rhs_dest, p_author)) {
+    return FUSED_CONDITION_ERROR;
+  }
+  if (lhs.value.index > B_MAX || rhs.value.index > C_MAX) {
+    // the 2w form carries 16 bit operands; a compile window this wide keeps
+    // the generic path (whose LONG variants exist) rather than growing a
+    // fused LONG spelling nobody has benched yet.
+    return FUSED_CONDITION_UNSUPPORTED;
+  }
+  *p_out = current_chunk(p_compiler)->code.count;
+  if (!emit_word2(p_compiler,
+                  encode_OPPABCQC(OP_JUMP_IF_CMP,
+                                  p_truthy,
+                                  0,
+                                  lhs.value.index,
+                                  rhs.value.index,
+                                  is_rhs_const,
+                                  (uint8_t)cmp),
+                  p_author)) {
+    report_oom(p_compiler, p_author);
+    return FUSED_CONDITION_ERROR;
+  }
+  return FUSED_CONDITION_OK;
+}
+
 // defaults ladder guard: jump forward when the argument for parameter position
 // p_position was supplied (frame->argc > position). patched with patch_jump_if,
 // which preserves B (the position) while rewriting A.
@@ -2602,7 +2712,10 @@ static bool patch_jump_if(
   const uint16_t B = B_of(joined);
   const uint16_t C = C_of(joined);
   const bool Q = Q_of(joined);
-  word2 patched = encode_OPPABCQ(op, p, jmp, B, C, Q);
+  // the cmp lane rides along untouched: encode_OPPABCQ zeroes it, so the
+  // original bits are re-or'd. every other 2w jump keeps those bits zero and
+  // re-oring zeros is a no-op - one patcher, both shapes.
+  word2 patched = encode_OPPABCQ(op, p, jmp, B, C, Q) | (joined & CMP_MASK);
   words[0] = (word)(patched & UINT64_C(0xffffffff));
   words[1] = (word)(patched >> 32u);
   return true;
@@ -2640,25 +2753,32 @@ static bool patch_jump_if_set(compiler* p_compiler,
 }
 
 bool compile_if_statement(compiler* p_compiler, ast_if_statement* p_if) {
-  expression_result condition;
-  _register condition_register;
-  if (!register_allocator_allocate_temp(&current_context(p_compiler)->register_allocator, &condition_register)) {
-    report_oom(p_compiler, (ast_node*)p_if);
-    return false;
-  }
-  if (!compile_expression(p_compiler, p_if->condition, condition_register, 1, &condition)) {
-    return false;
-  }
-  if (!materialize_into_if_not_register(p_compiler, &condition.value, condition_register, (ast_node*)p_if)) {
-    return false;
-  }
-  condition_register.error = REGISTER_OK;
-  condition_register.index = condition.value.index;
-  condition_register.flags = REGISTER_FLAG_NONE; // for all that it matters this is a temp
-
   uint32_t cons_jump;
-  if (!emit_incomplete_jump_if(p_compiler, false, condition_register, &cons_jump, (ast_node*)p_if)) {
+  const fused_condition_result fused =
+      compile_fused_condition_jump(p_compiler, p_if->condition, false, &cons_jump, (ast_node*)p_if);
+  if (fused == FUSED_CONDITION_ERROR) {
     return false;
+  }
+  if (fused == FUSED_CONDITION_UNSUPPORTED) {
+    expression_result condition;
+    _register condition_register;
+    if (!register_allocator_allocate_temp(&current_context(p_compiler)->register_allocator, &condition_register)) {
+      report_oom(p_compiler, (ast_node*)p_if);
+      return false;
+    }
+    if (!compile_expression(p_compiler, p_if->condition, condition_register, 1, &condition)) {
+      return false;
+    }
+    if (!materialize_into_if_not_register(p_compiler, &condition.value, condition_register, (ast_node*)p_if)) {
+      return false;
+    }
+    condition_register.error = REGISTER_OK;
+    condition_register.index = condition.value.index;
+    condition_register.flags = REGISTER_FLAG_NONE; // for all that it matters this is a temp
+
+    if (!emit_incomplete_jump_if(p_compiler, false, condition_register, &cons_jump, (ast_node*)p_if)) {
+      return false;
+    }
   }
 
   if (!compile_statement(p_compiler, p_if->consequence)) {
@@ -2717,26 +2837,33 @@ bool compile_while_statement(compiler* p_compiler, ast_while_statement* p_while)
   CTX.handlers_at_entry = ctx->active_handlers;
   chunk* chunk = current_chunk(p_compiler);
   const uint32_t loop_start = chunk->code.count;
-  expression_result condition;
-  _register condition_reg;
-  if (!register_allocator_allocate_temp(&current_context(p_compiler)->register_allocator, &condition_reg)) {
-    report_oom(p_compiler, (ast_node*)p_while);
-    return false;
-  }
-  if (!compile_expression(p_compiler, p_while->condition, condition_reg, 1, &condition)) {
-    return false;
-  }
-  if (!materialize_into_if_not_register(p_compiler, &condition.value, condition_reg, (ast_node*)p_while)) {
-    return false;
-  }
-
-  condition_reg.error = REGISTER_OK;
-  condition_reg.index = condition.value.index;
-  condition_reg.flags = REGISTER_FLAG_NONE;
-
   uint32_t exit_jmp;
-  if (!emit_incomplete_jump_if(p_compiler, false, condition_reg, &exit_jmp, (ast_node*)p_while)) {
+  const fused_condition_result fused =
+      compile_fused_condition_jump(p_compiler, p_while->condition, false, &exit_jmp, (ast_node*)p_while);
+  if (fused == FUSED_CONDITION_ERROR) {
     return false;
+  }
+  if (fused == FUSED_CONDITION_UNSUPPORTED) {
+    expression_result condition;
+    _register condition_reg;
+    if (!register_allocator_allocate_temp(&current_context(p_compiler)->register_allocator, &condition_reg)) {
+      report_oom(p_compiler, (ast_node*)p_while);
+      return false;
+    }
+    if (!compile_expression(p_compiler, p_while->condition, condition_reg, 1, &condition)) {
+      return false;
+    }
+    if (!materialize_into_if_not_register(p_compiler, &condition.value, condition_reg, (ast_node*)p_while)) {
+      return false;
+    }
+
+    condition_reg.error = REGISTER_OK;
+    condition_reg.index = condition.value.index;
+    condition_reg.flags = REGISTER_FLAG_NONE;
+
+    if (!emit_incomplete_jump_if(p_compiler, false, condition_reg, &exit_jmp, (ast_node*)p_while)) {
+      return false;
+    }
   }
 
   if (!compile_statement(p_compiler, p_while->body)) {
@@ -2787,27 +2914,36 @@ bool compile_for_statement(compiler* p_compiler, ast_for_statement* p_for) {
   uint32_t exit_jump;
   const uint32_t loop_start = chunk->code.count;
   if (p_for->condition != NULL) {
-    expression_result condition;
-    _register condition_reg;
-    if (!register_allocator_allocate_temp(&current_context(p_compiler)->register_allocator, &condition_reg)) {
-      report_oom(p_compiler, (ast_node*)p_for);
-      return false;
-    }
-    if (!compile_expression(p_compiler, p_for->condition, condition_reg, 1, &condition)) {
+    const fused_condition_result fused =
+        compile_fused_condition_jump(p_compiler, p_for->condition, false, &exit_jump, (ast_node*)p_for->condition);
+    if (fused == FUSED_CONDITION_ERROR) {
       goto fail;
     }
-    if (!materialize_into_if_not_register(p_compiler, &condition.value, condition_reg, (ast_node*)p_for)) {
-      goto fail;
-    }
+    if (fused == FUSED_CONDITION_OK) {
+      is_exit_set = true;
+    } else {
+      expression_result condition;
+      _register condition_reg;
+      if (!register_allocator_allocate_temp(&current_context(p_compiler)->register_allocator, &condition_reg)) {
+        report_oom(p_compiler, (ast_node*)p_for);
+        return false;
+      }
+      if (!compile_expression(p_compiler, p_for->condition, condition_reg, 1, &condition)) {
+        goto fail;
+      }
+      if (!materialize_into_if_not_register(p_compiler, &condition.value, condition_reg, (ast_node*)p_for)) {
+        goto fail;
+      }
 
-    condition_reg.error = REGISTER_OK;
-    condition_reg.index = condition.value.index;
-    condition_reg.flags = REGISTER_FLAG_NONE;
+      condition_reg.error = REGISTER_OK;
+      condition_reg.index = condition.value.index;
+      condition_reg.flags = REGISTER_FLAG_NONE;
 
-    if (!emit_incomplete_jump_if(p_compiler, false, condition_reg, &exit_jump, (ast_node*)p_for->condition)) {
-      goto fail;
+      if (!emit_incomplete_jump_if(p_compiler, false, condition_reg, &exit_jump, (ast_node*)p_for->condition)) {
+        goto fail;
+      }
+      is_exit_set = true;
     }
-    is_exit_set = true;
   }
   if (p_for->update != NULL) {
     CTX.continue_forward = true;
@@ -3378,6 +3514,11 @@ static bool compile_string_expression(compiler* p_compiler,
   }
   allocators* alloc = p_compiler->alloc;
   object_specs s = {alloc, p_compiler->objects_store};
+  // literals stay UN-interned: === is word identity (C11) and identical
+  // literals must remain distinct words. interning covers NAMES (member,
+  // class, method spellings) - the lookup lane - never values. (interning
+  // literals too would flip `"a" === "a"` to true: a contract change that
+  // needs Q's ruling, not a perf patch's side effect.)
   object_string* object_str = create_object_string(parsed_str, &s);
   if (object_str == NULL) {
     report_oom(p_compiler, (ast_node*)p_string);
