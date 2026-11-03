@@ -1,0 +1,7 @@
+import "./lib.ok";
+import "std/map";
+
+let a = [1, 2, 3];
+print(lib.count(a)); // expect: 3
+let m = {"x": 1};
+print(std.map.get(m, "x")); // expect: 1

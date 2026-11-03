@@ -1,0 +1,2 @@
+from "std/math" import floor;
+// expect error: module 'std/math' has no pub export 'floor'

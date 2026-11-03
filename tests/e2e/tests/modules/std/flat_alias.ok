@@ -1,0 +1,9 @@
+// the flat spellings stay as deprecated aliases: old scripts keep running
+import "std/array";
+
+let a = [1];
+std.array.push(a, 2);
+push(a, 3);
+a.push(4);
+print(len(a)); // expect: 4
+print(a.len()); // expect: 4

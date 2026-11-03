@@ -5,6 +5,6 @@ print len(m); // expect: 1
 print m["k"]; // expect: true
 
 // a bare {} in expression position is rejected - the empty map is {:}
-let x = {}; // expect error: empty '{}' is not an expression - the empty map literal is '{:}'.
+let x = {}; // expect error: empty '{}' is not an expression, the empty map literal is '{:}'.
 // a bare {} STATEMENT stays an empty block
 { print "block"; } // expect: block

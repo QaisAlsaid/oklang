@@ -1,0 +1,8 @@
+// math and str exist today and open empty: the stdlib growth version fills
+// them, the import lane does not change when it does
+import "std/math" as math;
+import "std/str" as str;
+
+print(math); // expect: <module std/math>
+print(str); // expect: <module std/str>
+print(isinstance(math, object)); // expect: true

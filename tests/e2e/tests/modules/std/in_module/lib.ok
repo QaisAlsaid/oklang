@@ -1,0 +1,6 @@
+// a file module importing std: the same graph, std is just a node in it
+import "std/array";
+
+pub fu count(a) {
+  return std.array.len(a);
+}

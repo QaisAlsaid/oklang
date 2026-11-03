@@ -843,7 +843,7 @@ static bool record_module_export_if_pub(compiler* p_compiler,
   if ((p_modifiers & DECLARATION_EXPORT) != 0) {
     error_at(p_compiler,
              p_author,
-             ok_create_string_view("the export rule is 'pub' (M9), not 'export'.",
+             ok_create_string_view("the export rule is 'pub', not 'export'.",
                                    OK_STRING_VIEW_CALCULATE_LENGTH,
                                    true));
     return false;
@@ -1830,7 +1830,7 @@ static bool compile_class_declaration(compiler* p_compiler, ast_class_declaratio
       if (let->span_bindings.count > 0) {
         error_at(p_compiler,
                  (ast_node*)member,
-                 ok_create_string_view("a field is one name; span lets are not fields.",
+                 ok_create_string_view("a field is one name, span lets are not fields.",
                                        OK_STRING_VIEW_CALCULATE_LENGTH, true));
         return false;
       }

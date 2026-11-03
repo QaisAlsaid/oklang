@@ -1,14 +1,15 @@
 // OR-1 "O Resolution" - the compile-time module spine, driver side.
 //
 // the shape (MODULES.md section 3): ok_modules_prepare walks one TU's import
-// statements; each import resolves through the ladder (file-relative, then
-// OKPATH - the std/ root lands with OR-2), then loads depth-first: read,
-// parse, prepare ITS imports (recursion - the active chain catches cycles),
-// compile in module mode (pub top-levels recorded), run the main (top-level
-// code runs once, on first import, before the importer's), harvest the
-// exports from the hidden globals into a sealed namespace instance, register.
-// by the time the importer compiles, every binding is a live value riding
-// its constant pool - the compiler resolves nothing at run time, ever.
+// statements; each import resolves through the ladder (file-relative, the
+// std/ registry, then OKPATH), then loads depth-first: read, parse, prepare
+// ITS imports (recursion - the active chain catches cycles), compile in
+// module mode (pub top-levels recorded), run the main (top-level code runs
+// once, on first import, before the importer's), harvest the exports from
+// the hidden globals into a sealed namespace instance, register. by the
+// time the importer compiles, every binding is a live value riding its
+// constant pool - the compiler resolves nothing at run time, ever. the std
+// modules (OR-2) are built-in: no source, no run, the same registry.
 //
 // diagnostics use the import site's own file:line:col through okdiag, so a
 // module-world error reads exactly like every other oklang error.
@@ -556,7 +557,7 @@ static ok_result load_module(module_system* p_modules,
   if (p_modules->chain_depth >= OK_MODULES_MAX_DEPTH) {
     module_report(p_from_source,
                   p_site,
-                  "import chain too deep: the limit is 128 - a module graph this deep is a design smell.");
+                  "import chain too deep: the limit is 128.");
     return OK_COMPILE_ERROR;
   }
 
@@ -697,6 +698,125 @@ static ok_result load_module(module_system* p_modules,
   return OK;
 }
 
+// ---------------------------------------------------------------- the std modules (OR-2)
+
+// the built-in std registry. the std root resolves against this table ONLY
+// (M8): never the filesystem, never OKPATH, nothing can shadow it. the
+// members are the same native function objects the flat spellings use,
+// harvested from their hidden globals into the same sealed-namespace shape
+// file modules get, so a std module value IS a module value: same freezes,
+// same print shape, same from-import probe. math and str are importable
+// today and open empty, the stdlib growth version fills them, and the
+// resolution lane does not change when it does.
+typedef struct {
+  const char* export_name;
+  const char* hidden_global;
+} std_member_def;
+
+typedef struct {
+  const char* stem;
+  const std_member_def* members;
+  uint32_t member_count;
+} std_module_def;
+
+static const std_member_def std_array_members[] = {
+    {"len", " len"},
+    {"push", " push"},
+    {"pop", " pop"},
+    {"remove", " remove"},
+};
+static const std_member_def std_map_members[] = {
+    {"len", " len"},
+    {"remove", " remove"},
+    {"get", " get"},
+};
+static const std_member_def std_io_members[] = {
+    {"print", " print"},
+};
+static const std_module_def std_modules[] = {
+    {"array", std_array_members, sizeof(std_array_members) / sizeof(std_array_members[0])},
+    {"io", std_io_members, sizeof(std_io_members) / sizeof(std_io_members[0])},
+    {"map", std_map_members, sizeof(std_map_members) / sizeof(std_map_members[0])},
+    {"math", NULL, 0},
+    {"str", NULL, 0},
+};
+
+static const std_module_def* std_module_find(const ok_string_view p_stem) {
+  for (uint32_t i = 0; i < sizeof(std_modules) / sizeof(std_modules[0]); ++i) {
+    if (view_equals(p_stem, std_modules[i].stem)) {
+      return &std_modules[i];
+    }
+  }
+  return NULL;
+}
+
+// the registry key and display name of one std module: "std/<stem>". no
+// leading slash, so it can never collide with a realpath'd file key (those
+// are absolute, always).
+static bool std_canonical_of(const std_module_def* p_def, char* p_buffer, size_t p_capacity) {
+  const int written = snprintf(p_buffer, p_capacity, "std/%s", p_def->stem);
+  return written > 0 && (size_t)written < p_capacity;
+}
+
+// builds and registers one std module, idempotent through the registry.
+// built lazily on first import: an embedder that never touches std never
+// pays for it.
+static ok_result std_build_module(module_system* p_modules, const std_module_def* p_def) {
+  ok* okay = p_modules->ok;
+  char canonical[32];
+  if (!std_canonical_of(p_def, canonical, sizeof(canonical))) {
+    return OK_INIT_ERROR;
+  }
+  if (registry_find(p_modules, canonical) != NULL) {
+    return OK;
+  }
+
+  module_exports exports;
+  module_exports_init(&exports, &okay->alloc);
+  ok_result result = OK;
+  for (uint32_t i = 0; i < p_def->member_count; ++i) {
+    module_export entry;
+    entry.name = ok_create_string_view(p_def->members[i].export_name,
+                                       (uint32_t)strlen(p_def->members[i].export_name),
+                                       true);
+    entry.local = 0; // unused: only the compiler's epilogue reads it
+    entry.hidden = globals_store_get(&okay->globals_store,
+                                     ok_create_string_view(p_def->members[i].hidden_global,
+                                                           (uint32_t)strlen(p_def->members[i].hidden_global),
+                                                           true));
+    if (!IS_GLOBAL_VALID(entry.hidden) || !module_exports_append(&exports, entry)) {
+      result = OK_INIT_ERROR;
+      break;
+    }
+  }
+
+  if (result == OK) {
+    value namespace = NULL_AS_VALUE();
+    if (!build_namespace(p_modules, canonical, &exports, &namespace)) {
+      result = OK_INIT_ERROR;
+    } else {
+      ok_module_record record;
+      record.canonical = strdup(canonical);
+      record.name = VALUE_AS_INSTANCE(namespace)->klass->name;
+      record.namespace_class = VALUE_AS_INSTANCE(namespace)->klass;
+      record.namespace = namespace;
+      if (!gc_guard_up(&okay->gc, namespace)) {
+        free(record.canonical);
+        result = OK_INIT_ERROR;
+      } else {
+        const bool registered = record.canonical != NULL && ok_module_records_append(&p_modules->loaded, record);
+        gc_guard_down(&okay->gc);
+        if (!registered) {
+          free(record.canonical);
+          result = OK_INIT_ERROR;
+        }
+      }
+    }
+  }
+  module_exports_deinit(&exports, &okay->alloc);
+  return result;
+}
+
 // ---------------------------------------------------------------- resolution
 
 // resolve one import path from one importing file. produces the canonical
@@ -720,15 +840,49 @@ static bool resolve_import(module_system* p_modules,
       found = ladder_at(joined, &tried, &native_found);
       free(joined);
     }
-  } else if (view_starts_with(p_path, "std/")) {
-    // the std root is reserved (M8: unshadowable) and re-homes with OR-2 -
-    // until then it is honestly absent rather than OKPATH-shadowable.
+  } else if (view_equals(p_path, "std")) {
+    // the bare root imports nothing: the std library is a tree of modules.
     module_report(p_source,
                   p_site,
-                  "the standard library is not module-shaped yet: the std re-home is OR-2. file-relative "
-                  "(\"./x\") and OKPATH imports work today.");
+                  "the std root is a namespace: import a module under it, like \"std/array\".");
     str_list_deinit(&tried);
     return false;
+  } else if (view_starts_with(p_path, "std/")) {
+    // the std lane (M8, OR-2): the built-in registry only. it never falls
+    // through to OKPATH, so no directory on disk can shadow the standard
+    // library.
+    const ok_string_view stem = ok_create_string_view(p_path.chars + 4,
+                                                      ok_string_view_get_length(&p_path) - 4,
+                                                      false);
+    const std_module_def* def = std_module_find(stem);
+    if (def == NULL) {
+      string message = asprint(&p_modules->ok->alloc,
+                               "there is no std module '%.*s': the std modules are array, io, map, math, str.",
+                               (int)ok_string_view_get_length(&stem),
+                               stem.chars);
+      module_report(p_source, p_site, message.chars != NULL ? message.chars : "no such std module.");
+      string_deinit(&message, &p_modules->ok->alloc);
+      str_list_deinit(&tried);
+      return false;
+    }
+    if (std_build_module(p_modules, def) != OK) {
+      module_report(p_source, p_site, "out of memory while building the module's namespace.");
+      str_list_deinit(&tried);
+      return false;
+    }
+    char canonical[32];
+    if (!std_canonical_of(def, canonical, sizeof(canonical))) {
+      str_list_deinit(&tried);
+      return false;
+    }
+    char* owned = strdup(canonical);
+    if (owned == NULL) {
+      str_list_deinit(&tried);
+      return false;
+    }
+    str_list_deinit(&tried);
+    *p_out_canonical = owned;
+    return true;
   } else {
     // the OKPATH lane: colon-separated roots, the same ladder at each.
     const char* okpath = getenv("OKPATH");
@@ -759,8 +913,7 @@ static bool resolve_import(module_system* p_modules,
     if (native_found) {
       module_report(p_source,
                     p_site,
-                    "native module found, but native loading lands with OR-3 (the sandbox + the loader) - "
-                    "not yet.");
+                    "a native module was found, but native loading is not available yet.");
       str_list_deinit(&tried);
       return false;
     }
@@ -952,12 +1105,13 @@ ok_result ok_modules_prepare(module_system* p_modules,
       }
       const ok_string_view root_name =
           ok_create_string_view(root_owned, (uint32_t)strlen(root_owned), true);
-      // the reserved root (M8): only the std/ lane may bind `std`.
-      if (view_equals(root_name, "std")) {
+      // the reserved root (M8): only the std/ lane may bind `std`. a user
+      // file or directory named std (any relative or OKPATH path whose
+      // first segment is std) still cannot.
+      if (view_equals(root_name, "std") && !view_starts_with(path, "std/")) {
         module_report(p_source,
                       site,
-                      "the name 'std' is reserved for the standard library's namespace: import it as "
-                      "\"std/...\" when OR-2 lands it.");
+                      "the name 'std' is reserved for the standard library's namespace.");
         free_segments(segments, segment_count);
         result = OK_COMPILE_ERROR;
         break;

@@ -4991,7 +4991,7 @@ static void* ok_dispatch_table[OP__COUNT] = {
       object_closure* closure = VALUE_AS_CLOSURE(REG_AT(B));
       object_string* name = VALUE_AS_STRING(frame->closure->function->chunk.constants.data[C]);
       if (klass->frozen) {
-        runtime_error(p_vm, OK_EK_TYPE, "class %s is sealed; methods cannot be added.", klass->name->string.chars);
+        runtime_error(p_vm, OK_EK_TYPE, "class %s is sealed: methods cannot be added.", klass->name->string.chars);
         FAIL_PATH();
         DISPATCH();
       }
@@ -5132,7 +5132,7 @@ static void* ok_dispatch_table[OP__COUNT] = {
       object_closure* closure = VALUE_AS_CLOSURE(REG_AT(B));
       object_string* name = VALUE_AS_STRING(frame->closure->function->chunk.constants.data[C]);
       if (klass->frozen) {
-        runtime_error(p_vm, OK_EK_TYPE, "class %s is sealed; statics cannot be added.", klass->name->string.chars);
+        runtime_error(p_vm, OK_EK_TYPE, "class %s is sealed: statics cannot be added.", klass->name->string.chars);
         FAIL_PATH();
         DISPATCH();
       }

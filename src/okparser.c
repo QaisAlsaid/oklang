@@ -803,7 +803,7 @@ ast_expression* parse_map_literal(parser* p_parser, token p_trigger) {
     // is rejected here rather than guessed at.
     error_at(p_parser,
              p_parser->current,
-             ok_create_string_view("empty '{}' is not an expression - the empty map literal is '{:}'.",
+             ok_create_string_view("empty '{}' is not an expression, the empty map literal is '{:}'.",
                                    OK_STRING_VIEW_CALCULATE_LENGTH,
                                    true));
     goto fail_lists;
@@ -1445,13 +1445,13 @@ static char* parse_operator_spelling(parser* p_parser) {
   case TOKEN_BANG:
     error_at(p_parser,
              end,
-             ok_create_string_view("'!' (truthiness) is not overloadable - truthiness is the control-flow substrate.",
+             ok_create_string_view("'!' (truthiness) is not overloadable, truthiness is the control-flow substrate.",
                                    OK_STRING_VIEW_CALCULATE_LENGTH, true));
     return NULL;
   case TOKEN_BANG_EQUAL:
     error_at(p_parser,
              end,
-             ok_create_string_view("'!=' is the negation of '==' and is not separately overloadable - define 'operator =='.",
+             ok_create_string_view("'!=' is the negation of '==' and is not separately overloadable, define 'operator =='.",
                                    OK_STRING_VIEW_CALCULATE_LENGTH, true));
     return NULL;
   case TOKEN_CARET:
@@ -1473,7 +1473,7 @@ static char* parse_operator_spelling(parser* p_parser) {
   case TOKEN_SHIFT_RIGHT_EQUAL: {
     string message = asprint(alloc,
                              "operator '%.*s' has no dispatchable form in 0.5.0 (compound operators desugar to their "
-                             "binary form; bitwise operators are not implemented).",
+                             "binary form, bitwise operators are not implemented).",
                              end.length,
                              end.start);
     error_at(p_parser, end, ok_create_string_view_from_string(message));
@@ -1633,7 +1633,10 @@ ast_expression* parse_access(
   (void)is_right_associative;
   allocators* alloc = p_parser->alloc;
   advance(p_parser); // the '.'
-  if (p_parser->previous.type != TOKEN_IDENTIFIER) {
+  // `print` is a keyword (the statement) and std.io's member carries the
+  // name anyway: in member position it always names the member, the
+  // statement never starts after a '.'.
+  if (p_parser->previous.type != TOKEN_IDENTIFIER && p_parser->previous.type != TOKEN_PRINT) {
     error_at(p_parser,
              p_parser->previous,
              ok_create_string_view("expected a member name after '.'.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
@@ -2969,7 +2972,7 @@ static ast_import_statement* parse_import_statement(parser* p_parser) {
       error_at_noted(p_parser,
                      p_parser->current,
                      ok_create_string_view("expected a quoted import path.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-                     ok_create_string_view("spell it import \"a/b\"; - the python-plain form is not the language.",
+                     ok_create_string_view("spell it import \"a/b\", the path is a quoted string.",
                                            OK_STRING_VIEW_CALCULATE_LENGTH,
                                            true));
     } else {
@@ -3041,7 +3044,7 @@ static ast_import_statement* parse_from_import_statement(parser* p_parser) {
                      ok_create_string_view("expected a quoted import path after 'from'.",
                                            OK_STRING_VIEW_CALCULATE_LENGTH,
                                            true),
-                     ok_create_string_view("spell it from \"a/b\" import x; - the python-plain form is not the language.",
+                     ok_create_string_view("spell it from \"a/b\" import x, the path is a quoted string.",
                                            OK_STRING_VIEW_CALCULATE_LENGTH,
                                            true));
     } else {
@@ -3079,7 +3082,9 @@ static ast_import_statement* parse_from_import_statement(parser* p_parser) {
     goto fail;
   }
   for (;;) {
-    if (p_parser->current.type != TOKEN_IDENTIFIER) {
+    // `print` is a keyword and std.io exports it: an imported name may be
+    // the print keyword (aliases stay plain identifiers).
+    if (p_parser->current.type != TOKEN_IDENTIFIER && p_parser->current.type != TOKEN_PRINT) {
       error_at(p_parser,
                p_parser->current,
                ok_create_string_view("expected an imported name.", OK_STRING_VIEW_CALCULATE_LENGTH, true));

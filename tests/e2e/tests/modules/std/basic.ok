@@ -1,0 +1,25 @@
+// the built-in std modules: array and map under one merged std root (M5)
+import "std/array";
+import "std/map";
+
+let a = [1, 2, 3];
+print(std.array.len(a)); // expect: 3
+std.array.push(a, 4);
+print(std.array.len(a)); // expect: 4
+print(std.array.pop(a)); // expect: 4
+print(std.array.remove(a, 0, 1)); // expect: null
+
+let m = {"k": 1, "j": 2};
+print(std.map.len(m)); // expect: 2
+print(std.map.get(m, "k")); // expect: 1
+print(std.map.get(m, "zz", 0)); // expect: 0
+std.map.remove(m, "k");
+print(std.map.len(m)); // expect: 1
+
+print(std.array); // expect: <module std/array>
+print(std.map); // expect: <module std/map>
+
+// a module value is an ordinary value: alias it, box it, call through it
+import "std/array" as arr;
+let box = {"m": arr};
+print(box["m"].len([1, 2])); // expect: 2

@@ -50,6 +50,21 @@ static ok_value native_classof(ok* p_ok, uint8_t p_argc, const ok_value* p_argv)
   return OBJECT_AS_VALUE(vm_classof(&p_ok->vm, p_argv[0]));
 }
 
+// std.io's print (OR-2): the function face of the print statement, one
+// argument, the same formatting and the same hook. the statement stays
+// until the stdlib version that deprecates it; this native is a module
+// member only, never a seeded flat global.
+static ok_value native_print_fn(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  if (p_ok->vm.print_cb != NULL) {
+    p_ok->vm.print_cb(p_ok->vm.print_ctx, p_argv[0]);
+  } else {
+    value_debug_print(p_argv[0]);
+    puts("");
+  }
+  return NULL_AS_VALUE();
+}
+
 // isinstance(v, C) (C12): the chain walk - true when C is classof(v) or one
 // of its ancestors (object at the root matches everything, including null
 // through nil). the exact-class check is `classof(v) == C` or the `is`
@@ -261,6 +276,11 @@ static bool ok_define_core_natives(ok* p_ok) {
       p_ok, ok_create_string_view(" classof", OK_STRING_VIEW_CALCULATE_LENGTH, true), 1, native_classof);
   status &= ok_global_define_native_function(
       p_ok, ok_create_string_view(" isinstance", OK_STRING_VIEW_CALCULATE_LENGTH, true), 2, native_isinstance);
+  // hidden like the rest, but deliberately NOT seeded flat: the function
+  // spelling of print is std.io's member (OR-2), the statement stays the
+  // flat way.
+  status &= ok_global_define_native_function(
+      p_ok, ok_create_string_view(" print", OK_STRING_VIEW_CALCULATE_LENGTH, true), 1, native_print_fn);
   return status;
 }
 

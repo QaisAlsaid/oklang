@@ -1,0 +1,4 @@
+import "std/array";
+
+std.array.len = 5;
+// expect error: module namespaces are immutable

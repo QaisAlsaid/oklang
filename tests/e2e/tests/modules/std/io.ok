@@ -1,0 +1,11 @@
+// std.io: the print function, same formatting as the statement
+import "std/io" as io;
+
+io.print("hello"); // expect: hello
+io.print(7); // expect: 7
+io.print(2.0); // expect: 2
+io.print(true); // expect: true
+
+from "std/io" import print as say;
+say("from-imported"); // expect: from-imported
+print "the statement stays"; // expect: the statement stays
