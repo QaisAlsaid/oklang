@@ -1,0 +1,22 @@
+// lambdas inside a redefined method: the copies follow the body, and each
+// generation closes over its own fields
+fu make_box_class() {
+  class Box {
+    let mut n = 0;
+    pub fu bump() {
+      n = n + 1;
+      let report = fu() { return n; };
+      return report();
+    }
+  }
+  return Box;
+}
+let B1 = make_box_class();
+let B2 = make_box_class();
+let x = B1();
+let y = B2();
+print(x.bump()); // expect: 1
+print(x.bump()); // expect: 2
+print(y.bump()); // expect: 1
+print(x.bump()); // expect: 3
+print(y.bump()); // expect: 2

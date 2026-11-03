@@ -219,6 +219,8 @@ static token_type lookup_identifier(lexer* p_lexer) {
         return check_keyword(p_lexer, 2, 4, "port", TOKEN_IMPORT);
       case 'f':
         return check_keyword(p_lexer, 2, 0, "", TOKEN_IF);
+      case 's':
+        return check_keyword(p_lexer, 2, 0, "", TOKEN_IS);
       }
     }
     break;
@@ -362,7 +364,9 @@ start:
   case '!':
     return create_token(p_lexer, match(p_lexer, '=') ? TOKEN_BANG_EQUAL : TOKEN_BANG);
   case '=':
-    return create_token(p_lexer, match(p_lexer, '=') ? TOKEN_EQUAL : TOKEN_ASSIGN);
+    // longest match first: === (identity) before == before =
+    return create_token(p_lexer,
+                        match(p_lexer, '=') ? match(p_lexer, '=') ? TOKEN_TRIPLE_EQUAL : TOKEN_EQUAL : TOKEN_ASSIGN);
   case '<':
     return create_token(p_lexer,
                         match(p_lexer, '=')   ? TOKEN_LESS_EQUAL

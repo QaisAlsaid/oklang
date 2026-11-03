@@ -1,0 +1,20 @@
+// the statics lane's runtime ladder: a bare name in a static context resolves
+// static fields first, then static methods (a sibling call binds this=class),
+// then globals. the instance lane bakes the same ladder at freeze.
+glob let g = 5;
+glob let mut gm = 1;
+class Registry {
+  static let mut count = 0;
+  static let label = "reg";
+  pub static fu bump() { count = count + 1; return count; }
+  pub static fu bump_twice() { bump(); return bump(); } // bare sibling static call
+  pub static fu label_of() { return label; } // bare static field
+  pub static fu read_g() { return g; } // bare global fallback
+  pub static fu grow() { gm = gm + 1; return gm; } // bare global store
+}
+print(Registry.bump_twice()); // expect: 2
+print(Registry.bump_twice()); // expect: 4
+print(Registry.label_of()); // expect: reg
+print(Registry.read_g()); // expect: 5
+print(Registry.grow()); // expect: 2
+print(gm); // expect: 2

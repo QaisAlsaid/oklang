@@ -117,8 +117,14 @@ void vm_init(vm* p_vm, vm_specs p_specs) {
   p_vm->print_ctx = NULL;
   p_vm->object_singleton = NULL;
   p_vm->class_singleton = NULL;
+  for (uint32_t i = 0; i < OK_BUILTIN_COUNT; ++i) {
+    p_vm->builtin_classes[i] = NULL;
+  }
   p_vm->static_call_name = NULL;
   p_vm->init_method_name = NULL;
+  for (uint32_t i = 0; i < CLASS_OP_COUNT; ++i) {
+    p_vm->op_names[i] = NULL;
+  }
   // TODO: temp
   p_vm->current_execution_state = p_vm->alloc->allocate(p_vm->alloc, sizeof(execution_state));
   p_vm->current_execution_state->open_upvalues = NULL;
@@ -174,6 +180,18 @@ void vm_deinit(vm* p_vm) {
 // allocations that could collect mid-sequence: aggressive mode collects on
 // every allocation, and an unrooted, unassigned object is exactly what a
 // collect would sweep.
+//
+// the guard discipline here is PER-OBJECT BALANCED: a name rides the stack
+// only across the class creation that adopts it, and drops the moment the
+// class assignment roots the pair (mark_vm marks the singleton, its trace
+// marks the name). the original shape held every name on the stack at once,
+// which silently overflowed OK_GC_GUARD_CAPACITY (16) once the builtin
+// singletons joined the sequence - gc_guard_up fails quietly past capacity,
+// the str singleton's name was swept mid-startup, its memory got reused by
+// the num name, and `x as str` probed "operator num". found under
+// OK_AGGRESSIVE_GC by conversion_private_error.ok; guard pushes are checked
+// now, and the cached names below need no guard at all (their assignment is
+// the rooting - nothing allocates between the two).
 bool vm_init_singletons(vm* p_vm) {
   object_specs specs = {p_vm->alloc, p_vm->objects_store};
   gc* gc = p_vm->alloc->gc;
@@ -182,10 +200,12 @@ bool vm_init_singletons(vm* p_vm) {
   if (object_name == NULL) {
     return false;
   }
-  gc_guard_up(gc, OBJECT_AS_VALUE(object_name));
+  if (!gc_guard_up(gc, OBJECT_AS_VALUE(object_name))) {
+    return false;
+  }
   p_vm->object_singleton = create_object_class(object_name, NULL, &specs);
+  gc_guard_down(gc); // the assignment above rooted class + name for good
   if (p_vm->object_singleton == NULL) {
-    gc_guard_down(gc);
     return false;
   }
   // the root is born complete: no fields, no methods, frozen empty.
@@ -193,23 +213,74 @@ bool vm_init_singletons(vm* p_vm) {
   object_string* class_name =
       create_object_string(ok_create_string_view("Class", OK_STRING_VIEW_CALCULATE_LENGTH, true), &specs);
   if (class_name == NULL) {
-    gc_guard_down(gc);
     return false;
   }
-  gc_guard_up(gc, OBJECT_AS_VALUE(class_name));
+  if (!gc_guard_up(gc, OBJECT_AS_VALUE(class_name))) {
+    return false;
+  }
   p_vm->class_singleton = create_object_class(class_name, p_vm->object_singleton, &specs);
+  gc_guard_down(gc); // same rooting as above
   if (p_vm->class_singleton == NULL) {
-    gc_guard_down(gc);
-    gc_guard_down(gc);
     return false;
   }
   object_class_freeze(p_vm->class_singleton);
+  // the cached lookup names: no guard window exists for any of them - the
+  // assignment into the vm IS the rooting (mark_vm scans these slots, and
+  // nothing allocates between assignment and the next possible collect).
   p_vm->static_call_name =
       create_object_string(ok_create_string_view("operator ()", OK_STRING_VIEW_CALCULATE_LENGTH, true), &specs);
   p_vm->init_method_name =
       create_object_string(ok_create_string_view("init", OK_STRING_VIEW_CALCULATE_LENGTH, true), &specs);
-  gc_guard_down(gc);
-  gc_guard_down(gc);
+  // the operator probe names: one per class_operator, from the canonical
+  // spelling table. [CALL] aliases static_call_name (same spelling), so it is
+  // skipped here and patched in after the loop.
+  for (uint32_t i = 0; i < CLASS_OP_COUNT; ++i) {
+    if (i == (uint32_t)CLASS_OP_CALL) {
+      continue;
+    }
+    if (p_vm->static_call_name == NULL || p_vm->init_method_name == NULL) {
+      break;
+    }
+    p_vm->op_names[i] =
+        create_object_string(ok_create_string_view(class_operator_spelling((class_operator)i),
+                                                   OK_STRING_VIEW_CALCULATE_LENGTH,
+                                                   true),
+                             &specs);
+  }
+  p_vm->op_names[CLASS_OP_CALL] = p_vm->static_call_name;
+  // the seven builtin singletons (C10): under Object, created UNFROZEN here -
+  // the native method surface is mounted by ok_define_builtin_surfaces (the
+  // C-side step that owns their freeze, so the tables fill before the seal).
+  // the name rides the guard stack only across the class creation that
+  // adopts it.
+  for (uint32_t i = 0; i < OK_BUILTIN_COUNT; ++i) {
+    object_string* builtin_name =
+        create_object_string(ok_create_string_view(builtin_class_name((builtin_class_id)i),
+                                                   OK_STRING_VIEW_CALCULATE_LENGTH,
+                                                   true),
+                             &specs);
+    if (builtin_name == NULL) {
+      break;
+    }
+    if (!gc_guard_up(gc, OBJECT_AS_VALUE(builtin_name))) {
+      break;
+    }
+    p_vm->builtin_classes[i] = create_object_class(builtin_name, p_vm->object_singleton, &specs);
+    gc_guard_down(gc); // the class assignment roots the pair
+    if (p_vm->builtin_classes[i] == NULL) {
+      break;
+    }
+  }
+  for (uint32_t i = 0; i < CLASS_OP_COUNT; ++i) {
+    if (p_vm->op_names[i] == NULL) {
+      return false;
+    }
+  }
+  for (uint32_t i = 0; i < OK_BUILTIN_COUNT; ++i) {
+    if (p_vm->builtin_classes[i] == NULL) {
+      return false;
+    }
+  }
   return p_vm->static_call_name != NULL && p_vm->init_method_name != NULL;
 }
 
@@ -423,6 +494,150 @@ resolve_goperand(vm* p_vm, call_frame* p_frame, register_file* p_reg, uint16_t p
   return p_reg->array.data[p_frame->registers_base + p_index];
 }
 
+// ============================== native methods ==============================
+// (the natives-as-classes patch: one flight, two staging shapes)
+
+// the shared native flight: run one C entry point with a staged argv and
+// hand its result back through p_result. error lanes (ok_native_error,
+// ok_native_throw, a failed ok_call inside) are reported here exactly like
+// call_native always did. the caller owns where the result lands and the
+// register watermark. p_argc is bounds-checked against the 8-bit argc of
+// ok_native_fn itself - the old call_native would truncate and then overrun
+// its stash on an ANY-arity native called with 256+ arguments (a landmine
+// the method path would have inherited; now it is everyone's guard).
+static inline bool
+run_native(vm* p_vm, execution_state* p_exe, ok_native_fn p_fn, uint16_t p_argc, const value* p_argv, value* p_result) {
+  if (p_argc > UINT8_MAX) {
+    runtime_error(p_vm, OK_EK_ARITY, "too many arguments to a native call.");
+    return false;
+  }
+  p_exe->native_call_depth++;
+  value result = p_fn(p_vm->ok, (uint8_t)p_argc, p_argv);
+  p_exe->native_call_depth--;
+  if (p_exe->native_has_error) {
+    runtime_error(p_vm, OK_EK_NATIVE, "%s", p_exe->native_error_message.chars);
+    p_exe->native_has_error = false;
+    string_deinit(&p_exe->native_error_message, p_vm->alloc);
+    return false;
+  }
+  if (p_exe->error_pending) {
+    // a runtime error fired inside the native (e.g. its ok_call on a script
+    // closure failed). runtime_error already reset the state and printed the
+    // report; resuming would reload frame state that no longer exists.
+    return false;
+  }
+  p_exe->native_has_error = false;
+  string_deinit(&p_exe->native_error_message, p_vm->alloc);
+  *p_result = result;
+  return true;
+}
+
+// a native METHOD entry: the receiver rides argv[0]. p_window is the call
+// window base - the receiver's own register, arguments above it (the INVOKE
+// shape, the bound-method shape, and the operator-dispatch staging all share
+// it, which is the whole reason the door was pre-built this way). the
+// declared arity COUNTS the receiver: the existing builtin handlers were
+// already receiver-first functions (`len(x)` always took its receiver as
+// argv[0]), so one C entry serves both spellings - `len(a)` and `a.len()`.
+// no frame is pushed; the result lands at the window base like OP_CALL's
+// r[a] = r[a](...) and the watermark returns to the caller's frame top.
+static inline bool call_native_method(vm* p_vm,
+                                      execution_state* p_exe,
+                                      register_file* p_reg,
+                                      const method_entry* p_entry,
+                                      uint32_t p_window,
+                                      uint16_t p_argc) {
+  const uint32_t total = (uint32_t)p_argc + 1u;
+  if (p_entry->arity != OK_NATIVE_ARITY_ANY && total != (uint32_t)p_entry->arity) {
+    runtime_error(p_vm,
+                  OK_EK_ARITY,
+                  "invalid call to method '%s' of class '%s': expected %u argument%s, got %u.",
+                  p_entry->name->string.chars,
+                  p_entry->owner->name->string.chars,
+                  (unsigned)p_entry->arity - 1u,
+                  p_entry->arity - 1u == 1 ? "" : "s",
+                  p_argc);
+    return false;
+  }
+  if (total > UINT8_MAX) {
+    runtime_error(p_vm, OK_EK_ARITY, "too many arguments to method '%s'.", p_entry->name->string.chars);
+    return false;
+  }
+  // stage a copy: the native may re-enter the vm and grow (realloc) the
+  // register file out from under a window pointer - call_native's discipline.
+  value stash[UINT8_MAX];
+  memcpy(stash, p_reg->array.data + p_window, total * sizeof(value));
+  value result;
+  if (!run_native(p_vm, p_exe, p_entry->native, (uint16_t)total, stash, &result)) {
+    return false;
+  }
+  gc_guard_up(p_vm->alloc->gc, result);
+  register_file* reg = &p_exe->registers;
+  if (p_exe->call_stack.count > 0) {
+    call_frame* caller = &p_exe->call_stack.data[p_exe->call_stack.count - 1];
+    reg->top = caller->registers_base + caller->closure->function->registers;
+  } else {
+    reg->top = p_window;
+  }
+  reg->array.data[p_window] = result;
+  gc_guard_down(p_vm->alloc->gc);
+  return true;
+}
+
+// forward declarations for the operator dispatch lane (definitions sit after
+// entry_visible_from, which they share with the member/invoke paths).
+static bool entry_visible_from(const method_entry* p_entry, const call_frame* p_frame);
+static interpret_result error_interpret_result(void);
+static interpret_result dispatch_operator_method(vm* p_vm,
+                                                 register_file* p_reg,
+                                                 call_frame* p_frame,
+                                                 uint16_t p_dest,
+                                                 const method_entry* p_entry,
+                                                 const object_string* p_name,
+                                                 value p_receiver,
+                                                 const value* p_args,
+                                                 uint32_t p_argc);
+
+// the instance arm of every perform ladder (C14): when the left operand is an
+// instance whose chain carries the operator, run it. returns true when the
+// call HAPPENED (p_out carries its result or its error); false when the chain
+// has no such operator and the caller continues to its own error/fallback.
+// privacy rides the running frame like every method call. the cold path by
+// construction: the number and string lanes return before this arm ever runs.
+static bool try_instance_operator(vm* p_vm,
+                                  register_file* p_reg,
+                                  call_frame* p_frame,
+                                  uint16_t p_dest,
+                                  value p_lhs,
+                                  const value* p_args,
+                                  uint32_t p_argc,
+                                  class_operator p_op,
+                                  interpret_result* p_out) {
+  if (!IS_VALUE_INSTANCE(p_lhs)) {
+    return false;
+  }
+  object_class* klass = VALUE_AS_INSTANCE(p_lhs)->klass;
+  if (p_op >= CLASS_OP_COUNT || p_vm->op_names[p_op] == NULL) {
+    return false;
+  }
+  const method_entry* entry = object_class_find_operator(klass, p_op, p_vm->op_names[p_op]);
+  if (entry == NULL) {
+    return false;
+  }
+  if (!entry_visible_from(entry, p_frame)) {
+    runtime_error(p_vm,
+                  OK_EK_TYPE,
+                  "operator '%s' of class '%s' is private.",
+                  p_vm->op_names[p_op]->string.chars,
+                  entry->owner->name->string.chars);
+    *p_out = error_interpret_result();
+    return true;
+  }
+  *p_out = dispatch_operator_method(
+      p_vm, p_reg, p_frame, p_dest, entry, p_vm->op_names[p_op], p_lhs, p_args, p_argc);
+  return true;
+}
+
 static interpret_result perform_not(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_on) {
   const uint32_t base = p_frame->registers_base;
   value on = p_on;
@@ -458,8 +673,13 @@ perform_negate(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_d
   } else if (IS_VALUE_INT(on)) {
     on = INT_AS_VALUE(-VALUE_AS_INT(on));
   } else if (IS_VALUE_OBJECT(on)) {
+    // the instance arm (C14): unary minus shares the "operator -" name with
+    // the binary; the method's own arity is the discriminator.
+    interpret_result out;
+    if (try_instance_operator(p_vm, p_reg, p_frame, p_dest, on, NULL, 0, CLASS_OP_NEGATE, &out)) {
+      return out;
+    }
     goto invalid;
-    // TODO
   } else {
   invalid: {
     runtime_error(p_vm, OK_EK_TYPE, "invalid operand for unary '-'.");
@@ -538,6 +758,13 @@ perform_add(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest
   default:
     break;
   }
+  // the instance arm (C14): a + b dispatches on a's class only.
+  {
+    interpret_result out;
+    if (try_instance_operator(p_vm, p_reg, p_frame, p_dest, lhs, &p_rhs, 1, CLASS_OP_ADD, &out)) {
+      return out;
+    }
+  }
   runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '+'.");
   return (interpret_result){.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
 }
@@ -555,6 +782,14 @@ perform_subtract(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p
     p_reg->array.data[base + p_dest] = lhs;
     return (interpret_result){.status = RUNTIME_OK, .top_level_return = NULL_AS_VALUE()};
   }
+  // the instance arm (C14): a - b dispatches on a's class only. unary minus
+  // shares the "operator -" name and splits by arity at the method itself.
+  {
+    interpret_result out;
+    if (try_instance_operator(p_vm, p_reg, p_frame, p_dest, lhs, &p_rhs, 1, CLASS_OP_SUBTRACT, &out)) {
+      return out;
+    }
+  }
   runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '-'.");
   return (interpret_result){.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
 }
@@ -571,6 +806,13 @@ perform_multiply(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p
     }
     p_reg->array.data[base + p_dest] = lhs;
     return (interpret_result){.status = RUNTIME_OK, .top_level_return = NULL_AS_VALUE()};
+  }
+  // the instance arm (C14).
+  {
+    interpret_result out;
+    if (try_instance_operator(p_vm, p_reg, p_frame, p_dest, lhs, &p_rhs, 1, CLASS_OP_MULTIPLY, &out)) {
+      return out;
+    }
   }
   runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '*'.");
   return (interpret_result){.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
@@ -596,6 +838,13 @@ perform_divide(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_d
     }
     p_reg->array.data[base + p_dest] = lhs;
     return (interpret_result){.status = RUNTIME_OK, .top_level_return = NULL_AS_VALUE()};
+  }
+  // the instance arm (C14).
+  {
+    interpret_result out;
+    if (try_instance_operator(p_vm, p_reg, p_frame, p_dest, lhs, &p_rhs, 1, CLASS_OP_DIVIDE, &out)) {
+      return out;
+    }
   }
   runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '/'.");
   return (interpret_result){.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
@@ -634,6 +883,13 @@ perform_modulo(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_d
     p_reg->array.data[base + p_dest] = lhs;
     return (interpret_result){.status = RUNTIME_OK, .top_level_return = NULL_AS_VALUE()};
   }
+  // the instance arm (C14).
+  {
+    interpret_result out;
+    if (try_instance_operator(p_vm, p_reg, p_frame, p_dest, lhs, &p_rhs, 1, CLASS_OP_MODULUS, &out)) {
+      return out;
+    }
+  }
   runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '%%'.");
   return (interpret_result){.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
 }
@@ -666,6 +922,14 @@ perform_equal(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_de
   // mixed type equality intentionally falls back to a raw identity check
   // (null/bool vs anything): turning this into a type error is a semantic
   // decision deferred to when we design the error model.
+  // the instance arm (C11/C14): with operator == the class's method decides;
+  // without it the identity fallback below is the shipped default.
+  {
+    interpret_result out;
+    if (try_instance_operator(p_vm, p_reg, p_frame, p_dest, lhs, &p_rhs, 1, CLASS_OP_EQUALS, &out)) {
+      return out;
+    }
+  }
   p_reg->array.data[base + p_dest] = BOOL_AS_VALUE(lhs == p_rhs);
   return (interpret_result){.status = RUNTIME_OK, .top_level_return = NULL_AS_VALUE()};
 }
@@ -695,14 +959,26 @@ perform_not_equal(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t 
   default:
     break;
   }
-  // mixed type: the identity fallback, negated (see perform_equal).
+  // mixed type: the identity fallback, negated (see perform_equal). the
+  // instance arm dispatches operator == and negates its result's truthiness
+  // - `a != b` is exactly `!(a == b)`, no separate operator.
+  {
+    interpret_result out;
+    if (try_instance_operator(p_vm, p_reg, p_frame, p_dest, lhs, &p_rhs, 1, CLASS_OP_EQUALS, &out)) {
+      if (out.status == RUNTIME_OK) {
+        p_reg->array.data[base + p_dest] = BOOL_AS_VALUE(is_falsy(p_reg->array.data[base + p_dest]));
+      }
+      return out;
+    }
+  }
   p_reg->array.data[base + p_dest] = BOOL_AS_VALUE(lhs != p_rhs);
   return (interpret_result){.status = RUNTIME_OK, .top_level_return = NULL_AS_VALUE()};
 }
 
 // the four comparisons share one shape: numbers compare through the numeric
-// union, everything else is a type error (no coercion, no cross-type order).
-#define PERFORM_ORDERED(name, op, spelling)                                                                             \
+// union, instances dispatch on the left operand's class (C14), everything
+// else is a type error (no coercion, no cross-type order).
+#define PERFORM_ORDERED(name, op, spelling, class_op)                                                                    \
   static interpret_result perform_##name(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest,          \
                                           value p_lhs, value p_rhs) {                                                   \
     const uint32_t base = p_frame->registers_base;                                                                      \
@@ -710,14 +986,20 @@ perform_not_equal(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t 
       p_reg->array.data[base + p_dest] = BOOL_AS_VALUE(value_as_f64(p_lhs) op value_as_f64(p_rhs));                     \
       return (interpret_result){.status = RUNTIME_OK, .top_level_return = NULL_AS_VALUE()};                             \
     }                                                                                                                   \
+    {                                                                                                                   \
+      interpret_result out;                                                                                             \
+      if (try_instance_operator(p_vm, p_reg, p_frame, p_dest, p_lhs, &p_rhs, 1, class_op, &out)) {                      \
+        return out;                                                                                                     \
+      }                                                                                                                 \
+    }                                                                                                                   \
     runtime_error(p_vm, OK_EK_TYPE, "invalid operands for binary '" spelling "'.");                                     \
     return (interpret_result){.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};                            \
   }
 
-PERFORM_ORDERED(greater, >, ">")
-PERFORM_ORDERED(less, <, "<")
-PERFORM_ORDERED(greater_equal, >=, ">=")
-PERFORM_ORDERED(less_equal, <=, "<=")
+PERFORM_ORDERED(greater, >, ">", CLASS_OP_GREATER)
+PERFORM_ORDERED(less, <, "<", CLASS_OP_LESS)
+PERFORM_ORDERED(greater_equal, >=, ">=", CLASS_OP_GREATER_EQUAL)
+PERFORM_ORDERED(less_equal, <=, "<=", CLASS_OP_LESS_EQUAL)
 
 static inline bool as_str_rest(vm* p_vm, ok_string_view p_str, value* p_result) {
   object_specs specs = {p_vm->alloc, p_vm->objects_store};
@@ -728,6 +1010,20 @@ static inline bool as_str_rest(vm* p_vm, ok_string_view p_str, value* p_result) 
   }
   *p_result = OBJECT_AS_VALUE(str);
   return true;
+}
+
+// asprint + as_str_rest + the release of the printed intermediate. the bare
+// pattern leaked the middle buffer on every call (lsan found it the day
+// `instance as str` first ran in the e2e corpus - the object arms had simply
+// never been reached before). the result value is written before the deinit
+// and the deinit never collects, so no rooting window opens.
+static inline bool as_str_printed(vm* p_vm, string p_printed, value* p_result) {
+  if (p_printed.chars == NULL) {
+    return false; // the caller reported its own failure flavor already
+  }
+  const bool ok = as_str_rest(p_vm, ok_create_string_view_from_string(p_printed), p_result);
+  string_deinit(&p_printed, p_vm->alloc);
+  return ok;
 }
 
 static inline bool num_as_str(vm* p_vm, double p_value, value* p_result) {
@@ -879,7 +1175,7 @@ static inline bool closure_as_str(vm* p_vm, object* p_closure, value* p_result) 
     runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert function to string.");
     return false;
   }
-  return as_str_rest(p_vm, ok_create_string_view_from_string(str), p_result);
+  return as_str_printed(p_vm, str, p_result);
 }
 
 static inline bool native_function_as_str(vm* p_vm, object* p_native_function, value* p_result) {
@@ -895,7 +1191,7 @@ static inline bool native_function_as_str(vm* p_vm, object* p_native_function, v
     runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert native function to string.");
     return false;
   }
-  return as_str_rest(p_vm, ok_create_string_view_from_string(str), p_result);
+  return as_str_printed(p_vm, str, p_result);
 }
 
 static inline bool native_value_as_str(vm* p_vm, object* p_native_value, value* p_result) {
@@ -905,7 +1201,7 @@ static inline bool native_value_as_str(vm* p_vm, object* p_native_value, value* 
     runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert native value to string.");
     return false;
   }
-  return as_str_rest(p_vm, ok_create_string_view_from_string(str), p_result);
+  return as_str_printed(p_vm, str, p_result);
 }
 
 static inline bool object_as_str(vm* p_vm, object* p_obj, value* p_result) {
@@ -936,7 +1232,7 @@ static inline bool object_as_str(vm* p_vm, object* p_obj, value* p_result) {
       runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert class to string.");
       return false;
     }
-    return as_str_rest(p_vm, ok_create_string_view_from_string(str), p_result);
+    return as_str_printed(p_vm, str, p_result);
   }
   case OBJ_INSTANCE: {
     object_instance* inst = (object_instance*)p_obj;
@@ -945,7 +1241,7 @@ static inline bool object_as_str(vm* p_vm, object* p_obj, value* p_result) {
       runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert instance to string.");
       return false;
     }
-    return as_str_rest(p_vm, ok_create_string_view_from_string(str), p_result);
+    return as_str_printed(p_vm, str, p_result);
   }
   case OBJ_BOUND_METHOD: {
     object_bound_method* bound = (object_bound_method*)p_obj;
@@ -954,7 +1250,7 @@ static inline bool object_as_str(vm* p_vm, object* p_obj, value* p_result) {
       runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert method to string.");
       return false;
     }
-    return as_str_rest(p_vm, ok_create_string_view_from_string(str), p_result);
+    return as_str_printed(p_vm, str, p_result);
   }
   }
   runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert unknown object to string.");
@@ -1041,8 +1337,22 @@ static inline bool object_as_num(vm* p_vm, object* p_obj, value* p_result) {
     runtime_error(p_vm, OK_EK_CONVERSION, "native value is not convertible to number.");
     return false;
   }
+  case OBJ_CLASS: {
+    runtime_error(p_vm, OK_EK_CONVERSION, "class is not convertible to number.");
+    return false;
   }
-  runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert unknown object to string.");
+  case OBJ_INSTANCE: {
+    // the operator lane already had its chance in perform_as; an instance
+    // with no `operator num` has no numeric form, full stop
+    runtime_error(p_vm, OK_EK_CONVERSION, "instance is not convertible to number.");
+    return false;
+  }
+  case OBJ_BOUND_METHOD: {
+    runtime_error(p_vm, OK_EK_CONVERSION, "method is not convertible to number.");
+    return false;
+  }
+  }
+  runtime_error(p_vm, OK_EK_CONVERSION, "failed to convert unknown object to number.");
   return false;
 }
 
@@ -1056,6 +1366,7 @@ static ok_value as_num(vm* p_vm, ok_value p_value, value* p_result) {
   switch (tag) {
   case TAG_INT_MASK: {
     *p_result = NUMBER_AS_VALUE(VALUE_AS_INT(p_value));
+    return true;
   }
   case TAG_NULL_MASK: {
     runtime_error(p_vm, OK_EK_CONVERSION, "null is not convertible to number.");
@@ -1085,6 +1396,119 @@ static ok_value as_bool(vm* p_vm, value p_value, value* p_result) {
   return true;
 }
 
+// classof (C10): every value is an instance of exactly one class. instances
+// carry theirs, class values are all Class, every other object maps to its
+// lane's builtin singleton. native values (opaque embedder payloads) sit
+// directly under Object, and bound methods count as function - both are
+// recorded in the classes draft as the two judgment calls.
+object_class* vm_classof(vm* p_vm, ok_value p_value) {
+  if (IS_VALUE_NUMBER(p_value) || IS_VALUE_INT(p_value)) {
+    return p_vm->builtin_classes[OK_BUILTIN_NUM];
+  }
+  switch (VALUE_TAG(p_value)) {
+  case TAG_INT_MASK:
+    return p_vm->builtin_classes[OK_BUILTIN_NUM];
+  case TAG_NULL_MASK:
+    return p_vm->builtin_classes[OK_BUILTIN_NIL];
+  case TAG_TRUE_MASK:
+  case TAG_FALSE_MASK:
+    return p_vm->builtin_classes[OK_BUILTIN_BOOL];
+  case TAG_OBJECT_MASK:
+    break;
+  default:
+    return p_vm->object_singleton;
+  }
+  if (IS_VALUE_INSTANCE(p_value)) {
+    return VALUE_AS_INSTANCE(p_value)->klass;
+  }
+  if (IS_VALUE_CLASS(p_value)) {
+    return p_vm->class_singleton;
+  }
+  switch (OBJECT_TYPE(p_value)) {
+  case OBJ_STRING:
+    return p_vm->builtin_classes[OK_BUILTIN_STR];
+  case OBJ_ARRAY:
+    return p_vm->builtin_classes[OK_BUILTIN_ARRAY];
+  case OBJ_MAP:
+    return p_vm->builtin_classes[OK_BUILTIN_MAP];
+  case OBJ_CLOSURE:
+  case OBJ_NATIVE_FUNCTION:
+  case OBJ_BOUND_METHOD:
+    return p_vm->builtin_classes[OK_BUILTIN_FUNCTION];
+  default:
+    // native values are opaque payloads: Object directly. raw protos and
+    // upvalues never surface as values; if one ever does, Object is the
+    // honest total answer.
+    return p_vm->object_singleton;
+  }
+}
+
+bool vm_is_instance(vm* p_vm, ok_value p_value, const object_class* p_target) {
+  return object_class_is_a(vm_classof(p_vm, p_value), p_target);
+}
+
+// the mangled conversion name "operator <Target>": the same string the
+// parser synthesizes at the declaration site, rebuilt here because the
+// target is a runtime value. the raw buffer dies inside (create_object_string
+// copies the bytes), so the probe owns its own storage.
+static object_string* make_conversion_name(vm* p_vm, const object_class* p_target) {
+  enum { PREFIX_LEN = 9 }; // "operator " - keyword, one space, per the canonical spelling
+  const uint32_t target_len = string_get_length(&p_target->name->string);
+  char* buffer = p_vm->alloc->allocate(p_vm->alloc, PREFIX_LEN + target_len + 1u);
+  if (buffer == NULL) {
+    return NULL;
+  }
+  memcpy(buffer, "operator ", PREFIX_LEN);
+  memcpy(buffer + PREFIX_LEN, p_target->name->string.chars, target_len);
+  buffer[PREFIX_LEN + target_len] = '\0';
+  object_specs specs = {p_vm->alloc, p_vm->objects_store};
+  object_string* probe =
+      create_object_string(ok_create_string_view(buffer, PREFIX_LEN + target_len, true), &specs);
+  p_vm->alloc->release(p_vm->alloc, buffer);
+  return probe;
+}
+
+// the conversion contract (C13): an `operator <Target>` must deliver a value
+// of the target. the builtin targets check their lane, a class target
+// accepts the target or any descendant (an operator Vec2 returning a Vec3 : Vec2
+// is a legal narrowing source, not a lie).
+static bool conversion_result_matches(vm* p_vm, const object_class* p_target, value p_result) {
+  if (p_target == p_vm->builtin_classes[OK_BUILTIN_STR]) {
+    return IS_VALUE_STRING(p_result);
+  }
+  if (p_target == p_vm->builtin_classes[OK_BUILTIN_NUM]) {
+    return value_is_numeric(p_result);
+  }
+  if (p_target == p_vm->builtin_classes[OK_BUILTIN_BOOL]) {
+    return IS_VALUE_STRICTLY_BOOL(p_result);
+  }
+  return IS_VALUE_INSTANCE(p_result) && object_class_is_a(VALUE_AS_INSTANCE(p_result)->klass, p_target);
+}
+
+static interpret_result
+perform_strict_equal(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
+  (void)p_vm;
+  // raw word identity (C11): total over every value, never dispatchable.
+  // same bits for immediates (1 === 1.0 is false - different boxes), same
+  // allocation for heap values. bit-identical NaNs compare equal here; that
+  // is the box's truth and the operator promises nothing else.
+  p_reg->array.data[p_frame->registers_base + p_dest] = BOOL_AS_VALUE(p_lhs == p_rhs);
+  return (interpret_result){.status = RUNTIME_OK, .top_level_return = NULL_AS_VALUE()};
+}
+
+static interpret_result
+perform_is(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
+  if (!IS_VALUE_CLASS(p_rhs)) {
+    runtime_error(p_vm, OK_EK_TYPE, "invalid type: 'is' requires a class on the right.");
+    return (interpret_result){.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
+  }
+  // classof + identity, fused (C12's ruling): the exact-class probe. the
+  // chain-walk lives in isinstance; `is` answers "what box", not "what family".
+  p_reg->array.data[p_frame->registers_base + p_dest] =
+      BOOL_AS_VALUE(vm_classof(p_vm, p_lhs) == VALUE_AS_CLASS(p_rhs));
+  return (interpret_result){.status = RUNTIME_OK, .top_level_return = NULL_AS_VALUE()};
+}
+
 static interpret_result
 perform_as(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, value p_lhs, value p_rhs) {
   const uint32_t base = p_frame->registers_base;
@@ -1092,32 +1516,81 @@ perform_as(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_dest,
   res.status = RUNTIME_ERROR;
   res.top_level_return = NULL_AS_VALUE();
 
-  if (!IS_VALUE_STRICTLY_AS(p_rhs)) {
+  if (!IS_VALUE_CLASS(p_rhs)) {
     runtime_error(p_vm, OK_EK_CONVERSION, "invalid type: expected a type in 'as' conversion.");
     return res;
   }
+  object_class* target = VALUE_AS_CLASS(p_rhs);
   value* dest = &p_reg->array.data[base + p_dest];
 
-  switch (VALUE_AS_AS_TAG(p_rhs)) {
-  case TT_STR: {
+  // the user lane (C13): an instance's chain may carry `operator <Target>`.
+  // builtin classes are sealed and empty, so no other receiver shape can
+  // define one - the probe is skipped entirely for numbers, strings, arrays,
+  // maps, functions and null, keeping the builtin lanes below allocation-free.
+  if (IS_VALUE_INSTANCE(p_lhs)) {
+    object_class* klass = VALUE_AS_INSTANCE(p_lhs)->klass;
+    object_string* probe = make_conversion_name(p_vm, target);
+    if (probe == NULL) {
+      runtime_oom(p_vm, "out of memory: failed to allocate conversion name.");
+      return res;
+    }
+    gc_guard_up(p_vm->alloc->gc, OBJECT_AS_VALUE(probe));
+    const method_entry* entry = object_class_find_method(klass, probe);
+    if (entry != NULL) {
+      if (!entry_visible_from(entry, p_frame)) {
+        gc_guard_down(p_vm->alloc->gc);
+        runtime_error(p_vm,
+                      OK_EK_TYPE,
+                      "operator '%s' of class '%s' is private.",
+                      probe->string.chars,
+                      entry->owner->name->string.chars);
+        return res;
+      }
+      interpret_result out =
+          dispatch_operator_method(p_vm, p_reg, p_frame, p_dest, entry, probe, p_lhs, NULL, 0);
+      gc_guard_down(p_vm->alloc->gc);
+      if (out.status != RUNTIME_OK) {
+        return out;
+      }
+      if (!conversion_result_matches(p_vm, target, p_reg->array.data[base + p_dest])) {
+        runtime_error(p_vm,
+                      OK_EK_INTERNAL,
+                      "operator '%s' of class '%s' returned the wrong type.",
+                      probe->string.chars,
+                      klass->name->string.chars);
+        return (interpret_result){.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
+      }
+      return out;
+    }
+    gc_guard_down(p_vm->alloc->gc);
+  }
+
+  // the builtin lanes: same targets as always, now reached through the
+  // class values instead of the retired hidden tag globals.
+  if (target == p_vm->builtin_classes[OK_BUILTIN_STR]) {
     if (as_str(p_vm, p_lhs, dest)) {
       res.status = RUNTIME_OK;
     }
-    break;
+    return res;
   }
-  case TT_NUM: {
+  if (target == p_vm->builtin_classes[OK_BUILTIN_NUM]) {
     if (as_num(p_vm, p_lhs, dest)) {
       res.status = RUNTIME_OK;
     }
-    break;
+    return res;
   }
-  case TT_BOOL: {
+  if (target == p_vm->builtin_classes[OK_BUILTIN_BOOL]) {
     if (as_bool(p_vm, p_lhs, dest)) {
       res.status = RUNTIME_OK;
     }
-    break;
+    return res;
   }
-  }
+
+  runtime_error(p_vm,
+                OK_EK_CONVERSION,
+                "no conversion from '%s' to '%s'.",
+                vm_classof(p_vm, p_lhs)->name->string.chars,
+                target->name->string.chars);
   return res;
 }
 
@@ -1654,6 +2127,99 @@ static bool entry_visible_from(const method_entry* p_entry, const call_frame* p_
   return object_class_is_a(caller, p_entry->owner);
 }
 
+// stage an operator-method call at the register file top and run it to
+// completion (the construction/defer lane): the receiver and arguments are
+// copied ABOVE every live register (a binop's (dest, lhs, rhs) shape carries
+// no call-window guarantee, so the frame's own registers are never touched),
+// the method runs in a nested run_until, and the single result lands in
+// p_dest. the cold path by construction - the builtin lanes returned first.
+//
+// the one hazard of running script from inside a perform: the nested call may
+// GROW (and realloc) the register file and the call stack, which dangles the
+// dispatch loop's cached exe/reg/frame locals. the CALLER (the dispatch case)
+// refreshes them after a successful perform - the same dance the construct
+// path already does.
+static interpret_result dispatch_operator_method(vm* p_vm,
+                                                 register_file* p_reg,
+                                                 call_frame* p_frame,
+                                                 uint16_t p_dest,
+                                                 const method_entry* p_entry,
+                                                 const object_string* p_name,
+                                                 value p_receiver,
+                                                 const value* p_args,
+                                                 uint32_t p_argc) {
+  execution_state* exe = p_vm->current_execution_state;
+  // arity: the entry counts parameters, the receiver rides separately. the
+  // pre-check is the ERROR MESSAGE lane only - call() re-asserts the real
+  // contract (defaults ladder included), so it stays deliberately simple:
+  // exact match, the defaulted window, or varargs deferred to call() itself.
+  // native entries check their own arity inside call_native_method (theirs
+  // counts the receiver).
+  if (!p_entry->is_native && !p_entry->closure->function->has_varargs &&
+      p_argc > p_entry->closure->function->arity) {
+    runtime_error(p_vm,
+                  OK_EK_ARITY,
+                  "operator '%s' of class '%s' expects at most %u argument%s.",
+                  p_name->string.chars,
+                  p_entry->owner->name->string.chars,
+                  (unsigned)p_entry->closure->function->arity,
+                  p_entry->closure->function->arity == 1 ? "" : "s");
+    return error_interpret_result();
+  }
+  const uint32_t depth = exe->call_stack.count;
+  const uint32_t saved_top = p_reg->top;
+  const uint32_t need = 1u + p_argc + (p_entry->is_native ? 0u : p_entry->closure->function->registers);
+  if (saved_top + need > UINT16_MAX + 1u) {
+    runtime_error(p_vm, OK_EK_INTERNAL, "operator dispatch: register file exhausted.");
+    return error_interpret_result();
+  }
+  if (saved_top + need > p_reg->array.capacity) {
+    // same contract as call()'s growth: fresh slots must read as null
+    const uint32_t target = saved_top + need + ((saved_top + need) >> 1u);
+    const uint32_t new_capacity = target > UINT16_MAX + 1u ? UINT16_MAX + 1u : target;
+    const uint32_t initialized_uptill = p_reg->array.capacity;
+    if (!register_array_grow(&p_reg->array, new_capacity)) {
+      runtime_oom(p_vm, "out of memory: failed to grow register file.");
+      return error_interpret_result();
+    }
+    for (uint32_t i = initialized_uptill; i < new_capacity; ++i) {
+      p_reg->array.data[i] = NULL_AS_VALUE();
+    }
+  }
+  const uint32_t staged = p_reg->top;
+  p_reg->array.data[staged] = p_receiver;
+  for (uint32_t i = 0; i < p_argc; ++i) {
+    p_reg->array.data[staged + 1u + i] = p_args[i];
+  }
+  p_reg->top = staged + need;
+  if (p_entry->is_native) {
+    // the native flight reads the staged window (receiver at [staged], the
+    // arguments above), lands its result back at [staged]. no frame, no
+    // nested run_until - but the register file may still have grown above.
+    const bool called = call_native_method(p_vm, exe, p_reg, p_entry, staged, (uint16_t)p_argc);
+    p_reg->top = saved_top;
+    if (!called) {
+      return error_interpret_result();
+    }
+    p_reg->array.data[p_frame->registers_base + p_dest] = p_reg->array.data[staged];
+    return (interpret_result){.status = RUNTIME_OK, .top_level_return = NULL_AS_VALUE()};
+  }
+  gc_guard_up(p_vm->alloc->gc, OBJECT_AS_VALUE(p_entry->closure));
+  const bool called = call(p_vm, exe, p_reg, p_entry->closure, staged, (uint16_t)p_argc, 1u);
+  gc_guard_down(p_vm->alloc->gc);
+  if (!called) {
+    p_reg->top = saved_top;
+    return error_interpret_result();
+  }
+  const interpret_result result = run_until(p_vm, depth);
+  p_reg->top = saved_top;
+  if (result.status != RUNTIME_OK) {
+    return result;
+  }
+  p_reg->array.data[p_frame->registers_base + p_dest] = p_reg->array.data[staged];
+  return result;
+}
+
 // rewrite one chunk's field NAME ops in place to baked slots (or globals).
 // width-stable by construction: every NAME form rewrites to an op of the same
 // word count with the same operand roles (the b'/C payload swaps name-const
@@ -1687,6 +2253,19 @@ static bool patch_chunk_fields(vm* p_vm, object_class* p_class, chunk* p_chunk, 
           p_chunk->code.data[i] = encode_oppabprime(OP_GET_FIELD, false, dst, field->slot);
         }
       } else {
+        // the method lane (R1): a bare name that is a method of this chain
+        // bakes to a bind of `this` - the same operand roles, width-stable.
+        // fields win over methods, methods over globals (the GET_MEMBER
+        // order, mirrored for bare names).
+        const method_entry* method = object_class_find_method(p_class, name);
+        if (method != NULL) {
+          if (is_long) {
+            rewrite_word2(p_chunk, i, encode_OPPABCQ(OP_GET_METHOD_LONG, false, dst, name_at, 0, false));
+          } else {
+            p_chunk->code.data[i] = encode_oppabprime(OP_GET_METHOD, false, dst, name_at);
+          }
+          break;
+        }
         const global glob = globals_store_get(p_vm->globals_store, ok_create_string_view(
                                                                        name->string.chars,
                                                                        string_get_length(&name->string),
@@ -1731,6 +2310,16 @@ static bool patch_chunk_fields(vm* p_vm, object_class* p_class, chunk* p_chunk, 
           p_chunk->code.data[i] = encode_oppabprime(OP_FIELD_IMMUTABLE, false, 0, name_at);
         }
       } else {
+        // the method lane: storing to a bare method name is the trap (methods
+        // are not assignable). fields win, then this, then the global store.
+        if (object_class_find_method(p_class, name) != NULL) {
+          if (is_long) {
+            rewrite_word2(p_chunk, i, encode_OPPABCQ(OP_METHOD_NOT_ASSIGNABLE_LONG, false, name_at, 0, 0, false));
+          } else {
+            p_chunk->code.data[i] = encode_oppabprime(OP_METHOD_NOT_ASSIGNABLE, false, 0, name_at);
+          }
+          break;
+        }
         const global glob = globals_store_get(p_vm->globals_store, ok_create_string_view(
                                                                        name->string.chars,
                                                                        string_get_length(&name->string),
@@ -1784,22 +2373,148 @@ static bool patch_chunk_fields(vm* p_vm, object_class* p_class, chunk* p_chunk, 
 
 static bool freeze_walk_chunk(vm* p_vm, object_class* p_class, chunk* p_chunk, bool p_construction);
 
-// patch one proto (once): the patched_by marker is the single-definition
-// guard - a body frozen for one class cannot be re-frozen for another (the
-// in-place rewrite is already done; per-definition copies are the ladder step
-// when local classes earn them).
+// fill a fresh proto from its source: code, line table, identifiers, upvalue
+// descriptors, mic slots (empty), and the constants. constant indices are
+// load-bearing (the code addresses them), so order and count are preserved
+// exactly. values are shared; nested non-member protos are copied so the new
+// definition owns its own bake. protos of a class declared inside this body
+// are shared - their own definition owns them.
+//
+// p_dest must already be rooted (guard stack or a reachable parent's
+// constants) before this runs: every allocation below can collect. children
+// are created, appended, THEN filled - a node is safe the moment it lands in
+// a safe parent's constants, so the guard stack never holds more than the
+// tree root plus the child being appended.
+static bool copy_proto_fill(vm* p_vm, object_function* p_dest, object_function* p_src, object_specs* p_specs) {
+  chunk* dest = &p_dest->chunk;
+  chunk* src = &p_src->chunk;
+  if (!code_append_n(&dest->code, src->code.data, src->code.count) ||
+      !source_info_append_n(&dest->source_info, src->source_info.data, src->source_info.count)) {
+    return false;
+  }
+  for (uint32_t i = 0; i < src->identifiers.count; ++i) {
+    const string* id = &src->identifiers.data[i];
+    string copy;
+    if (!string_init(&copy, id->chars, string_get_length(id), string_is_dynamic(id), p_specs->alloc) ||
+        !identifiers_append(&dest->identifiers, copy)) {
+      return false;
+    }
+  }
+  if (!upvalue_descriptor_array_append_n(&p_dest->upvalues, p_src->upvalues.data, p_src->upvalues.count)) {
+    return false;
+  }
+  const mic_entry empty_mic = {NULL_AS_VALUE(), NULL, 0, 0};
+  for (uint32_t i = 0; i < src->mic.count; ++i) {
+    if (!mic_entries_append(&dest->mic, empty_mic)) {
+      return false;
+    }
+  }
+  p_dest->ndefaults = p_src->ndefaults;
+  p_dest->registers = p_src->registers;
+  p_dest->results = p_src->results;
+  p_dest->has_varargs = p_src->has_varargs;
+  p_dest->is_class_member = p_src->is_class_member;
+  p_dest->calls_super_init = p_src->calls_super_init;
+  dest->source_id = src->source_id;
+  for (uint32_t i = 0; i < src->constants.count; ++i) {
+    const value v = src->constants.data[i];
+    if (IS_VALUE_FUNCTION(v) && !VALUE_AS_FUNCTION(v)->is_class_member) {
+      object_function* nested_src = VALUE_AS_FUNCTION(v);
+      object_function* nested = create_object_function(nested_src->name, nested_src->arity, p_specs);
+      if (nested == NULL) {
+        return false;
+      }
+      // the guard covers exactly the window between creation and the append
+      // that roots the child (the append itself can collect).
+      if (!gc_guard_up(p_vm->alloc->gc, OBJECT_AS_VALUE(nested))) {
+        return false;
+      }
+      const bool appended = value_array_append(&dest->constants, OBJECT_AS_VALUE(nested));
+      gc_guard_down(p_vm->alloc->gc);
+      if (!appended) {
+        return false;
+      }
+      if (!copy_proto_fill(p_vm, nested, nested_src, p_specs)) {
+        return false;
+      }
+    } else {
+      if (!value_array_append(&dest->constants, v)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+// deep-copy a compiled body (every nested non-member proto included) so a
+// second definition can own its own bake. the source's code is already
+// freeze-patched for its class; the copy starts from that state, which the
+// caller guarantees to be valid (same parent, identical flattened layout).
+// a failed copy leaves the partial tree unreachable - the collector reclaims
+// it.
+static object_function* copy_proto_tree(vm* p_vm, object_function* p_src) {
+  object_specs specs = {p_vm->alloc, p_vm->objects_store};
+  object_function* top = create_object_function(p_src->name, p_src->arity, &specs);
+  if (top == NULL) {
+    return NULL;
+  }
+  // create_object_function makes one allocation (its collect runs before the
+  // object exists) and object_store_append does not allocate, so nothing can
+  // collect between creation and this guard.
+  if (!gc_guard_up(p_vm->alloc->gc, OBJECT_AS_VALUE(top))) {
+    return NULL;
+  }
+  const bool filled = copy_proto_fill(p_vm, top, p_src, &specs);
+  gc_guard_down(p_vm->alloc->gc);
+  return filled ? top : NULL;
+}
+
+// patch one proto (once): the patched_by marker is the single-walk guard.
+// redefinitions are handled one level up, at the closures that own member
+// protos - every proto reaching this function is fresh or already this
+// class's, so a foreign marker here is an internal error.
 static bool freeze_patch_proto(vm* p_vm, object_class* p_class, object_function* p_proto, bool p_construction) {
   if (p_proto->patched_by == p_class) {
     return true;
   }
   if (p_proto->patched_by != NULL) {
     runtime_error(p_vm,
-                  OK_EK_TYPE,
-                  "this class body is already defined: a local class can only be defined once.");
+                  OK_EK_INTERNAL,
+                  "a class body reached the freeze walk without a per-definition copy.");
     return false;
   }
   p_proto->patched_by = p_class;
   return freeze_walk_chunk(p_vm, p_class, &p_proto->chunk, p_construction);
+}
+
+// freeze one member closure for p_class. a proto already patched for another
+// class is a redefinition: the same parent bakes to the identical layout, so
+// the new definition takes a copy of the body and freezes that. a different
+// parent would need a different bake from pre-freeze code the proto no
+// longer carries, so it is refused.
+static bool freeze_patch_closure(vm* p_vm, object_class* p_class, object_closure* p_closure, bool p_construction) {
+  object_function* proto = p_closure->function;
+  if (proto->patched_by == p_class) {
+    return true;
+  }
+  if (proto->patched_by != NULL) {
+    if (proto->patched_by->parent != p_class->parent) {
+      runtime_error(p_vm,
+                    OK_EK_TYPE,
+                    "this class body is already defined with a different base: "
+                    "a local class can only be redefined with the same parent.");
+      return false;
+    }
+    object_function* copy = copy_proto_tree(p_vm, proto);
+    if (copy == NULL) {
+      runtime_oom(p_vm, "out of memory: failed to copy a redefined class body.");
+      return false;
+    }
+    p_closure->function = copy;
+    proto = copy;
+  }
+  proto->patched_by = p_class;
+  return freeze_walk_chunk(p_vm, p_class, &proto->chunk, p_construction);
 }
 
 static bool freeze_walk_chunk(vm* p_vm, object_class* p_class, chunk* p_chunk, bool p_construction) {
@@ -1811,9 +2526,19 @@ static bool freeze_walk_chunk(vm* p_vm, object_class* p_class, chunk* p_chunk, b
   // through the patched_by guard. nested protos do NOT inherit the
   // construction flag: a closure inside init is patched like any other
   // method body, so deferred mutation of a non-mut field stays trapped.
+  // MEMBER protos of another class are the boundary: a class declared inside
+  // one of this class's methods compiles its members as constants of that
+  // method's chunk, and this class's freeze must leave them for their own
+  // OP_CLASS_END (patching them here would bake this class's layout into
+  // their bodies and break their definition with a spurious "defined once"
+  // error - or worse, a wrong-slot bake).
   for (uint32_t i = 0; i < p_chunk->constants.count; ++i) {
     if (IS_VALUE_FUNCTION(p_chunk->constants.data[i])) {
-      if (!freeze_patch_proto(p_vm, p_class, VALUE_AS_FUNCTION(p_chunk->constants.data[i]), false)) {
+      object_function* nested = VALUE_AS_FUNCTION(p_chunk->constants.data[i]);
+      if (nested->is_class_member) {
+        continue;
+      }
+      if (!freeze_patch_proto(p_vm, p_class, nested, false)) {
         return false;
       }
     }
@@ -1837,14 +2562,14 @@ static bool class_freeze(vm* p_vm, object_class* p_class) {
     if (p_class->methods.keys[i] != NULL && p_class->methods.values[i].closure != NULL) {
       const object_string* mname = p_class->methods.keys[i];
       const bool is_init = string_get_length(&mname->string) == 4 && memcmp(mname->string.chars, "init", 4) == 0;
-      if (!freeze_patch_proto(p_vm, p_class, p_class->methods.values[i].closure->function, is_init)) {
+      if (!freeze_patch_closure(p_vm, p_class, p_class->methods.values[i].closure, is_init)) {
         return false;
       }
     }
   }
   for (uint32_t i = 0; i < p_class->own_inits.count; ++i) {
     if (p_class->own_inits.data[i] != NULL) {
-      if (!freeze_patch_proto(p_vm, p_class, p_class->own_inits.data[i]->function, true)) {
+      if (!freeze_patch_closure(p_vm, p_class, p_class->own_inits.data[i], true)) {
         return false;
       }
     }
@@ -1963,8 +2688,16 @@ static bool construct_instance(vm* p_vm, object_class* p_class, uint32_t p_windo
         p_vm->init_method_name != NULL ? object_class_find_method(p_class, p_vm->init_method_name) : NULL;
     if (init != NULL) {
       if (init->is_native) {
-        runtime_error(p_vm, OK_EK_INTERNAL, "native methods arrive with the native-class patch.");
-        ok = false;
+        // a C-defined initializer: the receiver-first flight over the stashed
+        // arguments, the result discarded - the construction's value is the
+        // instance, same as the closure lane.
+        value init_stash[UINT8_MAX];
+        init_stash[0] = instance_value;
+        if (p_argc > 0) {
+          memcpy(init_stash + 1, args_stash, p_argc * sizeof(value));
+        }
+        value discarded;
+        ok = run_native(p_vm, exe, init->native, (uint16_t)(p_argc + 1u), init_stash, &discarded);
       } else if (!run_method_to_completion(p_vm, init->closure, instance_value, p_argc, args_stash, NULL)) {
         ok = false;
       }
@@ -2028,6 +2761,19 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
     /* propagation: an outer script level may still catch, and the print belongs */                                    \
     /* to the outermost C lane (ok_run prints) */                                                                      \
     return error_interpret_result();                                                                                   \
+  } while (0)
+
+// the operator-dispatch lanes run script from inside a perform (the nested
+// run_until in dispatch_operator_method): the nested call may grow (and
+// realloc) the register file and the call stack, which dangles this loop's
+// cached exe/reg/frame locals. every case whose perform can dispatch refreshes
+// after a success - three loads and one store, nothing when nothing grew.
+#define REFRESH_AFTER_NESTED()                                                                                          \
+  do {                                                                                                                  \
+    exe = p_vm->current_execution_state;                                                                                \
+    reg = &exe->registers;                                                                                              \
+    frame = &exe->call_stack.data[exe->call_stack.count - 1];                                                           \
+    frame->ip = ip;                                                                                                     \
   } while (0)
 
   for (;;) {
@@ -2348,6 +3094,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       if (res.status != RUNTIME_OK) {
         FAIL_PATH();
       }
+      REFRESH_AFTER_NESTED();
       break;
     }
     case OP_NEGATE_LONG: {
@@ -2359,6 +3106,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       if (res.status != RUNTIME_OK) {
         FAIL_PATH();
       }
+      REFRESH_AFTER_NESTED();
       break;
     }
     case OP_ADD: {
@@ -2370,6 +3118,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       if (res.status != RUNTIME_OK) {
         FAIL_PATH();
       }
+      REFRESH_AFTER_NESTED();
       break;
     }
     case OP_ADD_LONG: {
@@ -2384,6 +3133,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       if (res.status != RUNTIME_OK) {
         FAIL_PATH();
       }
+      REFRESH_AFTER_NESTED();
       break;
     }
     case OP_SUBTRACT: {
@@ -2395,6 +3145,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       if (res.status != RUNTIME_OK) {
         FAIL_PATH();
       }
+      REFRESH_AFTER_NESTED();
       break;
     }
     case OP_SUBTRACT_LONG: {
@@ -2409,6 +3160,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       if (res.status != RUNTIME_OK) {
         FAIL_PATH();
       }
+      REFRESH_AFTER_NESTED();
       break;
     }
     case OP_MULTIPLY: {
@@ -2420,6 +3172,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       if (res.status != RUNTIME_OK) {
         FAIL_PATH();
       }
+      REFRESH_AFTER_NESTED();
       break;
     }
     case OP_MULTIPLY_LONG: {
@@ -2434,6 +3187,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       if (res.status != RUNTIME_OK) {
         FAIL_PATH();
       }
+      REFRESH_AFTER_NESTED();
       break;
     }
     case OP_DIVIDE: {
@@ -2445,6 +3199,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       if (res.status != RUNTIME_OK) {
         FAIL_PATH();
       }
+      REFRESH_AFTER_NESTED();
       break;
     }
     case OP_DIVIDE_LONG: {
@@ -2459,6 +3214,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       if (res.status != RUNTIME_OK) {
         FAIL_PATH();
       }
+      REFRESH_AFTER_NESTED();
       break;
     }
     case OP_MODULUS: {
@@ -2470,6 +3226,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       if (res.status != RUNTIME_OK) {
         FAIL_PATH();
       }
+      REFRESH_AFTER_NESTED();
       break;
     }
     case OP_MODULUS_LONG: {
@@ -2484,6 +3241,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       if (res.status != RUNTIME_OK) {
         FAIL_PATH();
       }
+      REFRESH_AFTER_NESTED();
       break;
     }
     case OP_EQUALS: {
@@ -2495,6 +3253,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       if (res.status != RUNTIME_OK) {
         FAIL_PATH();
       }
+      REFRESH_AFTER_NESTED();
       break;
     }
     case OP_EQUALS_LONG: {
@@ -2509,6 +3268,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       if (res.status != RUNTIME_OK) {
         FAIL_PATH();
       }
+      REFRESH_AFTER_NESTED();
       break;
     }
     case OP_NOT_EQUAL: {
@@ -2517,6 +3277,60 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const uint8_t b = b_of(instruction);
       const uint8_t c = c_of(instruction);
       interpret_result res = perform_not_equal(p_vm, reg, frame, a, REG_AT(b), resolve_operand(frame, reg, c, p));
+      if (res.status != RUNTIME_OK) {
+        FAIL_PATH();
+      }
+      REFRESH_AFTER_NESTED();
+      break;
+    }
+    case OP_STRICT_EQUAL: {
+      const bool p = p_of(instruction);
+      const uint8_t a = a_of(instruction);
+      const uint8_t b = b_of(instruction);
+      const uint8_t c = c_of(instruction);
+      // never nests: raw word compare, no dispatch, no allocation
+      interpret_result res =
+          perform_strict_equal(p_vm, reg, frame, a, REG_AT(b), resolve_operand(frame, reg, c, p));
+      if (res.status != RUNTIME_OK) {
+        FAIL_PATH();
+      }
+      break;
+    }
+    case OP_STRICT_EQUAL_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool p = p_of(instruction);
+      const bool q = Q_of(words);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      interpret_result res =
+          perform_strict_equal(p_vm, reg, frame, A, resolve_operand(frame, reg, B, q), resolve_operand(frame, reg, C, p));
+      if (res.status != RUNTIME_OK) {
+        FAIL_PATH();
+      }
+      break;
+    }
+    case OP_IS: {
+      const bool p = p_of(instruction);
+      const uint8_t a = a_of(instruction);
+      const uint8_t b = b_of(instruction);
+      const uint8_t c = c_of(instruction);
+      // never nests: classof + pointer compare
+      interpret_result res = perform_is(p_vm, reg, frame, a, REG_AT(b), resolve_operand(frame, reg, c, p));
+      if (res.status != RUNTIME_OK) {
+        FAIL_PATH();
+      }
+      break;
+    }
+    case OP_IS_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const bool p = p_of(instruction);
+      const bool q = Q_of(words);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      const uint16_t C = C_of(words);
+      interpret_result res =
+          perform_is(p_vm, reg, frame, A, resolve_operand(frame, reg, B, q), resolve_operand(frame, reg, C, p));
       if (res.status != RUNTIME_OK) {
         FAIL_PATH();
       }
@@ -2534,6 +3348,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       if (res.status != RUNTIME_OK) {
         FAIL_PATH();
       }
+      REFRESH_AFTER_NESTED();
       break;
     }
     case OP_GREATER: {
@@ -2545,6 +3360,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       if (res.status != RUNTIME_OK) {
         FAIL_PATH();
       }
+      REFRESH_AFTER_NESTED();
       break;
     }
     case OP_GREATER_LONG: {
@@ -2559,6 +3375,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       if (res.status != RUNTIME_OK) {
         FAIL_PATH();
       }
+      REFRESH_AFTER_NESTED();
       break;
     }
     case OP_LESS: {
@@ -2570,6 +3387,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       if (res.status != RUNTIME_OK) {
         FAIL_PATH();
       }
+      REFRESH_AFTER_NESTED();
       break;
     }
     case OP_LESS_LONG: {
@@ -2584,6 +3402,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       if (res.status != RUNTIME_OK) {
         FAIL_PATH();
       }
+      REFRESH_AFTER_NESTED();
       break;
     }
     case OP_GREATER_EQUAL: {
@@ -2595,6 +3414,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       if (res.status != RUNTIME_OK) {
         FAIL_PATH();
       }
+      REFRESH_AFTER_NESTED();
       break;
     }
     case OP_GREATER_EQUAL_LONG: {
@@ -2609,6 +3429,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       if (res.status != RUNTIME_OK) {
         FAIL_PATH();
       }
+      REFRESH_AFTER_NESTED();
       break;
     }
     case OP_LESS_EQUAL: {
@@ -2620,6 +3441,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       if (res.status != RUNTIME_OK) {
         FAIL_PATH();
       }
+      REFRESH_AFTER_NESTED();
       break;
     }
     case OP_LESS_EQUAL_LONG: {
@@ -2634,6 +3456,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       if (res.status != RUNTIME_OK) {
         FAIL_PATH();
       }
+      REFRESH_AFTER_NESTED();
       break;
     }
     case OP_AS: {
@@ -2641,10 +3464,13 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const uint8_t a = a_of(instruction);
       const uint8_t b = b_of(instruction);
       const uint8_t c = c_of(instruction);
+      // an `operator <Target>` conversion runs script from inside the
+      // perform: the register file and call stack may realloc under us
       interpret_result res = perform_as(p_vm, reg, frame, a, REG_AT(b), resolve_goperand(p_vm, frame, reg, c, p));
       if (res.status != RUNTIME_OK) {
         FAIL_PATH();
       }
+      REFRESH_AFTER_NESTED();
       break;
     }
     case OP_AS_LONG: {
@@ -2659,6 +3485,7 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       if (res.status != RUNTIME_OK) {
         FAIL_PATH();
       }
+      REFRESH_AFTER_NESTED();
       break;
     }
 
@@ -2779,6 +3606,17 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
         REG_AT(a) = read;
         break;
       }
+      // the instance arm: operator [] on the left operand's class.
+      if (IS_VALUE_INSTANCE(base)) {
+        interpret_result out;
+        if (try_instance_operator(p_vm, reg, frame, a, base, &key, 1, CLASS_OP_SUBSCRIPT_GET, &out)) {
+          if (out.status != RUNTIME_OK) {
+            FAIL_PATH();
+          }
+          REFRESH_AFTER_NESTED();
+          break;
+        }
+      }
       const object_array* arr = resolve_array_base(p_vm, base);
       uint32_t index = 0;
       if (arr == NULL || !resolve_array_index(p_vm, key, arr->values.count, &index)) {
@@ -2803,6 +3641,17 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
         REG_AT(A) = read;
         break;
       }
+      // the instance arm: operator [] on the left operand's class.
+      if (IS_VALUE_INSTANCE(base)) {
+        interpret_result out;
+        if (try_instance_operator(p_vm, reg, frame, A, base, &key, 1, CLASS_OP_SUBSCRIPT_GET, &out)) {
+          if (out.status != RUNTIME_OK) {
+            FAIL_PATH();
+          }
+          REFRESH_AFTER_NESTED();
+          break;
+        }
+      }
       const object_array* arr = resolve_array_base(p_vm, base);
       uint32_t index = 0;
       if (arr == NULL || !resolve_array_index(p_vm, key, arr->values.count, &index)) {
@@ -2826,6 +3675,20 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
         }
         break;
       }
+      // the instance arm: operator []= (index, value); the operator runs for
+      // effect - the assignment expression's value is the stored value, same
+      // as the array/map lanes.
+      if (IS_VALUE_INSTANCE(base)) {
+        const value args[2] = {key, REG_AT(c)};
+        interpret_result out;
+        if (try_instance_operator(p_vm, reg, frame, 0, base, args, 2, CLASS_OP_SUBSCRIPT_SET, &out)) {
+          if (out.status != RUNTIME_OK) {
+            FAIL_PATH();
+          }
+          REFRESH_AFTER_NESTED();
+          break;
+        }
+      }
       const object_array* arr = resolve_array_base(p_vm, base);
       uint32_t index = 0;
       if (arr == NULL || !resolve_array_index(p_vm, key, arr->values.count, &index)) {
@@ -2848,6 +3711,18 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
           FAIL_PATH();
         }
         break;
+      }
+      // the instance arm: operator []= (index, value), long form.
+      if (IS_VALUE_INSTANCE(base)) {
+        const value args[2] = {key, resolve_operand(frame, reg, C, q)};
+        interpret_result out;
+        if (try_instance_operator(p_vm, reg, frame, 0, base, args, 2, CLASS_OP_SUBSCRIPT_SET, &out)) {
+          if (out.status != RUNTIME_OK) {
+            FAIL_PATH();
+          }
+          REFRESH_AFTER_NESTED();
+          break;
+        }
       }
       const object_array* arr = resolve_array_base(p_vm, base);
       uint32_t index = 0;
@@ -3313,6 +4188,18 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       entry.owner = klass;
       entry.is_native = 0;
       entry.pub = pub;
+      // one name, one owner - within a class body too. this is load-bearing
+      // for operators: `operator -` (binary) and `operator -()` (unary) share
+      // a canonical name, and a silent overwrite would flip the dispatch.
+      if (method_map_get(&klass->methods, name) != NULL) {
+        runtime_error(p_vm,
+                      OK_EK_TYPE,
+                      "method '%s' is already declared in the body of class '%s'.",
+                      name->string.chars,
+                      klass->name->string.chars);
+        FAIL_PATH();
+        break;
+      }
       if (!method_map_set(&klass->methods, name, entry)) {
         runtime_oom(p_vm, "out of memory: failed to add method.");
         FAIL_PATH();
@@ -3466,6 +4353,44 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const object_class* owner = NULL;
       const field_entry* entry = object_class_find_static(klass, name, &owner);
       if (entry == NULL) {
+        // the method lane (R1, statics side): a bare sibling static method
+        // binds to the class receiver (`this` in a static is the class).
+        // static fields win, then static methods, then globals - the same
+        // ladder the instance lane bakes at freeze.
+        const method_entry* method = object_class_find_static_method(klass, name);
+        if (method != NULL) {
+          if (!entry_visible_from(method, frame)) {
+            runtime_error(p_vm,
+                          OK_EK_TYPE,
+                          "static method '%s' of class '%s' is private.",
+                          name->string.chars,
+                          klass->name->string.chars);
+            FAIL_PATH();
+            break;
+          }
+          gc_guard_up(p_vm->alloc->gc, klass_value);
+          object_specs specs = {p_vm->alloc, p_vm->objects_store};
+          object_bound_method* bound = create_object_bound_method(klass_value, method, &specs);
+          gc_guard_down(p_vm->alloc->gc);
+          if (bound == NULL) {
+            runtime_oom(p_vm, "out of memory: failed to allocate a bound method.");
+            FAIL_PATH();
+            break;
+          }
+          REG_AT(A) = OBJECT_AS_VALUE(bound);
+          break;
+        }
+        // the global lane: bare globals are reachable from static contexts
+        // (the instance lane's freeze fallback, mirrored at runtime - the
+        // statics lane swallows the name before the compiler's global run).
+        const global glob = globals_store_get(p_vm->globals_store, ok_create_string_view(
+                                                                         name->string.chars,
+                                                                         string_get_length(&name->string),
+                                                                         false));
+        if (IS_GLOBAL_VALID(glob)) {
+          REG_AT(A) = p_vm->globals_store->global_values.data[glob.index];
+          break;
+        }
         runtime_error(p_vm,
                       OK_EK_TYPE,
                       "undefined variable: %s (class %s has no static of this name).",
@@ -3495,6 +4420,36 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       const object_class* owner = NULL;
       const field_entry* entry = object_class_find_static(klass, name, &owner);
       if (entry == NULL) {
+        // the method lane: storing to a static method name is the trap.
+        if (object_class_find_static_method(klass, name) != NULL) {
+          runtime_error(p_vm,
+                        OK_EK_VALUE,
+                        "cannot assign to static method '%s': methods are not assignable.",
+                        name->string.chars);
+          FAIL_PATH();
+          break;
+        }
+        // the global lane, mirroring the read's fallback.
+        const global glob = globals_store_get(p_vm->globals_store, ok_create_string_view(
+                                                                         name->string.chars,
+                                                                         string_get_length(&name->string),
+                                                                         false));
+        if (IS_GLOBAL_VALID(glob)) {
+          const global_id gid = p_vm->globals_store->global_descriptors.data[glob.index];
+          if ((gid.flags & GLOBAL_FLAG_MUTABLE) == 0) {
+            runtime_error(p_vm,
+                          OK_EK_VALUE,
+                          "cannot assign to global '%s': declared without 'mut'.",
+                          name->string.chars);
+            FAIL_PATH();
+            break;
+          }
+          p_vm->globals_store->global_values.data[glob.index] = value_is_constant
+                                                                    ? frame->closure->function->chunk.constants
+                                                                          .data[A]
+                                                                    : REG_AT(A);
+          break;
+        }
         runtime_error(p_vm,
                       OK_EK_TYPE,
                       "undefined variable: %s (class %s has no static of this name).",
@@ -3514,6 +4469,122 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       owner->static_values.data[entry->slot] = value_is_constant
                                                     ? frame->closure->function->chunk.constants.data[A]
                                                     : REG_AT(A);
+      break;
+    }
+    case OP_GET_METHOD: {
+      // the baked method lane (R1): a bare method name inside a member body,
+      // proved at freeze time, resolved here against the running method's
+      // DEFINING class (the body was compiled in its context) and bound to
+      // `this` at register 0. the slow lane next to INVOKE's fused fast one.
+      const uint16_t ap = aprime_of(instruction);
+      const uint16_t bp = bprime_of(instruction);
+      value self = REG_AT(0);
+      if (!IS_VALUE_INSTANCE(self) ||
+          !IS_VALUE_STRING(frame->closure->function->chunk.constants.data[bp])) {
+        runtime_error(p_vm, OK_EK_INTERNAL, "corrupt method read.");
+        FAIL_PATH();
+        break;
+      }
+      object_string* name = VALUE_AS_STRING(frame->closure->function->chunk.constants.data[bp]);
+      object_class* owner = frame->closure->owner;
+      if (owner == NULL) {
+        runtime_error(p_vm, OK_EK_INTERNAL, "method read outside a class member.");
+        FAIL_PATH();
+        break;
+      }
+      const method_entry* entry = object_class_find_method(owner, name);
+      if (entry == NULL) {
+        // the tables are frozen; the freeze proved this exists. unreachable
+        // unless the bytecode was hand-forged.
+        runtime_error(p_vm, OK_EK_INTERNAL, "corrupt method read: entry vanished from a frozen table.");
+        FAIL_PATH();
+        break;
+      }
+      if (!entry_visible_from(entry, frame)) {
+        runtime_error(p_vm,
+                      OK_EK_TYPE,
+                      "method '%s' of class '%s' is private.",
+                      name->string.chars,
+                      entry->owner->name->string.chars);
+        FAIL_PATH();
+        break;
+      }
+      gc_guard_up(p_vm->alloc->gc, self);
+      object_specs specs = {p_vm->alloc, p_vm->objects_store};
+      object_bound_method* bound = create_object_bound_method(self, entry, &specs);
+      gc_guard_down(p_vm->alloc->gc);
+      if (bound == NULL) {
+        runtime_oom(p_vm, "out of memory: failed to allocate a bound method.");
+        FAIL_PATH();
+        break;
+      }
+      REG_AT(ap) = OBJECT_AS_VALUE(bound);
+      break;
+    }
+    case OP_GET_METHOD_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      value self = REG_AT(0);
+      if (!IS_VALUE_INSTANCE(self) ||
+          !IS_VALUE_STRING(frame->closure->function->chunk.constants.data[B])) {
+        runtime_error(p_vm, OK_EK_INTERNAL, "corrupt method read.");
+        FAIL_PATH();
+        break;
+      }
+      object_string* name = VALUE_AS_STRING(frame->closure->function->chunk.constants.data[B]);
+      object_class* owner = frame->closure->owner;
+      if (owner == NULL) {
+        runtime_error(p_vm, OK_EK_INTERNAL, "method read outside a class member.");
+        FAIL_PATH();
+        break;
+      }
+      const method_entry* entry = object_class_find_method(owner, name);
+      if (entry == NULL) {
+        runtime_error(p_vm, OK_EK_INTERNAL, "corrupt method read: entry vanished from a frozen table.");
+        FAIL_PATH();
+        break;
+      }
+      if (!entry_visible_from(entry, frame)) {
+        runtime_error(p_vm,
+                      OK_EK_TYPE,
+                      "method '%s' of class '%s' is private.",
+                      name->string.chars,
+                      entry->owner->name->string.chars);
+        FAIL_PATH();
+        break;
+      }
+      gc_guard_up(p_vm->alloc->gc, self);
+      object_specs specs = {p_vm->alloc, p_vm->objects_store};
+      object_bound_method* bound = create_object_bound_method(self, entry, &specs);
+      gc_guard_down(p_vm->alloc->gc);
+      if (bound == NULL) {
+        runtime_oom(p_vm, "out of memory: failed to allocate a bound method.");
+        FAIL_PATH();
+        break;
+      }
+      REG_AT(A) = OBJECT_AS_VALUE(bound);
+      break;
+    }
+    case OP_METHOD_NOT_ASSIGNABLE: {
+      const uint16_t bp = bprime_of(instruction);
+      const object_string* name = VALUE_AS_STRING(frame->closure->function->chunk.constants.data[bp]);
+      runtime_error(p_vm,
+                    OK_EK_VALUE,
+                    "cannot assign to method '%s': methods are not assignable.",
+                    name != NULL ? name->string.chars : "?");
+      FAIL_PATH();
+      break;
+    }
+    case OP_METHOD_NOT_ASSIGNABLE_LONG: {
+      const word2 words = JOIN_WORD(instruction);
+      const uint16_t A = A_of(words);
+      const object_string* name = VALUE_AS_STRING(frame->closure->function->chunk.constants.data[A]);
+      runtime_error(p_vm,
+                    OK_EK_VALUE,
+                    "cannot assign to method '%s': methods are not assignable.",
+                    name != NULL ? name->string.chars : "?");
+      FAIL_PATH();
       break;
     }
     case OP_GET_FIELD: {
@@ -3725,9 +4796,9 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
       } else if (recv_is_class) {
         klass = VALUE_AS_CLASS(recv);
       } else {
-        runtime_error(p_vm, OK_EK_TYPE, "only instances and classes have members.");
-        FAIL_PATH();
-        break;
+        // the native lane (§11): a builtin receiver dispatches on its class
+        // singleton - `a.len()` finds the native entry on the array class
+        klass = vm_classof(p_vm, recv);
       }
       chunk* chunk = &frame->closure->function->chunk;
       if (mic_at >= chunk->mic.count) {
@@ -3904,9 +4975,11 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
         // value as its receiver, and Foo(args) rides OP_CALL's class arm.
         klass = VALUE_AS_CLASS(recv);
       } else {
-        runtime_error(p_vm, OK_EK_TYPE, "only instances and classes have methods.");
-        FAIL_PATH();
-        break;
+        // the native lane (§11): a builtin receiver dispatches on its class
+        // singleton. the builtin tables are sealed (C15), so the mic below
+        // stays sound; a value whose class carries no such method gets the
+        // ordinary "has no method" error, naming the class.
+        klass = vm_classof(p_vm, recv);
       }
       chunk* chunk = &frame->closure->function->chunk;
       if (mic_at >= chunk->mic.count) {
@@ -4060,8 +5133,19 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
         }
       }
       if (entry->is_native) {
-        runtime_error(p_vm, OK_EK_INTERNAL, "native methods arrive with the native-class patch.");
-        FAIL_PATH();
+        // the native method flight: the window already holds the receiver at
+        // r[A] with the arguments above - exactly the argv shape. no frame is
+        // pushed, but the native may re-enter the vm and realloc the call
+        // stack and register file, so the cached locals refresh after.
+        frame->ip = ip;
+        if (!call_native_method(p_vm, exe, reg, entry, frame->registers_base + A, B)) {
+          FAIL_PATH();
+          break;
+        }
+        exe = p_vm->current_execution_state;
+        reg = &exe->registers;
+        frame = &exe->call_stack.data[exe->call_stack.count - 1];
+        ip = frame->ip;
         break;
       }
       frame->ip = ip;
@@ -4110,8 +5194,18 @@ interpret_result run_until(vm* p_vm, uint32_t p_call_depth) {
         break;
       }
       if (entry->is_native) {
-        runtime_error(p_vm, OK_EK_INTERNAL, "native methods arrive with the native-class patch.");
-        FAIL_PATH();
+        // same window shape as the closure lane: receiver (register 0)
+        // staged at the call window base, arguments above it.
+        REG_AT(A) = REG_AT(0);
+        frame->ip = ip;
+        if (!call_native_method(p_vm, exe, reg, entry, frame->registers_base + A, B)) {
+          FAIL_PATH();
+          break;
+        }
+        exe = p_vm->current_execution_state;
+        reg = &exe->registers;
+        frame = &exe->call_stack.data[exe->call_stack.count - 1];
+        ip = frame->ip;
         break;
       }
       // stage the receiver (register 0) as the call window base, then the
@@ -4466,6 +5560,7 @@ static inline bool call_native(vm* p_vm,
                                uint32_t p_callee,
                                uint16_t p_argc,
                                uint32_t p_retc) {
+  (void)p_retc; // natives yield exactly one result; the caller's retc only trims closures
   if (p_native->arity != OK_NATIVE_ARITY_ANY && p_argc != p_native->arity) {
     runtime_error(p_vm,
                   OK_EK_ARITY,
@@ -4476,7 +5571,6 @@ static inline bool call_native(vm* p_vm,
                   p_argc);
     return false;
   }
-  p_exe->native_call_depth++;
   // the native receives a pointer into the register file. if it calls back
   // into the vm and the callee's frame needs more registers than the current capacity, call() grows the
   // file with realloc and that pointer would dangle for the rest of the
@@ -4486,26 +5580,11 @@ static inline bool call_native(vm* p_vm,
   if (p_argc > 0) {
     memcpy(args_stash, p_reg->array.data + p_callee + 1, p_argc * sizeof(value));
   }
-  // TODO: allow multiple
-  value result = p_native->function(p_vm->ok, p_argc, args_stash);
-  p_exe->native_call_depth--;
-  if (p_exe->native_has_error) {
-    runtime_error(p_vm, OK_EK_NATIVE, "%s", p_exe->native_error_message.chars);
-    p_exe->native_has_error = false;
-    string_deinit(&p_exe->native_error_message, p_vm->alloc);
-    return false;
-  }
-  if (p_exe->error_pending) {
-    // a runtime error fired inside the native (e.g. its ok_call on a script
-    // closure failed). runtime_error already reset the state and printed the
-    // report. returning true here would make the OP_CALL handler reload
-    // frame from an empty call stack (data[count - 1] with count == 0) and segfault.
-    // so we fail the call so the error propagates up to the C entry point instead.
+  value result;
+  if (!run_native(p_vm, p_exe, p_native->function, p_argc, args_stash, &result)) {
     return false;
   }
   gc_guard_up(p_vm->alloc->gc, result);
-  p_exe->native_has_error = false;
-  string_deinit(&p_exe->native_error_message, p_vm->alloc);
   // natives do not push a call frame: when invoked via ok_call the call stack is
   // empty (data[count - 1] would be a wild pointer), and when invoked from
   // bytecode the caller frame's return_base is not where this call's result
@@ -4608,12 +5687,43 @@ static bool call_value(vm* p_vm,
       // the receiver takes the bound value's place at the window base (the
       // OP_CALL shape holds), then the entry calls through the ordinary lane
       object_bound_method* bound = (object_bound_method*)obj;
+      p_reg->array.data[p_base + p_callee] = bound->receiver;
       if (bound->entry->is_native) {
-        runtime_error(p_vm, OK_EK_INTERNAL, "native methods arrive with the native-class patch.");
+        return call_native_method(p_vm, p_exe, p_reg, bound->entry, p_base + p_callee, p_argc);
+      }
+      return call(p_vm, p_exe, p_reg, bound->entry->closure, p_base + p_callee, p_argc, p_retc);
+    }
+    case OBJ_INSTANCE: {
+      // calling an instance: the instance operator (), staged exactly like a
+      // bound method - the instance already sits at the window base (the
+      // receiver position), the arguments above it. no override means the
+      // instance is not callable.
+      object_class* klass = ((object_instance*)obj)->klass;
+      const method_entry* entry = p_vm->op_names[CLASS_OP_CALL] != NULL
+                                      ? object_class_find_operator(klass, CLASS_OP_CALL, p_vm->op_names[CLASS_OP_CALL])
+                                      : NULL;
+      if (entry == NULL) {
+        runtime_error(p_vm,
+                      OK_EK_TYPE,
+                      "invalid call: an instance of class '%s' is not callable (no operator ()).",
+                      klass->name->string.chars);
         return false;
       }
-      p_reg->array.data[p_base + p_callee] = bound->receiver;
-      return call(p_vm, p_exe, p_reg, bound->entry->closure, p_base + p_callee, p_argc, p_retc);
+      const call_frame* caller =
+          p_exe->call_stack.count > 0 ? &p_exe->call_stack.data[p_exe->call_stack.count - 1] : NULL;
+      if (!entry_visible_from(entry, caller)) {
+        runtime_error(p_vm,
+                      OK_EK_TYPE,
+                      "operator '()' of class '%s' is private.",
+                      entry->owner->name->string.chars);
+        return false;
+      }
+      if (entry->is_native) {
+        // the instance already sits at the window base: the receiver-first
+        // argv shape, ready to fly
+        return call_native_method(p_vm, p_exe, p_reg, entry, p_base + p_callee, p_argc);
+      }
+      return call(p_vm, p_exe, p_reg, entry->closure, p_base + p_callee, p_argc, p_retc);
     }
     case OBJ_CLASS: {
       // calling a class value: the overridden static operator () if the
@@ -4634,8 +5744,8 @@ static bool call_value(vm* p_vm,
           return false;
         }
         if (entry->is_native) {
-          runtime_error(p_vm, OK_EK_INTERNAL, "native methods arrive with the native-class patch.");
-          return false;
+          // the class value is the receiver and already sits at the callee slot
+          return call_native_method(p_vm, p_exe, p_reg, entry, p_base + p_callee, p_argc);
         }
         return call(p_vm, p_exe, p_reg, entry->closure, p_base + p_callee, p_argc, p_retc);
       }

@@ -1,0 +1,8 @@
+// methods are not assignable: a bare store to a method name is the trap the
+// freeze pass bakes (OP_METHOD_NOT_ASSIGNABLE), named in the error.
+class C {
+  let v = 1;
+  pub fu helper() { return 42; }
+  pub fu try_assign() { helper = 5; return v; }
+}
+print(C().try_assign()); // expect error: methods are not assignable

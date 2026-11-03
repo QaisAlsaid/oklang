@@ -1,0 +1,17 @@
+// a local class re-entered: each definition owns its body (copy-on-redefine)
+fu make_class() {
+  class Inner { let t = 1; pub fu get() { return t; } }
+  return Inner;
+}
+let C1 = make_class();
+let C2 = make_class();
+print(C1().get()); // expect: 1
+print(C2().get()); // expect: 1
+print(C1 is C2); // expect: false
+let a = C1();
+let b = C2();
+print(a is C1); // expect: true
+print(a is C2); // expect: false
+print(b is C2); // expect: true
+// one line, alternating receivers: each generation's method cache is its own
+print(a.get() + b.get() + a.get()); // expect: 3

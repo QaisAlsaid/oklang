@@ -1,0 +1,14 @@
+// the operator error lanes: arity, no-operator type errors, and privacy.
+class Vec2 {
+  let x = 0;
+  fu init(x) { this.x = x; }
+  pub fu operator +(other) { return Vec2(x + other.x); }
+  fu operator *(k) { return Vec2(x * k); } // private
+  pub fu get() { return x; }
+}
+let a = Vec2(1);
+print((a + Vec2(2)).get()); // expect: 3
+
+print(a + 2); // expect error: class 'num' has no field or method 'x'
+print(a * 2); // expect error: is private
+print(a.operator +(Vec2(1), Vec2(2)).get()); // expect error: expects at most 1 argument

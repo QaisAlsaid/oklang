@@ -1,0 +1,8 @@
+// one name one owner, within a class body: binary and unary minus share the
+// canonical "operator -" spelling, so a class cannot declare both - the
+// second definition is refused instead of silently replacing the first.
+class Both {
+  pub fu operator -(other) { return 0; }
+  pub fu operator -() { return 1; }
+}
+print(Both()); // expect error: already declared

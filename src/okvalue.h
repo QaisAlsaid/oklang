@@ -39,7 +39,10 @@
 #define TAG_OBJECT 3
 #define TAG_INT 4
 #define TAG_USER 5  // pointer or whatever as long as it is 48bits
-#define TAG_AS 6    // the `as` conversion type carrier (TT_STR/TT_NUM/TT_BOOL)
+#define TAG_AS 6    // RETIRED (0.5.0): was the `as` conversion type carrier.
+                   // the lane went through real class values with the builtin
+                   // singletons; the tag id stays reserved so the survivors keep
+                   // their numbers.
 #define TAG_DEFER 7 // a pending defer: the payload is an object_closure*
 
 #define TAG_NULL_MASK UINT64_C(0x0000000000000000)
@@ -48,7 +51,7 @@
 #define TAG_OBJECT_MASK UINT64_C(0x0003000000000000)
 #define TAG_INT_MASK UINT64_C(0x8000000000000000)
 #define TAG_USER_MASK UINT64_C(0x8001000000000000)
-#define TAG_AS_MASK UINT64_C(0x8002000000000000)
+// TAG_AS_MASK retired with TAG_AS (see above).
 #define TAG_DEFER_MASK UINT64_C(0x8003000000000000)
 
 #define VALUE_TAG(v) ((v) & TAG_MASK)
@@ -62,7 +65,6 @@
 #define IS_VALUE_OBJECT(v) (VALUE_TAG(v) == TAG_OBJECT_MASK)
 #define IS_VALUE_INT(v) (VALUE_TAG(v) == TAG_INT_MASK)
 #define IS_VALUE_USER(v) (VALUE_TAG(v) == TAG_USER_MASK)
-#define IS_VALUE_AS(v) (VALUE_TAG(v) == TAG_AS_MASK)
 #define IS_VALUE_DEFER(v) (VALUE_TAG(v) == TAG_DEFER_MASK)
 
 #define IS_VALUE_STRICTLY_NULL(v) (!IS_VALUE_NUMBER(v) && IS_VALUE_NULL(v))
@@ -70,7 +72,6 @@
 #define IS_VALUE_STRICTLY_OBJECT(v) (!IS_VALUE_NUMBER(v) && IS_VALUE_OBJECT(v))
 #define IS_VALUE_STRICTLY_INT(v) (!IS_VALUE_NUMBER(v) && IS_VALUE_INT(v))
 #define IS_VALUE_STRICTLY_USER(v) (!IS_VALUE_NUMBER(v) && IS_VALUE_USER(v))
-#define IS_VALUE_STRICTLY_AS(v) (!IS_VALUE_NUMBER(v) && IS_VALUE_AS(v))
 #define IS_VALUE_STRICTLY_DEFER(v) (!IS_VALUE_NUMBER(v) && IS_VALUE_DEFER(v))
 
 #define NUMBER_AS_VALUE(n) number_to_value(n)
@@ -80,7 +81,6 @@
 #define INT_AS_VALUE(i) TAGGED_VALUE(TAG_INT_MASK, int_to_payload(i))
 #define USER_AS_VALUE(u) TAGGED_VALUE(TAG_USER_MASK, (uint64_t)u)
 #define USER_PTR_AS_VALUE(u) TAGGED_VALUE(TAG_USER_MASK, (uint64_t)(uintptr_t)(u))
-#define AS_TAG_AS_VALUE(t) TAGGED_VALUE(TAG_AS_MASK, (uint64_t)(t))
 #define DEFER_AS_VALUE(c) TAGGED_VALUE(TAG_DEFER_MASK, (uint64_t)(uintptr_t)(c))
 
 #define VALUE_AS_NUMBER(v) value_to_number(v)
@@ -90,7 +90,6 @@
 #define VALUE_AS_INT(v) (payload_to_int(VALUE_PAYLOAD(v)))
 #define VALUE_AS_USER(v) VALUE_PAYLOAD(v)
 #define VALUE_AS_USER_PTR(v) ((void*)(uintptr_t)VALUE_PAYLOAD(v))
-#define VALUE_AS_AS_TAG(v) ((uint64_t)VALUE_PAYLOAD(v))
 
 typedef uint64_t value;
 

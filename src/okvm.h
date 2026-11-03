@@ -132,11 +132,22 @@ struct vm {
   // exactly one metaclass, no tower). created at vm_init, traced via mark_vm.
   struct object_class* object_singleton;
   struct object_class* class_singleton;
+  // the seven builtin class singletons (C10), index-parallel to
+  // builtin_class_id: str/num/bool/array/map/function/nil, all under Object,
+  // sealed by ok_define_builtin_surfaces after their native method tables
+  // are mounted. every value's classof() lands on one of these (or on
+  // Class, or on a user class). traced via mark_vm like the two above.
+  struct object_class* builtin_classes[OK_BUILTIN_COUNT];
   // the cached spelling of the static call operator, so constructing through
   // a class value never allocates its lookup name. rooted like the singletons.
   object_string* static_call_name;
   // the cached spelling of the initializer method, for the construction path.
   object_string* init_method_name;
+  // the canonical operator spellings ("operator +" etc.), one per
+  // class_operator, created once at init so the dispatch arms never allocate
+  // their probe names. rooted like the singletons. [SUBTRACT] and [NEGATE]
+  // share a spelling; the cache slots stay index-keyed.
+  object_string* op_names[CLASS_OP_COUNT];
   // the source table: one entry per ok_run, chunks carry the index. reports read per-frame.
   vm_sources sources;
   bool retain_source;
@@ -199,6 +210,14 @@ value vm_last_error(vm* p_vm);
 void vm_clear_error(vm* p_vm);
 bool vm_native_throw(vm* p_vm, ok_value p_value);
 
-typedef enum { TT_STR, TT_NUM, TT_BOOL } temporary_type_tags;
+// classof (C10): the one class value every value is an instance of.
+// instances -> their class, class values -> Class, everything else -> its
+// lane's builtin singleton (native values -> Object, bound methods ->
+// function; both noted in the classes record). total: never NULL.
+object_class* vm_classof(vm* p_vm, ok_value p_value);
+
+// the chain-walk half of the family (C12): is p_value an instance of
+// p_target or one of its descendants (Object at the root matches everything).
+bool vm_is_instance(vm* p_vm, ok_value p_value, const object_class* p_target);
 
 #endif // OK_VM_H

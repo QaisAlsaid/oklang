@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "okgc.h"
 #include "okobject.h"
 #include "okobject_store.h"
 #include "okutils.h"
@@ -173,6 +174,7 @@ static void object_function_init(object_function* p_object_function,
   p_object_function->has_varargs = false; // compiler sets this when the last parameter is `rest...`
   upvalue_descriptor_array_init(&p_object_function->upvalues, p_specs->alloc);
   chunk_init(&p_object_function->chunk, p_specs->alloc);
+  p_object_function->is_class_member = false; // the compiler marks members at begin_context
   p_object_function->patched_by = NULL;
   p_object_function->calls_super_init = false;
 }
@@ -437,6 +439,9 @@ static void object_class_init(object_class* p_class,
   uint8_array_init(&p_class->own_static_muts, p_specs->alloc);
   value_array_init(&p_class->static_values, p_specs->alloc);
   field_map_init(&p_class->static_fields, p_specs->alloc);
+  for (uint32_t i = 0; i < CLASS_OP_COUNT; ++i) {
+    p_class->op_cache[i] = NULL;
+  }
   p_class->frozen = false;
 }
 
@@ -615,6 +620,62 @@ const method_entry* object_class_find_static_method(const object_class* p_class,
   return NULL;
 }
 
+// the canonical spellings, index-parallel to class_operator. ONE space between
+// the keyword and the symbol, always - the parser synthesizes exactly these
+// strings, and the dispatch arms probe with them.
+static const char* const class_operator_spellings[CLASS_OP_COUNT] = {
+    "operator +",
+    "operator -",
+    "operator *",
+    "operator /",
+    "operator %",
+    "operator ==",
+    "operator <",
+    "operator <=",
+    "operator >",
+    "operator >=",
+    "operator -", // unary: same name as binary, split by arity at dispatch
+    "operator []",
+    "operator []=",
+    "operator ()",
+};
+
+const char* class_operator_spelling(class_operator p_op) {
+  return class_operator_spellings[p_op];
+}
+
+// the builtin singleton names, index-parallel to builtin_class_id. these are
+// the user-visible global names, the `as` target spellings, and the suffixes
+// of `operator str`-style conversion names - one table keeps the three
+// agreeing by construction.
+static const char* const builtin_class_names[OK_BUILTIN_COUNT] = {
+    "str",
+    "num",
+    "bool",
+    "array",
+    "map",
+    "function",
+    "nil",
+};
+
+const char* builtin_class_name(builtin_class_id p_id) {
+  return builtin_class_names[p_id];
+}
+
+const method_entry* object_class_find_operator(object_class* p_class, class_operator p_op, const object_string* p_name) {
+  if (p_class->op_cache[p_op] != NULL) {
+    return p_class->op_cache[p_op];
+  }
+  const method_entry* entry = object_class_find_method(p_class, p_name);
+  if (entry != NULL && p_class->frozen) {
+    // the cache write is sound only under seal: frozen tables never move or
+    // replace entries, and the parent chain roots every owner. an unfrozen
+    // class (C-defined, pre-freeze) probes uncached.
+    p_class->op_cache[p_op] = entry;
+  }
+  return entry;
+}
+
 object_instance* create_object_instance(object_class* p_class, object_specs* p_specs) {
   object_instance* instance = (object_instance*)p_specs->alloc->allocate(
       p_specs->alloc, sizeof(object_instance) + p_class->nfields * sizeof(value));
@@ -641,6 +702,74 @@ object_bound_method* create_object_bound_method(value p_receiver, const method_e
   bound->entry = p_entry;
   object_store_append(p_specs->store, (object*)bound);
   return bound;
+}
+
+// the dispatch argc an entry settles at: a closure counts parameters (the
+// receiver rides the window separately), a native counts the receiver in its
+// declared arity. virtual dispatch only stays honest when the two agree.
+static uint32_t method_entry_dispatch_argc(const method_entry* p_entry) {
+  return p_entry->is_native ? (uint32_t)p_entry->arity - 1u : (uint32_t)p_entry->closure->function->arity;
+}
+
+bool object_class_define_native_method(object_class* p_class,
+                                       ok_string_view p_name,
+                                       uint16_t p_arity,
+                                       ok_native_fn p_fn,
+                                       bool p_pub,
+                                       object_specs* p_specs) {
+  if (p_class->frozen) {
+    return false; // sealed (C15); the caller reports its own flavor
+  }
+  if (p_fn == NULL || p_name.chars == NULL) {
+    return false;
+  }
+  // the name object rides the guard stack across the map insert that adopts
+  // it (the map set allocates; an unrooted, unassigned string is exactly
+  // what an aggressive collect would sweep).
+  object_string* name = create_object_string(p_name, p_specs);
+  if (name == NULL) {
+    return false;
+  }
+  if (!gc_guard_up(p_specs->alloc->gc, OBJECT_AS_VALUE(name))) {
+    return false;
+  }
+  bool pub = p_pub;
+  const method_entry* inherited = NULL;
+  for (const object_class* c = p_class->parent; c != NULL; c = c->parent) {
+    inherited = method_map_get(&c->methods, name);
+    if (inherited != NULL) {
+      break;
+    }
+  }
+  if (inherited != NULL) {
+    if (inherited->pub && !p_pub) {
+      gc_guard_down(p_specs->alloc->gc);
+      return false; // no quiet narrowing of a pub ancestor
+    }
+    if (inherited->pub) {
+      pub = true; // pub survives overrides
+    }
+    if (method_entry_dispatch_argc(inherited) != (uint32_t)p_arity - 1u) {
+      gc_guard_down(p_specs->alloc->gc);
+      return false; // the signature contract
+    }
+  }
+  // one name, one owner - the same doctrine the script lane enforces.
+  if (method_map_get(&p_class->methods, name) != NULL) {
+    gc_guard_down(p_specs->alloc->gc);
+    return false;
+  }
+  method_entry entry;
+  entry.closure = NULL;
+  entry.native = p_fn;
+  entry.name = name;
+  entry.arity = p_arity;
+  entry.owner = p_class;
+  entry.is_native = 1;
+  entry.pub = pub;
+  const bool set = method_map_set(&p_class->methods, name, entry);
+  gc_guard_down(p_specs->alloc->gc); // the map (and the class's trace) owns the name now
+  return set;
 }
 
 void object_dispatch_deinit(object* p_object, object_specs* p_specs) {

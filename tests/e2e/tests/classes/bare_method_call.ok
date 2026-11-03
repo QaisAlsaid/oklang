@@ -1,0 +1,32 @@
+// R1: methods participate in bare-name resolution, implicitly bound to this.
+// the resolution order, pinned: READS are field-first (data wins), CALL SITES
+// fuse to INVOKE and are method-first (invoking wins). a bare name in call
+// position is a READ that gets called - a field shadowing a method name makes
+// the bare call hit the field's value.
+class Animal {
+  let name = "";
+  fu init(name) { this.name = name; }
+  pub fu describe() { return name + " speaks"; }
+  pub fu speak() { return describe() + " loudly"; } // bare sibling call
+  fu secret() { return "hidden"; }
+  pub fu reveal() { return secret(); } // bare private call
+  pub fu both() { return describe() + " | " + this.describe(); } // both lanes
+}
+let a = Animal("rex");
+print(a.speak()); // expect: rex speaks loudly
+print(a.reveal()); // expect: hidden
+print(a.both()); // expect: rex speaks | rex speaks
+// the shadow shape: one name, a field and a method
+class Shadow {
+  let x = "field";
+  pub fu x() { return "method"; }
+  pub fu read_bare() { return x; } // bare read: the field
+  pub fu read_this() { return this.x; } // this-relative read: the field
+  pub fu call_this() { return this.x(); } // invoke site: the method
+}
+let s = Shadow();
+print(s.read_bare()); // expect: field
+print(s.read_this()); // expect: field
+print(s.call_this()); // expect: method
+print(s.read_bare()); // expect: field
+print(s.call_this()); // expect: method

@@ -105,6 +105,14 @@ typedef struct {
                     // floor drops it, and the runtime frame widens past `registers` to cover
                     // the staged arguments. set by the compiler at the prologue.
   upvalue_descriptor_array upvalues;
+  // true when this proto is a class member (a method or a field initializer
+  // thunk): the class's own freeze enters through it directly. the freeze
+  // walk uses the flag to NOT descend into member protos of OTHER classes -
+  // a class declared inside a method compiles its members as constants of the
+  // ENCLOSING method's chunk, and the enclosing class's freeze must leave them
+  // alone (their own OP_CLASS_END owns them). plain lambdas carry false and
+  // patch for whatever class lexically encloses them.
+  bool is_class_member;
   // the class whose definition freeze-patched this proto's chunk (NULL until
   // then). a second freeze by a different class means the same body defined
   // twice - the in-place patching cannot express that, so it is refused.
@@ -233,6 +241,54 @@ typedef struct method_entry {
 // (constants are not interned across chunks), cached hashes.
 MAP_DECLARE(method_map, object_string*, method_entry, const object_string*)
 
+// the overloadable operator surface, as seen by the dispatch arms. each
+// binary takes one argument, unary minus and the subscript-get take none
+// beyond the receiver, the subscript-store takes two, the call operator's
+// count is the call's own. arity is checked at dispatch (unary minus and
+// binary minus share the "operator -" name and split by arity).
+typedef enum {
+  CLASS_OP_ADD = 0,
+  CLASS_OP_SUBTRACT,
+  CLASS_OP_MULTIPLY,
+  CLASS_OP_DIVIDE,
+  CLASS_OP_MODULUS,
+  CLASS_OP_EQUALS,
+  CLASS_OP_LESS,
+  CLASS_OP_LESS_EQUAL,
+  CLASS_OP_GREATER,
+  CLASS_OP_GREATER_EQUAL,
+  CLASS_OP_NEGATE,
+  CLASS_OP_SUBSCRIPT_GET,
+  CLASS_OP_SUBSCRIPT_SET,
+  CLASS_OP_CALL,
+  CLASS_OP_COUNT,
+} class_operator;
+
+// the canonical method-table spelling of an operator ("operator +" etc.).
+const char* class_operator_spelling(class_operator p_op);
+
+// the seven builtin classes (C10): one per existing value lane, all under
+// Object, all created at startup and sealed by ok_define_builtin_surfaces
+// once their native method tables are mounted (str/function/num/bool/nil
+// carry no methods in v0.5.0 - nothing existed as a function builtin to
+// mirror, and the ruling is no new stdlib). int and float share
+// `num` (the box detail is not a class difference); `nil` is null's class
+// and null is its sole instance.
+typedef enum {
+  OK_BUILTIN_STR = 0,
+  OK_BUILTIN_NUM,
+  OK_BUILTIN_BOOL,
+  OK_BUILTIN_ARRAY,
+  OK_BUILTIN_MAP,
+  OK_BUILTIN_FUNCTION,
+  OK_BUILTIN_NIL,
+  OK_BUILTIN_COUNT,
+} builtin_class_id;
+
+// the singleton's name ("str", "num", ...), also the `as` target spelling
+// and the mangled-name suffix of an `operator str`-style conversion.
+const char* builtin_class_name(builtin_class_id p_id);
+
 // one flat-layout field: its absolute slot in the instance array + mutability.
 typedef struct {
   uint16_t slot;
@@ -263,10 +319,35 @@ struct object_class {
   value_array static_values;   // own statics' storage: one slot each, never
                                // copied down the chain (shared by lookup)
   field_map static_fields;     // own statics only: name -> {slot, mut}
+  // the class-resident operator cache: one entry pointer per dispatchable
+  // operator, filled lazily on first dispatch and sound forever after - the
+  // tables are frozen (C15), so find_method is a pure function of (class,
+  // name) and the entry can never dangle while this class is reachable (the
+  // parent chain roots every owner). shared by EVERY dispatch site in the
+  // vm: one slot per (class, operator) beats per-site monomorphic state and
+  // costs no instruction words.
+  const struct method_entry* op_cache[CLASS_OP_COUNT];
   bool frozen;
 };
 
 object_class* create_object_class(object_string* p_name, object_class* p_parent, object_specs* p_specs);
+
+// definition-time (C side): append one native method entry. the arity COUNTS
+// the receiver (`a.len()` is arity 1) - the builtin handlers were already
+// receiver-first functions, which is what makes one C entry serve the
+// function and method spellings. OK_NATIVE_ARITY_ANY validates inside the
+// callback. false = OOM, the class is frozen (sealed, C15), a same-name
+// redeclaration in the body, a private override of a pub ancestor method,
+// or an override whose dispatch arity disagrees with the ancestor's (a
+// native's declared arity and a closure's parameter count both express "the
+// argc this entry dispatches at" - native counts the receiver, closure
+// does not - and the two must agree for virtual dispatch to be honest).
+bool object_class_define_native_method(object_class* p_class,
+                                       ok_string_view p_name,
+                                       uint16_t p_arity,
+                                       ok_native_fn p_fn,
+                                       bool p_pub,
+                                       object_specs* p_specs);
 
 // definition-time: append one own field. false = OOM or a redeclaration
 // (p_previous_owner names the ancestor that already declared it).
@@ -307,6 +388,12 @@ const field_entry* object_class_find_static(const object_class* p_class,
 
 // static method lookup walking the parent chain. NULL = not found.
 const method_entry* object_class_find_static_method(const object_class* p_class, const object_string* p_name);
+
+// the operator dispatch probe: the cached entry when one exists, else a
+// chain walk on the canonical spelling that (for frozen classes) fills the
+// cache. NULL = the chain has no such operator. p_name must be the
+// caller-held canonical object_string (the vm caches one per operator).
+const method_entry* object_class_find_operator(object_class* p_class, class_operator p_op, const object_string* p_name);
 
 typedef struct {
   object object;

@@ -1,0 +1,2 @@
+// no operator, no builtin lane: nothing converts a num to an array
+print(1 as array); // expect error: no conversion from 'num' to 'array'

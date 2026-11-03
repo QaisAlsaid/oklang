@@ -1,0 +1,2 @@
+// `is` demands a class on the right
+print(1 is 5); // expect error: 'is' requires a class

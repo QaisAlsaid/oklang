@@ -360,6 +360,24 @@ typedef enum {
                          //                          layout is a runtime truth, so no slot baking in 0.5.0.
   OP_STORE_STATIC_NAME,   // 2w:   (p, A, B, C)    -> static field k[C] of class value r[B] = p then
                          //                          k[A] otherwise r[A]. mutability checked at the walk.
+  OP_GET_METHOD,          // w:    (a', b')        -> r[a'] = bound method k[b'] of `this`. the baked
+                         //                          form of a field-maybe read the freeze pass proved to
+                         //                          be a method (own or inherited): the receiver is
+                         //                          register 0, the entry is looked up by name at
+                         //                          runtime (the slow lane next to INVOKE's fast one).
+  OP_GET_METHOD_LONG,     // 2w:   (A, B)          -> same, wide; ip += w
+  OP_METHOD_NOT_ASSIGNABLE, // w:  (b')            -> always errors: the name k[b'] is a method of the
+                         //                          enclosing chain, and methods are not assignable.
+                         //                          written by the freeze pass in place of a this-relative
+                         //                          store it proved to target a method.
+  OP_METHOD_NOT_ASSIGNABLE_LONG, // 2w: (A)         -> same, wide; ip += w
+  OP_STRICT_EQUAL,       // w:    (p, a, b, c)    -> r[a] = r[b] === (p then k[c] otherwise r[c]) - raw word
+                         //                          identity, total over every value, never dispatchable
+  OP_STRICT_EQUAL_LONG,  // 2w:   (p, A, B, C, q) -> r[A] = (q then k[B] otherwise r[B]) === (p then k[C] otherwise r[C]); ip += w
+  OP_IS,                 // w:    (p, a, b, c)    -> r[a] = classof(r[b]) === (p then k[c] otherwise r[c]) - the
+                         //                          exact-class probe, classof+identity fused, no global involved.
+                         //                          the operand must be a class value
+  OP_IS_LONG,            // 2w:   (p, A, B, C, q) -> r[A] = classof(q then k[B] otherwise r[B]) === (p then k[C] otherwise r[C]); ip += w
 } opcode;
 
 // clang-format on
@@ -619,6 +637,10 @@ static inline uint32_t opcode_word_count(opcode p_op) {
   case OP_DEFINE_STATIC_FIELD:
   case OP_GET_STATIC_NAME:
   case OP_STORE_STATIC_NAME:
+  case OP_GET_METHOD_LONG:
+  case OP_METHOD_NOT_ASSIGNABLE_LONG:
+  case OP_STRICT_EQUAL_LONG:
+  case OP_IS_LONG:
     return 2;
   case OP_GET_MEMBER:
   case OP_INVOKE:

@@ -1,0 +1,56 @@
+// the conversion surface (C13): `operator <Target>` rides the `as` lane.
+// the builtin targets (str/num/bool) override the default lanes for
+// instances; class targets are user-defined end to end.
+class Vec2 {
+  let x = 0;
+  let y = 0;
+  fu init(x, y) { this.x = x; this.y = y; }
+  pub fu operator ==(o) { return x == o.x and y == o.y; }
+}
+class Vec {
+  let a = 0;
+  let b = 0;
+  fu init(a, b) { this.a = a; this.b = b; }
+  pub fu operator Vec2() { return Vec2(a, b); }
+  pub fu operator str() { return "Vec(" + (a as str) + ", " + (b as str) + ")"; }
+  pub fu operator num() { return a + b; }
+  pub fu operator bool() { return a != 0; }
+}
+let v = Vec(3, 4);
+print(v as Vec2 == Vec2(3, 4)); // expect: true
+print(v as str); // expect: Vec(3, 4)
+print(v as num); // expect: 7
+print(v as bool); // expect: true
+print(Vec(0, 1) as bool); // expect: false
+// the conversion is found on the chain: a subclass inherits it
+class Vec3 : Vec {
+  fu init(a, b) { super(a, b); }
+}
+let w = Vec3(5, 6);
+print(w as Vec2 == Vec2(5, 6)); // expect: true
+print(w as num); // expect: 11
+// a conversion may return the target or any descendant of it
+class Vec2x : Vec2 {}
+class Box {
+  pub fu operator Vec2() { return Vec2x(1, 1); }
+}
+print((Box() as Vec2) is Vec2x); // expect: true
+print((Box() as Vec2) == Vec2(1, 1)); // expect: true
+// the builtin lanes for non-instances, unchanged
+print(12 as str); // expect: 12
+print("34" as num); // expect: 34
+print(0 as bool); // expect: true
+print(null as bool); // expect: false
+// instances without operator str keep the default rendering
+class Plain { let x = 1; }
+print(Plain() as str); // expect: <instance Plain>
+// conversions inside methods resolve the target through the same ladder
+class Meter {
+  let m = 0;
+  fu init(m) { this.m = m; }
+  pub fu feet() { return (m as num) * 3.281; }
+  pub fu tag() { return (m as str) + "m"; }
+}
+let m = Meter(2);
+print(m.feet()); // expect: 6.562
+print(m.tag()); // expect: 2m

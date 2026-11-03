@@ -160,6 +160,37 @@ bool ok_map_set(ok* p_ok, ok_value p_map, ok_value p_key, ok_value p_value);
 // (no store happens either way). never allocates.
 bool ok_map_remove(ok_value p_map, ok_value p_key);
 
+/* classes (embedder side) */
+
+bool ok_value_is_class(ok_value p_value);
+
+// a C-defined class: created unfrozen (define its native methods, then
+// ok_class_freeze). p_parent is a class value, or a null value for Object.
+// returns a null value on failure. the result is not rooted: the define and
+// freeze calls below guard it across their own allocations, but anything
+// else you allocate in between (or keeping it past the sequence) is your
+// rooting job - ok_root it, same contract as an ok_array_new result.
+// script sees the frozen class like any other: store it in a global and
+// construct instances with C(args).
+ok_value ok_class_new(ok* p_ok, ok_string_view p_name, ok_value p_parent);
+
+// define one native method on an unfrozen class. the receiver rides argv[0]
+// and the arity COUNTS it (`fu m(x)` on the script side is arity 2 here);
+// OK_NATIVE_ARITY_ANY defers the check to the callback. false = p_class is
+// not a class value, the class is sealed, a same-name redeclaration, a
+// private override of a pub ancestor, an arity disagreement with an
+// ancestor's dispatch, or OOM.
+bool ok_class_define_native_method(ok* p_ok,
+                                    ok_value p_class,
+                                    ok_string_view p_name,
+                                    uint16_t p_arity_including_receiver,
+                                    ok_native_fn p_cb,
+                                    bool p_pub);
+
+// seal the class (C15): builds the flat field map and freezes the tables.
+// after this, definitions are refused forever.
+bool ok_class_freeze(ok* p_ok, ok_value p_class);
+
 /* output */
 
 // print statements route through p_cb when set. the default (NULL) keeps the

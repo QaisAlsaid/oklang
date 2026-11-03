@@ -98,6 +98,51 @@ static void native_destructor(void* ptr) {
   g_destructor_calls++;
 }
 
+// natives as classes: the receiver rides argv[0] (an instance of the
+// host-defined class), the declared arity counts it.
+static ok_value native_square(ok* p_ok, uint8_t argc, const ok_value* argv) {
+  (void)p_ok;
+
+  assert(argc == 2); // receiver + x
+  assert(ok_value_is_object(argv[0]));
+  assert(ok_value_is_number(argv[1]));
+
+  const double x = ok_value_as_number(argv[1]);
+
+  return ok_value_number(x * x);
+}
+
+static ok_value native_method_add(ok* p_ok, uint8_t argc, const ok_value* argv) {
+  (void)p_ok;
+
+  assert(argc == 3); // receiver + a + b
+  assert(ok_value_is_object(argv[0]));
+  assert(ok_value_is_number(argv[1]));
+  assert(ok_value_is_number(argv[2]));
+
+  return ok_value_number(ok_value_as_number(argv[1]) + ok_value_as_number(argv[2]));
+}
+
+static ok_value native_hidden(ok* p_ok, uint8_t argc, const ok_value* argv) {
+  (void)p_ok;
+  (void)argc;
+  (void)argv;
+
+  return ok_value_number(0);
+}
+
+// a native operator entry: dispatched through the perform ladders exactly
+// like a script `operator +`, receiver on the left (C14).
+static ok_value native_operator_add(ok* p_ok, uint8_t argc, const ok_value* argv) {
+  (void)p_ok;
+
+  assert(argc == 2);
+  assert(ok_value_is_object(argv[0]));
+  assert(ok_value_is_number(argv[1]));
+
+  return ok_value_number(100 + ok_value_as_number(argv[1]));
+}
+
 struct string_bag {
   std::vector<ok_value> items;
   int* destructor_calls;
@@ -408,6 +453,114 @@ int main() {
 
   assert(ok_value_is_number(echo_result));
   assert(ok_value_as_number(echo_result) == 123);
+
+  // natives as classes: a host-defined class with native methods, consumed
+  // from script like any other - construct, call, bind, instanceof, privacy.
+  ok_value math = ok_class_new(vm, ok_create_string_view("Math", OK_STRING_VIEW_CALCULATE_LENGTH, true), ok_value_null());
+
+  assert(ok_value_is_class(math));
+  assert(!ok_value_is_number(math));
+
+  assert(ok_class_define_native_method(
+      vm, math, ok_create_string_view("square", OK_STRING_VIEW_CALCULATE_LENGTH, true), 2, native_square, true));
+  assert(ok_class_define_native_method(
+      vm, math, ok_create_string_view("add", OK_STRING_VIEW_CALCULATE_LENGTH, true), 3, native_method_add, true));
+  // a private one: script outside the (empty) hierarchy ring cannot call it
+  assert(ok_class_define_native_method(
+      vm, math, ok_create_string_view("hidden", OK_STRING_VIEW_CALCULATE_LENGTH, true), 1, native_hidden, false));
+  // a native operator: the perform ladders find it by the canonical spelling
+  assert(ok_class_define_native_method(
+      vm, math, ok_create_string_view("operator +", OK_STRING_VIEW_CALCULATE_LENGTH, true), 2, native_operator_add, true));
+  // one name, one owner - the same doctrine the script lane enforces
+  assert(!ok_class_define_native_method(
+      vm, math, ok_create_string_view("square", OK_STRING_VIEW_CALCULATE_LENGTH, true), 2, native_square, true));
+
+  assert(ok_class_freeze(vm, math));
+  // sealed (C15): definitions are refused forever
+  assert(!ok_class_define_native_method(
+      vm, math, ok_create_string_view("late", OK_STRING_VIEW_CALCULATE_LENGTH, true), 1, native_hidden, true));
+
+  assert(ok_global_define(vm, ok_create_string_view("Math", OK_STRING_VIEW_CALCULATE_LENGTH, true), math, false));
+
+  const char* class_code = R"(
+    let m = Math();
+    if m.square(7) != 49 { print "bad: square"; }
+    if m.add(1, 2) != 3 { print "bad: add"; }
+    if not (m is Math) { print "bad: is"; }
+    if not isinstance(m, Object) { print "bad: root"; }
+    // the bound native method carries its receiver
+    let sq = m.square;
+    if sq(6) != 36 { print "bad: bound"; }
+    // a warm site: the mic caches (builtin class -> native entry) like any other
+    let mut total = 0;
+    for let i = 0 : 100 {
+      total = total + m.square(i);
+    }
+    if total != 328350 { print "bad: warm site"; }
+    // the native operator entry, dispatched through the binary + ladder
+    if m + 5 != 105 { print "bad: native operator"; }
+    m.hidden();
+  )";
+
+  ok_source class_source = {
+      .code = class_code,
+      .path = "embed",
+  };
+
+  // the last line calls a private native method: a runtime error, exactly
+  // like a private script method would be
+  result = ok_run(vm, class_source);
+
+  assert(result == OK_RUNTIME_ERROR);
+
+  // a script factory re-called through the C API: the second call redefines
+  // the local class (copy-on-redefine, same parent). both generations work,
+  // each with its own captured seed.
+  const char* factory_code = R"(
+    glob fu make_inner(seed) {
+      class Inner {
+        let t;
+        fu init() { this.t = seed; }
+        pub fu read() { return t; }
+        pub fu twice() { return read() * 2; }
+      }
+      let v = Inner();
+      return v.twice();
+    }
+  )";
+
+  ok_source factory_source = {
+      .code = factory_code,
+      .path = "embed",
+  };
+
+  result = ok_run(vm, factory_source);
+
+  assert(result == OK);
+
+  ok_value factory = ok_value_null();
+
+  assert(ok_global_get(vm, ok_create_string_view("make_inner", OK_STRING_VIEW_CALCULATE_LENGTH, true), &factory));
+
+  ok_value gen1_args[] = {
+      ok_value_number(21),
+  };
+
+  ok_value gen1 = ok_value_null();
+
+  assert(ok_call(vm, factory, 1, gen1_args, &gen1));
+
+  assert(ok_value_as_number(gen1) == 42);
+
+  ok_value gen2_args[] = {
+      ok_value_number(50),
+  };
+
+  ok_value gen2 = ok_value_null();
+
+  assert(ok_call(vm, factory, 1, gen2_args, &gen2));
+
+  assert(ok_value_as_number(gen2) == 100);
 
   const char* error_code = "host_fail();\n";
 

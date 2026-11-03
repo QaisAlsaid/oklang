@@ -375,6 +375,13 @@ begin_context(compiler* p_compiler, ok_string_view p_name, function_type p_type,
     ctx.sees_statics = p_compiler->contexts.data[p_compiler->contexts.count - 1].sees_statics;
     ctx.statics_of_class = p_compiler->contexts.data[p_compiler->contexts.count - 1].statics_of_class;
   }
+  if (p_type == FUNCTION_METHOD || p_type == FUNCTION_STATIC) {
+    // the freeze walk's boundary: member protos belong to their OWN class's
+    // freeze (which enters through the class's method table directly); a
+    // class declared inside this method compiles ITS members as constants of
+    // this chunk, and this class's freeze must skip them.
+    obj_fu->is_class_member = true;
+  }
   const bool res = compile_contexts_append(&p_compiler->contexts, ctx);
   gc_guard_down(alloc->gc);
   if (!res) {
@@ -708,6 +715,7 @@ ret: {
 // object: constants are not interned, and the freeze pass + runtime compare
 // by content, so sharing is an optimization nobody asked for yet.
 static constant add_name_constant(compiler* p_compiler, token p_name, ast_node* p_author);
+static constant add_string_constant(compiler* p_compiler, ok_string_view p_name, ast_node* p_author);
 
 // the statics lane resolves the enclosing class's name through the ordinary
 // variable machinery (a local in the body, an upvalue inside methods), so the
@@ -1409,9 +1417,14 @@ static bool compile_function_declaration(compiler* p_compiler, ast_function_decl
 }
 
 static constant add_name_constant(compiler* p_compiler, token p_name, ast_node* p_author) {
+  return add_string_constant(p_compiler, ok_create_string_view(p_name.start, p_name.length, false), p_author);
+}
+
+// the canonical-name lane: operator methods and operator member accesses
+// carry a synthesized spelling ("operator +") that no single token spans.
+static constant add_string_constant(compiler* p_compiler, ok_string_view p_name, ast_node* p_author) {
   object_specs specs = {p_compiler->alloc, p_compiler->objects_store};
-  ok_string_view name_view = ok_create_string_view(p_name.start, p_name.length, false);
-  object_string* name = create_object_string(name_view, &specs);
+  object_string* name = create_object_string(p_name, &specs);
   if (name == NULL) {
     report_oom(p_compiler, p_author);
     return (constant){0, 0, CONSTANT_ALLOCATION_FAILED};
@@ -1652,8 +1665,10 @@ static bool compile_class_declaration(compiler* p_compiler, ast_class_declaratio
       }
     } else if (member->node.node_type == AST_FUNCTION_DECLARATION) {
       ast_function_declaration* fu = (ast_function_declaration*)member;
-      ok_string_view method_name =
-          ast_identifier_expression_get_value((ast_identifier_expression*)fu->binding->lvalue);
+      // the canonical name: the binding's identifier, or the synthesized
+      // operator spelling ("operator +") - one string either way, so the
+      // method table, the dispatch arms, and the member syntax all agree.
+      ok_string_view method_name = ast_function_declaration_name(fu);
       _register closure_reg;
       if (!register_allocator_allocate_temp(regalloc, &closure_reg)) {
         report_oom(p_compiler, author);
@@ -1672,9 +1687,7 @@ static bool compile_class_declaration(compiler* p_compiler, ast_class_declaratio
                                  (ast_node*)member)) {
         return false;
       }
-      constant method_const =
-          add_name_constant(p_compiler, ((ast_identifier_expression*)fu->binding->lvalue)->expression.node.token,
-                            (ast_node*)member);
+      constant method_const = add_string_constant(p_compiler, method_name, (ast_node*)member);
       if (!IS_CONSTANT_VALID(method_const)) {
         return false;
       }
@@ -2086,7 +2099,7 @@ static lvalue resolve_lvalue(compiler* p_compiler, ast_expression* p_lvalue_expr
                                        author);
       if (self.error == LOCATION_OK && self.kind == LOCATION_KIND_REGISTER && self.index == 0) {
         object_specs specs = {p_compiler->alloc, p_compiler->objects_store};
-        ok_string_view name_view = ok_create_string_view(access->name.start, access->name.length, false);
+        ok_string_view name_view = ast_access_expression_name(access);
         object_string* name = create_object_string(name_view, &specs);
         if (name == NULL) {
           report_oom(p_compiler, author);
@@ -2117,7 +2130,7 @@ static lvalue resolve_lvalue(compiler* p_compiler, ast_expression* p_lvalue_expr
       return (lvalue){LVALUE_INVALID};
     }
     object_specs specs = {p_compiler->alloc, p_compiler->objects_store};
-    ok_string_view name_view = ok_create_string_view(access->name.start, access->name.length, false);
+    ok_string_view name_view = ast_access_expression_name(access);
     object_string* name = create_object_string(name_view, &specs);
     if (name == NULL) {
       report_oom(p_compiler, author);
@@ -3665,6 +3678,32 @@ static bool compile_binary_value_operator(compiler* p_compiler,
 
     break;
   }
+  case OPERATOR_BIN_STRICT_EQUALS: {
+    result = emit_binop(p_compiler,
+                        OP_STRICT_EQUAL,
+                        OP_STRICT_EQUAL_LONG,
+                        p_dest,
+                        lhs.value,
+                        rhs.value,
+                        is_lhs_p,
+                        is_rhs_p,
+                        (ast_node*)p_binexpr);
+
+    break;
+  }
+  case OPERATOR_BIN_IS: {
+    result = emit_binop(p_compiler,
+                        OP_IS,
+                        OP_IS_LONG,
+                        p_dest,
+                        lhs.value,
+                        rhs.value,
+                        is_lhs_p,
+                        is_rhs_p,
+                        (ast_node*)p_binexpr);
+
+    break;
+  }
   case OPERATOR_BIN_BANG_EQUAL: {
     result = emit_binop(p_compiler,
                         OP_NOT_EQUAL,
@@ -3924,7 +3963,7 @@ bool compile_call_expression(compiler* p_compiler,
         }
         constant name_const;
         if (is_super_access) {
-          name_const = add_name_constant(p_compiler, ((ast_access_expression*)callee)->name, (ast_node*)p_call);
+          name_const = add_string_constant(p_compiler, ast_access_expression_name((ast_access_expression*)callee), (ast_node*)p_call);
         } else {
           object_specs specs = {p_compiler->alloc, p_compiler->objects_store};
           object_string* init_name =
@@ -3975,7 +4014,7 @@ bool compile_call_expression(compiler* p_compiler,
         if (!compile_expressions_list(p_compiler, &p_call->arguments, A_MAX, &args, (ast_node*)p_call)) {
           return false;
         }
-        constant name_const = add_name_constant(p_compiler, access->name, (ast_node*)p_call);
+        constant name_const = add_string_constant(p_compiler, ast_access_expression_name(access), (ast_node*)p_call);
         if (!IS_CONSTANT_VALID(name_const)) {
           return false;
         }
@@ -4827,7 +4866,7 @@ static bool compile_access_expression(compiler* p_compiler,
                                      ok_create_string_view("this", OK_STRING_VIEW_CALCULATE_LENGTH, true),
                                      author);
     if (self.error == LOCATION_OK && self.kind == LOCATION_KIND_REGISTER && self.index == 0) {
-      constant name_const = add_name_constant(p_compiler, p_access->name, author);
+      constant name_const = add_string_constant(p_compiler, ast_access_expression_name(p_access), author);
       if (!IS_CONSTANT_VALID(name_const)) {
         return false;
       }
@@ -4860,7 +4899,7 @@ static bool compile_access_expression(compiler* p_compiler,
   if (!materialize_into(p_compiler, &recv.value, p_dest, author)) {
     return false;
   }
-  constant name_const = add_name_constant(p_compiler, p_access->name, author);
+  constant name_const = add_string_constant(p_compiler, ast_access_expression_name(p_access), author);
   if (!IS_CONSTANT_VALID(name_const)) {
     return false;
   }

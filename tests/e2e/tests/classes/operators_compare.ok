@@ -1,0 +1,42 @@
+// the comparison surface: == dispatches when defined, != is its negation,
+// the ordered four dispatch on the left operand. without an operator the
+// shipped defaults hold: mixed == is identity, ordered is a type error.
+class Version {
+  let major = 0;
+  let minor = 0;
+  fu init(major, minor) { this.major = major; this.minor = minor; }
+  pub fu operator ==(other) { return major == other.major and minor == other.minor; }
+  pub fu operator <(other) { return major < other.major; }
+  pub fu operator <=(other) { return major < other.major or (major == other.major and minor <= other.minor); }
+  pub fu operator >(other) { return major > other.major; }
+  pub fu operator >=(other) { return major > other.major or (major == other.major and minor >= other.minor); }
+}
+let v1 = Version(1, 0);
+let v2 = Version(1, 0);
+let v3 = Version(1, 1);
+let v4 = Version(2, 0);
+print(v1 == v2); // expect: true
+print(v1 == v3); // expect: false
+print(v1 != v2); // expect: false
+print(v1 != v3); // expect: true
+print(v1 < v4); // expect: true
+print(v1 <= v2); // expect: true
+print(v4 > v1); // expect: true
+print(v3 >= v1); // expect: true
+// an operator may take a non-instance right operand: the method decides
+class Temp {
+  let celsius = 0;
+  fu init(c) { celsius = c; }
+  pub fu operator ==(other) { return celsius == other; }
+}
+let t = Temp(20);
+print(t == 20); // expect: true
+print(t == 21); // expect: false
+print(t != 21); // expect: true
+// no operator defined: identity ==, identity != (the shipped defaults)
+class Opaque {}
+let o1 = Opaque();
+let o2 = Opaque();
+print(o1 == o1); // expect: true
+print(o1 == o2); // expect: false
+print(o1 != o2); // expect: true

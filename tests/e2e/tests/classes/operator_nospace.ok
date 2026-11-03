@@ -1,0 +1,13 @@
+// the canonical spelling: `fu operator+(o)` (no space) and `a.operator  +(b)`
+// (extra spaces) both canonicalize to "operator +" - one name, one entry,
+// regardless of the user's whitespace.
+class Num {
+  let v = 0;
+  fu init(v) { this.v = v; }
+  pub fu operator+(other) { return Num(v + other.v); }
+  pub fu get() { return v; }
+}
+let a = Num(1);
+print((a + Num(2)).get()); // expect: 3
+print(a.operator +(Num(3)).get()); // expect: 4
+print(a.operator+(Num(4)).get()); // expect: 5

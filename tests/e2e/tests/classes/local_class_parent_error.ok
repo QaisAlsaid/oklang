@@ -1,0 +1,10 @@
+// the one shape a redefinition cannot express: a different base would need a
+// different bake from pre-freeze code the body no longer carries
+class Base1 { let a = 1; }
+class Base2 { let b = 2; }
+fu make_class(p) {
+  class Inner : p { let t = 1; pub fu get() { return t; } }
+  return Inner;
+}
+let C1 = make_class(Base1);
+let C2 = make_class(Base2); // expect error: different base

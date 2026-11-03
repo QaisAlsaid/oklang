@@ -1,0 +1,19 @@
+// calling an instance: the instance operator (), staged like a bound method
+// (the instance is already the call window's receiver). without it, the
+// instance is not callable.
+class Adder {
+  let base = 0;
+  fu init(base) { this.base = base; }
+  pub fu operator ()(x) { return base + x; }
+}
+let add10 = Adder(10);
+print(add10(5)); // expect: 15
+print(add10(90)); // expect: 100
+let add0 = Adder(0);
+print(add0(7)); // expect: 7
+// instances compose as values: through arrays, maps, and calls
+let adders = [Adder(1), Adder(2)];
+print(adders[0](10)); // expect: 11
+print(adders[1](10)); // expect: 12
+fu apply(f, v) { return f(v); }
+print(apply(add10, 1)); // expect: 11

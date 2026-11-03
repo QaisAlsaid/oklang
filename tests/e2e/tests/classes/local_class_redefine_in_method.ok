@@ -1,0 +1,17 @@
+// a class declared inside a method, re-entered: the member protos are shared
+// constants of the method's chunk, and each definition copies its own
+class Outer {
+  pub fu make_inner() {
+    class Inner {
+      let t = 1;
+      pub fu get() { return t; }
+    }
+    return Inner;
+  }
+}
+let o = Outer();
+let I1 = o.make_inner();
+let I2 = o.make_inner();
+print(I1().get()); // expect: 1
+print(I2().get()); // expect: 1
+print(I1 is I2); // expect: false

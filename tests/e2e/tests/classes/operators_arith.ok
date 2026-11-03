@@ -1,0 +1,27 @@
+// the binary operator surface: every dispatchable arithmetic form, called
+// through the operator syntax and the member syntax, plus binding.
+class Vec2 {
+  let x = 0;
+  let y = 0;
+  fu init(x, y) { this.x = x; this.y = y; }
+  pub fu operator +(other) { return Vec2(x + other.x, y + other.y); }
+  pub fu operator -(other) { return Vec2(x - other.x, y - other.y); }
+  pub fu operator *(k) { return Vec2(x * k, y * k); }
+  pub fu operator /(k) { return Vec2(x / k, y / k); }
+  pub fu operator %(k) { return Vec2(x % k, y % k); }
+  pub fu show() { return "(" + (x as str) + ", " + (y as str) + ")"; }
+}
+let a = Vec2(1, 2);
+let b = Vec2(3, 4);
+print((a + b).show()); // expect: (4, 6)
+print((a - b).show()); // expect: (-2, -2)
+print((a * 3).show()); // expect: (3, 6)
+print((a / 2).show()); // expect: (0.5, 1)
+print((b % 2).show()); // expect: (1, 0)
+// the member syntax reaches the same entries, and they bind like any method
+print(a.operator +(b).show()); // expect: (4, 6)
+let m = a.operator +;
+print(m(b).show()); // expect: (4, 6)
+// left-operand dispatch only (C14): a number on the left never dispatches
+let n = 2;
+print(n * 3); // expect: 6

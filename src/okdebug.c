@@ -113,10 +113,16 @@ static const char* const OPCODE_NAMES[] = {
     "DEFINE_STATIC_FIELD",
     "GET_STATIC_NAME",
     "STORE_STATIC_NAME",
+    "GET_METHOD",
+    "GET_METHOD_LONG",
+    "METHOD_NOT_ASSIGNABLE",
+    "METHOD_NOT_ASSIGNABLE_LONG",
+    "STRICT_EQUAL",
+    "STRICT_EQUAL_LONG",
+    "IS",
+    "IS_LONG",
 };
-typedef char opcode_names_in_sync[(sizeof(OPCODE_NAMES) / sizeof(OPCODE_NAMES[0]) == (size_t)OP_STORE_STATIC_NAME + 1)
-                                      ? 1
-                                      : -1];
+typedef char opcode_names_in_sync[(sizeof(OPCODE_NAMES) / sizeof(OPCODE_NAMES[0]) == (size_t)OP_IS_LONG + 1) ? 1 : -1];
 
 static const char* binop_symbol(const opcode p_op) {
   switch (p_op) {
@@ -138,6 +144,12 @@ static const char* binop_symbol(const opcode p_op) {
   case OP_EQUALS:
   case OP_EQUALS_LONG:
     return "==";
+  case OP_STRICT_EQUAL:
+  case OP_STRICT_EQUAL_LONG:
+    return "===";
+  case OP_IS:
+  case OP_IS_LONG:
+    return "is";
   case OP_NOT_EQUAL:
   case OP_NOT_EQUAL_LONG:
     return "!=";
@@ -203,6 +215,8 @@ static bool op_is_two_words(opcode p_op) {
   case OP_DIVIDE_LONG:
   case OP_MODULUS_LONG:
   case OP_EQUALS_LONG:
+  case OP_STRICT_EQUAL_LONG:
+  case OP_IS_LONG:
   case OP_NOT_EQUAL_LONG:
   case OP_GREATER_LONG:
   case OP_LESS_LONG:
@@ -708,6 +722,24 @@ uint32_t debug_disassemble_instruction(disassembler* p_disassembler, uint32_t p_
     } else {
       printf("r%u", A);
     }
+    break;
+  case OP_GET_METHOD:
+    printf("r%u = this.", ap);
+    print_constant_inline(chunk, bp);
+    printf(" <bind>");
+    break;
+  case OP_GET_METHOD_LONG:
+    printf("r%u = this.", A);
+    print_constant_inline(chunk, B);
+    printf(" <bind>");
+    break;
+  case OP_METHOD_NOT_ASSIGNABLE:
+    printf("method trap ");
+    print_constant_inline(chunk, bp);
+    break;
+  case OP_METHOD_NOT_ASSIGNABLE_LONG:
+    printf("method trap ");
+    print_constant_inline(chunk, A);
     break;
   case OP_GET_MEMBER: {
     const word mic = chunk->code.data[p_offset + 2];

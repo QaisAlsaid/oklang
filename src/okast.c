@@ -459,6 +459,23 @@ void ast_access_expression_init(ast_access_expression* p_access,
   ast_expression_init(&p_access->expression, AST_ACCESS_EXPRESSION, p_token, p_specs);
   p_access->left = p_left;
   p_access->name = p_name;
+  p_access->owned_name = NULL;
+}
+
+void ast_access_expression_set_owned_name(ast_access_expression* p_access, char* p_owned_name) {
+  allocators* alloc = p_access->expression.node.alloc;
+  if (p_access->owned_name != NULL) {
+    alloc->release(alloc, p_access->owned_name);
+  }
+  p_access->owned_name = p_owned_name;
+}
+
+ok_string_view ast_access_expression_name(const ast_access_expression* p_access) {
+  if (p_access->owned_name != NULL) {
+    const uint32_t length = (uint32_t)strlen(p_access->owned_name);
+    return ok_create_string_view(p_access->owned_name, length, false);
+  }
+  return ok_create_string_view(p_access->name.start, p_access->name.length, false);
 }
 
 void ast_access_expression_deinit(ast_access_expression* p_access) {
@@ -466,6 +483,10 @@ void ast_access_expression_deinit(ast_access_expression* p_access) {
   ast_dispatch_deinit((ast_node*)p_access->left);
   alloc->release(alloc, p_access->left);
   p_access->left = NULL;
+  if (p_access->owned_name != NULL) {
+    alloc->release(alloc, p_access->owned_name);
+    p_access->owned_name = NULL;
+  }
   ast_expression_deinit(&p_access->expression);
 }
 
@@ -1724,6 +1745,23 @@ void ast_function_declaration_init(ast_function_declaration* p_fu,
   p_fu->binding = p_binding;
   p_fu->parameters = p_params;
   p_fu->body = p_body;
+  p_fu->mangled_name = NULL;
+}
+
+void ast_function_declaration_set_mangled_name(ast_function_declaration* p_fu, char* p_mangled_name) {
+  allocators* alloc = p_fu->declaration.statement.node.alloc;
+  if (p_fu->mangled_name != NULL) {
+    alloc->release(alloc, p_fu->mangled_name);
+  }
+  p_fu->mangled_name = p_mangled_name;
+}
+
+ok_string_view ast_function_declaration_name(const ast_function_declaration* p_fu) {
+  if (p_fu->mangled_name != NULL) {
+    const uint32_t length = (uint32_t)strlen(p_fu->mangled_name);
+    return ok_create_string_view(p_fu->mangled_name, length, false);
+  }
+  return ast_identifier_expression_get_value((ast_identifier_expression*)p_fu->binding->lvalue);
 }
 
 void ast_function_declaration_deinit(ast_function_declaration* p_fu) {
@@ -1735,6 +1773,10 @@ void ast_function_declaration_deinit(ast_function_declaration* p_fu) {
   alloc->release(alloc, p_fu->binding);
   p_fu->binding = NULL;
   p_fu->body = NULL;
+  if (p_fu->mangled_name != NULL) {
+    alloc->release(alloc, p_fu->mangled_name);
+    p_fu->mangled_name = NULL;
+  }
   ast_declaration_deinit(&p_fu->declaration);
 }
 

@@ -20,7 +20,10 @@ void test_tag_logical_vs_physical() {
   TEST_ASSERT_EQUAL(TAG_X_MASK(TAG_OBJECT), TAG_OBJECT_MASK);
   TEST_ASSERT_EQUAL(TAG_X_MASK(TAG_INT), TAG_INT_MASK);
   TEST_ASSERT_EQUAL(TAG_X_MASK(TAG_USER), TAG_USER_MASK);
-  TEST_ASSERT_EQUAL(TAG_X_MASK(TAG_AS), TAG_AS_MASK);
+  // TAG_AS is retired (0.5.0: the `as` lane rides real class values now) but
+  // its logical id stays reserved so the survivors keep their numbers - the
+  // physical mask for id 6 is still the retired 0x8002 tag bits.
+  TEST_ASSERT_EQUAL(TAG_X_MASK(TAG_AS), UINT64_C(0x8002000000000000));
   TEST_ASSERT_EQUAL(TAG_X_MASK(TAG_DEFER), TAG_DEFER_MASK);
 }
 

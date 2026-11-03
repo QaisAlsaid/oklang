@@ -1,0 +1,25 @@
+// operators are methods: inherited, overridable (signature contract holds),
+// private when unmarked. the dispatch walks the chain like any lookup, and
+// privacy rides the caller's frame exactly like a named method.
+class Base {
+  let v = 0;
+  fu init(v) { this.v = v; }
+  pub fu operator +(other) { return Base(v + other.v); }
+  fu operator *(k) { return Base(v * k); } // private: the ring only
+  pub fu scale(k) { return this * k; } // inside the ring: the private op works
+  pub fu get() { return v; }
+}
+let x = Base(2);
+let y = Base(3);
+print((x + y).get()); // expect: 5
+print(x.scale(10).get()); // expect: 20
+class Derived : Base {
+  fu init(v) { super(v); }
+  pub fu operator +(other) { return Derived(v + other.v + 100); }
+  pub fu scale_from_sub(k) { return this * k; } // the ring extends down
+}
+let d = Derived(1);
+print((d + y).get()); // expect: 104
+print(d.scale_from_sub(5).get()); // expect: 5
+// an inherited pub operator serves a subclass instance unchanged
+print((d + Base(1)).get()); // expect: 102

@@ -1,0 +1,3 @@
+// an instance with no `operator num` has no numeric form
+class Plain { let x = 1; }
+print(Plain() as num); // expect error: instance is not convertible to number

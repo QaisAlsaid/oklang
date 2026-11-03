@@ -1,0 +1,20 @@
+// redefinition with a named base: the inherited field bake rides the copied
+// body, and the layout is identical for every generation
+class Base { let a = 1; }
+fu make_class() {
+  class Inner : Base {
+    let mut t = 2;
+    pub fu both() { return a + t; }
+    pub fu set(v) { t = v; return t; }
+  }
+  return Inner;
+}
+let C1 = make_class();
+let C2 = make_class();
+let x = C1();
+let y = C2();
+print(x.both()); // expect: 3
+print(y.both()); // expect: 3
+print(x.set(10)); // expect: 10
+print(y.both()); // expect: 3
+print(x.both()); // expect: 11

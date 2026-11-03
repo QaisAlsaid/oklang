@@ -1,0 +1,7 @@
+// the statics-side trap: storing to a bare static method name.
+class C {
+  static let s = 1;
+  pub static fu helper() { return s; }
+  pub static fu try_assign() { helper = 5; return s; }
+}
+print(C.try_assign()); // expect error: methods are not assignable

@@ -1,0 +1,20 @@
+// unary minus: same "operator -" name as the binary, split by arity. one
+// name one owner: a class (and, through the signature contract, a hierarchy)
+// picks either the unary or the binary form.
+class Point {
+  let x = 0;
+  let y = 0;
+  fu init(x, y) { this.x = x; this.y = y; }
+  pub fu operator -() { return Point(-x, -y); }
+  pub fu show() { return "(" + (x as str) + ", " + (y as str) + ")"; }
+}
+let p = Point(1, -2);
+print((-p).show()); // expect: (-1, 2)
+print((-(-p)).show()); // expect: (1, -2)
+// the member syntax and the bind lane work for the unary too
+print(p.operator -().show()); // expect: (-1, 2)
+let neg = p.operator -;
+print(neg().show()); // expect: (-1, 2)
+// numbers keep the fast lane: the instance arm never runs for them
+print(-5); // expect: -5
+print(-2.5); // expect: -2.5

@@ -1,0 +1,3 @@
+// the declared arity counts the receiver: push takes exactly one argument
+let a = [1];
+a.push(1, 2); // expect error: expected 1 argument

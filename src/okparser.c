@@ -128,6 +128,8 @@ static const parse_rule parse_rules[] = {
     [TOKEN_BANG] = {parse_unary_prefix, NULL, PREC_PREFIX},
     [TOKEN_BANG_EQUAL] = {NULL, parse_binary_infix, PREC_EQUALITY},
     [TOKEN_EQUAL] = {NULL, parse_binary_infix, PREC_EQUALITY},
+    [TOKEN_TRIPLE_EQUAL] = {NULL, parse_binary_infix, PREC_EQUALITY},
+    [TOKEN_IS] = {NULL, parse_binary_infix, PREC_EQUALITY},
     [TOKEN_LESS_EQUAL] = {NULL, parse_binary_infix, PREC_COMPARISION},
     [TOKEN_GREATER_EQUAL] = {NULL, parse_binary_infix, PREC_COMPARISION},
     [TOKEN_LESS] = {NULL, parse_binary_infix, PREC_COMPARISION},
@@ -1263,6 +1265,133 @@ free_bindings:
   return NULL;
 }
 
+// the shared operator-spelling parser: the token after `operator` (already
+// peeked at p_parser->current) is consumed, validated against the dispatchable
+// set, and the CANONICAL name - "operator" + one space + spelling - is built
+// into a fresh allocation the caller owns. one spelling for every use site
+// (definitions and member access alike), independent of the user's whitespace:
+// `operator+` and `operator  +` both canonicalize to "operator +".
+// returns NULL after reporting an error.
+static char* parse_operator_spelling(parser* p_parser) {
+  allocators* alloc = p_parser->alloc;
+  token end = p_parser->current;
+  const char* spelling = NULL;
+  uint32_t spelling_length = 0;
+  switch (end.type) {
+  case TOKEN_LEFT_PAREN:
+    advance(p_parser);
+    if (!expect(p_parser, TOKEN_RIGHT_PAREN, ok_create_string_view("expected ')' after 'operator ('.",
+                                                  OK_STRING_VIEW_CALCULATE_LENGTH, true))) {
+      return NULL;
+    }
+    end = p_parser->previous;
+    spelling = "()";
+    spelling_length = 2;
+    break;
+  case TOKEN_LEFT_BRACKET: {
+    advance(p_parser); // consumed '['
+    if (!expect(p_parser, TOKEN_RIGHT_BRACKET, ok_create_string_view("expected ']' after 'operator ['.",
+                                                     OK_STRING_VIEW_CALCULATE_LENGTH, true))) {
+      return NULL;
+    }
+    // the store spelling's '=' trails the bracket pair: `operator []=`
+    const bool is_store = p_parser->current.type == TOKEN_ASSIGN;
+    if (is_store) {
+      advance(p_parser);
+    }
+    end = p_parser->previous;
+    spelling = is_store ? "[]=" : "[]";
+    spelling_length = is_store ? 3 : 2;
+    break;
+  }
+  case TOKEN_IDENTIFIER: {
+    // conversion: one target identifier. builtin targets (str, num, bool)
+    // and class names both parse here; validity is the compiler's call.
+    token target = p_parser->current;
+    if (target.length == 8 && memcmp(target.start, "operator", 8) == 0) {
+      error_at(p_parser, target, ok_create_string_view("'operator' cannot follow 'operator'.",
+                                                          OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      return NULL;
+    }
+    advance(p_parser);
+    end = p_parser->previous;
+    spelling = end.start;
+    spelling_length = end.length;
+    break;
+  }
+  case TOKEN_PLUS:
+  case TOKEN_MINUS:
+  case TOKEN_ASTERISK:
+  case TOKEN_SLASH:
+  case TOKEN_MODULO:
+  case TOKEN_EQUAL:
+  case TOKEN_LESS:
+  case TOKEN_LESS_EQUAL:
+  case TOKEN_GREATER:
+  case TOKEN_GREATER_EQUAL:
+    advance(p_parser);
+    end = p_parser->previous;
+    spelling = end.start;
+    spelling_length = end.length;
+    break;
+  case TOKEN_BANG:
+    error_at(p_parser,
+             end,
+             ok_create_string_view("'!' (truthiness) is not overloadable - truthiness is the control-flow substrate.",
+                                   OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL;
+  case TOKEN_BANG_EQUAL:
+    error_at(p_parser,
+             end,
+             ok_create_string_view("'!=' is the negation of '==' and is not separately overloadable - define 'operator =='.",
+                                   OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL;
+  case TOKEN_CARET:
+  case TOKEN_AMPERSAND:
+  case TOKEN_BAR:
+  case TOKEN_TILED:
+  case TOKEN_SHIFT_LEFT:
+  case TOKEN_SHIFT_RIGHT:
+  case TOKEN_PLUS_EQUAL:
+  case TOKEN_MINUS_EQUAL:
+  case TOKEN_ASTERISK_EQUAL:
+  case TOKEN_SLASH_EQUAL:
+  case TOKEN_MODULO_EQUAL:
+  case TOKEN_CARET_EQUAL:
+  case TOKEN_AMPERSAND_EQUAL:
+  case TOKEN_BAR_EQUAL:
+  case TOKEN_TILED_EQUAL:
+  case TOKEN_SHIFT_LEFT_EQUAL:
+  case TOKEN_SHIFT_RIGHT_EQUAL: {
+    string message = asprint(alloc,
+                             "operator '%.*s' has no dispatchable form in 0.5.0 (compound operators desugar to their "
+                             "binary form; bitwise operators are not implemented).",
+                             end.length,
+                             end.start);
+    error_at(p_parser, end, ok_create_string_view_from_string(message));
+    string_deinit(&message, alloc);
+    return NULL;
+  }
+  default:
+    error_at(p_parser,
+             end,
+             ok_create_string_view("expected an operator symbol after 'operator'.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL;
+  }
+  // the canonical name: "operator" + ' ' + spelling, always exactly one space.
+  char* canonical = (char*)alloc->allocate(alloc, 9 + spelling_length + 1); // 8 + 1 + spelling + NUL
+  if (canonical == NULL) {
+    error_at(p_parser,
+             end,
+             ok_create_string_view("failed to allocate memory for operator name.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL;
+  }
+  memcpy(canonical, "operator ", 9);
+  memcpy(canonical + 9, spelling, spelling_length);
+  canonical[9 + spelling_length] = '\0';
+  return canonical;
+}
+
 ast_function_declaration* parse_function_declaration(parser* p_parser,
                                                      ast_declaration_modifiers_t p_declaration_modifiers,
                                                      bool p_in_class_body) {
@@ -1297,92 +1426,20 @@ ast_function_declaration* parse_function_declaration(parser* p_parser,
     return NULL;
   }
   token name_tok = p_parser->previous;
+  // a method literally named "operator" is an operator declaration: the
+  // canonical name ("operator +", "operator ()", "operator []=", "operator
+  // Target") is synthesized by the shared spelling parser, so every consumer
+  // (the method table, the dispatch arms, the member syntax) sees one string
+  // regardless of the user's whitespace. non-dispatchable spellings
+  // ('!', '!=', compound and bitwise forms) are refused here, at the
+  // definition site, with the reason.
+  char* mangled_name = NULL;
   if (p_in_class_body && name_tok.length == 8 && memcmp(name_tok.start, "operator", 8) == 0) {
-    // a method literally named "operator" is an operator declaration: the
-    // name spans the operator keyword plus its spelling. `operator +`,
-    // `operator ==`, `operator ()`, `operator []`, `operator []=`, and
-    // `operator Target` (a conversion, the target spelled as an identifier).
-    // the call operator is `fu operator ()(args)`: the empty parens are the
-    // spelling, the following parameter list belongs to the method.
-    token end = p_parser->current;
-    switch (end.type) {
-    case TOKEN_LEFT_PAREN:
-      advance(p_parser);
-      if (!expect(p_parser, TOKEN_RIGHT_PAREN, ok_create_string_view("expected ')' after 'operator ('.",
-                                                        OK_STRING_VIEW_CALCULATE_LENGTH, true))) {
-        return NULL;
-      }
-      end = p_parser->previous;
-      break;
-    case TOKEN_LEFT_BRACKET:
-      advance(p_parser);
-      if (p_parser->current.type == TOKEN_ASSIGN) {
-        advance(p_parser);
-      }
-      if (!expect(p_parser, TOKEN_RIGHT_BRACKET, ok_create_string_view("expected ']' after 'operator ['.",
-                                                         OK_STRING_VIEW_CALCULATE_LENGTH, true))) {
-        return NULL;
-      }
-      end = p_parser->previous;
-      break;
-    case TOKEN_IDENTIFIER: {
-      // conversion: one target identifier. builtin targets (str, num, bool)
-      // and class names both parse here; validity is the compiler's call.
-      token target = p_parser->current;
-      if (target.length == 8 && memcmp(target.start, "operator", 8) == 0) {
-        error_at(p_parser, target, ok_create_string_view("'operator' cannot follow 'operator'.",
-                                                          OK_STRING_VIEW_CALCULATE_LENGTH, true));
-        return NULL;
-      }
-      advance(p_parser);
-      end = p_parser->previous;
-      break;
+    mangled_name = parse_operator_spelling(p_parser);
+    if (mangled_name == NULL) {
+      return NULL;
     }
-    default:
-      switch (end.type) {
-      case TOKEN_PLUS:
-      case TOKEN_MINUS:
-      case TOKEN_ASTERISK:
-      case TOKEN_SLASH:
-      case TOKEN_MODULO:
-      case TOKEN_CARET:
-      case TOKEN_AMPERSAND:
-      case TOKEN_BAR:
-      case TOKEN_TILED:
-      case TOKEN_SHIFT_LEFT:
-      case TOKEN_SHIFT_RIGHT:
-      case TOKEN_BANG:
-      case TOKEN_BANG_EQUAL:
-      case TOKEN_EQUAL:
-      case TOKEN_LESS:
-      case TOKEN_LESS_EQUAL:
-      case TOKEN_GREATER:
-      case TOKEN_GREATER_EQUAL:
-      case TOKEN_PLUS_EQUAL:
-      case TOKEN_MINUS_EQUAL:
-      case TOKEN_ASTERISK_EQUAL:
-      case TOKEN_SLASH_EQUAL:
-      case TOKEN_MODULO_EQUAL:
-      case TOKEN_CARET_EQUAL:
-      case TOKEN_AMPERSAND_EQUAL:
-      case TOKEN_BAR_EQUAL:
-      case TOKEN_TILED_EQUAL:
-      case TOKEN_SHIFT_LEFT_EQUAL:
-      case TOKEN_SHIFT_RIGHT_EQUAL:
-        advance(p_parser);
-        end = p_parser->previous;
-        break;
-      default:
-        error_at(p_parser,
-                 end,
-                 ok_create_string_view("expected an operator symbol after 'operator'.",
-                                       OK_STRING_VIEW_CALCULATE_LENGTH, true));
-        return NULL;
-      }
-      break;
-    }
-    name_tok.length = (uint32_t)((end.start + end.length) - name_tok.start);
-    p_parser->previous = name_tok;
+    p_parser->previous = name_tok; // the binding's token stays the bare keyword
   }
   ast_identifier_expression* ident =
       (ast_identifier_expression*)alloc->allocate(alloc, sizeof(ast_identifier_expression));
@@ -1438,10 +1495,17 @@ ast_function_declaration* parse_function_declaration(parser* p_parser,
     goto free_bind_list;
   }
   ast_function_declaration_init(fu, binding, params, body, p_declaration_modifiers, fu_tok, &s);
+  ast_function_declaration_set_mangled_name(fu, mangled_name); // ownership moves into the node
   return fu;
 free_bind_list:
+  if (mangled_name != NULL) {
+    alloc->release(alloc, mangled_name);
+  }
   ast_bindings_list_deinit(&params, alloc);
 free_bind:
+  if (mangled_name != NULL) {
+    alloc->release(alloc, mangled_name);
+  }
   ast_binding_deinit(binding);
   alloc->release(alloc, binding);
   return NULL; // if binding successfully initialized it will free ident.
@@ -1466,8 +1530,23 @@ ast_expression* parse_access(
              ok_create_string_view("expected a member name after '.'.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
     goto fail;
   }
+  // the operator member syntax: `a.operator +`, `Foo.operator ()` - the same
+  // fused spelling as declarations, producing the same canonical name, so an
+  // operator method is reachable (and bindable) like any other member. the
+  // identifier `operator` is reserved in member position: a member so named
+  // must spell an operator.
+  char* owned_name = NULL;
+  if (p_parser->previous.length == 8 && memcmp(p_parser->previous.start, "operator", 8) == 0) {
+    owned_name = parse_operator_spelling(p_parser);
+    if (owned_name == NULL) {
+      goto fail;
+    }
+  }
   ast_access_expression* access = (ast_access_expression*)alloc->allocate(alloc, sizeof(ast_access_expression));
   if (access == NULL) {
+    if (owned_name != NULL) {
+      alloc->release(alloc, owned_name);
+    }
     error_at(p_parser,
              p_trigger,
              ok_create_string_view("failed to allocate memory for access node.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
@@ -1475,6 +1554,7 @@ ast_expression* parse_access(
   }
   ast_specs s = {alloc};
   ast_access_expression_init(access, p_trigger, p_left, p_parser->previous, &s);
+  ast_access_expression_set_owned_name(access, owned_name);
   return (ast_expression*)access;
 fail:
   ast_dispatch_deinit((ast_node*)p_left);
@@ -1579,6 +1659,25 @@ ast_class_declaration* parse_class_declaration(parser* p_parser, ast_declaration
     }
     if (member == NULL) {
       goto free_members;
+    }
+    // the `operator` reservation: a field so named would be unreachable through
+    // the member syntax (`.operator` always fuses into an operator member
+    // name), so the declaration is refused rather than silently stranded.
+    if (member->node.node_type == AST_LET_DECLARATION) {
+      ast_let_declaration* let_member = (ast_let_declaration*)member;
+      const ok_string_view member_name =
+          ast_identifier_expression_get_value((ast_identifier_expression*)let_member->binding->lvalue);
+      if (ok_string_view_get_length(&member_name) == 8 && memcmp(member_name.chars, "operator", 8) == 0) {
+        const token where = let_member->declaration.statement.node.token; // captured before the free
+        ast_dispatch_deinit((ast_node*)member);
+        alloc->release(alloc, member);
+        error_at(p_parser,
+                 where,
+                 ok_create_string_view("'operator' is reserved in class bodies: spell an operator method "
+                                       "('fu operator +') or choose another field name.",
+                                       OK_STRING_VIEW_CALCULATE_LENGTH, true));
+        goto free_members;
+      }
     }
     if (!ast_statements_list_append(&members, member)) {
       ast_dispatch_deinit((ast_node*)member);

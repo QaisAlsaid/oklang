@@ -1,0 +1,4 @@
+// a class without operator [] is not subscriptable
+class Plain { let v = 1; }
+let p = Plain();
+print(p[0]); // expect error: expected an array

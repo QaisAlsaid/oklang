@@ -1,0 +1,32 @@
+// === : word identity (C11). total, primitive, never dispatchable.
+// numbers are f64 at the surface - there is no public int box - so
+// 1 === 1.0 compares the double 1.0 against itself: true. the visible
+// word-identity edge is the signed zero.
+print(1 === 1); // expect: true
+print(1 === 1.0); // expect: true
+print(1 == 1.0); // expect: true
+print(0.0 === -0.0); // expect: false
+print(0.0 == -0.0); // expect: true
+print(null === null); // expect: true
+print(true === true); // expect: true
+print(true === 1); // expect: false
+print(null === false); // expect: false
+// strings: same allocation, not same content
+print("a" === "a"); // expect: false
+let s = "a";
+print(s === s); // expect: true
+// heap values: the allocation is the identity
+let arr = [1];
+print(arr === arr); // expect: true
+print([] === []); // expect: false
+class P {}
+let a = P();
+let b = P();
+print(a === b); // expect: false
+print(a === a); // expect: true
+// the result is an ordinary bool
+print((1 === 2) === false); // expect: true
+print(1 === 2); // expect: false
+// and it composes with the logical operators
+print(1 === 1 and 2 === 2); // expect: true
+print(1 === 1 or 2 === 3); // expect: true

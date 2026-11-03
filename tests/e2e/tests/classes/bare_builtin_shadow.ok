@@ -1,0 +1,14 @@
+// pinned shadowing, awaiting a ruling: the std-zero builtins ride a hidden
+// enclosing scope, and a captured enclosing name beats the field/method
+// ladder. so a bare call inside a method reaches the builtin, while the
+// explicit member call reaches the method of the same name.
+let m = {"a": 10, "b": 20};
+class Inner {
+  let t = 5;
+  pub fu get() { return t; }
+  pub fu via_bare() { return get(m, "b"); }
+  pub fu via_this() { return this.get(); }
+}
+let v = Inner();
+print(v.via_this()); // expect: 5
+print(v.via_bare()); // expect: 20

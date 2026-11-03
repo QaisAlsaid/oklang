@@ -1,0 +1,37 @@
+// the `is` operator (C12's yes): classof + identity, fused. the exact-class
+// probe - `x is C` is true when classof(x) === C, no chain walk. the family
+// question is isinstance. builtin lanes match by construction: every number's
+// class is num, every string's is str.
+print(1 is num); // expect: true
+print(1.5 is num); // expect: true
+print("x" is str); // expect: true
+print(true is bool); // expect: true
+print(false is bool); // expect: true
+print([1] is array); // expect: true
+print({:} is map); // expect: true
+print(null is nil); // expect: true
+print(len is function); // expect: true
+class Animal : Object {}
+class Dog : Animal {}
+let d = Dog();
+print(d is Dog); // expect: true
+// the exact-class ruling, pinned: `is` answers "what box", not "what family"
+print(d is Animal); // expect: false
+print(d is Object); // expect: false
+print(isinstance(d, Animal)); // expect: true
+print(isinstance(d, Object)); // expect: true
+// every class value is an instance of the one metaclass
+print(Dog is Class); // expect: true
+print(Object is Class); // expect: true
+print(Class is Class); // expect: true
+print(d is Class); // expect: false
+print(d is num); // expect: false
+// where it reads right: the guard
+fu check(v) {
+  if v is num { return "number"; } else { return "other"; }
+}
+print(check(3)); // expect: number
+print(check("3")); // expect: other
+// the right side is any expression that evaluates to a class
+let cls = num;
+print(1 is cls); // expect: true

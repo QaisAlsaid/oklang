@@ -1,0 +1,25 @@
+// the subscript surface: operator [] reads, operator []= writes, and the
+// compound forms compose both with the binary operators.
+class Board {
+  let cells = [0, 0, 0, 0];
+  pub fu operator [](i) { return cells[i]; }
+  pub fu operator []=(i, v) { cells[i] = v; }
+  pub fu total() { return cells[0] + cells[1] + cells[2] + cells[3]; }
+}
+let b = Board();
+b[0] = 10;
+b[1] = 20;
+print(b[1]); // expect: 20
+b[1] += 5; // compound: [] then + then []=
+print(b[1]); // expect: 25
+b[0] = b[0] * 2;
+print(b[0]); // expect: 20
+print(b.total()); // expect: 45
+// arrays and maps keep their builtin lanes; instances only dispatch when
+// the class carries the operator
+let arr = [1, 2, 3];
+arr[0] = 9;
+print(arr[0]); // expect: 9
+let mp = {:};
+mp["k"] = "v";
+print(mp["k"]); // expect: v

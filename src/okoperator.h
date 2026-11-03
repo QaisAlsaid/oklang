@@ -15,6 +15,8 @@
   X(OPERATOR_BIN_CARET, "^")                                                                                           \
   X(OPERATOR_PRE_BANG, "!")                                                                                            \
   X(OPERATOR_BIN_EQUALS, "==")                                                                                         \
+  X(OPERATOR_BIN_STRICT_EQUALS, "===")                                                                                 \
+  X(OPERATOR_BIN_IS, "is")                                                                                             \
   X(OPERATOR_BIN_BANG_EQUAL, "!=")                                                                                     \
   X(OPERATOR_BIN_GREATER, ">")                                                                                         \
   X(OPERATOR_BIN_GREATER_EQUAL, ">=")                                                                                  \
@@ -62,6 +64,8 @@ typedef enum {
   OPERATOR_BIN_BAR,
   OPERATOR_BIN_TILED,
   OPERATOR_BIN_EQUALS,
+  OPERATOR_BIN_STRICT_EQUALS,
+  OPERATOR_BIN_IS,
   OPERATOR_BIN_BANG_EQUAL,
   OPERATOR_BIN_GREATER,
   OPERATOR_BIN_GREATER_EQUAL,

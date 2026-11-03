@@ -41,6 +41,7 @@
   X(TOKEN_BANG, "!")                                                                                                   \
   X(TOKEN_BANG_EQUAL, "!=")                                                                                            \
   X(TOKEN_EQUAL, "==")                                                                                                 \
+  X(TOKEN_TRIPLE_EQUAL, "===")                                                                                                 \
   X(TOKEN_LESS_EQUAL, "<=")                                                                                            \
   X(TOKEN_GREATER_EQUAL, ">=")                                                                                         \
   X(TOKEN_LESS, "<")                                                                                                   \
@@ -57,6 +58,7 @@
   X(TOKEN_PRINT, "print")                                                                                              \
   X(TOKEN_IMPORT, "import")                                                                                            \
   X(TOKEN_AS, "as")                                                                                                    \
+  X(TOKEN_IS, "is")                                                                                                    \
   X(TOKEN_FU, "fu")                                                                                                    \
   X(TOKEN_LET, "let")                                                                                                  \
   X(TOKEN_WHILE, "while")                                                                                              \
@@ -124,6 +126,7 @@ typedef enum {
   TOKEN_BANG,
   TOKEN_BANG_EQUAL,
   TOKEN_EQUAL,
+  TOKEN_TRIPLE_EQUAL,
   TOKEN_LESS_EQUAL,
   TOKEN_GREATER_EQUAL,
   TOKEN_LESS,
@@ -142,6 +145,7 @@ typedef enum {
   TOKEN_PRINT,
   TOKEN_IMPORT,
   TOKEN_AS,
+  TOKEN_IS,
   TOKEN_FU,
   TOKEN_LET,
   TOKEN_WHILE,

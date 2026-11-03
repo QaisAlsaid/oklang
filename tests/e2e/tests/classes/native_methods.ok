@@ -1,0 +1,40 @@
+// the native method surface (§11): the builtin functions, re-mounted as
+// methods on their class singletons. one C entry serves both spellings -
+// `len(a)` and `a.len()` were always the same receiver-first function.
+let a = [1, 2, 3];
+print(a.len()); // expect: 3
+a.push(4);
+print(a.len()); // expect: 4
+print(a.pop()); // expect: 4
+a.remove(0, 2);
+print(a.len()); // expect: 1
+print(a[0]); // expect: 3
+let m = {:};
+m["k1"] = 1;
+m["k2"] = 2;
+print(m.len()); // expect: 2
+print(m.get("k1")); // expect: 1
+print(m.get("nope", 99)); // expect: 99
+m.remove("k1");
+print(m.len()); // expect: 1
+// the free-function spelling still works: same entry, mounted twice
+print(len(a)); // expect: 1
+print(len(m)); // expect: 1
+// a method as a value: the bound native method carries its receiver
+let pusher = a.push;
+pusher(7);
+print(a.len()); // expect: 2
+// a warm site: the mic caches (builtin class -> native entry) like any other
+for let i = 0 : 500 {
+  a.push(i);
+}
+print(a.len()); // expect: 502
+// the methods are visible through the class singletons too
+print(a is array); // expect: true
+print(classof(a) == array); // expect: true
+// instances of user classes still resolve their own methods first
+class Box {
+  let items = [1];
+  pub fu count() { return items.len(); }
+}
+print(Box().count()); // expect: 1

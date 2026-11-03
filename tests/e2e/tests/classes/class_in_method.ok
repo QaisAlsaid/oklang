@@ -1,0 +1,12 @@
+// a class declared inside a method: the enclosing class's freeze must not
+// descend into the inner class's member protos (they compile as constants of
+// the method's chunk) - the inner class's own OP_CLASS_END owns them.
+class Outer {
+  pub fu make_inner() {
+    class Inner { let t = 1; pub fu get() { return t; } }
+    return Inner;
+  }
+}
+let I = Outer().make_inner();
+print(I().get()); // expect: 1
+print(I().get()); // expect: 1

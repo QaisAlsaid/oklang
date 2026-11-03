@@ -27,8 +27,10 @@ struct ok {
   bool dump_skip_run;
 };
 
-// when classes + methods are implemented, push/pop/remove become methods and these globals
-// either retire or stay as free functions (len likely stays, go style).
+// the core builtins are receiver-first native functions: `len(a)` and
+// `a.len()` are one C entry, mounted twice (free function + method on the
+// array/map class singletons). str carries no methods in v0.5.0 - nothing
+// existed as a str function builtin to mirror, and the ruling is no new stdlib.
 // errors go through the supported path ok_native_error -> vm_native_error.
 
 static ok_value native_len(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
@@ -44,6 +46,28 @@ static ok_value native_len(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
                   ok_create_string_view(
                       "invalid argument: 'len' expects an array or a map.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
   return NULL_AS_VALUE();
+}
+
+// classof(v) (C12): the one class every value is an instance of. never
+// fails - the answer is total over the value space.
+static ok_value native_classof(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  return OBJECT_AS_VALUE(vm_classof(&p_ok->vm, p_argv[0]));
+}
+
+// isinstance(v, C) (C12): the chain walk - true when C is classof(v) or one
+// of its ancestors (Object at the root matches everything, including null
+// through nil). the exact-class check is `classof(v) == C` or the `is`
+// operator; this is the family question.
+static ok_value native_isinstance(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  if (!IS_VALUE_CLASS(p_argv[1])) {
+    ok_native_error(p_ok,
+                    ok_create_string_view(
+                        "invalid argument: 'isinstance' expects a class.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  return BOOL_AS_VALUE(vm_is_instance(&p_ok->vm, p_argv[0], VALUE_AS_CLASS(p_argv[1])));
 }
 
 // get(m, k) / get(m, k, default)
@@ -235,70 +259,143 @@ static bool ok_define_core_natives(ok* p_ok) {
                                              native_remove);
   status &= ok_global_define_native_function(
       p_ok, ok_create_string_view(" get", OK_STRING_VIEW_CALCULATE_LENGTH, true), OK_NATIVE_ARITY_ANY, native_get);
+  // the class-surface builtins (C12): classof/isinstance are plain native
+  // functions like the rest, rebindable like the rest. the `is` operator and
+  // `===` are the primitive lanes that never consult bindings.
+  status &= ok_global_define_native_function(
+      p_ok, ok_create_string_view(" classof", OK_STRING_VIEW_CALCULATE_LENGTH, true), 1, native_classof);
+  status &= ok_global_define_native_function(
+      p_ok, ok_create_string_view(" isinstance", OK_STRING_VIEW_CALCULATE_LENGTH, true), 2, native_isinstance);
   return status;
 }
 
-static bool ok_define_temporary_types(ok* p_ok) {
+// the natives-as-classes step: mount the method surfaces on the builtin
+// singletons, then seal them. the C handlers are the SAME functions the
+// free-function spellings use - they were receiver-first all along
+// (`len(x)` always took its receiver as argv[0]) - so `len(a)` and `a.len()`
+// are one entry, and the "no new stdlib" ruling holds by construction:
+// only what already existed as a function builtin gets a method spelling
+// (array: len/push/pop/remove; map: len/remove/get; str/function/num/bool/
+// nil carry nothing in v0.5.0). the sealing happens here, after the tables
+// fill - which is why vm_init_singletons leaves the builtins unfrozen.
+static bool ok_define_builtin_surfaces(ok* p_ok) {
+  object_specs specs = {&p_ok->alloc, &p_ok->objects_store};
+  struct {
+    builtin_class_id klass;
+    const char* name;
+    uint16_t arity; // counts the receiver
+    ok_native_fn fn;
+  } const methods[] = {
+      {OK_BUILTIN_ARRAY, "len", 1, native_len},
+      {OK_BUILTIN_ARRAY, "push", 2, native_push},
+      {OK_BUILTIN_ARRAY, "pop", 1, native_pop},
+      {OK_BUILTIN_ARRAY, "remove", OK_NATIVE_ARITY_ANY, native_remove},
+      {OK_BUILTIN_MAP, "len", 1, native_len},
+      {OK_BUILTIN_MAP, "remove", OK_NATIVE_ARITY_ANY, native_remove},
+      {OK_BUILTIN_MAP, "get", OK_NATIVE_ARITY_ANY, native_get},
+  };
   bool status = true;
-  status &= ok_global_define(
-      p_ok, ok_create_string_view(" str", OK_STRING_VIEW_CALCULATE_LENGTH, true), AS_TAG_AS_VALUE(TT_STR), false);
-  status &= ok_global_define(
-      p_ok, ok_create_string_view(" num", OK_STRING_VIEW_CALCULATE_LENGTH, true), AS_TAG_AS_VALUE(TT_NUM), false);
-  status &= ok_global_define(
-      p_ok, ok_create_string_view(" bool", OK_STRING_VIEW_CALCULATE_LENGTH, true), AS_TAG_AS_VALUE(TT_BOOL), false);
+  for (uint32_t i = 0; i < sizeof(methods) / sizeof(methods[0]); ++i) {
+    status &= object_class_define_native_method(p_ok->vm.builtin_classes[methods[i].klass],
+                                                ok_create_string_view(methods[i].name, OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                                                methods[i].arity,
+                                                methods[i].fn,
+                                                /*p_pub*/ true,
+                                                &specs);
+  }
+  for (uint32_t i = 0; i < OK_BUILTIN_COUNT; ++i) {
+    // the seal (C15): from here the builtin tables are frozen like every
+    // script class's, which is what the fast lanes depend on.
+    status &= object_class_freeze(p_ok->vm.builtin_classes[i]);
+  }
   return status;
 }
+
+// the seeding table: ONE list both sides walk, so the visible-name array and
+// the value array can never drift apart (the old two hand-built arrays were
+// position-paired by discipline alone). natives pull their hidden " name"
+// global (the space prefix is what hides them); builtin classes pull the vm
+// singletons; Object and Class ride the same walk.
+typedef enum {
+  SEED_NATIVE,       // the value is hidden-global " <name>" (a native fn)
+  SEED_BUILTIN_CLASS, // the value is vm->builtin_classes[class_id]
+  SEED_OBJECT,       // the root singleton
+  SEED_CLASS,        // the metaclass singleton
+} seed_kind;
+
+typedef struct {
+  const char* name;   // the visible top-level binding
+  seed_kind kind;
+  builtin_class_id class_id; // SEED_BUILTIN_CLASS only, else OK_BUILTIN_COUNT
+} seed_entry;
+
+static const seed_entry top_level_seeds[] = {
+    {"len", SEED_NATIVE, OK_BUILTIN_COUNT},
+    {"push", SEED_NATIVE, OK_BUILTIN_COUNT},
+    {"pop", SEED_NATIVE, OK_BUILTIN_COUNT},
+    {"remove", SEED_NATIVE, OK_BUILTIN_COUNT},
+    {"get", SEED_NATIVE, OK_BUILTIN_COUNT},
+    {"isinstance", SEED_NATIVE, OK_BUILTIN_COUNT},
+    {"classof", SEED_NATIVE, OK_BUILTIN_COUNT},
+    {"str", SEED_BUILTIN_CLASS, OK_BUILTIN_STR},
+    {"num", SEED_BUILTIN_CLASS, OK_BUILTIN_NUM},
+    {"bool", SEED_BUILTIN_CLASS, OK_BUILTIN_BOOL},
+    {"array", SEED_BUILTIN_CLASS, OK_BUILTIN_ARRAY},
+    {"map", SEED_BUILTIN_CLASS, OK_BUILTIN_MAP},
+    {"function", SEED_BUILTIN_CLASS, OK_BUILTIN_FUNCTION},
+    {"nil", SEED_BUILTIN_CLASS, OK_BUILTIN_NIL},
+    {"Object", SEED_OBJECT, OK_BUILTIN_COUNT},
+    {"Class", SEED_CLASS, OK_BUILTIN_COUNT},
+};
 
 static top_level_declarations ok_get_top_level_declarations(ok* p_ok, bool* p_error) {
   top_level_declarations decls;
   top_level_declarations_init(&decls, &p_ok->alloc);
-  variable_declaration raw_decls[] = {{ok_create_string_view("len", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
-                                      {ok_create_string_view("push", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
-                                      {ok_create_string_view("pop", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
-                                      {ok_create_string_view("remove", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
-                                      {ok_create_string_view("get", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
-                                      {ok_create_string_view("str", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
-                                      {ok_create_string_view("num", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
-                                      {ok_create_string_view("bool", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
-                                      {ok_create_string_view("Object", OK_STRING_VIEW_CALCULATE_LENGTH, true)},
-                                      {ok_create_string_view("Class", OK_STRING_VIEW_CALCULATE_LENGTH, true)}};
-
-  *p_error = !top_level_declarations_append_n(&decls, raw_decls, sizeof(raw_decls) / sizeof(variable_declaration));
-  return decls;
-}
-
-static value_array ok_get_top_level_values(ok* p_ok, bool* p_error) {
-  ok_string_view raw_idents[] = {ok_create_string_view(" len", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-                                 ok_create_string_view(" push", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-                                 ok_create_string_view(" pop", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-                                 ok_create_string_view(" remove", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-                                 ok_create_string_view(" get", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-                                 ok_create_string_view(" str", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-                                 ok_create_string_view(" num", OK_STRING_VIEW_CALCULATE_LENGTH, true),
-                                 ok_create_string_view(" bool", OK_STRING_VIEW_CALCULATE_LENGTH, true)};
-
-  value_array vals;
-  value_array_init(&vals, &p_ok->alloc);
-
-  for (uint32_t i = 0; i < sizeof(raw_idents) / sizeof(ok_string_view); ++i) {
-    value temp;
-    if (!ok_global_get(p_ok, raw_idents[i], &temp)) {
-      *p_error = true;
-      break;
-    }
-    if (!value_array_append(&vals, temp)) {
+  for (uint32_t i = 0; i < sizeof(top_level_seeds) / sizeof(top_level_seeds[0]); ++i) {
+    variable_declaration decl = {
+        ok_create_string_view(top_level_seeds[i].name, OK_STRING_VIEW_CALCULATE_LENGTH, true)};
+    if (!top_level_declarations_append(&decls, decl)) {
       *p_error = true;
       break;
     }
   }
-  // the hierarchy singletons ride the same seeding: position-paired with
-  // their declarations above (Object, Class), pulled straight from the vm
-  // since no global storage exists for them.
-  if (!*p_error) {
-    if (p_ok->vm.object_singleton == NULL || p_ok->vm.class_singleton == NULL ||
-        !value_array_append(&vals, OBJECT_AS_VALUE(p_ok->vm.object_singleton)) ||
-        !value_array_append(&vals, OBJECT_AS_VALUE(p_ok->vm.class_singleton))) {
+  return decls;
+}
+
+static value_array ok_get_top_level_values(ok* p_ok, bool* p_error) {
+  value_array vals;
+  value_array_init(&vals, &p_ok->alloc);
+
+  for (uint32_t i = 0; i < sizeof(top_level_seeds) / sizeof(top_level_seeds[0]) && !*p_error; ++i) {
+    const seed_entry* seed = &top_level_seeds[i];
+    value temp;
+    switch (seed->kind) {
+    case SEED_NATIVE: {
+      // the hidden global is " " + the visible name; the names are short
+      // static strings, so a bounded stack buffer is the whole story
+      char hidden[32];
+      const int written = snprintf(hidden, sizeof(hidden), " %s", seed->name);
+      if (written <= 0 || (size_t)written >= sizeof(hidden) ||
+          !ok_global_get(p_ok, ok_create_string_view(hidden, (uint32_t)written, true), &temp)) {
+        *p_error = true;
+      }
+      break;
+    }
+    case SEED_BUILTIN_CLASS:
+      temp = OBJECT_AS_VALUE(p_ok->vm.builtin_classes[seed->class_id]);
+      break;
+    case SEED_OBJECT:
+      // Object and Class have no global storage; the vm singletons are
+      // the values (seeded fresh every run, rooted by mark_vm in between)
+      temp = OBJECT_AS_VALUE(p_ok->vm.object_singleton);
+      break;
+    case SEED_CLASS:
+      temp = OBJECT_AS_VALUE(p_ok->vm.class_singleton);
+      break;
+    }
+    if (*p_error || !value_array_append(&vals, temp)) {
       *p_error = true;
+      break;
     }
   }
   return vals;
@@ -339,7 +436,7 @@ ok* ok_create(ok_specs p_specs) {
     ok_free(okay);
     return NULL;
   }
-  if (!ok_define_temporary_types(okay)) {
+  if (!ok_define_builtin_surfaces(okay)) { // mount the method tables, then seal
     ok_free(okay);
     return NULL;
   }
@@ -378,6 +475,83 @@ ok_result ok_run(ok* p_ok, ok_source p_source) {
 
 void ok_retain_source(ok* p_ok, bool p_retain) {
   p_ok->vm.retain_source = p_retain;
+}
+
+/* classes (embedder side) */
+
+bool ok_value_is_class(ok_value p_value) {
+  return IS_VALUE_CLASS(p_value);
+}
+
+// a C-defined class: created unfrozen (define its native methods, then
+// ok_class_freeze). p_parent is a class value, or a null value for Object.
+// returns a null value on failure. the returned class is NOT rooted - the
+// definition-sequence calls below guard it across their own allocations,
+// but if you allocate anything else in between (or keep it past the
+// sequence), root it with ok_root first, exactly like an ok_array_new result.
+ok_value ok_class_new(ok* p_ok, ok_string_view p_name, ok_value p_parent) {
+  object_specs specs = {&p_ok->alloc, &p_ok->objects_store};
+  object_class* parent = p_ok->vm.object_singleton;
+  if (!IS_VALUE_STRICTLY_NULL(p_parent)) {
+    if (!IS_VALUE_CLASS(p_parent)) {
+      return NULL_AS_VALUE();
+    }
+    parent = VALUE_AS_CLASS(p_parent);
+  }
+  object_string* name = create_object_string(p_name, &specs);
+  if (name == NULL) {
+    return NULL_AS_VALUE();
+  }
+  if (!gc_guard_up(p_ok->alloc.gc, OBJECT_AS_VALUE(name))) {
+    return NULL_AS_VALUE();
+  }
+  object_class* klass = create_object_class(name, parent, &specs);
+  gc_guard_down(p_ok->alloc.gc); // the class (and its trace) owns the name
+  if (klass == NULL) {
+    return NULL_AS_VALUE();
+  }
+  return OBJECT_AS_VALUE(klass);
+}
+
+// define one native method on an unfrozen class. the arity COUNTS the
+// receiver (`fu m(x)` on the script side is arity 2 here). OK_NATIVE_ARITY_ANY
+// defers the check to the callback. false = p_class is not a class value, the
+// class is sealed, a same-name redeclaration, a private override of a pub
+// ancestor, an arity disagreement with an ancestor, or OOM.
+bool ok_class_define_native_method(ok* p_ok,
+                                    ok_value p_class,
+                                    ok_string_view p_name,
+                                    uint16_t p_arity_including_receiver,
+                                    ok_native_fn p_cb,
+                                    bool p_pub) {
+  if (!IS_VALUE_CLASS(p_class)) {
+    return false;
+  }
+  // the class may be unrooted C state: guard it across the name allocation
+  // and the map insert (both can collect under aggressive gc).
+  if (!gc_guard_up(p_ok->alloc.gc, p_class)) {
+    return false;
+  }
+  object_specs specs = {&p_ok->alloc, &p_ok->objects_store};
+  const bool defined = object_class_define_native_method(
+      VALUE_AS_CLASS(p_class), p_name, p_arity_including_receiver, p_cb, p_pub, &specs);
+  gc_guard_down(p_ok->alloc.gc);
+  return defined;
+}
+
+// seal the class (C15): builds the flat field map and freezes both tables.
+// after this, ok_class_define_native_method is refused. script sees the class
+// like any other: store it in a global and construct with C(args).
+bool ok_class_freeze(ok* p_ok, ok_value p_class) {
+  if (!IS_VALUE_CLASS(p_class)) {
+    return false;
+  }
+  if (!gc_guard_up(p_ok->alloc.gc, p_class)) {
+    return false;
+  }
+  const bool frozen = object_class_freeze(VALUE_AS_CLASS(p_class));
+  gc_guard_down(p_ok->alloc.gc);
+  return frozen;
 }
 
 ok_value ok_last_error(ok* p_ok) {

@@ -18,6 +18,10 @@ operator_type operator_type_from_token_type(const token_type p_token_type, bool 
     return OPERATOR_PRE_BANG;
   case TOKEN_EQUAL:
     return OPERATOR_BIN_EQUALS;
+  case TOKEN_TRIPLE_EQUAL:
+    return OPERATOR_BIN_STRICT_EQUALS;
+  case TOKEN_IS:
+    return OPERATOR_BIN_IS;
   case TOKEN_BANG_EQUAL:
     return OPERATOR_BIN_BANG_EQUAL;
   case TOKEN_GREATER:

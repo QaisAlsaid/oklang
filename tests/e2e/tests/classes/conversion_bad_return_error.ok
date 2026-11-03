@@ -1,0 +1,4 @@
+// the conversion contract (C13): operator Vec2 must deliver a Vec2
+class Vec2 { let x = 0; fu init(x) { this.x = x; } }
+class Liar { pub fu operator Vec2() { return 42; } }
+print(Liar() as Vec2); // expect error: returned the wrong type

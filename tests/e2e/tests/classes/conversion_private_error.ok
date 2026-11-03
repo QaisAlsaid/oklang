@@ -1,0 +1,3 @@
+// conversions are methods: private ones are hierarchy-internal
+class Secret { fu operator str() { return "s"; } }
+print(Secret() as str); // expect error: is private

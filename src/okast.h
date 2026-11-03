@@ -388,10 +388,15 @@ string ast_super_expression_asprint(const ast_super_expression* p_super);
 // from the calling hierarchy) or a bound method; the compiler fuses an access
 // in call position into OP_INVOKE. `left` may be an ast_super_expression:
 // `super.name(...)` compiles to OP_SUPER_INVOKE.
+//
+// owned_name: when non-NULL it is a heap copy of a synthesized member name
+// (the operator member syntax `a.operator +`), preferred over the token view
+// by ast_access_expression_name. freed by the deinit.
 typedef struct {
   ast_expression expression;
   ast_expression* left;
   token name;
+  char* owned_name;
 } ast_access_expression;
 
 void ast_access_expression_init(ast_access_expression* p_access,
@@ -399,6 +404,10 @@ void ast_access_expression_init(ast_access_expression* p_access,
                                 ast_expression* p_left,
                                 const token p_name,
                                 ast_specs* p_specs);
+// takes ownership of p_owned_name (an alloc->allocate copy); NULL clears it.
+void ast_access_expression_set_owned_name(ast_access_expression* p_access, char* p_owned_name);
+// the member name: the owned synthesized spelling when present, else the token view.
+ok_string_view ast_access_expression_name(const ast_access_expression* p_access);
 void ast_access_expression_deinit(ast_access_expression* p_access);
 bool ast_access_expression_print(const ast_access_expression* p_access);
 string ast_access_expression_asprint(const ast_access_expression* p_access);
@@ -707,6 +716,12 @@ typedef struct {
   ast_binding* binding;
   ast_bindings_list parameters;
   ast_statement* body;
+  // non-NULL for operator declarations: the canonical synthesized name
+  // ("operator +", "operator ()", "operator []=", "operator num"), heap-copied
+  // and freed by the deinit. ast_function_declaration_name prefers it over the
+  // binding's token view so every consumer sees one spelling regardless of the
+  // user's whitespace.
+  char* mangled_name;
 } ast_function_declaration;
 
 void ast_function_declaration_init(ast_function_declaration* p_fu,
@@ -716,6 +731,10 @@ void ast_function_declaration_init(ast_function_declaration* p_fu,
                                    ast_declaration_modifiers_t p_modifiers,
                                    const token p_token,
                                    ast_specs* p_specs);
+// takes ownership of p_mangled_name (an alloc->allocate copy); NULL clears it.
+void ast_function_declaration_set_mangled_name(ast_function_declaration* p_fu, char* p_mangled_name);
+// the declaration's name: the canonical operator spelling when present, else the binding's identifier.
+ok_string_view ast_function_declaration_name(const ast_function_declaration* p_fu);
 void ast_function_declaration_deinit(ast_function_declaration* p_fu);
 bool ast_function_declaration_print(const ast_function_declaration* p_fu);
 string ast_function_declaration_asprint(const ast_function_declaration* p_fu);

@@ -194,6 +194,20 @@ static bool mark_vm(gc* p_gc) {
       !mark_object(p_gc, (object*)vm->static_call_name) || !mark_object(p_gc, (object*)vm->init_method_name)) {
     return false;
   }
+  for (uint32_t i = 0; i < CLASS_OP_COUNT; ++i) {
+    // [CALL] aliases static_call_name; marking twice is a no-op either way.
+    if (!mark_object(p_gc, (object*)vm->op_names[i])) {
+      return false;
+    }
+  }
+  // the seven builtin singletons root here exactly like Object and Class:
+  // nothing else references them at startup, and every classof() answer
+  // funnels through one of them.
+  for (uint32_t i = 0; i < OK_BUILTIN_COUNT; ++i) {
+    if (!mark_object(p_gc, (object*)vm->builtin_classes[i])) {
+      return false;
+    }
+  }
   // a script-thrown value sits in the error lane from raise until the host
   // clears it (ok_last_error keeps it readable past the failed run/call).
   // across C boundaries where allocation happens, so it must root like a

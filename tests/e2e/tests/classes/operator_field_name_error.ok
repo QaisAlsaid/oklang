@@ -1,0 +1,6 @@
+// the `operator` reservation: a field so named would be unreachable (the
+// member syntax `.operator` always fuses into an operator spelling).
+class C {
+  let operator = 5;
+}
+print(C()); // expect error: reserved

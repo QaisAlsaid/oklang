@@ -1,0 +1,3 @@
+// str carries no methods in v0.5.0 (nothing existed as a str function
+// builtin to mirror, and the ruling is no new stdlib)
+print("abc".len()); // expect error: class 'str' has no method 'len'
