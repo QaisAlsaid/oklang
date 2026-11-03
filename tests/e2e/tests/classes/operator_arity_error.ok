@@ -1,0 +1,11 @@
+// the operator arity lane: calling the method spelling directly keeps the
+// arity check (parameters only - the receiver is not counted).
+class Vec2 {
+  let x = 0;
+  fu init(x) { this.x = x; }
+  pub fu operator +(other) { return Vec2(x + other.x); }
+  fu operator *(k) { return Vec2(x * k); } // private
+  pub fu get() { return x; }
+}
+let a = Vec2(1);
+print(a.operator +(Vec2(1), Vec2(2)).get()); // expect error: invalid call to 'operator +': expected 1 argument, got 2

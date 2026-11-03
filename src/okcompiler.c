@@ -1735,10 +1735,19 @@ static bool compile_class_declaration(compiler* p_compiler, ast_class_declaratio
     report_oom(p_compiler, author);
     return false;
   }
+  // the class rides klass_reg: for a local that register IS the binding, so
+  // the define collapses to the initialized-marking no-op; for a global it
+  // is the temp register_for_location handed out, and this store is what
+  // actually publishes the class. (claiming the value already lived in the
+  // global slot - the old shape - made write_global load the slot's null
+  // back into itself: glob classes printed as null and were uncallable.)
   return define_variable(
       p_compiler,
       varloc,
-      (expression_result){EXPRESSION_LVALUE | EXPRESSION_VALUE, varloc, (lvalue){LVALUE_VARIABLE, varloc}, 1},
+      (expression_result){EXPRESSION_VALUE,
+                          (location){klass_reg.index, LOCATION_KIND_REGISTER, LOCATION_OK},
+                          (lvalue){LVALUE_VARIABLE, varloc},
+                          1},
       author);
 }
 

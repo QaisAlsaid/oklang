@@ -1,0 +1,11 @@
+// the operator privacy lane: a private operator is callable from inside the
+// class, never through the operator surface from outside.
+class Vec2 {
+  let x = 0;
+  fu init(x) { this.x = x; }
+  pub fu operator +(other) { return Vec2(x + other.x); }
+  fu operator *(k) { return Vec2(x * k); } // private
+  pub fu get() { return x; }
+}
+let a = Vec2(1);
+print(a * 2); // expect error: operator 'operator *' of class 'Vec2' is private

@@ -1,4 +1,6 @@
-// the operator error lanes: arity, no-operator type errors, and privacy.
+// the operator type-error lane: no operator match means the operand's own
+// surface is probed, and a num has no fields. one error per file - the vm
+// halts at the first error, so each lane gets its own run.
 class Vec2 {
   let x = 0;
   fu init(x) { this.x = x; }
@@ -8,7 +10,4 @@ class Vec2 {
 }
 let a = Vec2(1);
 print((a + Vec2(2)).get()); // expect: 3
-
 print(a + 2); // expect error: class 'num' has no field or method 'x'
-print(a * 2); // expect error: is private
-print(a.operator +(Vec2(1), Vec2(2)).get()); // expect error: expects at most 1 argument

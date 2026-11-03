@@ -1,0 +1,35 @@
+// glob classes publish like glob fus: the class value is stored into the
+// global slot by the declaration itself. regression: the define used to
+// claim the value already lived in the global slot, so the store re-ran with
+// null - glob classes printed as null and cc() was "not callable", while
+// locals worked (their define is the register no-op).
+glob class cc {
+  pub fu pr(s) {
+    print s;
+  }
+}
+
+cc().pr("hi"); // expect: hi
+print(cc); // expect: <class cc>
+
+glob let cg = cc;
+cg().pr("ho"); // expect: ho
+
+fu use() {
+  return cc().pr("from fn");
+}
+use(); // expect: from fn
+
+class kid : cc {
+  pub fu twice(s) {
+    pr(s);
+    pr(s);
+  }
+}
+kid().twice("x"); // expect: x
+// expect: x
+
+glob let inst = cc();
+print(inst is cc); // expect: true
+print(classof(inst) === cc); // expect: true
+print(classof(cc) === Class); // expect: true
