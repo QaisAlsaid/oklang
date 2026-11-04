@@ -1,0 +1,7 @@
+// the dep names are import roots: "mathx/vec" resolves inside dep mathx
+// (its own project's module roots), "helpers/x" inside the raw dir.
+import "mathx/vec";
+import "helpers/x";
+
+print mathx.vec.mag2(3, 4); // expect: 25
+print helpers.x.twice(21); // expect: 42

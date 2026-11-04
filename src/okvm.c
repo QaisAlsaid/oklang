@@ -4960,7 +4960,7 @@ static void* ok_dispatch_table[OP__COUNT] = {
         thunk->owner = klass;
       }
       const object_string* previous_owner = NULL;
-      if (!object_class_add_field(klass, name, is_mut, thunk, &previous_owner)) {
+      if (!object_class_add_field(klass, name, is_mut, thunk, NULL_AS_VALUE(), &previous_owner)) {
         if (previous_owner != NULL) {
           runtime_error(p_vm,
                         OK_EK_TYPE,

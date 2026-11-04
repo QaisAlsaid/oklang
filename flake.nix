@@ -38,6 +38,7 @@
           git
           criterion
           valgrind
+          gcc
         ];
       };
     };

@@ -1,0 +1,5 @@
+// a project module. its own imports resolve through the same governing
+// project (walk up from here, the same root answers).
+import "util";
+
+pub let greeting = util.deco("hello from src");

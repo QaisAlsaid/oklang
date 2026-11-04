@@ -1,0 +1,7 @@
+// the missing dep: the path does not exist, the discovery fails eagerly
+pub let project = {
+  "name": "missingdep",
+  "deps": {
+    "gone": {"path": "vendor/gone"},
+  },
+};

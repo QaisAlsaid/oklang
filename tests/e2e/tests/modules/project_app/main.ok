@@ -1,0 +1,5 @@
+// the project lane (OR-4): bare names resolve through the governing
+// project's module roots, discovered by walking up from THIS file.
+import "app";
+
+print app.greeting; // expect: <hello from src>

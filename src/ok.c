@@ -600,6 +600,20 @@ void ok_set_loader(ok* p_ok, ok_loader p_loader) {
   ok_modules_set_loader(&p_ok->modules, p_loader);
 }
 
+/* projects (OR-4) */
+
+void ok_set_projects(ok* p_ok, const ok_project* p_projects, uint32_t p_count, ok_project_build_hooks p_hooks) {
+  ok_modules_set_projects(&p_ok->modules, p_projects, p_count, p_hooks);
+}
+
+bool ok_module_where(ok* p_ok, const char* p_import, const char* p_from_dir, const char** p_out_canonical) {
+  return ok_modules_where(&p_ok->modules, p_import, p_from_dir, p_out_canonical);
+}
+
+ok_value ok_module_evaluate(ok* p_ok, ok_source p_source) {
+  return ok_modules_evaluate(&p_ok->modules, &p_source);
+}
+
 /* modules (embedder side, OR-3) */
 
 // the registry read side: what got loaded, in load order. file modules key
@@ -774,6 +788,94 @@ bool ok_class_freeze(ok* p_ok, ok_value p_class) {
   const bool frozen = object_class_freeze(VALUE_AS_CLASS(p_class));
   gc_guard_down(p_ok->alloc.gc);
   return frozen;
+}
+
+// patch 49: the field-access trio. a native class grows per-instance state:
+// declare fields before the freeze, fill them from a native init method,
+// read them from any native method. the machinery is the VM's own (flat
+// slots, the frozen field map), this is only the door.
+bool ok_class_add_field(ok* p_ok, ok_value p_class, ok_string_view p_name, bool p_mut, ok_value p_initial) {
+  if (!IS_VALUE_CLASS(p_class) || p_name.chars == NULL || ok_string_view_get_length(&p_name) == 0) {
+    return false;
+  }
+  object_class* klass = VALUE_AS_CLASS(p_class);
+  if (klass->module_namespace) {
+    // the loader's territory: a namespace class is built and frozen by the
+    // module system, never handed out unfrozen. the frozen check below
+    // covers it in practice; this stays explicit for the reader.
+    return false;
+  }
+  // the class and the initial value are caller-held (the define sequence's
+  // rooting contract): guard both across the interner's allocation. the
+  // interner owns the name from here on, the class owns the default. each
+  // failed guard pops exactly what it pushed, the up/down pairs stay honest.
+  if (!gc_guard_up(p_ok->alloc.gc, p_class)) {
+    return false;
+  }
+  if (!gc_guard_up(p_ok->alloc.gc, p_initial)) {
+    gc_guard_down(p_ok->alloc.gc);
+    return false;
+  }
+  object_specs specs = {&p_ok->alloc, &p_ok->objects_store};
+  object_string* name = string_interner_intern(&p_ok->interner, p_name, &specs);
+  if (name == NULL) {
+    gc_guard_down(p_ok->alloc.gc);
+    gc_guard_down(p_ok->alloc.gc);
+    return false;
+  }
+  // the interned name rides unrooted from here until the class's own_names
+  // adopts it: the appends inside object_class_add_field allocate, and
+  // under aggressive gc that collection must not sweep it (the interner
+  // does not root it for you - build_namespace guards the same window)
+  if (!gc_guard_up(p_ok->alloc.gc, OBJECT_AS_VALUE(name))) {
+    gc_guard_down(p_ok->alloc.gc);
+    gc_guard_down(p_ok->alloc.gc);
+    return false;
+  }
+  const bool added = object_class_add_field(klass, name, p_mut, NULL, p_initial, NULL);
+  gc_guard_down(p_ok->alloc.gc);
+  gc_guard_down(p_ok->alloc.gc);
+  gc_guard_down(p_ok->alloc.gc);
+  return added;
+}
+
+bool ok_value_get_field(ok* p_ok, ok_value p_value, ok_string_view p_name, ok_value* p_out) {
+  if (!IS_VALUE_INSTANCE(p_value) || p_name.chars == NULL) {
+    return false;
+  }
+  // an unseen spelling cannot be a field (universal interning, D20): the
+  // probe allocates nothing, so the read is allocation-free end to end
+  const object_string* name = string_interner_find(&p_ok->interner, p_name);
+  if (name == NULL) {
+    return false;
+  }
+  object_instance* instance = VALUE_AS_INSTANCE(p_value);
+  const field_entry* field = object_class_find_field(instance->klass, name);
+  if (field == NULL) {
+    return false;
+  }
+  *p_out = instance->fields[field->slot];
+  return true;
+}
+
+bool ok_value_set_field(ok* p_ok, ok_value p_value, ok_string_view p_name, ok_value p_new_value) {
+  if (!IS_VALUE_INSTANCE(p_value) || p_name.chars == NULL) {
+    return false;
+  }
+  const object_string* name = string_interner_find(&p_ok->interner, p_name);
+  if (name == NULL) {
+    return false;
+  }
+  object_instance* instance = VALUE_AS_INSTANCE(p_value);
+  if (instance->klass->module_namespace) {
+    return false; // a module's exports are sealed, same doctrine as script
+  }
+  const field_entry* field = object_class_find_field(instance->klass, name);
+  if (field == NULL || !field->mut) {
+    return false;
+  }
+  instance->fields[field->slot] = p_new_value;
+  return true;
 }
 
 ok_value ok_last_error(ok* p_ok) {
@@ -1187,4 +1289,27 @@ bool ok_map_remove(ok_value p_map, ok_value p_key) {
     return false;
   }
   return object_map_remove(VALUE_AS_MAP(p_map), p_key);
+}
+
+bool ok_map_pair_at(ok_value p_map, uint32_t p_index, ok_value* p_out_key, ok_value* p_out_value) {
+  if (!IS_VALUE_MAP(p_map)) {
+    return false;
+  }
+  // the keys array is the occupancy authority: walk occupied slots only
+  // (empty slots hold the strict-null sentinel, their value slots are
+  // stale garbage - the gc trace's comment, the same discipline here)
+  const object_map* map = VALUE_AS_MAP(p_map);
+  uint32_t seen = 0;
+  for (uint32_t i = 0; i < map->entries.capacity; ++i) {
+    if (IS_VALUE_STRICTLY_NULL(map->entries.keys[i])) {
+      continue;
+    }
+    if (seen == p_index) {
+      *p_out_key = map->entries.keys[i];
+      *p_out_value = map->entries.values[i];
+      return true;
+    }
+    ++seen;
+  }
+  return false;
 }

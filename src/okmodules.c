@@ -155,6 +155,8 @@ static void module_note(const ok_source* p_source, const token* p_site, const ch
   fprintf(stderr, "%s:%u:%u: note: %s\n", p_source->path, span.line, span.column, p_text);
 }
 
+
+
 // ---------------------------------------------------------------- path plumbing
 
 // a growable list of copied strings (the 404's trace). raw user-allocator
@@ -334,6 +336,7 @@ static bool probe_ladder(module_system* p_modules,
                          str_list* p_tried,
                          char* p_native_error,
                          size_t p_native_error_capacity,
+                         bool p_where,
                          resolved_module* p_out) {
   const ok_allocators* a = &p_modules->ok->raw_alloc;
   static const char* const forms[] = {"", ".ok", "/index.ok"};
@@ -389,6 +392,22 @@ static bool probe_ladder(module_system* p_modules,
   }
   char* canonical = canonicalize_path(a, candidate);
   if (canonical == NULL) {
+    return false;
+  }
+  // OR-4's where mode: report the candidate without opening it. the
+  // existence probe is the loader's read (a diagnostic may dlopen nothing);
+  // a broken native still shows as found by path, the import is the truth.
+  if (p_where) {
+    ok_source probe;
+    if (p_modules->loader.read_source != NULL &&
+        p_modules->loader.read_source(p_modules->loader.p_ctx, canonical, &probe)) {
+      mod_free(a, (void*)probe.code);
+      p_out->canonical = canonical;
+      p_out->is_native = true;
+      return true;
+    }
+    str_list_append(p_tried, a, canonical); // best effort: the trace wants it
+    mod_free(a, canonical);
     return false;
   }
   // an already-registered native answers from the registry (a module loads
@@ -544,7 +563,8 @@ static bool build_namespace(module_system* p_modules,
     }
     const object_string* previous_owner = NULL;
     const bool added =
-        object_class_add_field(klass, field_name, false /* mut */, NULL /* init thunk */, &previous_owner);
+        object_class_add_field(klass, field_name, false /* mut */, NULL /* init thunk */,
+                              NULL_AS_VALUE() /* default: the loader fills the slot */, &previous_owner);
     gc_guard_down(collector); // the class owns the name now
     if (!added) {
       gc_guard_down(collector);
@@ -671,7 +691,8 @@ static bool materialize_ns(module_system* p_modules, pending_ns* p_node, value* 
     }
     const object_string* previous_owner = NULL;
     const bool added =
-        object_class_add_field(klass, field_name, false /* mut */, NULL /* init thunk */, &previous_owner);
+        object_class_add_field(klass, field_name, false /* mut */, NULL /* init thunk */,
+                              NULL_AS_VALUE() /* default: the loader fills the slot */, &previous_owner);
     gc_guard_down(collector); // the class owns the name now
     if (!added) {
       gc_guard_down(collector);
@@ -756,7 +777,8 @@ static bool build_namespace_members(module_system* p_modules,
     }
     const object_string* previous_owner = NULL;
     const bool added =
-        object_class_add_field(klass, field_name, false /* mut */, NULL /* init thunk */, &previous_owner);
+        object_class_add_field(klass, field_name, false /* mut */, NULL /* init thunk */,
+                              NULL_AS_VALUE() /* default: the loader fills the slot */, &previous_owner);
     gc_guard_down(collector); // the class owns the name now
     if (!added) {
       gc_guard_down(collector);
@@ -798,6 +820,38 @@ static void plain_report(const char* p_path, const char* p_message) {
                 ok_create_string_view(p_message, OK_STRING_VIEW_CALCULATE_LENGTH, true),
                 NULL);
 }
+
+// OR-4: the where lane's site-less note (ok_module_where has no import
+// statement to point at, the query itself is the context).
+static void plain_note(const char* p_display, const char* p_text) {
+  fprintf(stderr, "%s: note: %s\n", p_display, p_text);
+}
+
+// report/note through whichever lane is active: an import site, or the
+// where display. p_where NULL = the normal import lane.
+static void lane_report(const char* p_where, const ok_source* p_source, const token* p_site, const char* p_message) {
+  if (p_where != NULL) {
+    plain_report(p_where, p_message);
+  } else {
+    module_report(p_source, p_site, p_message);
+  }
+}
+
+static void lane_note(const char* p_where, const ok_source* p_source, const token* p_site, const char* p_text) {
+  if (p_where != NULL) {
+    plain_note(p_where, p_text);
+  } else {
+    module_note(p_source, p_site, p_text);
+  }
+}
+
+// the project lanes' tri-state: a miss (fall through to OKPATH), a find,
+// or a hard error (already printed, resolution stops, no 404 on top).
+typedef enum {
+  PROJECT_MISS = 0,
+  PROJECT_FOUND,
+  PROJECT_ERROR,
+} project_lane_result;
 
 // the register lane's one report: at the import site when there is one,
 // bare with the module's own path when there is not (force-load).
@@ -1342,11 +1396,24 @@ static ok_result std_build_module(module_system* p_modules, const std_module_def
 // module (canonical + the loader's read, or the native lane's descriptor),
 // or prints the teaching 404 with the full trace of locations and forms
 // tried (and returns false).
+static project_lane_result resolve_in_project(module_system* p_modules,
+                                              const ok_project* p_project,
+                                              const ok_string_view p_path,
+                                              str_list* p_tried,
+                                              char* p_native_error,
+                                              size_t p_native_error_capacity,
+                                              const ok_source* p_source,
+                                              const token* p_site,
+                                              const char* p_where,
+                                              uint32_t p_depth,
+                                              resolved_module* p_out);
+
 static bool resolve_import(module_system* p_modules,
                            const ok_string_view p_path,
                            const char* p_from_dir,
                            const ok_source* p_source,
                            const token* p_site,
+                           const char* p_where,
                            resolved_module* p_out) {
   const ok_allocators* a = &p_modules->ok->raw_alloc;
   str_list tried;
@@ -1360,7 +1427,7 @@ static bool resolve_import(module_system* p_modules,
     // needed.
     char* joined = join_normalize(a, p_from_dir, p_path);
     if (joined != NULL) {
-      resolved = probe_ladder(p_modules, joined, &tried, native_error, sizeof(native_error), p_out);
+      resolved = probe_ladder(p_modules, joined, &tried, native_error, sizeof(native_error), p_where != NULL, p_out);
       mod_free(a, joined);
     }
   } else if (view_equals(p_path, "std")) {
@@ -1388,7 +1455,7 @@ static bool resolve_import(module_system* p_modules,
       str_list_deinit(&tried, a);
       return false;
     }
-    if (std_build_module(p_modules, def) != OK) {
+    if (p_where == NULL && std_build_module(p_modules, def) != OK) {
       module_report(p_source, p_site, "out of memory while building the module's namespace.");
       str_list_deinit(&tried, a);
       return false;
@@ -1421,6 +1488,46 @@ static bool resolve_import(module_system* p_modules,
       str_list_deinit(&tried, a);
       return p_out->canonical != NULL;
     }
+    // the project lane (OR-4, the draft's section 5 step 3): the governing
+    // project's module roots, then its native targets, then its deps by
+    // name, recursing into project deps. the governing project is the
+    // deepest installed root containing the importing file's directory.
+    if (!resolved && p_modules->projects_count > 0) {
+      // canonicalize_path DESTROYS its input (the ladder's ownership
+      // discipline): the from_dir is the caller's, a copy goes in
+      char* from_dir_copy = mod_strdup(a, p_from_dir);
+      char* canon_dir = from_dir_copy != NULL ? canonicalize_path(a, from_dir_copy) : NULL;
+      if (canon_dir != NULL) {
+        const ok_project* governor = NULL;
+        size_t governor_length = 0;
+        for (uint32_t i = 0; i < p_modules->projects_count; ++i) {
+          const ok_project* candidate = &p_modules->projects[i];
+          const size_t root_length = strlen(candidate->root);
+          const size_t dir_length = strlen(canon_dir);
+          const bool under = dir_length == root_length ||
+                             (dir_length > root_length && canon_dir[root_length] == '/' &&
+                              memcmp(canon_dir, candidate->root, root_length) == 0);
+          if (under && root_length >= governor_length) {
+            governor = candidate;
+            governor_length = root_length;
+          }
+        }
+        mod_free(a, canon_dir);
+        if (governor != NULL) {
+          const project_lane_result lane = resolve_in_project(p_modules, governor, p_path, &tried, native_error,
+                                                              sizeof(native_error), p_source, p_site, p_where, 0,
+                                                              p_out);
+          if (lane == PROJECT_FOUND) {
+            resolved = true;
+          } else if (lane == PROJECT_ERROR) {
+            // the hard error already printed (a refused capability, a
+            // refused build, a project dep imported bare): no 404 on top
+            str_list_deinit(&tried, a);
+            return false;
+          }
+        }
+      }
+    }
     // the OKPATH lane: colon-separated roots, the same ladder at each.
     const char* okpath = getenv("OKPATH");
     if (okpath != NULL && *okpath != '\0') {
@@ -1435,7 +1542,8 @@ static bool resolve_import(module_system* p_modules,
           if (*cursor != '\0') {
             char* joined = join_normalize(a, cursor, p_path);
             if (joined != NULL) {
-              resolved = probe_ladder(p_modules, joined, &tried, native_error, sizeof(native_error), p_out);
+              resolved = probe_ladder(p_modules, joined, &tried, native_error, sizeof(native_error), p_where != NULL,
+                                      p_out);
               mod_free(a, joined);
             }
           }
@@ -1451,25 +1559,25 @@ static bool resolve_import(module_system* p_modules,
     // message is the note (a text file named .so, a corrupt image, a
     // missing ok_native_export)
     if (native_error[0] != '\0') {
-      module_report(p_source, p_site, "the native module could not be loaded.");
-      module_note(p_source, p_site, native_error);
+      lane_report(p_where, p_source, p_site, "the native module could not be loaded.");
+      lane_note(p_where, p_source, p_site, native_error);
       str_list_deinit(&tried, a);
       return false;
     }
     // the 404 must teach (M3): every location and form tried, plus the hint.
-    module_report(p_source, p_site, "module not found.");
+    lane_report(p_where, p_source, p_site, "module not found.");
     for (uint32_t i = 0; i < tried.count; ++i) {
-      module_note(p_source, p_site, tried.items[i]);
+      lane_note(p_where, p_source, p_site, tried.items[i]);
     }
-    if ((p_modules->ok->caps_dropped & OK_CAP_NATIVE_LOAD) != 0) {
-      module_note(p_source, p_site,
-                  "native modules are not searched: OK_CAP_NATIVE_LOAD is dropped in this ok instance.");
+    if (p_where == NULL && (p_modules->ok->caps_dropped & OK_CAP_NATIVE_LOAD) != 0) {
+      lane_note(p_where, p_source, p_site,
+                "native modules are not searched: OK_CAP_NATIVE_LOAD is dropped in this ok instance.");
     }
     if (tried.count == 0) {
-      module_note(p_source, p_site, "no locations were searched: file-relative paths need './' or '../', "
-                                    "bare names search OKPATH (unset).");
+      lane_note(p_where, p_source, p_site, "no locations were searched: file-relative paths need './' or '../', "
+                                           "bare names search the project roots and OKPATH (unset).");
     } else {
-      module_note(p_source, p_site, "add the module's directory to OKPATH, or fix the path.");
+      lane_note(p_where, p_source, p_site, "add the module's directory to OKPATH, or fix the path.");
     }
     str_list_deinit(&tried, a);
     return false;
@@ -1605,7 +1713,7 @@ ok_result ok_modules_prepare(module_system* p_modules,
     char* canonical = NULL;
     resolved_module resolved;
     resolved_init(&resolved);
-    if (!resolve_import(p_modules, path, from_dir, p_source, site, &resolved)) {
+    if (!resolve_import(p_modules, path, from_dir, p_source, site, NULL, &resolved)) {
       result = OK_COMPILE_ERROR;
       break;
     }
@@ -1904,6 +2012,391 @@ ok_result ok_modules_prepare(module_system* p_modules,
   return result;
 }
 
+
+// ---------------------------------------------------------------- projects (OR-4)
+
+// one path split at its first segment: "mathx/vec" -> ("mathx", "vec"),
+// "app" -> ("app", ""). the views borrow p_path's chars.
+static void split_first_segment(const ok_string_view p_path, ok_string_view* p_head, ok_string_view* p_rest) {
+  const uint64_t length = ok_string_view_get_length(&p_path);
+  uint64_t slash = 0;
+  while (slash < length && p_path.chars[slash] != '/') {
+    ++slash;
+  }
+  *p_head = ok_create_string_view(p_path.chars, slash, false);
+  if (slash < length) {
+    *p_rest = ok_create_string_view(p_path.chars + slash + 1, length - slash - 1, false);
+  } else {
+    *p_rest = ok_create_string_view(NULL, 0, false);
+  }
+}
+
+static bool view_seg_equals(const ok_string_view p_view, const char* p_text) {
+  const size_t length = strlen(p_text);
+  return ok_string_view_get_length(&p_view) == length && memcmp(p_view.chars, p_text, length) == 0;
+}
+
+// join <dir>/<sub>/<rel> with normalization, one allocation out. p_sub may
+// be NULL (skipped). every join is a view join: join_normalize takes views.
+static char* join_three(const ok_allocators* p_a, const char* p_dir, const char* p_sub, const ok_string_view p_rel) {
+  const ok_string_view sub_view =
+      p_sub != NULL ? ok_create_string_view(p_sub, (uint32_t)strlen(p_sub), true)
+                    : ok_create_string_view(".", 1, true);
+  char* base = join_normalize(p_a, p_dir, sub_view);
+  if (base == NULL) {
+    return NULL;
+  }
+  char* joined = join_normalize(p_a, base, p_rel);
+  mod_free(p_a, base);
+  return joined;
+}
+
+// the native-target lane inside one project: the import names a declared
+// target. caps first (the doctrine: LOAD gates the load, BUILD gates the
+// ensure hook), the hook second (staleness and consent are host data), the
+// load third. p_where short-circuits to reporting the artifact.
+static project_lane_result resolve_native_target(module_system* p_modules,
+                                  const ok_project* p_project,
+                                  const ok_project_native* p_target,
+                                  str_list* p_tried,
+                                  char* p_native_error,
+                                  size_t p_native_error_capacity,
+                                  const ok_source* p_source,
+                                  const token* p_site,
+                                  const char* p_where,
+                                  resolved_module* p_out) {
+  const ok_allocators* a = &p_modules->ok->raw_alloc;
+
+  if (p_where != NULL) {
+    // report without ensuring, opening, or building
+    char* artifact_copy = mod_strdup(a, p_target->artifact);
+    char* canonical = artifact_copy != NULL ? canonicalize_path(a, artifact_copy) : NULL;
+    if (canonical == NULL) {
+      return PROJECT_ERROR;
+    }
+    p_out->canonical = canonical;
+    p_out->is_native = true;
+    return PROJECT_FOUND;
+  }
+
+  if ((p_modules->ok->caps_dropped & OK_CAP_NATIVE_LOAD) != 0) {
+    char message[320];
+    snprintf(message, sizeof(message), "native target '%s' refused: OK_CAP_NATIVE_LOAD is dropped in this ok instance.",
+             p_target->name);
+    lane_report(p_where, p_source, p_site, message);
+    return PROJECT_ERROR;
+  }
+  if ((p_modules->ok->caps_dropped & OK_CAP_NATIVE_BUILD) == 0 && p_modules->project_hooks.ensure != NULL) {
+    char err[512];
+    err[0] = '\0';
+    if (!p_modules->project_hooks.ensure(p_modules->project_hooks.p_ctx, p_project, p_target, err, sizeof(err))) {
+      char message[640];
+      snprintf(message, sizeof(message), "native target '%s' could not be built: %s", p_target->name,
+               err[0] != '\0' ? err : "the build hook refused it.");
+      lane_report(p_where, p_source, p_site, message);
+      return PROJECT_ERROR;
+    }
+  } else if ((p_modules->ok->caps_dropped & OK_CAP_NATIVE_BUILD) != 0) {
+    // no hook ran (the cap is dropped): the artifact must already exist.
+    // the loader's read is the existence probe, the where lane's trick.
+    ok_source probe;
+    if (p_modules->loader.read_source == NULL ||
+        !p_modules->loader.read_source(p_modules->loader.p_ctx, p_target->artifact, &probe)) {
+      char message[512];
+      snprintf(message,
+               sizeof(message),
+               "native target '%s' has no artifact at %s, and OK_CAP_NATIVE_BUILD is dropped: no build was attempted.",
+               p_target->name,
+               p_target->artifact);
+      lane_report(p_where, p_source, p_site, message);
+      return PROJECT_ERROR;
+    }
+    mod_free(a, (void*)probe.code);
+  }
+  if (p_modules->loader.load_native == NULL) {
+    lane_report(p_where, p_source, p_site, "this ok instance's loader has no native lane.");
+    return PROJECT_ERROR;
+  }
+  // the artifact string is the host's (borrowed, const): a copy goes into
+  // the destroying canonicalizer, the canonical is this lane's to spend
+  char* artifact_copy = mod_strdup(a, p_target->artifact);
+  char* canonical = artifact_copy != NULL ? canonicalize_path(a, artifact_copy) : NULL;
+  if (canonical == NULL) {
+    return PROJECT_ERROR;
+  }
+  // already loaded answers from the registry (one load per instance, ever)
+  if (registry_find(p_modules, canonical) != NULL) {
+    p_out->canonical = canonical;
+    p_out->is_native = true;
+    return PROJECT_FOUND;
+  }
+  const ok_native_module* descriptor = NULL;
+  void* handle = NULL;
+  char err[256];
+  err[0] = '\0';
+  const bool loaded =
+      p_modules->loader.load_native(p_modules->loader.p_ctx, canonical, ok_api_table(), &descriptor, &handle, err,
+                                    sizeof(err));
+  if (!loaded) {
+    if (err[0] != '\0') {
+      snprintf(p_native_error, p_native_error_capacity, "%s", err);
+    }
+    str_list_append(p_tried, a, canonical); // best effort: the trace wants it
+    mod_free(a, canonical);
+    return PROJECT_MISS; // unreadable or broken: the caller's lanes go on
+  }
+  p_out->canonical = canonical;
+  p_out->is_native = true;
+  p_out->descriptor = descriptor;
+  p_out->handle = handle;
+  return PROJECT_FOUND;
+}
+
+// resolve one import path inside one project (the draft's section 5 step 3):
+// the module roots, then the native targets, then the deps by name. project
+// deps recurse with their own tables. depth caps the (host-supplied, maybe
+// cyclic) dep graph. false = not found in this project's lanes (the caller
+// falls through), hard errors print and return false with p_out untouched.
+static project_lane_result resolve_in_project(module_system* p_modules,
+                                              const ok_project* p_project,
+                                              const ok_string_view p_path,
+                                              str_list* p_tried,
+                                              char* p_native_error,
+                                              size_t p_native_error_capacity,
+                                              const ok_source* p_source,
+                                              const token* p_site,
+                                              const char* p_where,
+                                              uint32_t p_depth,
+                                              resolved_module* p_out) {
+  const ok_allocators* a = &p_modules->ok->raw_alloc;
+
+  // the module roots, the full ladder at each (native candidates included)
+  for (uint32_t r = 0; r < p_project->module_roots_count; ++r) {
+    char* candidate = join_three(a, p_project->root, p_project->module_roots[r], p_path);
+    if (candidate == NULL) {
+      return PROJECT_ERROR;
+    }
+    const bool found =
+        probe_ladder(p_modules, candidate, p_tried, p_native_error, p_native_error_capacity, p_where != NULL, p_out);
+    mod_free(a, candidate);
+    if (found) {
+      return PROJECT_FOUND;
+    }
+  }
+
+  // the native targets: the import names one (single-segment paths only,
+  // a native is one module, not a namespace)
+  const uint64_t path_length = ok_string_view_get_length(&p_path);
+  bool has_slash = false;
+  for (uint64_t i = 0; i < path_length; ++i) {
+    if (p_path.chars[i] == '/') {
+      has_slash = true;
+      break;
+    }
+  }
+  if (!has_slash) {
+    for (uint32_t n = 0; n < p_project->natives_count; ++n) {
+      if (view_seg_equals(p_path, p_project->natives[n].name)) {
+        return resolve_native_target(p_modules, p_project, &p_project->natives[n], p_tried, p_native_error,
+                                     p_native_error_capacity, p_source, p_site, p_where, p_out);
+      }
+    }
+  }
+
+  // the deps by name: the first segment names the dep, the rest resolves
+  // inside it (a project dep's own roots/natives/deps, a raw dir's ladder)
+  if (p_depth >= 32) {
+    lane_report(p_where, p_source, p_site, "project dependency nesting is too deep: the limit is 32.");
+    return PROJECT_ERROR;
+  }
+  ok_string_view head;
+  ok_string_view rest;
+  split_first_segment(p_path, &head, &rest);
+  for (uint32_t d = 0; d < p_project->deps_count; ++d) {
+    const ok_project_dep* dep = &p_project->deps[d];
+    if (!view_seg_equals(head, dep->name)) {
+      continue;
+    }
+    if (dep->is_project) {
+      // the dep's own project table: the installed project at dep->path
+      const ok_project* dep_project = NULL;
+      for (uint32_t i = 0; i < p_modules->projects_count; ++i) {
+        if (strcmp(p_modules->projects[i].root, dep->path) == 0) {
+          dep_project = &p_modules->projects[i];
+          break;
+        }
+      }
+      if (dep_project == NULL) {
+        // the host's graph is inconsistent: fall back to the raw-dir lanes
+        dep_project = NULL;
+      }
+      if (dep_project != NULL) {
+        if (ok_string_view_get_length(&rest) == 0) {
+          char message[320];
+          snprintf(message,
+                   sizeof(message),
+                   "'%s' is a project dependency: import a module under it, like \"%s/module\".",
+                   dep->name,
+                   dep->name);
+          lane_report(p_where, p_source, p_site, message);
+          return PROJECT_ERROR;
+        }
+        return resolve_in_project(p_modules, dep_project, rest, p_tried, p_native_error, p_native_error_capacity,
+                                  p_source, p_site, p_where, p_depth + 1, p_out);
+      }
+    }
+    // the raw-dir lane (also the fallback for an unresolved project dep):
+    // the dep directory is an import root, the full ladder under it. a bare
+    // dep name probes the directory itself: D/index.ok, D.ok, D.so
+    char* candidate = join_three(a, dep->path, NULL, ok_string_view_get_length(&rest) == 0
+                                                        ? ok_create_string_view(".", 1, true)
+                                                        : rest);
+    if (candidate == NULL) {
+      return PROJECT_ERROR;
+    }
+    const bool found =
+        probe_ladder(p_modules, candidate, p_tried, p_native_error, p_native_error_capacity, p_where != NULL, p_out);
+    mod_free(a, candidate);
+    if (found) {
+      return PROJECT_FOUND;
+    }
+  }
+  return PROJECT_MISS;
+}
+
+// ok.h's ok_set_projects: the borrowed graph moves in wholesale.
+void ok_modules_set_projects(module_system* p_modules,
+                             const ok_project* p_projects,
+                             uint32_t p_count,
+                             ok_project_build_hooks p_hooks) {
+  p_modules->projects = p_projects;
+  p_modules->projects_count = p_count;
+  p_modules->project_hooks = p_hooks;
+}
+
+// ok.h's ok_module_where: the resolution question, asked directly. nothing
+// loads, nothing runs, nothing builds: the same ladder, read probes only.
+bool ok_modules_where(module_system* p_modules, const char* p_import, const char* p_from_dir,
+                      const char** p_out_canonical) {
+  const ok_allocators* a = &p_modules->ok->raw_alloc;
+  const ok_string_view view = ok_create_string_view(p_import, (uint32_t)strlen(p_import), false);
+  resolved_module resolved;
+  resolved_init(&resolved);
+  if (!resolve_import(p_modules, view, p_from_dir, NULL, NULL, "ok where", &resolved)) {
+    return false;
+  }
+  // the answer buffer: one slot, the previous answer dies with the call
+  if (p_modules->where_canonical != NULL) {
+    mod_free(a, p_modules->where_canonical);
+  }
+  p_modules->where_canonical = resolved.canonical;
+  resolved.canonical = NULL;
+  resolved_deinit(a, &resolved);
+  if (p_modules->where_canonical == NULL) {
+    return false;
+  }
+  if (p_out_canonical != NULL) {
+    *p_out_canonical = p_modules->where_canonical;
+  }
+  return true;
+}
+
+// ok.h's ok_module_evaluate: one source as a standalone module, the
+// manifest lane. imports are refused (a manifest is a script), the pub
+// surface becomes a namespace value, nothing registers.
+ok_value ok_modules_evaluate(module_system* p_modules, ok_source* p_source) {
+  ok* okay = p_modules->ok;
+
+  // parse: the manifest's own diagnostics (syntax errors carry its path)
+  parser parser;
+  parser_specs parser_specs = {.alloc = &okay->alloc, .source = p_source};
+  parser_init(&parser, parser_specs);
+  parse_result parsed = parser_parse(&parser);
+  if (parsed.status != PARSE_OK) {
+    parser_deinit(&parser);
+    parse_result_deinit(&parsed);
+    return NULL_AS_VALUE();
+  }
+
+  // imports are refused with the import site's own location
+  for (uint32_t i = 0; i < parsed.root->statements.count; ++i) {
+    if (parsed.root->statements.data[i]->node.node_type == AST_IMPORT_STATEMENT) {
+      ast_import_statement* import = (ast_import_statement*)parsed.root->statements.data[i];
+      module_report(p_source,
+                    &import->statement.node.token,
+                    "the manifest may not import: it is evaluated standalone, with no import lane.");
+      parser_deinit(&parser);
+      parse_result_deinit(&parsed);
+      return NULL_AS_VALUE();
+    }
+  }
+
+  // compile in module mode: pub top-levels recorded, the export epilogue
+  // emitted (the same lane every imported module compiles through)
+  compile_specs compile_specs;
+  compile_specs.source = p_source;
+  compile_specs.root = parsed.root;
+  bool err = false;
+  compile_specs.top_level_declarations = ok_get_top_level_declarations(okay, &err);
+  if (err) {
+    parser_deinit(&parser);
+    parse_result_deinit(&parsed);
+    return NULL_AS_VALUE();
+  }
+  compile_specs.imports = (ok_import_bindings){NULL, 0};
+  compile_specs.is_module = true;
+  compile_specs.module_path = ok_create_string_view(p_source->path, (uint32_t)strlen(p_source->path), true);
+  compile_result compiled = compiler_compile(&okay->compiler, compile_specs);
+  top_level_declarations_deinit(&compile_specs.top_level_declarations, &okay->alloc);
+  parser_deinit(&parser);
+  if (compiled.status != COMPILE_OK) {
+    parse_result_deinit(&parsed);
+    module_exports_deinit(&compiled.exports, &okay->alloc);
+    return NULL_AS_VALUE();
+  }
+
+  // run the top level: one source registration so runtime failures carry
+  // the manifest's own path and trace
+  if (!gc_guard_up(&okay->gc, OBJECT_AS_VALUE(compiled.function))) {
+    parse_result_deinit(&parsed);
+    module_exports_deinit(&compiled.exports, &okay->alloc);
+    return NULL_AS_VALUE();
+  }
+  const uint32_t source_id = vm_begin_source(&okay->vm, p_source->code, p_source->path);
+  if (source_id == VM_SOURCE_UNSTAMPED) {
+    gc_guard_down(&okay->gc);
+    parse_result_deinit(&parsed);
+    module_exports_deinit(&compiled.exports, &okay->alloc);
+    return NULL_AS_VALUE();
+  }
+  ok_stamp_source_ids(compiled.function, source_id);
+  err = false;
+  interpret_specs interpret_specs;
+  interpret_specs.function = compiled.function;
+  interpret_specs.source_id = source_id;
+  interpret_specs.top_level_values = ok_get_top_level_values(okay, &err);
+  const interpret_result ran = err ? (interpret_result){0} : vm_interpret(&okay->vm, interpret_specs);
+  gc_guard_down(&okay->gc);
+  value_array_deinit(&interpret_specs.top_level_values, &okay->alloc);
+  vm_end_source(&okay->vm, source_id);
+  if (err || ran.status != RUNTIME_OK) {
+    parse_result_deinit(&parsed);
+    module_exports_deinit(&compiled.exports, &okay->alloc);
+    return NULL_AS_VALUE(); // the runtime error printed with the manifest's path
+  }
+
+  // harvest into the sealed namespace; NOT registered (the host owns it)
+  value namespace = NULL_AS_VALUE();
+  if (!build_namespace(p_modules, p_source->path, &compiled.exports, &namespace)) {
+    parse_result_deinit(&parsed);
+    module_exports_deinit(&compiled.exports, &okay->alloc);
+    return NULL_AS_VALUE();
+  }
+  parse_result_deinit(&parsed);
+  module_exports_deinit(&compiled.exports, &okay->alloc);
+  return namespace;
+}
+
 // ---------------------------------------------------------------- lifecycle
 
 void ok_modules_init(module_system* p_modules, ok* p_ok, allocators* p_alloc) {
@@ -1921,6 +2414,11 @@ void ok_modules_init(module_system* p_modules, ok* p_ok, allocators* p_alloc) {
   p_modules->native_handles = NULL;
   p_modules->native_handles_count = 0;
   p_modules->native_handles_capacity = 0;
+  p_modules->projects = NULL;
+  p_modules->projects_count = 0;
+  p_modules->project_hooks.ensure = NULL;
+  p_modules->project_hooks.p_ctx = NULL;
+  p_modules->where_canonical = NULL;
   // the CLI default loader: fs reads (this file) + the dylib-based native
   // lane (okdylib.c). both halves reach the instance through the shared ctx.
   ok_loader loader;
@@ -1965,6 +2463,13 @@ void ok_modules_deinit(module_system* p_modules) {
   p_modules->native_handles = NULL;
   p_modules->native_handles_count = 0;
   p_modules->native_handles_capacity = 0;
+  // OR-4: the where answer buffer (the project graph itself is borrowed)
+  if (p_modules->where_canonical != NULL) {
+    mod_free(a, p_modules->where_canonical);
+    p_modules->where_canonical = NULL;
+  }
+  p_modules->projects = NULL;
+  p_modules->projects_count = 0;
   p_modules->ok = NULL;
 }
 

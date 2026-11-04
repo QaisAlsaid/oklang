@@ -1,0 +1,7 @@
+// resolved through mathx's own governing project: "tiny/t" is mathx's dep,
+// M5 binds the path (tiny.t), same as every import lane
+import "tiny/t";
+
+pub fu mag2(a, b) {
+  return tiny.t.square(a) + tiny.t.square(b);
+}

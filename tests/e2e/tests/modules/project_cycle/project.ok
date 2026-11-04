@@ -1,0 +1,7 @@
+// the cycle: b's manifest deps back on this project's root
+pub let project = {
+  "name": "cyc",
+  "deps": {
+    "b": {"path": "vendor/b"},
+  },
+};

@@ -1,0 +1,14 @@
+// the ambiguity (M13): one name, two meanings. the evaluator refuses,
+// naming both declarations.
+pub let project = {
+  "name": "ambiguous",
+  "deps": {
+    "ray": {"path": "vendor/ray"},
+  },
+  "natives": {
+    "ray": {
+      "build": "true",
+      "artifact": "ray.so",
+    },
+  },
+};

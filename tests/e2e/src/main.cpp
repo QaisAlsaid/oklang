@@ -190,14 +190,15 @@ std::string parse_okflags(const std::filesystem::path& path) {
 
 // the native fixture builds (OR-3): every build.sh under the tests root,
 // from its own directory, before any test runs. the declared-build contract:
-// whatever toolchain, idempotent, quiet on success.
-void build_native_fixtures(const std::string& tests_path) {
+// whatever toolchain, idempotent, quiet on success. OK_BIN is the ok binary
+// itself (OR-4: project fixtures build through 'ok build').
+void build_native_fixtures(const std::string& tests_path, const std::string& ok_path) {
   for (auto& entry : std::filesystem::recursive_directory_iterator(tests_path)) {
     if (entry.path().filename() != "build.sh") {
       continue;
     }
     const std::string dir = entry.path().parent_path().string();
-    const std::string cmd = "cd \"" + dir + "\" && bash build.sh";
+    const std::string cmd = "cd \"" + dir + "\" && OK_BIN=\"" + ok_path + "\" bash build.sh";
     if (decode_system_status(system(cmd.c_str())) != 0) {
       std::println(stderr, "FIXTURE BUILD FAILED: {}", entry.path().string());
       std::exit(1);
@@ -226,7 +227,7 @@ int main(int argc, char** argv) {
 
   uint32_t ok = 0, notok = 0, skipped = 0;
 
-  build_native_fixtures(tests_path);
+  build_native_fixtures(tests_path, okpath);
 
   for (auto& entry : std::filesystem::recursive_directory_iterator(tests_path)) {
     if (entry.path().extension() != ".ok")

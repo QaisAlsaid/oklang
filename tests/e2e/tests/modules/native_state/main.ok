@@ -1,0 +1,23 @@
+// the patch-49 acceptance lane: per-instance state in a native class
+import "./state";
+
+let a = state.Counter(10);
+let b = state.Counter(0);
+
+print a.count(); // expect: 10
+print a.bump(); // expect: 13
+print a.bump(); // expect: 16
+print b.count(); // expect: 0
+print a.count(); // expect: 16
+print a.step(); // expect: 3
+print b.bump(); // expect: 3
+
+// a script subclass inherits the C layout and the native methods both
+class Loud : state.Counter {
+  pub fu loud_bump() { return this.bump() + 1000; }
+}
+
+let loud = Loud(100);
+print loud.count(); // expect: 100
+print loud.loud_bump(); // expect: 1103
+print loud.count(); // expect: 103

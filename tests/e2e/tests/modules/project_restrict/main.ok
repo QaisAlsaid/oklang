@@ -1,0 +1,7 @@
+// okflags: --restrict
+// the capability refusal: no consent prompt, no build, one clear error.
+// --restrict drops OK_CAP_NATIVE_LOAD first, so the refusal names it.
+import "adder";
+
+print adder.add(1, 1);
+// expect error: native target 'adder' refused: OK_CAP_NATIVE_LOAD is dropped

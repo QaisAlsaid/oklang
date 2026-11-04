@@ -1,0 +1,6 @@
+pub let project = {
+  "name": "b",
+  "deps": {
+    "a": {"path": "../.."},
+  },
+};

@@ -1,0 +1,4 @@
+pub let project = {
+  "name": "whereapp",
+  "modules": ["src"],
+};

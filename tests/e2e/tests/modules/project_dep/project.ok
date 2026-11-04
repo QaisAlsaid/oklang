@@ -1,0 +1,9 @@
+// deps-on-project + a raw dir dep (M7's mixing). mathx is itself a project:
+// its own roots and deps apply under it. helpers is a plain directory.
+pub let project = {
+  "name": "depapp",
+  "deps": {
+    "mathx": {"path": "vendor/mathx"},
+    "helpers": {"path": "vendor/helpers"},
+  },
+};

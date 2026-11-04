@@ -527,6 +527,12 @@ static bool trace_object(gc* p_gc, object* p_object) {
         return false;
       }
     }
+    // patch 49: the C-side declared defaults are values (immediates or refs)
+    for (uint32_t i = 0; i < klass->own_defaults.count; ++i) {
+      if (!mark_value(p_gc, klass->own_defaults.data[i])) {
+        return false;
+      }
+    }
     for (uint32_t i = 0; i < klass->methods.capacity; ++i) {
       if (klass->methods.keys[i] != NULL) {
         if (!mark_object(p_gc, (object*)klass->methods.keys[i]) ||

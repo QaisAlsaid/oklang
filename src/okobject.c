@@ -457,6 +457,7 @@ static void object_class_init(object_class* p_class,
   object_string_array_init(&p_class->own_names, p_specs->alloc);
   uint8_array_init(&p_class->own_muts, p_specs->alloc);
   object_closure_array_init(&p_class->own_inits, p_specs->alloc);
+  value_array_init(&p_class->own_defaults, p_specs->alloc);
   field_map_init(&p_class->fields, p_specs->alloc);
   method_map_init(&p_class->methods, p_specs->alloc);
   method_map_init(&p_class->statics, p_specs->alloc);
@@ -477,6 +478,7 @@ static void object_class_deinit(object_class* p_class, object_specs* p_specs) {
   object_string_array_deinit(&p_class->own_names, p_specs->alloc);
   uint8_array_deinit(&p_class->own_muts, p_specs->alloc);
   object_closure_array_deinit(&p_class->own_inits, p_specs->alloc);
+  value_array_deinit(&p_class->own_defaults, p_specs->alloc);
   field_map_deinit(&p_class->fields);
   method_map_deinit(&p_class->methods);
   method_map_deinit(&p_class->statics);
@@ -501,6 +503,7 @@ bool object_class_add_field(object_class* p_class,
                             const object_string* p_name,
                             bool p_mut,
                             object_closure* p_init_thunk,
+                            value p_default,
                             const object_string** p_previous_owner) {
   if (p_class->frozen) {
     return false;
@@ -529,7 +532,8 @@ bool object_class_add_field(object_class* p_class,
   }
   if (!object_string_array_append(&p_class->own_names, (object_string*)p_name) ||
       !uint8_array_append(&p_class->own_muts, p_mut ? 1u : 0u) ||
-      !object_closure_array_append(&p_class->own_inits, p_init_thunk)) {
+      !object_closure_array_append(&p_class->own_inits, p_init_thunk) ||
+      !value_array_append(&p_class->own_defaults, p_default)) {
     return false;
   }
   p_class->nown++;
@@ -713,6 +717,18 @@ object_instance* create_object_instance(object_class* p_class, object_specs* p_s
   instance->klass = p_class;
   for (uint32_t i = 0; i < p_class->nfields; ++i) {
     instance->fields[i] = NULL_AS_VALUE();
+  }
+  // patch 49: the C-side declared defaults (native classes). root segments
+  // first so a subclass's default never lands in a parent's slot range, and
+  // ALL of them before any initializer thunk runs - a thunk may read a
+  // default declared before it (the same reason run_field_inits is
+  // root-first). script classes carry all-null defaults here, so this loop
+  // is a no-op store loop for them.
+  for (const object_class* c = p_class; c != NULL; c = c->parent) {
+    const uint16_t base = c->parent != NULL ? c->parent->nfields : 0;
+    for (uint32_t i = 0; i < c->own_defaults.count; ++i) {
+      instance->fields[base + i] = c->own_defaults.data[i];
+    }
   }
   object_store_append(p_specs->store, (object*)instance);
   return instance;

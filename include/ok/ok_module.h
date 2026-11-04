@@ -37,7 +37,7 @@ extern "C" {
 // refuses with the rebuild message. no semver, no compat promises pre-1.0:
 // "rebuild your natives" is the honest stance. the one discipline kept
 // anyway: vtable entries are APPEND-ONLY, never repurposed, never reordered.
-#define OK_NATIVE_ABI 1u
+#define OK_NATIVE_ABI 2u
 
 // the one symbol a native shared object exports. msvc needs dllexport on
 // the building side and dllimport on the consuming side; everywhere else
@@ -100,9 +100,14 @@ typedef enum {
 // the api vtable (M14: "the vm only cares about its vtable"). carries the
 // whole ok.h surface a module needs, both directions, per Q's ruling:
 // "support everything we have and expose to the abi". deliberately OUT of
-// v1: method enumeration, dynamic member get/set, subclass creation from
-// native, global define/get (a native's registration is its module
-// membership, the global namespace stays the host's).
+// v1: member ENUMERATION (listing a class's fields or methods - its shape
+// is entangled with the member-visibility round the pub-members question
+// opens, and no in-tree consumer exists; a later ABI bump adds it whole),
+// subclass creation from native, global define/get (a native's registration
+// is its module membership, the global namespace stays the host's). the
+// field-access trio below IS in (patch 49, Q's question): declare, read,
+// write instance fields - a native class with per-instance state, the
+// getter-free representation.
 struct ok_api {
   uint32_t abi; // OK_NATIVE_ABI
   // view construction: the module builds the string views every other
@@ -167,6 +172,15 @@ struct ok_api {
   uint32_t (*coro_status)(ok* p_ok, ok_value p_coro);
   ok_value (*coro_current)(ok* p_ok);
   bool (*native_suspend)(ok* p_ok);
+  // the field-access trio (patch 49, ABI 2): a native class with
+  // per-instance state. declare fields before class_freeze (every
+  // instance's slot starts as p_initial), fill them from a native init
+  // method (the receiver rides argv[0]), read them anywhere. the write
+  // honors mut and refuses module namespaces; the read is allocation-free.
+  // C is the trusted lane: the script-side visibility ring does not apply.
+  bool (*class_add_field)(ok* p_ok, ok_value p_class, ok_string_view p_name, bool p_mut, ok_value p_initial);
+  bool (*value_get_field)(ok* p_ok, ok_value p_instance, ok_string_view p_name, ok_value* p_out);
+  bool (*value_set_field)(ok* p_ok, ok_value p_instance, ok_string_view p_name, ok_value p_new_value);
 };
 
 // the dynamic-library hooks, host-provided like malloc: the host supplies

@@ -1,0 +1,8 @@
+// the nested project: its deps answer for files under it (vec.ok's own
+// imports resolve through THIS table, not the parent's)
+pub let project = {
+  "name": "mathx",
+  "deps": {
+    "tiny": {"path": "../tiny"},
+  },
+};

@@ -161,6 +161,13 @@ bool ok_map_set(ok* p_ok, ok_value p_map, ok_value p_key, ok_value p_value);
 // (no store happens either way). never allocates.
 bool ok_map_remove(ok_value p_map, ok_value p_key);
 
+// one map's entries as an indexed walk (OR-4: the manifest harvest, the
+// same read-side ruling that gave the module export table its api). the
+// order is the table's internal slot order: stable for the same content,
+// not declaration order. p_index < ok_map_len. false = not a map or out
+// of range, no values stored. never allocates.
+bool ok_map_pair_at(ok_value p_map, uint32_t p_index, ok_value* p_out_key, ok_value* p_out_value);
+
 /* classes (embedder side) */
 
 bool ok_value_is_class(ok_value p_value);
@@ -191,6 +198,34 @@ bool ok_class_define_native_method(ok* p_ok,
 // seal the class (C15): builds the flat field map and freezes the tables.
 // after this, definitions are refused forever.
 bool ok_class_freeze(ok* p_ok, ok_value p_class);
+
+// declare one field on an unfrozen C-defined class (the patch-49 door: a
+// native class with per-instance state). every instance's slot starts as
+// p_initial (null is the honest default; a reference-typed initial value is
+// shared by every instance, the documented footgun of evaluating once at
+// definition time - prefer null plus a mut field plus an init method).
+// fill mut fields from a native "init" method (the receiver rides argv[0])
+// with ok_value_set_field; a field declared without mut can never be
+// written, from C any more than from script. false = p_class is not a class
+// value, the class is frozen, an empty name, a redeclaration anywhere in
+// the chain, or OOM.
+bool ok_class_add_field(ok* p_ok, ok_value p_class, ok_string_view p_name, bool p_mut, ok_value p_initial);
+
+// read one instance field by name. false = p_value is not an instance, or
+// no field of that name exists on its class chain. allocation-free: the
+// name is probed in the interner first, an unseen spelling cannot be a
+// field. C is the trusted lane: the script-side visibility ring (fields
+// are hierarchy-internal) does not apply here, the host chose to load your
+// code and that is the trust decision. a module namespace's exports read
+// through this door too. statics are not reachable here: instances only.
+bool ok_value_get_field(ok* p_ok, ok_value p_value, ok_string_view p_name, ok_value* p_out);
+
+// write one instance field by name. false = not an instance, no such field,
+// the field is immutable (declared without mut), or the instance is a
+// module namespace (exports are sealed). the call allocates nothing, so
+// neither value needs guarding across it; keeping p_new_value alive
+// afterwards is the instance's own reachability, the usual rooting contract.
+bool ok_value_set_field(ok* p_ok, ok_value p_value, ok_string_view p_name, ok_value p_new_value);
 
 /* coroutines (embedder side) */
 
@@ -282,6 +317,83 @@ const char* ok_module_import_path(ok* p_ok, uint32_t p_index, uint32_t p_import)
 uint32_t ok_module_export_count(ok* p_ok, ok_value p_module);
 const char* ok_module_export_name(ok* p_ok, ok_value p_module, uint32_t p_index);
 ok_value ok_module_export_get(ok* p_ok, ok_value p_module, uint32_t p_index);
+
+/* projects (OR-4: project.ok, the build pipeline) */
+
+// one declared native build target: the manifest's "natives" table entry.
+// every string is borrowed for the installation's lifetime (until the next
+// ok_set_projects call on this instance): the library copies nothing.
+typedef struct ok_project_native {
+  const char* name;     // the import name ("raylib")
+  const char* artifact; // what the name resolves to (absolute, importable)
+  const char* build;    // the declared build command. NULL = no build: the
+                        // artifact must already exist, staleness is foreign
+} ok_project_native;
+
+// one path dependency: the manifest's "deps" table entry. the dep's NAME is
+// an import root: import "mathx/vec" resolves inside dep mathx.
+typedef struct ok_project_dep {
+  const char* name; // the import root name
+  const char* path; // the dep's directory (absolute)
+  bool is_project;  // the dep has its own project.ok: its own roots, native
+                    // targets and deps apply when resolving under it
+} ok_project_dep;
+
+// one evaluated project. the host (the CLI, or an embedder with its own
+// manifest source) discovers and evaluates project.ok files, then installs
+// the resolved graph before ok_run.
+typedef struct ok_project {
+  const char* root;                // the project root (absolute, no trailing
+                                   // slash). an importing file is governed by
+                                   // the deepest installed root containing it
+  const char* const* module_roots; // import roots, relative to root (["src"]
+                                   // is the manifest default). searched with
+                                   // the full ladder, native candidates
+                                   // included
+  uint32_t module_roots_count;
+  const ok_project_native* natives; // declared native targets
+  uint32_t natives_count;
+  const ok_project_dep* deps;       // path dependencies
+  uint32_t deps_count;
+} ok_project;
+
+// the auto-build door. the resolution ladder reached a declared native
+// target and is about to load its artifact: the host ensures the artifact
+// is current (staleness is host data: .okbuild stamps, mtimes, whatever).
+// return false with a message in p_err to fail the import (consent refused,
+// build failed, artifact missing). NULL hooks load artifacts as they are.
+typedef struct ok_project_build_hooks {
+  bool (*ensure)(void* p_ctx, const ok_project* p_project, const ok_project_native* p_target,
+                 char* p_err, size_t p_err_capacity);
+  void* p_ctx;
+} ok_project_build_hooks;
+
+// install the project graph BEFORE ok_run (or ok_module_where). imports of
+// bare names resolve through the governing project's module roots, then its
+// native targets (through the ensure hook when OK_CAP_NATIVE_BUILD is up),
+// then its deps by name, before OKPATH. all pointers are borrowed until the
+// next call replaces them.
+void ok_set_projects(ok* p_ok, const ok_project* p_projects, uint32_t p_count,
+                     ok_project_build_hooks p_hooks);
+
+// resolve one import path exactly the way a script in p_from_dir would: the
+// same ladder (file-relative, the governing project, std, OKPATH), the same
+// teaching trace on failure (the error lane, like every module diagnostic).
+// NOTHING loads and NOTHING runs: sources are probed through the loader's
+// read only, natives are reported without being opened, no build hook fires.
+// true + *p_out_canonical (borrowed until the next call on this instance)
+// on success, false after the trace prints.
+bool ok_module_where(ok* p_ok, const char* p_import, const char* p_from_dir, const char** p_out_canonical);
+
+// evaluate one source as a single standalone module: the manifest lane.
+// pub top-level declarations become the namespace's fields, imports are
+// refused with the teaching error (a manifest is a script, not a module
+// graph node), nothing registers in the module system. the caller normally
+// restricts the instance at ok_create (the CLI refuses both native caps).
+// returns the sealed namespace value, NOT rooted: ok_root it (or finish
+// harvesting) before your next allocation. a null return means the
+// evaluation failed, its diagnostics already printed.
+ok_value ok_module_evaluate(ok* p_ok, ok_source p_source);
 
 /* output */
 

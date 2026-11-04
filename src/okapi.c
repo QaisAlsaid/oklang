@@ -278,6 +278,20 @@ static bool api_native_suspend(ok* p_ok) {
   return ok_native_suspend(p_ok);
 }
 
+// ---------------------------------------------------------------- the field-access trio (patch 49)
+
+static bool api_class_add_field(ok* p_ok, ok_value p_class, ok_string_view p_name, bool p_mut, ok_value p_initial) {
+  return ok_class_add_field(p_ok, p_class, p_name, p_mut, p_initial);
+}
+
+static bool api_value_get_field(ok* p_ok, ok_value p_instance, ok_string_view p_name, ok_value* p_out) {
+  return ok_value_get_field(p_ok, p_instance, p_name, p_out);
+}
+
+static bool api_value_set_field(ok* p_ok, ok_value p_instance, ok_string_view p_name, ok_value p_new_value) {
+  return ok_value_set_field(p_ok, p_instance, p_name, p_new_value);
+}
+
 // ---------------------------------------------------------------- the table
 
 static const ok_api g_ok_api = {
@@ -317,6 +331,9 @@ static const ok_api g_ok_api = {
     api_coro_status,
     api_coro_current,
     api_native_suspend,
+    api_class_add_field,
+    api_value_get_field,
+    api_value_set_field,
 };
 
 const ok_api* ok_api_table(void) {

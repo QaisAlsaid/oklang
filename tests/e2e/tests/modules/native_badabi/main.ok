@@ -1,2 +1,2 @@
 import "./badabi";
-// expect error: abi 99, expected 1, rebuild it against include/ok/ok_module.h.
+// expect error: abi 99, expected 2, rebuild it against include/ok/ok_module.h.

@@ -1,0 +1,6 @@
+// okflags: --yes
+// auto-build on import (OR-4): only inside a project, only with consent.
+// --yes grants it here; the build command runs from the project root.
+import "adder";
+
+print adder.add(20, 22); // expect: 42

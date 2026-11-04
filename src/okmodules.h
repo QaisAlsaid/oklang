@@ -104,6 +104,15 @@ typedef struct module_system {
   void** native_handles;
   uint32_t native_handles_count;
   uint32_t native_handles_capacity;
+  // OR-4: the installed project graph (ok_set_projects). all borrowed
+  // pointers, replaced wholesale by the next call. the governing project of
+  // an importing file is the deepest installed root containing it.
+  const ok_project* projects;
+  uint32_t projects_count;
+  ok_project_build_hooks project_hooks;
+  // OR-4: ok_module_where's answer buffer (owned, user allocators). one
+  // slot: the latest call owns it, the previous answer dies with the call.
+  char* where_canonical;
 } module_system;
 
 void ok_modules_init(module_system* p_modules, ok* p_ok, allocators* p_alloc);
@@ -135,6 +144,18 @@ ok_result ok_modules_prepare(module_system* p_modules,
 // okapi.c: the shared static ok_api table (OR-3). stateless trampolines
 // over the ok.h surface, one table per process, every ok instance.
 const ok_api* ok_api_table(void);
+
+// OR-4: the project graph install (ok.h's ok_set_projects), the where
+// probe (ok.h's ok_module_where), and the standalone manifest evaluator
+// (ok.h's ok_module_evaluate). all live here, next to the ladder they
+// extend.
+void ok_modules_set_projects(module_system* p_modules,
+                             const ok_project* p_projects,
+                             uint32_t p_count,
+                             ok_project_build_hooks p_hooks);
+bool ok_modules_where(module_system* p_modules, const char* p_import, const char* p_from_dir,
+                      const char** p_out_canonical);
+ok_value ok_modules_evaluate(module_system* p_modules, ok_source* p_source);
 
 // the gc's walk (called from okgc.c's mark): the registry's namespaces, the
 // pending-roots window, and the native mount window's staged values.

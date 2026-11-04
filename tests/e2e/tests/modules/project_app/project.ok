@@ -1,0 +1,7 @@
+// the manifest: a plain ok module, evaluated in a sandboxed instance (the
+// full stdlib, natives refused). the pub 'project' table is the surface.
+pub let project = {
+  "name": "app",
+  "version": "0.1.0",
+  "modules": ["src"],
+};

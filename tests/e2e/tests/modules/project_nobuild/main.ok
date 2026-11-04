@@ -1,0 +1,7 @@
+// okflags: --no-build
+// the consent refusal: the caps stay up, the flag refuses the needed build
+// with the teaching error
+import "adder";
+
+print adder.add(1, 1);
+// expect error: auto-build refused: --no-build

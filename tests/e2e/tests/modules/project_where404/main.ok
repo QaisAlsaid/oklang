@@ -1,0 +1,5 @@
+// okflags: --where gone
+// the where lane (OR-4): the resolution question, asked of the same graph,
+// the same teaching trace as an import's 404, nothing loads, nothing runs
+// (the process exits before the script does anything).
+// expect error: module not found.

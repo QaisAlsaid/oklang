@@ -1,11 +1,15 @@
+#define _POSIX_C_SOURCE 200809L // the CLI is the posix-ish default host (dlopen lane, build commands)
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "ok/ok.h"
 #include "ok/ok_module.h"
+
+#include "project.h"
 
 static void repl(ok* p_ok);
 static void run_file(ok* p_ok, const char* p_path);
@@ -59,6 +63,8 @@ static bool parse_caps(const char* p_list, uint32_t* p_out) {
 static void usage(void) {
   fprintf(stderr,
           "usage: ok [run] [flags] [path]\n"
+          "       ok build [--clean|--force]     run the project's native build commands\n"
+          "       ok where <import> [path]       print where an import resolves from\n"
           "       ok\n"
           "flags:\n"
           "  --dump                   compile and disassemble only\n"
@@ -66,14 +72,112 @@ static void usage(void) {
           "  --restrict               drop native load, native build, and host caps\n"
           "  --sandbox=locked         drop every capability (pure compute)\n"
           "  --deny=<list>            drop caps (native, build, host, all)\n"
-          "  --allow=<list>           narrow a previous deny (parse time only)\n");
+          "  --allow=<list>           narrow a previous deny (parse time only)\n"
+          "  --yes                    grant build consent (no prompts)\n"
+          "  --no-build               refuse every build, auto or explicit\n"
+          "  --where <import>         resolve <import> from the entry, print, exit\n");
+}
+
+// ---------------------------------------------------------------- the project verbs (OR-4)
+
+// `ok build [--clean|--force]`: the project above the cwd, its whole graph's
+// native targets, explicit consent (the command itself).
+static int cmd_build(int argc, char** argv) {
+  bool clean = false;
+  bool force = false;
+  for (int i = 0; i < argc; ++i) {
+    if (strcmp(argv[i], "--clean") == 0) {
+      clean = true;
+    } else if (strcmp(argv[i], "--force") == 0) {
+      force = true;
+    } else if (strcmp(argv[i], "--yes") == 0) {
+      // accepted for symmetry: ok build's consent is the command itself
+    } else {
+      usage();
+      return 64;
+    }
+  }
+  bool failed = false;
+  cli_graph* graph = cli_graph_discover(".", true, false, &failed);
+  if (failed) {
+    return 70;
+  }
+  if (graph == NULL) {
+    fprintf(stderr, "no project.ok found above the current directory.\n");
+    return 1;
+  }
+  const int code = cli_build_all(graph, force, clean);
+  cli_graph_free(graph);
+  return code;
+}
+
+// `ok where <import> [path]`: the same resolution a script at path (or the
+// cwd) would use, printed, exit 0/1.
+static int cmd_where(int argc, char** argv) {
+  if (argc < 1 || argc > 2) {
+    usage();
+    return 64;
+  }
+  const char* import = argv[0];
+  char* origin = NULL;
+  if (argc == 2) {
+    const char* slash = strrchr(argv[1], '/');
+    if (slash == NULL) {
+      origin = strdup(".");
+    } else {
+      origin = strndup(argv[1], (size_t)(slash - argv[1]));
+    }
+  } else {
+    origin = getcwd(NULL, 0);
+  }
+  if (origin == NULL) {
+    return 70;
+  }
+
+  ok_specs specs;
+  memset(&specs, 0, sizeof(specs));
+  ok* okay = ok_create(specs);
+  if (okay == NULL) {
+    free(origin);
+    return 70;
+  }
+  bool failed = false;
+  cli_graph* graph = cli_graph_discover(argc == 2 ? argv[1] : ".", true, false, &failed);
+  if (failed) {
+    ok_free(okay);
+    free(origin);
+    return 70;
+  }
+  if (graph != NULL) {
+    cli_graph_install(okay, graph);
+  }
+  const char* canonical = NULL;
+  const bool found = ok_module_where(okay, import, origin, &canonical);
+  if (found) {
+    printf("%s\n", canonical);
+  }
+  cli_graph_free(graph);
+  ok_free(okay);
+  free(origin);
+  return found ? 0 : 1;
 }
 
 int main(int argc, char** argv) {
+  // the OR-4 verbs
+  if (argc > 1 && strcmp(argv[1], "build") == 0) {
+    return cmd_build(argc - 2, argv + 2);
+  }
+  if (argc > 1 && strcmp(argv[1], "where") == 0) {
+    return cmd_where(argc - 2, argv + 2);
+  }
+
   ok_specs specs = {0};
   const char* natives[16];
   uint32_t natives_count = 0;
   bool dump = false;
+  bool yes = false;
+  bool no_build = false;
+  const char* where = NULL;
   const char* path = NULL;
   bool bad = false;
 
@@ -111,6 +215,16 @@ int main(int argc, char** argv) {
       // parse-time only: narrowing a deny before the instance exists. the
       // ratchet itself is untouched (nothing grants after ok_create).
       specs.caps_dropped &= ~caps;
+    } else if (strcmp(arg, "--yes") == 0) {
+      yes = true;
+    } else if (strcmp(arg, "--no-build") == 0) {
+      no_build = true;
+    } else if (strcmp(arg, "--where") == 0) {
+      if (i + 1 >= argc || where != NULL) {
+        bad = true;
+        break;
+      }
+      where = argv[++i];
     } else if (arg[0] == '-' && arg[1] != '\0') {
       bad = true;
       break;
@@ -126,11 +240,34 @@ int main(int argc, char** argv) {
     usage();
     return 64;
   }
+  if (where != NULL && path == NULL) {
+    usage(); // --where needs the entry it resolves from
+    return 64;
+  }
 
   ok* ok = ok_create(specs);
   if (dump) {
     ok_debug_dump_bytecode(ok, true, true);
   }
+
+  // OR-4: the project graph, discovered from the ENTRY file's directory
+  // (never cwd, the last implicit working-dir dependence died here). the
+  // REPL discovers from the cwd instead: it has no entry file. the graph
+  // lives in main's frame for the whole run: the instance borrows its
+  // views, and run_file's error exits keep the frame alive with it.
+  cli_graph* graph = NULL;
+  {
+    bool failed = false;
+    graph = cli_graph_discover(path != NULL ? path : ".", yes, no_build, &failed);
+    if (failed) {
+      ok_free(ok);
+      return 70;
+    }
+    if (graph != NULL) {
+      cli_graph_install(ok, graph);
+    }
+  }
+
   // force-loads happen before the run: scripts import the modules by their
   // declared names, the registry answers.
   for (uint32_t n = 0; n < natives_count; ++n) {
@@ -139,6 +276,30 @@ int main(int argc, char** argv) {
       return 70;
     }
   }
+
+  // --where: the resolution question, asked of the same graph, then exit.
+  // nothing loads and nothing runs (the where lane probes through reads).
+  if (where != NULL) {
+    const char* canonical = NULL;
+    char* dir = NULL;
+    const char* slash = strrchr(path, '/');
+    if (slash == NULL) {
+      dir = strdup(".");
+    } else {
+      dir = strndup(path, (size_t)(slash - path));
+    }
+    bool found = false;
+    if (dir != NULL) {
+      found = ok_module_where(ok, where, dir, &canonical);
+      if (found) {
+        printf("%s\n", canonical);
+      }
+      free(dir);
+    }
+    ok_free(ok);
+    return found ? 0 : 1;
+  }
+
   if (path == NULL && natives_count == 0) {
     repl(ok);
   } else if (path != NULL) {
@@ -146,9 +307,11 @@ int main(int argc, char** argv) {
   } else {
     usage();
     ok_free(ok);
+    cli_graph_free(graph);
     return 64;
   }
   ok_free(ok);
+  cli_graph_free(graph);
 }
 
 void repl(ok* p_ok) {

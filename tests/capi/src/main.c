@@ -110,6 +110,32 @@ static ok_string_view sv(const char* p_chars) {
   return ok_create_string_view(p_chars, OK_STRING_VIEW_CALCULATE_LENGTH, true);
 }
 
+// the patch-49 fixture: a stateful C class. Box carries a mut payload field
+// (filled by the native init through ok_value_set_field) and an immutable
+// tag field (a declared initial value, every instance reads the same one).
+static ok_value g_box_seen_tag;
+
+static ok_value box_init(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  CHECK(p_argc == 2);
+  ok_value tag = ok_value_null();
+  CHECK(ok_value_get_field(p_ok, p_argv[0], sv("tag"), &tag));
+  g_box_seen_tag = tag; // the declared default, read before any write
+  CHECK(ok_value_set_field(p_ok, p_argv[0], sv("payload"), p_argv[1]));
+  // the tag is immutable from C exactly as from script
+  CHECK(!ok_value_set_field(p_ok, p_argv[0], sv("tag"), ok_value_number(9)));
+  return ok_value_null();
+}
+
+static ok_value box_bump(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  ok_value payload = ok_value_null();
+  CHECK(ok_value_get_field(p_ok, p_argv[0], sv("payload"), &payload));
+  CHECK(ok_value_is_number(payload));
+  const ok_value next = ok_value_number(ok_value_as_number(payload) + 1.0);
+  CHECK(ok_value_set_field(p_ok, p_argv[0], sv("payload"), next));
+  return next;
+}
+
 // reads :what: out of a materialized {:kind:, :what:} error map.
 static bool error_what_contains(ok* p_ok, const char* p_needle) {
   ok_value error = ok_last_error(p_ok);
@@ -610,6 +636,168 @@ int main(void) {
     CHECK(ok_global_get(s_ok, sv("locked_len"), &locked_len));
     CHECK(ok_value_is_number(locked_len) && ok_value_as_number(locked_len) == 2.0);
     ok_free(s_ok);
+  }
+
+  // ---------- the field-access trio (patch 49): a stateful C class ----------
+  {
+    ok_value box = ok_class_new(p_ok, sv("Box"), ok_value_null());
+    CHECK(ok_value_is_class(box));
+    const uint32_t box_root = ok_root(p_ok, box);
+    CHECK(box_root != OK_ROOT_INVALID);
+    CHECK(ok_class_add_field(p_ok, box, sv("payload"), true, ok_value_null()));
+    CHECK(ok_class_add_field(p_ok, box, sv("tag"), false, ok_value_number(7)));
+    CHECK(!ok_class_add_field(p_ok, box, sv("payload"), true, ok_value_null())); // redeclare
+    CHECK(!ok_class_add_field(p_ok, box, sv(""), true, ok_value_null()));        // empty name
+    CHECK(ok_class_define_native_method(p_ok, box, sv("init"), 2, box_init, false));
+    CHECK(ok_class_define_native_method(p_ok, box, sv("bump"), 1, box_bump, true));
+    CHECK(ok_class_freeze(p_ok, box));
+    CHECK(!ok_class_add_field(p_ok, box, sv("late"), true, ok_value_null())); // frozen
+
+    // the class rides a global; the script constructs and drives it
+    CHECK(ok_global_define(p_ok, sv("Box"), box, false));
+    CHECK(run(p_ok,
+              "glob let b1 = Box(41);\n"
+              "glob let b2 = Box(1);\n"
+              "glob let up1 = b1.bump();\n"
+              "glob let up2 = b2.bump();\n"
+              "glob let up1b = b1.bump();\n"));
+    ok_value up1 = ok_value_null();
+    CHECK(ok_global_get(p_ok, sv("up1"), &up1));
+    CHECK(ok_value_is_number(up1) && ok_value_as_number(up1) == 42.0);
+    ok_value up2 = ok_value_null();
+    CHECK(ok_global_get(p_ok, sv("up2"), &up2));
+    CHECK(ok_value_is_number(up2) && ok_value_as_number(up2) == 2.0);
+    ok_value up1b = ok_value_null();
+    CHECK(ok_global_get(p_ok, sv("up1b"), &up1b));
+    CHECK(ok_value_is_number(up1b) && ok_value_as_number(up1b) == 43.0);
+
+    // per-instance isolation from the C lane: read both boxes' payloads
+    ok_value b1 = ok_value_null();
+    ok_value b2 = ok_value_null();
+    CHECK(ok_global_get(p_ok, sv("b1"), &b1));
+    CHECK(ok_global_get(p_ok, sv("b2"), &b2));
+    ok_value p1 = ok_value_null();
+    ok_value p2 = ok_value_null();
+    CHECK(ok_value_get_field(p_ok, b1, sv("payload"), &p1));
+    CHECK(ok_value_get_field(p_ok, b2, sv("payload"), &p2));
+    CHECK(ok_value_as_number(p1) == 43.0 && ok_value_as_number(p2) == 2.0);
+
+    // the immutable default survived every construction untouched
+    CHECK(ok_value_is_number(g_box_seen_tag) && ok_value_as_number(g_box_seen_tag) == 7.0);
+    ok_value tag = ok_value_null();
+    CHECK(ok_value_get_field(p_ok, b1, sv("tag"), &tag));
+    CHECK(ok_value_is_number(tag) && ok_value_as_number(tag) == 7.0);
+
+    // the refusals: a missing name, a non-instance, a class value (statics
+    // are a later entry), an immutable field
+    CHECK(!ok_value_get_field(p_ok, b1, sv("nope"), &p1));
+    CHECK(!ok_value_get_field(p_ok, ok_value_number(1), sv("payload"), &p1));
+    CHECK(!ok_value_get_field(p_ok, box, sv("payload"), &p1));
+    CHECK(!ok_value_set_field(p_ok, b1, sv("tag"), ok_value_number(8)));
+    CHECK(!ok_value_set_field(p_ok, b1, sv("nope"), ok_value_number(8)));
+
+    // a script subclass inherits the C layout: the fields and the native
+    // methods both ride the chain
+    CHECK(run(p_ok,
+              "class BigBox : Box {\n"
+              "  pub fu big() { return 1000; }\n"
+              "}\n"
+              "glob let big = BigBox(5);\n"
+              "glob let big_up = big.bump();\n"
+              "glob let big_hit = big.big();\n"));
+    ok_value big_up = ok_value_null();
+    CHECK(ok_global_get(p_ok, sv("big_up"), &big_up));
+    CHECK(ok_value_is_number(big_up) && ok_value_as_number(big_up) == 6.0);
+    ok_value big_hit = ok_value_null();
+    CHECK(ok_global_get(p_ok, sv("big_hit"), &big_hit));
+    CHECK(ok_value_is_number(big_hit) && ok_value_as_number(big_hit) == 1000.0);
+
+    // the C lane still reaches the inherited field through the subclass
+    // instance (the flat map covers the chain)
+    ok_value big = ok_value_null();
+    CHECK(ok_global_get(p_ok, sv("big"), &big));
+    ok_value big_payload = ok_value_null();
+    CHECK(ok_value_get_field(p_ok, big, sv("payload"), &big_payload));
+    CHECK(ok_value_as_number(big_payload) == 6.0);
+
+    CHECK(ok_unroot(p_ok, box_root));
+  }
+
+  // ---------- OR-4: the where probe, the map walk, the manifest lane ----------
+  {
+    // where over the memory loader: nothing loads, the answer borrows
+    ok* w_ok = ok_create(specs);
+    CHECK(w_ok != NULL);
+    ok_loader loader;
+    loader.read_source = mem_read_source;
+    loader.load_native = NULL;
+    loader.p_ctx = NULL;
+    ok_set_loader(w_ok, loader);
+    const char* canonical = NULL;
+    CHECK(ok_module_where(w_ok, "./deep.ok", "mem:/", &canonical));
+    CHECK(canonical != NULL && strstr(canonical, "deep.ok") != NULL); // realpath may refuse virtual paths
+    CHECK(!ok_module_where(w_ok, "./nope", "mem:/", &canonical));
+    ok_free(w_ok);
+
+    // the manifest lane: one source as a standalone module. pub table
+    // harvested through the export read api, imports refused with the
+    // teaching error, nothing registers.
+    ok* m_ok = ok_create(specs);
+    CHECK(m_ok != NULL);
+    ok_source manifest = {
+        "pub let project = {\n"
+        "  \"name\": \"capi\",\n"
+        "  \"modules\": [\"lib\"],\n"
+        "  \"deps\": {\"vendor\": {\"path\": \"/nowhere\"}},\n"
+        "};\n",
+        "project.ok"};
+    ok_value table = ok_module_evaluate(m_ok, manifest);
+    CHECK(!ok_value_is_null(table));
+    const uint32_t m_root = ok_root(m_ok, table);
+    CHECK(m_root != OK_ROOT_INVALID);
+    CHECK(ok_module_count(m_ok) == 0); // nothing registered: standalone
+    CHECK(ok_module_export_count(m_ok, table) == 1);
+    CHECK(strcmp(ok_module_export_name(m_ok, table, 0), "project") == 0);
+    ok_value project = ok_module_export_get(m_ok, table, 0);
+    CHECK(ok_value_is_map(project));
+
+    // the indexed map walk: the harvest's own lane (slot order, complete)
+    ok_value key = ok_value_null();
+    ok_value value = ok_value_null();
+    uint32_t pairs = 0;
+    bool saw_name = false;
+    bool saw_modules = false;
+    bool saw_deps = false;
+    while (ok_map_pair_at(project, pairs, &key, &value)) {
+      if (ok_value_is_string(key)) {
+        const ok_cstring_view name = ok_value_as_string(key);
+        if (strcmp(name.chars, "name") == 0) {
+          saw_name = ok_value_is_string(value);
+        } else if (strcmp(name.chars, "modules") == 0) {
+          saw_modules = ok_value_is_array(value) && ok_array_len(value) == 1 &&
+                        ok_value_is_string(ok_array_get(value, 0));
+        } else if (strcmp(name.chars, "deps") == 0) {
+          saw_deps = ok_value_is_map(value) && ok_map_len(value) == 1;
+        }
+      }
+      ++pairs;
+    }
+    CHECK(pairs == 3 && saw_name && saw_modules && saw_deps);
+    CHECK(!ok_map_pair_at(project, 3, &key, &value)); // out of range
+    ok_unroot(m_ok, m_root);
+
+    // a manifest that imports is refused, its own path and line in the
+    // report
+    ok_source importing = {"import \"std/array\";\n", "bad.ok"};
+    CHECK(ok_value_is_null(ok_module_evaluate(m_ok, importing)));
+    // and one with no pub project table still evaluates (the harvest is
+    // the caller's business): a namespace with the exports it declared
+    ok_source bare = {"pub let alone = 1;\n", "bare.ok"};
+    ok_value alone_ns = ok_module_evaluate(m_ok, bare);
+    CHECK(!ok_value_is_null(alone_ns));
+    CHECK(ok_module_export_count(m_ok, alone_ns) == 1);
+    CHECK(strcmp(ok_module_export_name(m_ok, alone_ns, 0), "alone") == 0);
+    ok_free(m_ok);
   }
 
   ok_free(p_ok);

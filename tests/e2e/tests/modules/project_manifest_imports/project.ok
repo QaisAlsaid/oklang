@@ -1,0 +1,6 @@
+// the manifest may not import (M10: a script, not a module graph node)
+import "std/array";
+
+pub let project = {
+  "name": "importing",
+};

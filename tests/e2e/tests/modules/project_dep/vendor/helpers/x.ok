@@ -1,0 +1,3 @@
+pub fu twice(x) {
+  return x * 2;
+}

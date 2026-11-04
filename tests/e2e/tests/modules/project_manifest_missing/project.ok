@@ -1,0 +1,2 @@
+// no pub 'project' table: the evaluator refuses with the teaching error
+pub let wrong = 1;

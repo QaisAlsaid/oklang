@@ -1,0 +1,6 @@
+// the native target by name: the project lane hands the import to the
+// artifact ok build produced
+import "adder";
+
+print adder.add(2, 3); // expect: 5
+print adder.add(40, 2); // expect: 42

@@ -338,6 +338,12 @@ struct object_class {
   object_string_array own_names; // own field names, declaration order
   uint8_array own_muts;        // parallel mut flags
   object_closure_array own_inits; // parallel initializer thunks (NULL = none)
+  value_array own_defaults;    // parallel C-side initial values (patch 49: the
+                               // native-class lane, always null for script
+                               // fields - their per-instance initializer is
+                               // the thunk. a reference-typed default is
+                               // shared by every instance, the documented
+                               // footgun of the static shape)
   field_map fields;            // flat name -> slot, built at freeze
   method_map methods;          // name -> entry, frozen at definition end
   method_map statics;          // static methods: name -> entry. the receiver is
@@ -396,11 +402,16 @@ bool object_class_define_native_static_method(object_class* p_class,
                                               object_specs* p_specs);
 
 // definition-time: append one own field. false = OOM or a redeclaration
-// (p_previous_owner names the ancestor that already declared it).
+// (p_previous_owner names the ancestor that already declared it). p_default
+// is the C-side initial value (patch 49): every instance's slot starts as
+// this value instead of null. the script lane always passes null - its
+// per-instance initializer is the thunk, which re-evaluates per
+// construction; a C default is evaluated once at definition time.
 bool object_class_add_field(object_class* p_class,
                             const object_string* p_name,
                             bool p_mut,
                             object_closure* p_init_thunk,
+                            value p_default,
                             const object_string** p_previous_owner);
 
 // definition end: build the flat field map over the parent chain and freeze
