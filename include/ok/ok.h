@@ -208,8 +208,23 @@ bool ok_class_freeze(ok* p_ok, ok_value p_class);
 // with ok_value_set_field; a field declared without mut can never be
 // written, from C any more than from script. false = p_class is not a class
 // value, the class is frozen, an empty name, a redeclaration anywhere in
-// the chain, or OOM.
+// the chain, or OOM. the field is PRIVATE from script (the ring); C reads
+// and writes it through this api either way. ok_class_add_field_ex (patch
+// 51) is the pub form: a pub field is script-readable (and, with mut,
+// script-writable) from outside the class, the getter-free surface.
 bool ok_class_add_field(ok* p_ok, ok_value p_class, ok_string_view p_name, bool p_mut, ok_value p_initial);
+
+// the pub form (patch 51): same contract as ok_class_add_field, plus the
+// visibility bit. p_pub true opens the member ring - script code anywhere
+// (other modules included) may read the field, and write it when mut. the
+// raylib shape: `vec.x` is a slot load, not a getter call. p_pub false is
+// exactly ok_class_add_field.
+bool ok_class_add_field_ex(ok* p_ok,
+                           ok_value p_class,
+                           ok_string_view p_name,
+                           bool p_mut,
+                           bool p_pub,
+                           ok_value p_initial);
 
 // read one instance field by name. false = p_value is not an instance, or
 // no field of that name exists on its class chain. allocation-free: the

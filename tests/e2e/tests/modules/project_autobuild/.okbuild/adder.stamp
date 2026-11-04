@@ -1,1 +1,2 @@
+3
 gcc -shared -fPIC -I../../../../../include -o adder.so native/adder.c

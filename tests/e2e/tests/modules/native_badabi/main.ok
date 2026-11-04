@@ -1,2 +1,2 @@
 import "./badabi";
-// expect error: abi 99, expected 2, rebuild it against include/ok/ok_module.h.
+// expect error: abi 0.99 is newer than this ok (0.3), upgrade ok or rebuild the module

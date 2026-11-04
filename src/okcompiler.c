@@ -1841,6 +1841,10 @@ static bool compile_class_declaration(compiler* p_compiler, ast_class_declaratio
       }
       const bool is_mut = (let->binding->modifiers & BINDING_MUT) != 0;
       const bool is_static = (let->declaration.modifiers & DECLARATION_STATIC) != 0;
+      // patch 51: fields join the visibility ring. `pub` on a class-body let
+      // opens the member outside the defining hierarchy (module boundaries
+      // included); the default stays the private ring the classes lane set.
+      const bool is_pub = (let->declaration.modifiers & DECLARATION_PUB) != 0;
       if (is_static) {
         // static field: the initializer runs inline, at definition time, in
         // this context (it may read earlier statics and call static methods
@@ -1866,12 +1870,13 @@ static bool compile_class_declaration(compiler* p_compiler, ast_class_declaratio
           }
         }
         if (!emit_word2(p_compiler,
-                        encode_OPPABCQ(OP_DEFINE_STATIC_FIELD,
-                                       false,
-                                       klass_reg.index,
-                                       value_reg.index,
-                                       CONSTANT_RAW_INDEX(field_const),
-                                       is_mut),
+                        encode_OPPABCQR(OP_DEFINE_STATIC_FIELD,
+                                        false,
+                                        klass_reg.index,
+                                        value_reg.index,
+                                        CONSTANT_RAW_INDEX(field_const),
+                                        is_mut,
+                                        is_pub),
                         (ast_node*)member)) {
           report_oom(p_compiler, author);
           return false;
@@ -1890,24 +1895,26 @@ static bool compile_class_declaration(compiler* p_compiler, ast_class_declaratio
           return false;
         }
         if (!emit_word2(p_compiler,
-                        encode_OPPABCQ(OP_DEFINE_FIELD,
-                                       false,
-                                       klass_reg.index,
-                                       thunk_reg.index,
-                                       CONSTANT_RAW_INDEX(field_const),
-                                       is_mut),
+                        encode_OPPABCQR(OP_DEFINE_FIELD,
+                                        false,
+                                        klass_reg.index,
+                                        thunk_reg.index,
+                                        CONSTANT_RAW_INDEX(field_const),
+                                        is_mut,
+                                        is_pub),
                         (ast_node*)member)) {
           report_oom(p_compiler, author);
           return false;
         }
       } else {
         if (!emit_word2(p_compiler,
-                        encode_OPPABCQ(OP_DEFINE_FIELD,
-                                       true,
-                                       klass_reg.index,
-                                       0,
-                                       CONSTANT_RAW_INDEX(field_const),
-                                       is_mut),
+                        encode_OPPABCQR(OP_DEFINE_FIELD,
+                                        true,
+                                        klass_reg.index,
+                                        0,
+                                        CONSTANT_RAW_INDEX(field_const),
+                                        is_mut,
+                                        is_pub),
                         (ast_node*)member)) {
           report_oom(p_compiler, author);
           return false;

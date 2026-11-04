@@ -1,0 +1,6 @@
+// a pub static without mut reads from anywhere, writes nowhere
+class Conf {
+  pub static let name = "fixed";
+}
+print Conf.name; // expect: fixed
+Conf.name = "other"; // expect error: cannot assign to static 'name': declared without 'mut'

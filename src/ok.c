@@ -795,6 +795,17 @@ bool ok_class_freeze(ok* p_ok, ok_value p_class) {
 // read them from any native method. the machinery is the VM's own (flat
 // slots, the frozen field map), this is only the door.
 bool ok_class_add_field(ok* p_ok, ok_value p_class, ok_string_view p_name, bool p_mut, ok_value p_initial) {
+  return ok_class_add_field_ex(p_ok, p_class, p_name, p_mut, false, p_initial);
+}
+
+// the pub form (patch 51): the private default stays the patch-49 behavior,
+// p_pub opens the member ring from script. the C lane is trusted either way.
+bool ok_class_add_field_ex(ok* p_ok,
+                           ok_value p_class,
+                           ok_string_view p_name,
+                           bool p_mut,
+                           bool p_pub,
+                           ok_value p_initial) {
   if (!IS_VALUE_CLASS(p_class) || p_name.chars == NULL || ok_string_view_get_length(&p_name) == 0) {
     return false;
   }
@@ -832,7 +843,7 @@ bool ok_class_add_field(ok* p_ok, ok_value p_class, ok_string_view p_name, bool 
     gc_guard_down(p_ok->alloc.gc);
     return false;
   }
-  const bool added = object_class_add_field(klass, name, p_mut, NULL, p_initial, NULL);
+  const bool added = object_class_add_field(klass, name, p_mut, p_pub, NULL, p_initial, NULL);
   gc_guard_down(p_ok->alloc.gc);
   gc_guard_down(p_ok->alloc.gc);
   gc_guard_down(p_ok->alloc.gc);

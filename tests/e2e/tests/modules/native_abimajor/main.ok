@@ -1,0 +1,2 @@
+import "./badmajor";
+// expect error: abi major 1, expected 0, rebuild it against include/ok/ok_module.h.

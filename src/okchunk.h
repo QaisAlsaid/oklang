@@ -469,6 +469,7 @@ ARRAY_DECLARE_DEFAULT(identifiers, string)
 #define C_MASK UINT64_C(0x00ffff0000000000)  // 16 bit width
 #define Q_MASK UINT64_C(0x0100000000000000)  // 1 bit width
 #define CMP_MASK UINT64_C(0x0e00000000000000) // 3 bit width (OP_JUMP_IF_CMP's comparator)
+#define R_MASK UINT64_C(0x1000000000000000)  // 1 bit width (the field-define ops' pub flag)
 
 #define OP_LOFFSET 0u
 #define P_LOFFSET (OP_LOFFSET + 7u)
@@ -477,6 +478,7 @@ ARRAY_DECLARE_DEFAULT(identifiers, string)
 #define C_LOFFSET (B_LOFFSET + 16u)
 #define Q_LOFFSET (C_LOFFSET + 16u)
 #define CMP_LOFFSET (Q_LOFFSET + 1u)
+#define R_LOFFSET (CMP_LOFFSET + 3u)
 
 #define a_MAX UINT8_MAX
 #define b_MAX a_MAX
@@ -595,6 +597,20 @@ static inline word2 encode_OPPABCQC(
     const opcode p_OP, const bool p_P, const uint16_t p_A, const uint16_t p_B, const uint16_t p_C, const bool p_Q,
     const uint8_t p_cmp) {
   return encode_OPPABCQ(p_OP, p_P, p_A, p_B, p_C, p_Q) | (((word2)p_cmp << CMP_LOFFSET) & CMP_MASK);
+}
+
+// the pub flag rides the instruction word's one spare bit (patch 51): the
+// field-define ops carry mut in Q already, and a second flag operand would
+// otherwise cost a new opcode pair. R is touched by exactly two producers
+// (OP_DEFINE_FIELD, OP_DEFINE_STATIC_FIELD) and two decoders.
+static inline word2 encode_OPPABCQR(
+    const opcode p_OP, const bool p_P, const uint16_t p_A, const uint16_t p_B, const uint16_t p_C, const bool p_Q,
+    const bool p_R) {
+  return encode_OPPABCQ(p_OP, p_P, p_A, p_B, p_C, p_Q) | (((word2)p_R << R_LOFFSET) & R_MASK);
+}
+
+static inline bool R_of(const word2 p_word) {
+  return (p_word & R_MASK) >> R_LOFFSET;
 }
 
 // chunks reference their source by index into the vm's source table.

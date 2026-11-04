@@ -1,0 +1,7 @@
+// a pub field without mut reads from anywhere, writes nowhere
+class Conf {
+  pub let name = "fixed";
+}
+let c = Conf();
+print c.name; // expect: fixed
+c.name = "other"; // expect error: cannot assign to field 'name': declared without 'mut'

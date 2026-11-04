@@ -228,8 +228,20 @@ static bool api_module_export(ok* p_ok, ok_string_view p_name, ok_value p_value)
   }
   memcpy(copy, p_name.chars, length);
   copy[length] = '\0';
-  // the value rides the marked mount window (mark_modules), not a guard
-  if (!value_array_append(&mount->values, p_value)) {
+  // the value rides the marked mount window once appended; the append itself
+  // can collect (aggressive gc), and until it lands the value is only a C
+  // local in the mount callback. guard across exactly that call - the same
+  // dance the fn-staging loop does. the hole was always here; patch 51's
+  // extra field-array append shifted the allocation order enough to reuse
+  // the swept class's memory before the namespace read it back.
+  if (!gc_guard_up(p_ok->alloc.gc, p_value)) {
+    p_ok->raw_alloc.release(copy);
+    mount->failure = "out of memory while staging a mount export.";
+    return false;
+  }
+  const bool appended = value_array_append(&mount->values, p_value);
+  gc_guard_down(p_ok->alloc.gc);
+  if (!appended) {
     p_ok->raw_alloc.release(copy);
     mount->failure = "out of memory while staging a mount export.";
     return false;
@@ -284,6 +296,12 @@ static bool api_class_add_field(ok* p_ok, ok_value p_class, ok_string_view p_nam
   return ok_class_add_field(p_ok, p_class, p_name, p_mut, p_initial);
 }
 
+// the pub form (patch 51, ABI 3): appended at the tail, the append-only way.
+static bool api_class_add_field_ex(
+    ok* p_ok, ok_value p_class, ok_string_view p_name, bool p_mut, bool p_pub, ok_value p_initial) {
+  return ok_class_add_field_ex(p_ok, p_class, p_name, p_mut, p_pub, p_initial);
+}
+
 static bool api_value_get_field(ok* p_ok, ok_value p_instance, ok_string_view p_name, ok_value* p_out) {
   return ok_value_get_field(p_ok, p_instance, p_name, p_out);
 }
@@ -334,6 +352,7 @@ static const ok_api g_ok_api = {
     api_class_add_field,
     api_value_get_field,
     api_value_set_field,
+    api_class_add_field_ex,
 };
 
 const ok_api* ok_api_table(void) {

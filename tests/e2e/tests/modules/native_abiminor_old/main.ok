@@ -1,0 +1,5 @@
+// the compat window's proof: a patch-49-era module (abi 2) loads and runs
+// unchanged on a newer host - same major, older minor, append-only history.
+import "./fossil";
+
+print fossil.answer(); // expect: 42

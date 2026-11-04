@@ -1,0 +1,24 @@
+// cross-module pub fields (patch 51): the imported class's pub members are
+// the surface, slot loads both sides of the module line.
+import "./lib.ok";
+
+let a = lib.Account();
+print a.owner; // expect: anon
+a.balance = 10;
+print a.balance; // expect: 10
+print a.deposit(5); // expect: 14
+print a.balance; // expect: 14
+print a.charged(); // expect: 1
+
+print lib.Account.opened; // expect: 0
+print lib.Account.house(); // expect: 1
+print lib.Account.opened; // expect: 1
+lib.Account.opened = 9;
+print lib.Account.opened; // expect: 9
+
+// a script subclass of the imported class inherits the pub layout
+class Joint : lib.Account {}
+let j = Joint();
+j.balance = 100;
+print j.balance; // expect: 100
+print j.deposit(1); // expect: 100

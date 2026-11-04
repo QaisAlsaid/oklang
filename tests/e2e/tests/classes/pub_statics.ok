@@ -1,0 +1,20 @@
+// pub statics (patch 51): the class value is the receiver, the ring opens
+// the same way as instance fields. private statics keep the ring.
+class Registry {
+  pub static let mut made = 0;
+  pub static let scale = 2;
+  static let hidden = 99; // the ring keeps this one
+  pub static fu note() { Registry.made = Registry.made + 1; return Registry.made; }
+  pub static fu peek() { return hidden; }
+}
+print Registry.made; // expect: 0
+print Registry.note(); // expect: 1
+print Registry.made; // expect: 1
+Registry.made = 10;
+print Registry.made; // expect: 10
+print Registry.scale; // expect: 2
+
+// a subclass reads the ancestor's pub static through its own name
+class Sub : Registry {}
+print Sub.made; // expect: 10
+print Sub.peek(); // expect: 99

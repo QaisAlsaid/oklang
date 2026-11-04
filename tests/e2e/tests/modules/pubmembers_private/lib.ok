@@ -1,0 +1,9 @@
+// the module boundary does not dissolve the private ring: an imported
+// class's pub-less field stays invisible to the importer (patch 51's
+// counterweight, already true since OR-1, pinned here for the fields).
+pub class Vault {
+  pub let mut gold = 0;
+  let combination = 42;
+
+  pub fu peek() { return this.combination; }
+}

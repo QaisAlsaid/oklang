@@ -3,6 +3,8 @@
 
 #include "project.h"
 
+#include "ok/ok_module.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -656,8 +658,22 @@ void cli_graph_free(cli_graph* p_graph) {
 
 // ---------------------------------------------------------------- the build lane
 
-// the staleness stamp: <root>/.okbuild/<name>.stamp holds the build command
-// of the last success. fresh = artifact readable AND stamp == command.
+// the staleness stamp: <root>/.okbuild/<name>.stamp holds the host's
+// native abi line and the build command of the last success. fresh =
+// artifact readable AND stamp == expected. the abi line (patch 51) is the
+// toolchain's fingerprint: an ok whose abi changed never trusts an older
+// artifact - the bump that taught this was 2 -> 3 leaving a green stamp
+// over a stale .so.
+static char* stamp_content(const char* p_build) {
+  const size_t room = 16 + strlen(p_build) + 2;
+  char* out = (char*)malloc(room);
+  if (out == NULL) {
+    return NULL;
+  }
+  sprintf(out, "%u\n%s", (unsigned)OK_NATIVE_ABI, p_build);
+  return out;
+}
+
 static char* stamp_path(const char* p_root, const char* p_name) {
   const size_t a = strlen(p_root);
   const size_t b = strlen(p_name);
@@ -682,8 +698,10 @@ static bool target_fresh(const char* p_root, const char* p_name, const char* p_b
   if (recorded == NULL) {
     return false;
   }
-  // the command string, unchanged since the last recorded success
-  const bool same = strcmp(recorded, p_build) == 0;
+  // the abi line and the command string, unchanged since the last success
+  char* expected = stamp_content(p_build);
+  const bool same = expected != NULL && strcmp(recorded, expected) == 0;
+  free(expected);
   free(recorded);
   return same;
 }
@@ -702,7 +720,11 @@ static void write_stamp(const char* p_root, const char* p_name, const char* p_bu
   }
   FILE* file = fopen(stamp, "wb");
   if (file != NULL) {
-    fwrite(p_build, 1, strlen(p_build), file);
+    char* content = stamp_content(p_build);
+    if (content != NULL) {
+      fwrite(content, 1, strlen(content), file);
+      free(content);
+    }
     fclose(file);
   }
   free(stamp);

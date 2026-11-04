@@ -563,8 +563,9 @@ static bool build_namespace(module_system* p_modules,
     }
     const object_string* previous_owner = NULL;
     const bool added =
-        object_class_add_field(klass, field_name, false /* mut */, NULL /* init thunk */,
-                              NULL_AS_VALUE() /* default: the loader fills the slot */, &previous_owner);
+        object_class_add_field(klass, field_name, false /* mut */, true /* pub: an export */,
+                              NULL /* init thunk */, NULL_AS_VALUE() /* default: the loader fills the slot */,
+                              &previous_owner);
     gc_guard_down(collector); // the class owns the name now
     if (!added) {
       gc_guard_down(collector);
@@ -691,8 +692,9 @@ static bool materialize_ns(module_system* p_modules, pending_ns* p_node, value* 
     }
     const object_string* previous_owner = NULL;
     const bool added =
-        object_class_add_field(klass, field_name, false /* mut */, NULL /* init thunk */,
-                              NULL_AS_VALUE() /* default: the loader fills the slot */, &previous_owner);
+        object_class_add_field(klass, field_name, false /* mut */, true /* pub: an export */,
+                              NULL /* init thunk */, NULL_AS_VALUE() /* default: the loader fills the slot */,
+                              &previous_owner);
     gc_guard_down(collector); // the class owns the name now
     if (!added) {
       gc_guard_down(collector);
@@ -777,8 +779,9 @@ static bool build_namespace_members(module_system* p_modules,
     }
     const object_string* previous_owner = NULL;
     const bool added =
-        object_class_add_field(klass, field_name, false /* mut */, NULL /* init thunk */,
-                              NULL_AS_VALUE() /* default: the loader fills the slot */, &previous_owner);
+        object_class_add_field(klass, field_name, false /* mut */, true /* pub: an export */,
+                              NULL /* init thunk */, NULL_AS_VALUE() /* default: the loader fills the slot */,
+                              &previous_owner);
     gc_guard_down(collector); // the class owns the name now
     if (!added) {
       gc_guard_down(collector);
@@ -912,17 +915,40 @@ static ok_result register_native(module_system* p_modules,
   ok* okay = p_modules->ok;
   const ok_allocators* a = &okay->raw_alloc;
 
-  // the abi check (both directions is the module's own job at export time,
-  // comparing against the api table it was handed)
-  if (p_descriptor->abi != OK_NATIVE_ABI) {
-    string message = asprint(&okay->alloc,
-                             "module '%s': abi %u, expected %u, rebuild it against include/ok/ok_module.h.",
-                             p_display,
-                             (unsigned)p_descriptor->abi,
-                             (unsigned)OK_NATIVE_ABI);
-    module_report_or_plain_fmt(p_from_source, p_site, p_display, &message, "native module abi mismatch.");
-    string_deinit(&message, &okay->alloc);
-    return OK_COMPILE_ERROR;
+  // the abi check (patch 52, semver-shaped): major must match, minor must be
+  // a real version at most the host's. an older minor loads unchanged (the
+  // additions were append-only, the old entries never moved), a newer minor
+  // refuses with the upgrade message, a major mismatch with the rebuild
+  // message. minor 0 is not a version: a zeroed descriptor is a rebuild.
+  // (both directions is the module's own job at export time, comparing
+  // against the api table it was handed)
+  {
+    const uint32_t module_major = p_descriptor->abi >> 16;
+    const uint32_t module_minor = p_descriptor->abi & 0xffffu;
+    if (module_major != OK_ABI_MAJOR) {
+      string message =
+          asprint(&okay->alloc,
+                  "module '%s': abi major %u, expected %u, rebuild it against include/ok/ok_module.h.",
+                  p_display,
+                  (unsigned)module_major,
+                  (unsigned)OK_ABI_MAJOR);
+      module_report_or_plain_fmt(p_from_source, p_site, p_display, &message, "native module abi mismatch.");
+      string_deinit(&message, &okay->alloc);
+      return OK_COMPILE_ERROR;
+    }
+    if (module_minor == 0 || module_minor > OK_ABI_MINOR) {
+      string message = asprint(&okay->alloc,
+                               "module '%s': abi %u.%u is newer than this ok (%u.%u), upgrade ok or rebuild the "
+                               "module against include/ok/ok_module.h.",
+                               p_display,
+                               (unsigned)module_major,
+                               (unsigned)module_minor,
+                               (unsigned)OK_ABI_MAJOR,
+                               (unsigned)OK_ABI_MINOR);
+      module_report_or_plain_fmt(p_from_source, p_site, p_display, &message, "native module abi mismatch.");
+      string_deinit(&message, &okay->alloc);
+      return OK_COMPILE_ERROR;
+    }
   }
   // the name check (graph loads): the descriptor's declared name and the
   // import's stem must agree, so a moved or renamed .so cannot lie about

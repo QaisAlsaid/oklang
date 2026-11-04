@@ -456,6 +456,7 @@ static void object_class_init(object_class* p_class,
   p_class->nown = 0;
   object_string_array_init(&p_class->own_names, p_specs->alloc);
   uint8_array_init(&p_class->own_muts, p_specs->alloc);
+  uint8_array_init(&p_class->own_pubs, p_specs->alloc);
   object_closure_array_init(&p_class->own_inits, p_specs->alloc);
   value_array_init(&p_class->own_defaults, p_specs->alloc);
   field_map_init(&p_class->fields, p_specs->alloc);
@@ -463,6 +464,7 @@ static void object_class_init(object_class* p_class,
   method_map_init(&p_class->statics, p_specs->alloc);
   object_string_array_init(&p_class->own_static_names, p_specs->alloc);
   uint8_array_init(&p_class->own_static_muts, p_specs->alloc);
+  uint8_array_init(&p_class->own_static_pubs, p_specs->alloc);
   value_array_init(&p_class->static_values, p_specs->alloc);
   field_map_init(&p_class->static_fields, p_specs->alloc);
   for (uint32_t i = 0; i < CLASS_OP_COUNT; ++i) {
@@ -477,6 +479,7 @@ static void object_class_deinit(object_class* p_class, object_specs* p_specs) {
   // only the backing buffers die here.
   object_string_array_deinit(&p_class->own_names, p_specs->alloc);
   uint8_array_deinit(&p_class->own_muts, p_specs->alloc);
+  uint8_array_deinit(&p_class->own_pubs, p_specs->alloc);
   object_closure_array_deinit(&p_class->own_inits, p_specs->alloc);
   value_array_deinit(&p_class->own_defaults, p_specs->alloc);
   field_map_deinit(&p_class->fields);
@@ -484,6 +487,7 @@ static void object_class_deinit(object_class* p_class, object_specs* p_specs) {
   method_map_deinit(&p_class->statics);
   object_string_array_deinit(&p_class->own_static_names, p_specs->alloc);
   uint8_array_deinit(&p_class->own_static_muts, p_specs->alloc);
+  uint8_array_deinit(&p_class->own_static_pubs, p_specs->alloc);
   value_array_deinit(&p_class->static_values, p_specs->alloc);
   field_map_deinit(&p_class->static_fields);
   object_deinit(&p_class->object);
@@ -502,6 +506,7 @@ object_class* create_object_class(object_string* p_name, object_class* p_parent,
 bool object_class_add_field(object_class* p_class,
                             const object_string* p_name,
                             bool p_mut,
+                            bool p_pub,
                             object_closure* p_init_thunk,
                             value p_default,
                             const object_string** p_previous_owner) {
@@ -532,6 +537,7 @@ bool object_class_add_field(object_class* p_class,
   }
   if (!object_string_array_append(&p_class->own_names, (object_string*)p_name) ||
       !uint8_array_append(&p_class->own_muts, p_mut ? 1u : 0u) ||
+      !uint8_array_append(&p_class->own_pubs, p_pub ? 1u : 0u) ||
       !object_closure_array_append(&p_class->own_inits, p_init_thunk) ||
       !value_array_append(&p_class->own_defaults, p_default)) {
     return false;
@@ -565,7 +571,7 @@ bool object_class_freeze(object_class* p_class) {
   }
   const uint16_t base = p_class->parent != NULL ? p_class->parent->nfields : 0;
   for (uint32_t i = 0; i < p_class->own_names.count; ++i) {
-    const field_entry entry = {(uint16_t)(base + i), p_class->own_muts.data[i]};
+    const field_entry entry = {(uint16_t)(base + i), p_class->own_muts.data[i], p_class->own_pubs.data[i]};
     if (!field_map_set(&p_class->fields, p_class->own_names.data[i], entry)) {
       return false;
     }
@@ -600,6 +606,7 @@ bool object_class_is_a(const object_class* p_class, const object_class* p_maybe_
 bool object_class_add_static_field(object_class* p_class,
                                     const object_string* p_name,
                                     bool p_mut,
+                                    bool p_pub,
                                     value p_value,
                                     const object_string** p_previous_owner) {
   if (p_class->frozen) {
@@ -615,9 +622,10 @@ bool object_class_add_static_field(object_class* p_class,
       return false;
     }
   }
-  const field_entry entry = {(uint16_t)p_class->static_values.count, p_mut ? 1u : 0u};
+  const field_entry entry = {(uint16_t)p_class->static_values.count, p_mut ? 1u : 0u, p_pub ? 1u : 0u};
   if (!object_string_array_append(&p_class->own_static_names, (object_string*)p_name) ||
       !uint8_array_append(&p_class->own_static_muts, p_mut ? 1u : 0u) ||
+      !uint8_array_append(&p_class->own_static_pubs, p_pub ? 1u : 0u) ||
       !value_array_append(&p_class->static_values, p_value) ||
       !field_map_set(&p_class->static_fields, p_name, entry)) {
     return false;

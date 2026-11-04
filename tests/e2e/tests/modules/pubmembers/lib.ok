@@ -1,0 +1,15 @@
+// a module's exported class: pub members are the importer's surface, the
+// private ring holds across the module boundary (patch 51).
+pub class Account {
+  pub let mut balance = 0;
+  pub let owner = "anon";
+  let fee = 1;
+
+  pub fu deposit(amount) {
+    this.balance = this.balance + amount - this.fee;
+    return this.balance;
+  }
+  pub fu charged() { return this.fee; }
+  pub static let mut opened = 0;
+  pub static fu house() { Account.opened = Account.opened + 1; return Account.opened; }
+}

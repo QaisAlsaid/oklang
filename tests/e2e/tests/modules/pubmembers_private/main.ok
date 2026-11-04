@@ -1,0 +1,9 @@
+// the ring holds across the module line: pub-less fields of an imported
+// class are invisible to the importer's code.
+import "./lib.ok";
+
+let v = lib.Vault();
+print v.gold; // expect: 0
+v.gold = 3;
+print v.peek(); // expect: 42
+print v.combination; // expect error: is not visible here

@@ -1,0 +1,13 @@
+// the patch-51 acceptance lane: pub fields on a native class. script reads
+// and writes them as slot loads (the getter-free surface), the private
+// counter stays behind the ring.
+import "./pubfield";
+
+let v = pubfield.Vec(3, 4);
+print v.x; // expect: 3
+print v.y; // expect: 4
+v.x = 30;
+print v.x; // expect: 30
+print v.length_sq(); // expect: 916
+print v.reads(); // expect: 1
+print v.taps; // expect error: is not visible here

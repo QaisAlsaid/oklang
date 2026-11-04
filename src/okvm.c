@@ -4942,6 +4942,7 @@ static void* ok_dispatch_table[OP__COUNT] = {
       const uint16_t B = B_of(words);
       const uint16_t C = C_of(words);
       const bool is_mut = Q_of(words);
+      const bool is_pub = R_of(words);
       if (!IS_VALUE_CLASS(REG_AT(A)) || !IS_VALUE_STRING(frame->closure->function->chunk.constants.data[C])) {
         runtime_error(p_vm, OK_EK_INTERNAL, "corrupt class field definition.");
         FAIL_PATH();
@@ -4960,7 +4961,7 @@ static void* ok_dispatch_table[OP__COUNT] = {
         thunk->owner = klass;
       }
       const object_string* previous_owner = NULL;
-      if (!object_class_add_field(klass, name, is_mut, thunk, NULL_AS_VALUE(), &previous_owner)) {
+      if (!object_class_add_field(klass, name, is_mut, is_pub, thunk, NULL_AS_VALUE(), &previous_owner)) {
         if (previous_owner != NULL) {
           runtime_error(p_vm,
                         OK_EK_TYPE,
@@ -5193,6 +5194,7 @@ static void* ok_dispatch_table[OP__COUNT] = {
       const uint16_t B = B_of(words);
       const uint16_t C = C_of(words);
       const bool is_mut = Q_of(words);
+      const bool is_pub = R_of(words);
       if (!IS_VALUE_CLASS(REG_AT(A)) || !IS_VALUE_STRING(frame->closure->function->chunk.constants.data[C])) {
         runtime_error(p_vm, OK_EK_INTERNAL, "corrupt static field definition.");
         FAIL_PATH();
@@ -5201,7 +5203,7 @@ static void* ok_dispatch_table[OP__COUNT] = {
       object_class* klass = VALUE_AS_CLASS(REG_AT(A));
       object_string* name = VALUE_AS_STRING(frame->closure->function->chunk.constants.data[C]);
       const object_string* previous_owner = NULL;
-      if (!object_class_add_static_field(klass, name, is_mut, REG_AT(B), &previous_owner)) {
+      if (!object_class_add_static_field(klass, name, is_mut, is_pub, REG_AT(B), &previous_owner)) {
         if (previous_owner != NULL) {
           runtime_error(p_vm,
                         OK_EK_TYPE,
@@ -5600,7 +5602,7 @@ static void* ok_dispatch_table[OP__COUNT] = {
         }
         const object_class* seg = field_defining_segment(inst->klass, field->slot);
         const object_class* caller = frame->closure->owner;
-        if (seg == NULL || caller == NULL || !object_class_is_a(caller, seg)) {
+        if (!field->pub && (seg == NULL || caller == NULL || !object_class_is_a(caller, seg))) {
           runtime_error(p_vm,
                         OK_EK_TYPE,
                         "field '%s' of class '%s' is not visible here.",
@@ -5634,7 +5636,7 @@ static void* ok_dispatch_table[OP__COUNT] = {
           DISPATCH();
         }
         const object_class* caller = frame->closure->owner;
-        if (caller == NULL || !object_class_is_a(caller, owner)) {
+        if (!statik->pub && (caller == NULL || !object_class_is_a(caller, owner))) {
           runtime_error(p_vm,
                         OK_EK_TYPE,
                         "static '%s' of class '%s' is not visible here.",
@@ -5742,10 +5744,10 @@ static void* ok_dispatch_table[OP__COUNT] = {
         const object_class* owner = NULL;
         const field_entry* sf = object_class_find_static(klass, name, &owner);
         if (sf != NULL) {
-          // the field doctrine: statics are hierarchy-internal, the ring is
-          // the defining class and everything below it.
+          // the field doctrine: statics are hierarchy-internal unless pub
+          // (patch 51), the ring is the defining class and everything below it.
           const object_class* caller = frame->closure->owner;
-          if (caller == NULL || !object_class_is_a(caller, owner)) {
+          if (!sf->pub && (caller == NULL || !object_class_is_a(caller, owner))) {
             runtime_error(p_vm,
                           OK_EK_TYPE,
                           "static '%s' of class '%s' is not visible here.",
@@ -5795,11 +5797,12 @@ static void* ok_dispatch_table[OP__COUNT] = {
         // OR-1: a module namespace's fields are its exports - public by
         // doctrine (M9); the visibility ring does not apply.
         if (!klass->module_namespace) {
-          // visibility: the calling hierarchy must contain the field's defining
+          // visibility: pub fields are the surface (patch 51); everything
+          // else needs the calling hierarchy to contain the field's defining
           // segment (class-wide privacy, the C++ ring)
           const object_class* seg = field_defining_segment(klass, field->slot);
           const object_class* caller = frame->closure->owner;
-          if (seg == NULL || caller == NULL || !object_class_is_a(caller, seg)) {
+          if (!field->pub && (seg == NULL || caller == NULL || !object_class_is_a(caller, seg))) {
             runtime_error(p_vm,
                           OK_EK_TYPE,
                           "field '%s' of class '%s' is not visible here.",
@@ -6005,8 +6008,10 @@ static void* ok_dispatch_table[OP__COUNT] = {
             const object_class* seg = field != NULL ? field_defining_segment(klass, field->slot) : NULL;
             // OR-1: a module namespace's exports are public (M9) - the ring
             // does not apply; `mod.export(args)` is the hot import path.
+            // patch 51: a pub field is the surface everywhere else.
             if (field != NULL &&
-                (klass->module_namespace || (seg != NULL && caller != NULL && object_class_is_a(caller, seg)))) {
+                (field->pub || klass->module_namespace ||
+                 (seg != NULL && caller != NULL && object_class_is_a(caller, seg)))) {
               value callable = inst->fields[field->slot];
               if (IS_VALUE_CLOSURE(callable)) {
                 const mic_entry filled = {OBJECT_AS_VALUE(klass), NULL, field->slot, 1, 0};

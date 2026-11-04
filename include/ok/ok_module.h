@@ -30,14 +30,33 @@
 extern "C" {
 #endif // __cplusplus
 
-// the ABI number: a single integer, bumped on ANY change to the vtable, the
-// descriptor layouts, or the tag enum. every module carries the number it
-// was built against; the loader checks at load (and a module may check the
-// api's number the other way, refusing a host it does not know). mismatch
-// refuses with the rebuild message. no semver, no compat promises pre-1.0:
-// "rebuild your natives" is the honest stance. the one discipline kept
-// anyway: vtable entries are APPEND-ONLY, never repurposed, never reordered.
-#define OK_NATIVE_ABI 2u
+// the ABI version (patch 52): a (major, minor) pair, semver-shaped, encoded
+// into the single uint32 the descriptor has carried since OR-3:
+// OK_NATIVE_ABI == (OK_ABI_MAJOR << 16) | OK_ABI_MINOR.
+//
+// MAJOR breaks compatibility: a reshuffled vtable, a changed entry
+// signature, a moved descriptor field, a renumbered tag. a module built
+// against another major is refused with the rebuild message.
+// MINOR is additive only: entries appended to the vtable's tail, fields
+// appended to the descriptor's tail. the loader accepts any module whose
+// minor is <= the host's (a host runs everything its own generation ever
+// loaded) and refuses a module from a newer minor with the upgrade
+// message. an addition is a minor bump, never a language major.
+//
+// pre-1.0 the major is 0 and history already fits the scheme: minor 1 was
+// OR-3's table, minor 2 the field trio (patch 49), minor 3 the pub-field
+// door (patch 51). the encoding keeps those integers intact, so an old
+// module decodes as (0, its number) and loads. v1.0.0 freezes (1, 0) and
+// the compat window opens for real: every 1.x ok runs every 1.y module
+// with y <= x, and no addition forces a v2. minor 0 is not a version: a
+// zeroed descriptor is refused with the rebuild message.
+//
+// the check is both directions, as ever: a module may compare p_api->abi
+// against OK_NATIVE_ABI exactly as before, or decode the pair for a
+// softer stance.
+#define OK_ABI_MAJOR 0u
+#define OK_ABI_MINOR 3u
+#define OK_NATIVE_ABI ((OK_ABI_MAJOR << 16) | OK_ABI_MINOR)
 
 // the one symbol a native shared object exports. msvc needs dllexport on
 // the building side and dllimport on the consuming side; everywhere else
@@ -181,6 +200,18 @@ struct ok_api {
   bool (*class_add_field)(ok* p_ok, ok_value p_class, ok_string_view p_name, bool p_mut, ok_value p_initial);
   bool (*value_get_field)(ok* p_ok, ok_value p_instance, ok_string_view p_name, ok_value* p_out);
   bool (*value_set_field)(ok* p_ok, ok_value p_instance, ok_string_view p_name, ok_value p_new_value);
+  // the pub-field door (patch 51, ABI 3): the trio's ex form. same contract
+  // as class_add_field, plus the visibility bit - a pub field is
+  // script-readable (and, with mut, script-writable) from outside the
+  // class, module boundaries included. the raylib shape: `vec.x` is a
+  // slot load, not a getter call. the old entry stays (append-only) as
+  // the private-default form.
+  bool (*class_add_field_ex)(ok* p_ok,
+                             ok_value p_class,
+                             ok_string_view p_name,
+                             bool p_mut,
+                             bool p_pub,
+                             ok_value p_initial);
 };
 
 // the dynamic-library hooks, host-provided like malloc: the host supplies

@@ -1159,11 +1159,12 @@ ast_let_declaration* parse_let_declaration(parser* p_parser,
   allocators* alloc = p_parser->alloc;
   const token let_tok = p_parser->previous;
   // static is a class-member modifier: fields only exist in class bodies.
-  // pub (OR-1, M9) is the module-export modifier: top level only - inside a
-  // class body fields are still not the surface, methods are.
+  // pub (OR-1, M9) is the module-export modifier at top level; inside a
+  // class body it is the member-visibility modifier (patch 51: fields join
+  // the methods - `pub let` opens the ring, the getter-free surface).
   const ast_declaration_modifiers_t let_allowed_decl_mods =
       DECLARATION_GLOB | DECLARATION_EXPORT |
-      (p_in_class_body ? DECLARATION_STATIC : DECLARATION_PUB);
+      (p_in_class_body ? (DECLARATION_STATIC | DECLARATION_PUB) : DECLARATION_PUB);
   if ((p_declaration_modifiers & ~let_allowed_decl_mods) != 0) {
     string mods_str = ast_declaration_modifiers_asprint(p_declaration_modifiers, alloc);
     string message = asprint(alloc,
@@ -1703,7 +1704,8 @@ ast_expression* parse_super(parser* p_parser, token p_trigger) {
 }
 
 // `class Name : Parent { members }`. members are let fields and fu methods
-// (pub composes on methods); anything else is a parse error.
+// (pub composes on both - the methods since the classes lane, the fields
+// since patch 51); anything else is a parse error.
 ast_class_declaration* parse_class_declaration(parser* p_parser, ast_declaration_modifiers_t p_modifiers) {
   allocators* alloc = p_parser->alloc;
   token class_tok = p_parser->previous;

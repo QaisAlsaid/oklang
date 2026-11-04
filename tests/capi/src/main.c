@@ -136,6 +136,22 @@ static ok_value box_bump(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
   return next;
 }
 
+// the patch-51 fixture: Open's pub fields are filled by the native init
+// (the C lane is trusted either way), peek exposes the private counter.
+static ok_value open_init(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  CHECK(p_argc == 3);
+  CHECK(ok_value_set_field(p_ok, p_argv[0], sv("x"), p_argv[1]));
+  CHECK(ok_value_set_field(p_ok, p_argv[0], sv("y"), p_argv[2]));
+  return ok_value_null();
+}
+
+static ok_value open_peek(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  ok_value hidden = ok_value_null();
+  CHECK(ok_value_get_field(p_ok, p_argv[0], sv("hidden"), &hidden));
+  return hidden;
+}
+
 // reads :what: out of a materialized {:kind:, :what:} error map.
 static bool error_what_contains(ok* p_ok, const char* p_needle) {
   ok_value error = ok_last_error(p_ok);
@@ -207,6 +223,13 @@ static bool mem_read_source(void* p_ctx, const char* p_path, ok_source* p_out) {
 }
 
 int main(void) {
+  // patch 52's scheme is load-bearing: the pair must keep encoding to the
+  // historic integer (an old module's abi 2 decodes as (0, 2) and loads),
+  // and the minor must be at least the trio's era for the fossil fixtures.
+  CHECK(OK_ABI_MAJOR == 0u);
+  CHECK(OK_ABI_MINOR >= 3u);
+  CHECK(((OK_ABI_MAJOR << 16) | OK_ABI_MINOR) == OK_NATIVE_ABI);
+
   ok_specs specs = {};
   ok* p_ok = ok_create(specs);
   CHECK(p_ok != NULL);
@@ -721,6 +744,69 @@ int main(void) {
     CHECK(ok_value_as_number(big_payload) == 6.0);
 
     CHECK(ok_unroot(p_ok, box_root));
+  }
+
+  // ---------- patch 51: pub fields from the C lane ----------
+  {
+    ok* p_ok = ok_create(specs);
+    CHECK(p_ok != NULL);
+    // Open: x and y are pub (script reads and writes them directly), hidden
+    // stays private (the ring). the ex form is the whole difference.
+    ok_value open = ok_class_new(p_ok, sv("Open"), ok_value_null());
+    CHECK(ok_value_is_class(open));
+    const uint32_t open_root = ok_root(p_ok, open);
+    CHECK(open_root != OK_ROOT_INVALID);
+    CHECK(ok_class_add_field_ex(p_ok, open, sv("x"), true, true, ok_value_number(0)));
+    CHECK(ok_class_add_field_ex(p_ok, open, sv("y"), true, true, ok_value_number(0)));
+    CHECK(ok_class_add_field(p_ok, open, sv("hidden"), true, ok_value_number(1))); // the private default
+    CHECK(ok_class_define_native_method(p_ok, open, sv("init"), 3, open_init, false));
+    CHECK(ok_class_define_native_method(p_ok, open, sv("peek"), 1, open_peek, true));
+    CHECK(ok_class_freeze(p_ok, open));
+    CHECK(ok_global_define(p_ok, sv("Open"), open, false));
+
+    // the script side reads and writes the pub fields as slot loads, and the
+    // private one refuses with the ring's error
+    CHECK(run(p_ok,
+              "glob let v = Open(3, 4);\n"
+              "glob let read_x = v.x;\n"
+              "v.y = 40;\n"
+              "glob let read_y = v.y;\n"
+              "glob let seen = v.peek();\n"));
+    ok_value read_x = ok_value_null();
+    CHECK(ok_global_get(p_ok, sv("read_x"), &read_x));
+    CHECK(ok_value_is_number(read_x) && ok_value_as_number(read_x) == 3.0);
+    ok_value read_y = ok_value_null();
+    CHECK(ok_global_get(p_ok, sv("read_y"), &read_y));
+    CHECK(ok_value_is_number(read_y) && ok_value_as_number(read_y) == 40.0);
+    ok_value seen = ok_value_null();
+    CHECK(ok_global_get(p_ok, sv("seen"), &seen));
+    CHECK(ok_value_is_number(seen) && ok_value_as_number(seen) == 1.0);
+
+    // the ring: script cannot read the private field, C still can
+    CHECK(!run(p_ok, "glob let no = Open(1, 1).hidden;\n"));
+    ok_value v = ok_value_null();
+    CHECK(ok_global_get(p_ok, sv("v"), &v));
+    ok_value hidden = ok_value_null();
+    CHECK(ok_value_get_field(p_ok, v, sv("hidden"), &hidden));
+    CHECK(ok_value_is_number(hidden) && ok_value_as_number(hidden) == 1.0);
+
+    // a pub field without mut: the read works, the script write refuses
+    ok_value locked = ok_class_new(p_ok, sv("Locked"), ok_value_null());
+    CHECK(ok_value_is_class(locked));
+    const uint32_t locked_root = ok_root(p_ok, locked);
+    CHECK(locked_root != OK_ROOT_INVALID);
+    CHECK(ok_class_add_field_ex(p_ok, locked, sv("name"), false, true, ok_value_string(p_ok, sv("fixed"))));
+    CHECK(ok_class_freeze(p_ok, locked));
+    CHECK(ok_global_define(p_ok, sv("Locked"), locked, false));
+    CHECK(run(p_ok, "glob let n = Locked().name;\n"));
+    ok_value n = ok_value_null();
+    CHECK(ok_global_get(p_ok, sv("n"), &n));
+    CHECK(ok_value_is_string(n));
+    CHECK(!run(p_ok, "Locked().name = \"other\";\n"));
+
+    CHECK(ok_unroot(p_ok, locked_root));
+    CHECK(ok_unroot(p_ok, open_root));
+    ok_free(p_ok);
   }
 
   // ---------- OR-4: the where probe, the map walk, the manifest lane ----------

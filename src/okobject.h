@@ -317,10 +317,15 @@ typedef enum {
 // and the mangled-name suffix of an `operator str`-style conversion.
 const char* builtin_class_name(builtin_class_id p_id);
 
-// one flat-layout field: its absolute slot in the instance array + mutability.
+// one flat-layout field: its absolute slot in the instance array, mutability,
+// and visibility. pub (patch 51) opens the member ring: a pub field is
+// readable (and, with mut, writable) from outside the defining hierarchy,
+// module boundaries included - the getter-free surface. private stays the
+// default, exactly as before.
 typedef struct {
   uint16_t slot;
   uint8_t mut;
+  uint8_t pub;
 } field_entry;
 
 MAP_DECLARE(field_map, object_string*, field_entry, const object_string*)
@@ -337,6 +342,7 @@ struct object_class {
   uint16_t nown;               // own field declarations (diagnostics)
   object_string_array own_names; // own field names, declaration order
   uint8_array own_muts;        // parallel mut flags
+  uint8_array own_pubs;        // parallel pub flags (patch 51: fields join the ring)
   object_closure_array own_inits; // parallel initializer thunks (NULL = none)
   value_array own_defaults;    // parallel C-side initial values (patch 49: the
                                // native-class lane, always null for script
@@ -350,6 +356,7 @@ struct object_class {
                                // the class value itself, never an instance
   object_string_array own_static_names; // own static fields, declaration order
   uint8_array own_static_muts; // parallel mut flags
+  uint8_array own_static_pubs; // parallel pub flags (patch 51)
   value_array static_values;   // own statics' storage: one slot each, never
                                // copied down the chain (shared by lookup)
   field_map static_fields;     // own statics only: name -> {slot, mut}
@@ -406,10 +413,12 @@ bool object_class_define_native_static_method(object_class* p_class,
 // is the C-side initial value (patch 49): every instance's slot starts as
 // this value instead of null. the script lane always passes null - its
 // per-instance initializer is the thunk, which re-evaluates per
-// construction; a C default is evaluated once at definition time.
+// construction; a C default is evaluated once at definition time. p_pub
+// (patch 51) marks the field readable outside the defining hierarchy.
 bool object_class_add_field(object_class* p_class,
                             const object_string* p_name,
                             bool p_mut,
+                            bool p_pub,
                             object_closure* p_init_thunk,
                             value p_default,
                             const object_string** p_previous_owner);
@@ -430,10 +439,12 @@ bool object_class_is_a(const object_class* p_class, const object_class* p_maybe_
 // definition-time: append one own static field with its (already evaluated)
 // value. false = OOM or a redeclaration anywhere in the chain (statics are
 // never shadowed: one name, one slot, the defining class owns it). the
-// previous owner names the ancestor that already declared it.
+// previous owner names the ancestor that already declared it. p_pub (patch
+// 51) opens the ring for the static, the fields' rule one table over.
 bool object_class_add_static_field(object_class* p_class,
                                     const object_string* p_name,
                                     bool p_mut,
+                                    bool p_pub,
                                     value p_value,
                                     const object_string** p_previous_owner);
 
