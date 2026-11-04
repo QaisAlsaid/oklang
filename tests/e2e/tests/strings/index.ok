@@ -1,0 +1,26 @@
+// the P2 index ruling: s[i] is the i-th CODEPOINT, a fresh one-codepoint
+// string - never the i-th byte. the s[s.len()-1] trap dies.
+let s = "héllo";
+print s[0]; // expect: h
+print s[1]; // expect: é
+print s[4]; // expect: o
+print len(s); // expect: 5
+print s.len(); // expect: 5
+
+// the last-codepoint idiom that used to be a byte trap
+let t = "noël";
+print t[t.len() - 1]; // expect: l
+print t[2]; // expect: ë
+
+// astral codepoints index as one
+let e = "😀";
+print e[0] == "😀"; // expect: true
+print len(e); // expect: 1
+
+// built-at-runtime strings ride the same lane
+let mut built = "";
+built += "é";
+built += "x";
+print built[0]; // expect: é
+print built[1]; // expect: x
+print len(built); // expect: 2

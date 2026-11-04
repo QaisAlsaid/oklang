@@ -38,6 +38,7 @@
   }                                                                                                                    \
                                                                                                                        \
   void name##_deinit(name* p_array, allocators* p_alloc) {                                                             \
+    (void)p_alloc; /* the array owns its allocators; the parameter stays for signature symmetry */                      \
     for (size_type i = 0; i < p_array->count; ++i) {                                                                   \
       deinit_type(&p_array->data[i], p_array->alloc);                                                                  \
     }                                                                                                                  \

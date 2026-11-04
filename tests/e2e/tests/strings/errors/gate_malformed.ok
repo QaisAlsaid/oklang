@@ -1,0 +1,3 @@
+// expect error: not acceptable utf-8
+print "before";
+ÿ

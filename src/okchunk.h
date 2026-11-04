@@ -508,33 +508,33 @@ static inline word2 join_words(word p_w1, word p_w2) {
 
 static inline word
 encode_oppabc(const opcode p_op, const bool p_p, const uint8_t p_a, const uint8_t p_b, const uint8_t p_c) {
-  return ((uint32_t)p_op << op_LOFFSET) & op_MASK | (((uint32_t)p_p) << p_LOFFSET) & p_MASK |
-         (((uint32_t)p_a) << a_LOFFSET) & a_MASK | (((uint32_t)p_b) << b_LOFFSET) & b_MASK |
-         (((uint32_t)p_c) << c_LOFFSET) & c_MASK;
+  return (((uint32_t)p_op << op_LOFFSET) & op_MASK) | ((((uint32_t)p_p) << p_LOFFSET) & p_MASK) |
+         ((((uint32_t)p_a) << a_LOFFSET) & a_MASK) | ((((uint32_t)p_b) << b_LOFFSET) & b_MASK) |
+         ((((uint32_t)p_c) << c_LOFFSET) & c_MASK);
 }
 
 static inline word
 encode_oppabprime(const opcode p_op, const bool p_p, const uint16_t p_aprime, const uint16_t p_bprime) {
-  return ((uint32_t)p_op << op_LOFFSET) & op_MASK | (((uint32_t)p_p) << p_LOFFSET) & p_MASK |
+  return (((uint32_t)p_op << op_LOFFSET) & op_MASK) | ((((uint32_t)p_p) << p_LOFFSET) & p_MASK) |
          (((uint32_t)p_aprime << aprime_LOFFSET) & aprime_MASK) |
-         (((uint32_t)p_bprime) << bprime_LOFFSET) & bprime_MASK;
+         ((((uint32_t)p_bprime) << bprime_LOFFSET) & bprime_MASK);
 }
 
 static inline word encode_oppA(const opcode p_op, const bool p_p, const uint16_t p_A) {
-  return ((uint32_t)p_op << op_LOFFSET) & op_MASK | (((uint32_t)p_p) << p_LOFFSET) & p_MASK |
-         (((uint32_t)p_A) << A_LARGE_LOFFSET) & A_LARGE_MASK;
+  return (((uint32_t)p_op << op_LOFFSET) & op_MASK) | ((((uint32_t)p_p) << p_LOFFSET) & p_MASK) |
+         ((((uint32_t)p_A) << A_LARGE_LOFFSET) & A_LARGE_MASK);
 }
 
 static inline word encode_oppAe(const opcode p_op, const bool p_p, const uint16_t p_A, const uint8_t p_e) {
-  return ((uint32_t)p_op << op_LOFFSET) & op_MASK | (((uint32_t)p_p) << p_LOFFSET) & p_MASK |
-         (((uint32_t)p_A) << A_LARGE_LOFFSET) & A_LARGE_MASK | (((uint32_t)p_e) << e_LARGE_LOFFSET) & e_LARGE_MASK;
+  return (((uint32_t)p_op << op_LOFFSET) & op_MASK) | ((((uint32_t)p_p) << p_LOFFSET) & p_MASK) |
+         ((((uint32_t)p_A) << A_LARGE_LOFFSET) & A_LARGE_MASK) | ((((uint32_t)p_e) << e_LARGE_LOFFSET) & e_LARGE_MASK);
 }
 
 static inline word2 encode_OPPABCQ(
     const opcode p_OP, const bool p_P, const uint16_t p_A, const uint16_t p_B, const uint16_t p_C, const bool p_Q) {
-  return ((uint64_t)p_OP << OP_LOFFSET) & OP_MASK | (((uint64_t)p_P) << P_LOFFSET) & P_MASK |
-         (((uint64_t)p_A) << A_LOFFSET) & A_MASK | (((uint64_t)p_B) << B_LOFFSET) & B_MASK |
-         (((uint64_t)p_C) << C_LOFFSET) & C_MASK | (((uint64_t)p_Q) << Q_LOFFSET) & Q_MASK;
+  return (((uint64_t)p_OP << OP_LOFFSET) & OP_MASK) | ((((uint64_t)p_P) << P_LOFFSET) & P_MASK) |
+         ((((uint64_t)p_A) << A_LOFFSET) & A_MASK) | ((((uint64_t)p_B) << B_LOFFSET) & B_MASK) |
+         ((((uint64_t)p_C) << C_LOFFSET) & C_MASK) | ((((uint64_t)p_Q) << Q_LOFFSET) & Q_MASK);
 }
 
 static inline opcode op_of(const word p_word) {

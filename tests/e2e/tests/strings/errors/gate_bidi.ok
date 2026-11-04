@@ -1,0 +1,3 @@
+// a bidi control inside a string: the trojan-source hole, closed at the front door
+// expect error: not acceptable utf-8
+print "a‮b";

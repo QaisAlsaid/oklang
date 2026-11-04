@@ -7,7 +7,7 @@
 #include <stdio.h>
 
 void release_impl(allocators* p_alloc, void* p_ptr) {
-  return p_alloc->raw_allocators->release(p_ptr);
+  p_alloc->raw_allocators->release(p_ptr);
 }
 
 void* reallocate_impl(allocators* p_alloc, void* p_ptr, const size_t p_old_size, const size_t p_new_size) {
@@ -40,10 +40,11 @@ allocators create_allocators(ok_allocators* p_alloc) {
 }
 
 void release_wrapper_impl(allocators* p_alloc, void* p_ptr) {
-  return p_alloc->raw_allocators->release(p_ptr);
+  p_alloc->raw_allocators->release(p_ptr);
 }
 
 void* reallocate_wrapper_impl(allocators* p_alloc, void* p_ptr, const size_t p_old_size, const size_t p_new_size) {
+  (void)p_old_size;
   if (p_new_size == 0) {
     release_impl(p_alloc, p_ptr);
     return NULL;

@@ -1,0 +1,2 @@
+print "\u{41";
+// expect error: missing its closing brace

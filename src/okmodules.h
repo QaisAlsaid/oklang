@@ -77,7 +77,9 @@ typedef struct {
 ARRAY_DECLARE_DEFAULT(ok_module_records, ok_module_record)
 ARRAY_DECLARE_DEFAULT(ok_import_binding_array, ok_import_binding)
 
-typedef struct module_system {
+// tag-only definition: the name binding lives in okfwd.h's forward typedef
+// (the P1 warning sweep - one typedef, not two).
+struct module_system {
   ok* ok;                      // the owning instance
   ok_module_records loaded;    // every initialized module, load order
   const char* chain[OK_MODULES_MAX_DEPTH]; // the active load chain's canonical paths (borrowed
@@ -113,7 +115,7 @@ typedef struct module_system {
   // OR-4: ok_module_where's answer buffer (owned, user allocators). one
   // slot: the latest call owns it, the previous answer dies with the call.
   char* where_canonical;
-} module_system;
+};
 
 void ok_modules_init(module_system* p_modules, ok* p_ok, allocators* p_alloc);
 void ok_modules_deinit(module_system* p_modules);

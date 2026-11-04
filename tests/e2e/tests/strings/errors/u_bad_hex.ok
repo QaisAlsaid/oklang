@@ -1,0 +1,2 @@
+print "\u{4G}";
+// expect error: only hex digits

@@ -2,4 +2,4 @@
 # the fixture's declared build: a raw gcc command (M12: whatever toolchain).
 set -e
 cd "$(dirname "$0")"
-gcc -shared -fPIC -I../../../../../include -o hello.so hello.c
+gcc -shared -fPIC -I"${OK_ROOT}/include" -o hello.so hello.c

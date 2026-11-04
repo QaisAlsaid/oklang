@@ -1,0 +1,5 @@
+// the str shape binds one variable, like the array shape
+for let k, v : "ab" {
+  print k;
+}
+// expect error: string iteration binds one loop variable

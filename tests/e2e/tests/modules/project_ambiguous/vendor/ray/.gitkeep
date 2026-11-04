@@ -1,0 +1,2 @@
+// the dep side of the M13 ambiguity fixture: a directory that resolves
+// (so the dep walk survives) but is not itself a project

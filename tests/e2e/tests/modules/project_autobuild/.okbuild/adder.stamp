@@ -1,2 +1,2 @@
 3
-gcc -shared -fPIC -I../../../../../include -o adder.so native/adder.c
+gcc -shared -fPIC -I$OK_ROOT/include -o adder.so native/adder.c

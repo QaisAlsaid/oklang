@@ -1,0 +1,3 @@
+let s = "ab";
+print s[-1];
+// expect error: index out of bounds: -1 (len 2)

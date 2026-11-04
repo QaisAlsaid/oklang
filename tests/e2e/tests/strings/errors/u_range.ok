@@ -1,0 +1,2 @@
+print "\u{110000}";
+// expect error: out of range

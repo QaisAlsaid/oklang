@@ -71,6 +71,7 @@ bool chunk_write_word2(chunk* p_chunk, const word2 p_words, const ok_line_info p
 }
 
 index_wrapper chunk_add_constant(chunk* p_chunk, const value p_constant, const ok_line_info p_line_info) {
+  (void)p_line_info;
   if (p_chunk->constants.count >= CONSTANTS_MAX) {
     return (index_wrapper){0, 0, CONSTANT_OVERFLOW};
   }
@@ -81,6 +82,7 @@ index_wrapper chunk_add_constant(chunk* p_chunk, const value p_constant, const o
 }
 
 index_wrapper chunk_add_identifier(chunk* p_chunk, const ok_string_view p_identifier, const ok_line_info p_line_info) {
+  (void)p_line_info;
   if (p_chunk->identifiers.count >= IDENTIFIERS_MAX) {
     return (index_wrapper){0, 0, IDENTIFIER_OVERFLOW};
   }

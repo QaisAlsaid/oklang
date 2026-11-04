@@ -2,6 +2,7 @@ set(tests
   test_array
   test_map
   test_nan
+  test_utf8
 )
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)

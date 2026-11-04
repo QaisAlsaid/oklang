@@ -50,7 +50,7 @@ inline static hash_t default_hash_str(const ok_string_view p_str) {
 }
 
 inline static hash_t hash_combine(const hash_t p_first, hash_t p_second) {
-  return p_first ^ p_second + 0x9e3779b9 + (p_first << 6) + (p_first >> 2);
+  return p_first ^ (p_second + 0x9e3779b9 + (p_first << 6) + (p_first >> 2));
 }
 
 inline static hash_t splitmix64(hash_t p_x) {

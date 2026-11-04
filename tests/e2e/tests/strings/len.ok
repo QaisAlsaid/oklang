@@ -1,0 +1,19 @@
+// the P2 len ruling: codepoints, not bytes. both counts live on the
+// interned header; len answers the codepoint one.
+print len("héllo"); // expect: 5
+print len(""); // expect: 0
+print len("abc"); // expect: 3
+print len("αβγδ"); // expect: 4
+print len("😀"); // expect: 1
+print len("a😀b"); // expect: 3
+// the method spelling agrees with the free one
+print "héllo".len(); // expect: 5
+// runtime-built strings cache the same way
+let mut s = "x";
+s += "é";
+s += "😀";
+print len(s); // expect: 3
+print s.len(); // expect: 3
+// len keeps its array and map lanes untouched
+print len([1, 2, 3]); // expect: 3
+print len({1: 2, 3: 4}); // expect: 2

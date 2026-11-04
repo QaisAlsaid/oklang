@@ -15,9 +15,8 @@ static void set_flag(uint8_t p_flag, uint64_t* p_info) {
   *p_info |= UINT64_C(1) << (56 + p_flag);
 }
 
-static void remove_flag(uint8_t p_flag, uint64_t* p_info) {
-  *p_info &= ~(UINT64_C(1) << (56 + p_flag));
-}
+// (a remove_flag twin lived here until the P1 sweep: interning made string
+// flags set-once, nothing ever cleared one.)
 
 #define STRING_FLAG_DYNAMIC 0
 bool string_init(string* p_string, const char* p_chars, uint64_t p_length, bool p_is_dynamic, allocators* p_alloc) {

@@ -210,6 +210,11 @@ string ast_number_expression_asprint(const ast_number_expression* p_number);
 
 typedef struct {
   ast_expression expression;
+  // the P2 string rework: when the literal carries escapes (or \u{}
+  // expansions), the translated bytes live here, arena-allocated, and
+  // get_value serves this buffer; a plain literal stays a source slice.
+  char* unescaped;
+  uint32_t unescaped_length;
 } ast_string_expression;
 
 void ast_string_expression_init(ast_string_expression* p_string, const token p_token, ast_specs* p_specs);

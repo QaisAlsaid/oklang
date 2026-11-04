@@ -97,6 +97,13 @@ typedef enum {
 
 typedef struct {
   lvalue_kind kind;
+  // the anonymous union is ok's one chosen C11-ism (see okindex.h for the
+  // ruling): each lvalue kind reads its own view, flat compound literals
+  // like (lvalue){LVALUE_VARIABLE, loc} bind positionally through it.
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+#endif
   union {
     location variable;
     struct {
@@ -114,6 +121,9 @@ typedef struct {
       location name; // the static field's string constant (LVALUE_STATIC)
     } statik;
   };
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 } lvalue;
 
 typedef struct {
@@ -314,7 +324,7 @@ typedef struct {
   module_exports exports;
 } compile_result;
 
-ARRAY_DECLARE_DEFAULT(top_level_declarations, variable_declaration);
+ARRAY_DECLARE_DEFAULT(top_level_declarations, variable_declaration)
 
 typedef struct {
   allocators* alloc;

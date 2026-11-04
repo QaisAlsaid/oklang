@@ -38,9 +38,15 @@ static ok_value native_len(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
   if (IS_VALUE_MAP(p_argv[0])) {
     return NUMBER_AS_VALUE((double)VALUE_AS_MAP(p_argv[0])->entries.count);
   }
+  if (IS_VALUE_STRING(p_argv[0])) {
+    // the P2 ruling: len answers CODEPOINTS, not bytes - both counts live
+    // cached on the interned header; the byte length keeps its own door
+    const object_string* str = (object_string*)VALUE_AS_OBJECT(p_argv[0]);
+    return NUMBER_AS_VALUE((double)str->codepoints);
+  }
   ok_native_error(p_ok,
                   ok_create_string_view(
-                      "invalid argument: 'len' expects an array or a map.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+                      "invalid argument: 'len' expects an array, a map, or a string.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
   return NULL_AS_VALUE();
 }
 
@@ -308,6 +314,7 @@ static bool ok_define_builtin_surfaces(ok* p_ok) {
       {OK_BUILTIN_ARRAY, "remove", OK_NATIVE_ARITY_ANY, native_remove},
       {OK_BUILTIN_MAP, "len", 1, native_len},
       {OK_BUILTIN_MAP, "remove", OK_NATIVE_ARITY_ANY, native_remove},
+      {OK_BUILTIN_STR, "len", 1, native_len}, // P2: the codepoint count - str's first method
       {OK_BUILTIN_MAP, "get", OK_NATIVE_ARITY_ANY, native_get},
   };
   bool status = true;
@@ -373,7 +380,7 @@ top_level_declarations ok_get_top_level_declarations(ok* p_ok, bool* p_error) {
   top_level_declarations decls;
   top_level_declarations_init(&decls, &p_ok->alloc);
   for (uint32_t i = 0; i < sizeof(top_level_seeds) / sizeof(top_level_seeds[0]); ++i) {
-    variable_declaration decl = {
+    variable_declaration decl = {.identifier =
         ok_create_string_view(top_level_seeds[i].name, OK_STRING_VIEW_CALCULATE_LENGTH, true)};
     if (!top_level_declarations_append(&decls, decl)) {
       *p_error = true;
@@ -412,6 +419,12 @@ value_array ok_get_top_level_values(ok* p_ok, bool* p_error) {
       break;
     case SEED_CLASS:
       temp = OBJECT_AS_VALUE(p_ok->vm.class_singleton);
+      break;
+    default:
+      // the sweep's -O2 find: an unknown seed kind must refuse, never
+      // append an uninitialized value (the enum is closed in this file,
+      // but the analyzer is right to ask)
+      *p_error = true;
       break;
     }
     if (*p_error || !value_array_append(&vals, temp)) {
@@ -700,6 +713,7 @@ const char* ok_module_export_name(ok* p_ok, ok_value p_module, uint32_t p_index)
 }
 
 ok_value ok_module_export_get(ok* p_ok, ok_value p_module, uint32_t p_index) {
+  (void)p_ok;
   const object_class* klass = module_namespace_class_of(p_module);
   if (klass == NULL || p_index >= klass->own_names.count) {
     return ok_value_null();

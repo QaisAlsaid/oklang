@@ -1,0 +1,2 @@
+print "a\qb";
+// expect error: unknown escape

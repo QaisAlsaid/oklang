@@ -83,6 +83,10 @@ typedef struct {
   string string;
   hash_t hash; // FNV-1a over the bytes, cached at creation. strings are immutable,
                // so map keys (and any future hashed user) never re-walk the bytes.
+  uint64_t codepoints; // the P2 len ruling: the codepoint count, lossy-cached at
+                       // creation (one U+FFFD per malformed byte for runtime
+                       // strings). len() answers this; the byte length stays
+                       // string_get_length until an s.bytes() ever earns its keep.
 } object_string;
 
 // the single choke point (D20): EVERY ok string routes through the interner

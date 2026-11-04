@@ -1,12 +1,12 @@
 #include <assert.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <string.h>
 #include <stdlib.h>
 
 #include "okparser.h"
 #include "okutils.h"
-
-static precedence get_precedence(token_type p_type);
+#include "okutf8.h"
 
 static ast_root* parse_root(parser* p_parser);
 static ast_expression* parse_expression(parser* p_parser, precedence p_precedence);
@@ -55,8 +55,6 @@ error_at_noted(parser* p_parser, token p_token, const ok_string_view p_message, 
 
 static bool advance(parser* p_parser);
 static bool expect(parser* p_parser, token_type p_type, const ok_string_view p_message);
-static token current(parser* p_parser);
-static token peek(parser* p_parser);
 static void sync_state(parser* p_parser);
 
 static ast_expression* parse_unary_prefix(parser* p_parser, token p_trigger);
@@ -202,6 +200,47 @@ void parser_deinit(parser* p_parser) {
 }
 
 parse_result parser_parse(parser* p_parser) {
+  // the front door (P2): one whole-source validation before any lexing -
+  // malformed utf-8, raw NUL, the bidi controls (the trojan-source hole),
+  // and stray C0 bytes never reach the lexer. everything funnels through
+  // here: the entry compile, the REPL's lines, every module source load.
+  // (C-string sources end at their first NUL by construction - an
+  // embedded NUL truncates the program, which is today's standing
+  // semantics; length-carrying loaders can gate the full region.)
+  {
+    const char* code = p_parser->source->code;
+    uint32_t bad = 0;
+    ok_utf8_rejection why = OK_UTF8_FINE;
+    if (!ok_utf8_validate(code, strlen(code), &bad, &why)) {
+      // locate the byte: line and column by walking the visible source
+      uint32_t line = 1;
+      uint32_t column = 1;
+      for (uint32_t i = 0; i < bad; ++i) {
+        if (code[i] == '\n') {
+          ++line;
+          column = 1;
+        } else {
+          ++column;
+        }
+      }
+      token where;
+      where.type = TOKEN_ERROR;
+      where.start = code + bad;
+      where.length = 1;
+      where.line_info.offset = bad;
+      where.line_info.line = line;
+      where.line_info.column = column;
+      error_at_noted(p_parser,
+                     where,
+                     ok_create_string_view("the source is not acceptable utf-8.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                     ok_create_string_view(ok_utf8_rejection_text(why), OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      parse_result result;
+      result.alloc = p_parser->alloc;
+      result.status = PARSE_ERROR;
+      result.root = NULL;
+      return result;
+    }
+  }
   ast_root* root = parse_root(p_parser);
   parse_result result;
   result.alloc = p_parser->alloc;
@@ -386,6 +425,7 @@ ast_expression* parse_unary_prefix(parser* p_parser, token p_trigger) {
 }
 
 ast_expression* parse_grouping(parser* p_parser, token p_trigger) {
+  (void)p_trigger;
   allocators* alloc = p_parser->alloc;
   if (!advance(p_parser)) {
     return NULL;
@@ -446,6 +486,156 @@ ast_expression* parse_identifier(parser* p_parser, token p_trigger) {
   return (ast_expression*)identifier;
 }
 
+// the P2 unescape lane: translate a string literal's raw slice (between
+// the quotes) into its value bytes. the escape set: \n \t \r \\ \' \"
+// and \u{HEX} (1-6 digits, <= U+10FFFF, no surrogates). anything else
+// after a backslash is a located compile error - unknown escapes never
+// pass silently. returns false with the error already reported.
+static bool unescape_string_literal(parser* p_parser, token p_token, ast_string_expression* p_out) {
+  allocators* alloc = p_parser->alloc;
+  const char* raw = p_token.start + 1;
+  const uint32_t raw_length = p_token.length >= 2 ? p_token.length - 2 : 0;
+  // an escape never grows the literal: \u{XXXXXX} (10 raw bytes) encodes
+  // to at most 4. the raw length is a safe upper bound.
+  char* out = (char*)alloc->allocate(alloc, raw_length + 1u);
+  if (out == NULL) {
+    error_at(p_parser,
+             p_token,
+             ok_create_string_view("failed to allocate memory for string node.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return false;
+  }
+  uint32_t written = 0;
+  uint32_t i = 0;
+  bool ok = true;
+  while (i < raw_length) {
+    const char c = raw[i];
+    if (c != '\\') {
+      out[written++] = c;
+      ++i;
+      continue;
+    }
+    ++i; // consume the backslash
+    if (i >= raw_length) {
+      error_at(p_parser,
+               p_token,
+               ok_create_string_view("dangling escape at the string's end.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      ok = false;
+      break;
+    }
+    const char e = raw[i];
+    switch (e) {
+    case 'n':
+      out[written++] = '\n';
+      ++i;
+      break;
+    case 't':
+      out[written++] = '\t';
+      ++i;
+      break;
+    case 'r':
+      out[written++] = '\r';
+      ++i;
+      break;
+    case '\\':
+    case '\'':
+    case '"':
+      out[written++] = e;
+      ++i;
+      break;
+    case 'u': {
+      ++i; // consume the u
+      if (i >= raw_length || raw[i] != '{') {
+        error_at(p_parser,
+                 p_token,
+                 ok_create_string_view("a \\u escape wants braces: \\u{1F600}.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+        ok = false;
+      } else {
+        ++i; // consume the {
+        uint64_t value = 0;
+        uint32_t digits = 0;
+        while (i < raw_length && raw[i] != '}') {
+          const char h = raw[i];
+          uint32_t d;
+          if (h >= '0' && h <= '9') {
+            d = (uint32_t)(h - '0');
+          } else if (h >= 'a' && h <= 'f') {
+            d = (uint32_t)(h - 'a') + 10u;
+          } else if (h >= 'A' && h <= 'F') {
+            d = (uint32_t)(h - 'A') + 10u;
+          } else {
+            error_at(p_parser,
+                     p_token,
+                     ok_create_string_view("only hex digits live inside \\u{}.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+            ok = false;
+            break;
+          }
+          value = (value << 4) | d;
+          ++digits;
+          ++i;
+          if (digits > 6) {
+            error_at(p_parser,
+                     p_token,
+                     ok_create_string_view("a \\u{} escape takes at most six hex digits.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+            ok = false;
+            break;
+          }
+        }
+        if (ok && (i >= raw_length || raw[i] != '}')) {
+          error_at(p_parser,
+                   p_token,
+                   ok_create_string_view("a \\u{} escape is missing its closing brace.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+          ok = false;
+        }
+        if (ok) {
+          ++i; // consume the }
+          char encoded[4];
+          const uint8_t len = ok_utf8_encode((uint32_t)value, encoded);
+          if (len == 0) {
+            error_at(p_parser,
+                     p_token,
+                     ok_create_string_view("the \\u{} codepoint is out of range (or a surrogate).",
+                                           OK_STRING_VIEW_CALCULATE_LENGTH,
+                                           true));
+            ok = false;
+          } else {
+            for (uint8_t b = 0; b < len; ++b) {
+              out[written++] = encoded[b];
+            }
+          }
+        }
+      }
+      if (!ok) {
+        break;
+      }
+      break;
+    }
+    default: {
+      char message[48];
+      const int printed = snprintf(message, sizeof(message), "unknown escape '\\%c'.", e);
+      if (printed > 0 && (size_t)printed < sizeof(message)) {
+        error_at(p_parser, p_token, ok_create_string_view(message, (uint32_t)printed, false));
+      } else {
+        error_at(p_parser,
+                 p_token,
+                 ok_create_string_view("unknown escape.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      }
+      ok = false;
+      break;
+    }
+    }
+    if (!ok) {
+      break;
+    }
+  }
+  if (!ok) {
+    alloc->release(alloc, out);
+    return false;
+  }
+  p_out->unescaped = out;
+  p_out->unescaped_length = written;
+  return true;
+}
+
 ast_expression* parse_string(parser* p_parser, token p_trigger) {
   allocators* alloc = p_parser->alloc;
   ast_string_expression* string = (ast_string_expression*)alloc->allocate(alloc, sizeof(ast_string_expression));
@@ -458,6 +648,22 @@ ast_expression* parse_string(parser* p_parser, token p_trigger) {
   }
   ast_specs s = {alloc};
   ast_string_expression_init(string, p_trigger, &s);
+  // the P2 rework: a literal with a backslash anywhere in its raw slice
+  // goes through the unescape lane; plain literals stay source slices.
+  {
+    const char* raw = p_trigger.start + 1;
+    const uint32_t raw_length = p_trigger.length >= 2 ? p_trigger.length - 2 : 0;
+    for (uint32_t i = 0; i < raw_length; ++i) {
+      if (raw[i] == '\\') {
+        if (!unescape_string_literal(p_parser, p_trigger, string)) {
+          ast_string_expression_deinit(string);
+          alloc->release(alloc, string);
+          return NULL;
+        }
+        break;
+      }
+    }
+  }
   return (ast_expression*)string;
 }
 
@@ -568,6 +774,7 @@ ast_expression* parse_yield(parser* p_parser, token p_trigger) {
 }
 
 static ast_expression* parse_function(parser* p_parser, token p_trigger) {
+  (void)p_trigger;
   allocators* alloc = p_parser->alloc;
   token fu_tok = p_parser->previous;
   if (p_parser->current.type != TOKEN_LEFT_PAREN) {
@@ -649,6 +856,8 @@ static bool is_lvalue(ast_expression* p_expression) {
 
 ast_expression* parse_assign_expression(
     parser* p_parser, ast_expression* p_left, precedence p_precedence, bool is_right_associative, token p_trigger) {
+    (void)is_right_associative;
+    (void)p_precedence;
   allocators* alloc = p_parser->alloc;
   advance(p_parser);
   if (!is_lvalue(p_left)) {
@@ -735,6 +944,9 @@ fail:
 
 ast_expression* parse_call(
     parser* p_parser, ast_expression* p_left, precedence p_precedence, bool is_right_associative, token p_trigger) {
+    (void)is_right_associative;
+    (void)p_precedence;
+    (void)p_trigger;
   allocators* alloc = p_parser->alloc;
   token trigger = p_parser->previous;
   ast_expressions_list args = parse_expressions_list(p_parser, TOKEN_COMMA, TOKEN_RIGHT_PAREN);
@@ -761,6 +973,7 @@ ast_expression* parse_call(
 }
 
 ast_expression* parse_array_literal(parser* p_parser, token p_trigger) {
+  (void)p_trigger;
   allocators* alloc = p_parser->alloc;
   token trigger = p_parser->previous; // '['
   ast_expressions_list elements = parse_expressions_list(p_parser, TOKEN_COMMA, TOKEN_RIGHT_BRACKET);
@@ -790,6 +1003,7 @@ ast_expression* parse_array_literal(parser* p_parser, token p_trigger) {
 // empty map: a leading ':' is unambiguous because no expression starts with
 // one. a trailing comma is allowed, mirroring arrays.
 ast_expression* parse_map_literal(parser* p_parser, token p_trigger) {
+  (void)p_trigger;
   allocators* alloc = p_parser->alloc;
   token trigger = p_parser->previous; // '{'
   ast_expressions_list keys;
@@ -902,6 +1116,7 @@ fail_lists:
 
 ast_expression* parse_subscript(
     parser* p_parser, ast_expression* p_left, precedence p_precedence, bool is_right_associative, token p_trigger) {
+    (void)p_trigger;
   (void)p_precedence;
   (void)is_right_associative;
   allocators* alloc = p_parser->alloc;
@@ -2046,7 +2261,9 @@ ast_while_statement* parse_while_statement(parser* p_parser) {
     error_at(p_parser,
              p_parser->previous,
              ok_create_string_view("failed to allocate memory for while node.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
-  fail:
+    // (the P1 sweep removed an unused `fail:` label that lived here; the
+    // fallthrough cleanup is the if's own error exit, and `goto fail_cond`
+    // above still jumps in.)
     ast_dispatch_deinit((ast_node*)body);
     alloc->release(alloc, body);
   fail_cond:

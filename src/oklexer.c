@@ -75,6 +75,26 @@ static char peek1(lexer* p_lexer) {
 
 static token string(lexer* p_lexer, char p_start, bool p_multiline) {
   while (peek(p_lexer) != p_start && !at_end(p_lexer)) {
+    if (peek(p_lexer) == '\\') {
+      // the P2 string rework: an escape never terminates the string. the
+      // raw bytes ride through here; the parser's unescape lane owns the
+      // meaning (and its errors).
+      advance(p_lexer);
+      if (at_end(p_lexer)) {
+        break;
+      }
+      if (peek(p_lexer) == '\n') {
+        if (!p_multiline) {
+          return create_error_token(p_lexer, "unterminated string.");
+        }
+        p_lexer->line_info.line++;
+        advance(p_lexer);
+        p_lexer->line_start = p_lexer->current;
+        continue;
+      }
+      advance(p_lexer);
+      continue;
+    }
     if (peek(p_lexer) == '\n' && !p_multiline) {
       token error = create_error_token(p_lexer, "unterminated string.");
       return error;

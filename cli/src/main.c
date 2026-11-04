@@ -4,12 +4,22 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "ok/ok.h"
 #include "ok/ok_module.h"
+#include "ok/ok_version.h"
 
 #include "project.h"
+
+// the compiled-in OK_ROOT fallback (P1): the checkout the binary was built
+// from. the sandbox's build script and cmake both pass it; an unset prefix
+// (installed binaries) simply never injects one, and an OK_ROOT already in
+// the environment always wins.
+#ifndef OK_ROOT_PREFIX
+#define OK_ROOT_PREFIX ""
+#endif
 
 static void repl(ok* p_ok);
 static void run_file(ok* p_ok, const char* p_path);
@@ -65,8 +75,11 @@ static void usage(void) {
           "usage: ok [run] [flags] [path]\n"
           "       ok build [--clean|--force]     run the project's native build commands\n"
           "       ok where <import> [path]       print where an import resolves from\n"
+          "       ok create <name>               scaffold a project (project.ok + src/ + tests/)\n"
+          "       ok version                     print the version stamp\n"
           "       ok\n"
           "flags:\n"
+          "  --version | -v           print the version stamp and exit\n"
           "  --dump                   compile and disassemble only\n"
           "  --native <path>          force-load a native module (repeatable)\n"
           "  --restrict               drop native load, native build, and host caps\n"
@@ -76,6 +89,99 @@ static void usage(void) {
           "  --yes                    grant build consent (no prompts)\n"
           "  --no-build               refuse every build, auto or explicit\n"
           "  --where <import>         resolve <import> from the entry, print, exit\n");
+}
+
+// ---------------------------------------------------------------- the version stamp (P1)
+
+// `ok --version` / `ok -v` / `ok version`: one compiled line - the version
+// (carrying the wave's pre-release lane while mid-wave) and the native abi
+// (ok_module.h's semver encoding, the patch-52 truth). the bench workflow
+// parses this line; keep it one line and greppable.
+static int cmd_version(void) {
+  printf("ok %s (abi %u.%u)\n", OK_VERSION_STRING, OK_ABI_MAJOR, OK_ABI_MINOR);
+  return 0;
+}
+
+// ---------------------------------------------------------------- `ok create` (P1)
+
+// scaffolds <name>/{project.ok, src/main.ok, tests/, .gitignore}. the
+// manifest is a plain ok module the OR-4 discovery walk already knows how
+// to read; the entry runs with `ok src/main.ok` from the project root.
+static int write_small_file(const char* p_path, const char* p_content) {
+  FILE* file = fopen(p_path, "w");
+  if (file == NULL) {
+    fprintf(stderr, "can't create file: \"%s\".\n", p_path);
+    return 1;
+  }
+  const size_t length = strlen(p_content);
+  if (fwrite(p_content, 1, length, file) != length) {
+    fprintf(stderr, "can't write file: \"%s\".\n", p_path);
+    fclose(file);
+    return 1;
+  }
+  fclose(file);
+  return 0;
+}
+
+static int cmd_create(const char* p_name) {
+  // one path segment: no separators, no dotfiles, not a scaffold dir's own
+  // name. refusing here is cheaper than untangling a bad tree later.
+  if (p_name[0] == '\0' || strchr(p_name, '/') != NULL || strchr(p_name, '.') != NULL ||
+      strcmp(p_name, "src") == 0 || strcmp(p_name, "tests") == 0) {
+    fprintf(stderr, "project name must be one path segment (letters, digits, '-', '_').\n");
+    return 64;
+  }
+  struct stat st;
+  if (stat(p_name, &st) == 0) {
+    fprintf(stderr, "\"%s\" already exists - refusing to touch it.\n", p_name);
+    return 1;
+  }
+  char path[512];
+  if (snprintf(path, sizeof(path), "%s/src", p_name) >= (int)sizeof(path)) {
+    return 70; // a name this long cannot happen through the segment checks, but stay honest
+  }
+  if (mkdir(p_name, 0777) != 0 || mkdir(path, 0777) != 0) {
+    fprintf(stderr, "can't create the project directories under \"%s\".\n", p_name);
+    return 70;
+  }
+  snprintf(path, sizeof(path), "%s/tests", p_name);
+  mkdir(path, 0777);
+  snprintf(path, sizeof(path), "%s/.gitignore", p_name);
+  if (write_small_file(path, ".okbuild/\n") != 0) {
+    return 70;
+  }
+  snprintf(path, sizeof(path), "%s/tests/.gitkeep", p_name);
+  write_small_file(path, "");
+  // the manifest: minimal on purpose - the keys the CLI reads today are
+  // name, version, deps, natives; everything else is the module's own.
+  char manifest[768];
+  snprintf(manifest, sizeof(manifest),
+           "// the project manifest: a plain ok module the CLI evaluates in a fresh\n"
+           "// instance to discover deps and native targets (OR-4). keys it reads:\n"
+           "// name, version, deps, natives.\n"
+           "pub let project = {\n"
+           "  \"name\": \"%s\",\n"
+           "  \"version\": \"0.1.0\",\n"
+           "};\n",
+           p_name);
+  snprintf(path, sizeof(path), "%s/project.ok", p_name);
+  if (write_small_file(path, manifest) != 0) {
+    return 70;
+  }
+  char entry[512];
+  snprintf(entry, sizeof(entry),
+           "// the entry point. from the project root:\n"
+           "//   ok src/main.ok\n"
+           "print \"hello from %s\";\n",
+           p_name);
+  snprintf(path, sizeof(path), "%s/src/main.ok", p_name);
+  if (write_small_file(path, entry) != 0) {
+    return 70;
+  }
+  printf("created %s/ (project.ok, src/main.ok, tests/, .gitignore)\n", p_name);
+  printf("  cd %s && ok src/main.ok     run it\n", p_name);
+  printf("  ok build                     build the project's native targets (none yet)\n");
+  return 0;
 }
 
 // ---------------------------------------------------------------- the project verbs (OR-4)
@@ -163,6 +269,33 @@ static int cmd_where(int argc, char** argv) {
 }
 
 int main(int argc, char** argv) {
+  // OK_ROOT (P1): the checkout this binary was built from, exported (never
+  // overriding an existing value) so declared native build commands and the
+  // test fixtures can reach the headers without ../../ reaches. the
+  // relative paths are dead; this prefix is the compiled-in fallback the
+  // roadmap ruled.
+  if (getenv("OK_ROOT") == NULL && OK_ROOT_PREFIX[0] != '\0') {
+    setenv("OK_ROOT", OK_ROOT_PREFIX, 0);
+  }
+
+  // P1: the version spellings - one stamp, three doors. -v / --version win
+  // over everything (they answer and leave), wherever they appear.
+  for (int i = 1; i < argc; ++i) {
+    if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-v") == 0) {
+      return cmd_version();
+    }
+  }
+  if (argc > 1 && strcmp(argv[1], "version") == 0) {
+    return cmd_version();
+  }
+  if (argc > 1 && strcmp(argv[1], "create") == 0) {
+    if (argc != 3) {
+      usage();
+      return 64;
+    }
+    return cmd_create(argv[2]);
+  }
+
   // the OR-4 verbs
   if (argc > 1 && strcmp(argv[1], "build") == 0) {
     return cmd_build(argc - 2, argv + 2);

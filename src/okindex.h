@@ -14,6 +14,15 @@ typedef enum { INDEX_OK = 0 } index_error;
 
 typedef struct {
   ok_index index;
+  // the two anonymous unions are ok's one chosen C11-ism: context-named
+  // views over the same bytes (a kind for the writer, a flag for the
+  // reader). naming them would redesign the tagged-index idiom the whole
+  // tree leans on, so the deviation is marked exactly here instead, and
+  // the C99 pedantic gate stays on everywhere else.
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+#endif
   union {
     uint8_t flags;
     uint8_t kind;
@@ -23,6 +32,9 @@ typedef struct {
     uint8_t errors;
     uint8_t error;
   };
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 } index_wrapper;
 
 #endif // OK_INDEX_H

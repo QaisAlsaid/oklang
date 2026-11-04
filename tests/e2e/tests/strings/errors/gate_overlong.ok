@@ -1,0 +1,3 @@
+// an overlong encoding (C0 80) is malformed, not a creative spelling of NUL
+// expect error: not acceptable utf-8
+print "a¿Äb";

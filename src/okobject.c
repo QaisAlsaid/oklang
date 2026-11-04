@@ -4,6 +4,7 @@
 #define OK_GC_EXPOSE
 #include "okgc.h"
 #include "okobject.h"
+#include "okutf8.h"
 #include "okobject_store.h"
 #include "okutils.h"
 
@@ -127,6 +128,7 @@ static void object_init(object* p_object, uint32_t p_type) {
 }
 
 static void object_deinit(object* p_object) {
+  (void)p_object;
 }
 
 uint32_t object_get_type(object* p_object) {
@@ -150,6 +152,9 @@ static void object_string_init(object_string* p_object_string, const ok_string_v
   object_init(&p_object_string->object, OBJ_STRING);
   p_object_string->string = create_string_from_string_view(p_string, p_specs->alloc);
   p_object_string->hash = default_hash_str(p_string);
+  // the P2 cache: codepoints, counted lossily (runtime strings are never
+  // rejected at construction - one U+FFFD per malformed byte)
+  p_object_string->codepoints = ok_utf8_count_lossy(p_string.chars, (size_t)ok_string_view_get_length(&p_string));
 }
 
 static void object_string_deinit(object_string* p_object_string, object_specs* p_specs) {
@@ -242,6 +247,7 @@ object_closure* create_object_closure(object_function* p_function, object_specs*
 }
 
 static void object_upvalue_init(object_upvalue* p_object_upvalue, uint32_t p_location, object_specs* p_specs) {
+  (void)p_specs;
   object_init(&p_object_upvalue->object, OBJ_UPVALUE);
   p_object_upvalue->info = p_location & 0x00ffffff;
   p_object_upvalue->next = NULL;
@@ -249,6 +255,7 @@ static void object_upvalue_init(object_upvalue* p_object_upvalue, uint32_t p_loc
 }
 
 static void object_upvalue_deinit(object_upvalue* p_object_upvalue, object_specs* p_specs) {
+  (void)p_specs;
   p_object_upvalue->closed = NULL_AS_VALUE();
   p_object_upvalue->next = NULL;
   p_object_upvalue->info = 0;
@@ -298,6 +305,7 @@ void object_native_value_init(object_native_value* p_native_value,
                               ok_native_destructor p_destructor,
                               ok_native_tracer p_tracer,
                               object_specs* p_specs) {
+                              (void)p_specs;
   object_init(&p_native_value->object, OBJ_NATIVE_VALUE);
   p_native_value->user_data = p_user_data;
   p_native_value->destructor = p_destructor;
@@ -305,6 +313,7 @@ void object_native_value_init(object_native_value* p_native_value,
 }
 
 void object_native_value_deinit(object_native_value* p_native_value, object_specs* p_specs) {
+  (void)p_specs;
   if (p_native_value->destructor) {
     p_native_value->destructor(p_native_value->user_data);
   }
@@ -385,6 +394,7 @@ static void object_map_init(object_map* p_object_map, object_specs* p_specs) {
 }
 
 static void object_map_deinit(object_map* p_object_map, object_specs* p_specs) {
+  (void)p_specs;
   // entry keys and values are gc owned (the instantiation's deinits are no-ops),
   // this only releases the parallel backing buffers.
   value_map_deinit(&p_object_map->entries);
@@ -414,7 +424,9 @@ object_map* create_object_map(object_specs* p_specs) {
   ((p) == (k) ||                                                                                              \
    (string_get_length(&(p)->string) == string_get_length(&(k)->string) &&                                     \
     memcmp((p)->string.chars, (k)->string.chars, string_get_length(&(p)->string)) == 0))
-#define SM_KEY_CLONE(p, a) (p)
+// the clone drops the probe's const: stored keys are the interned
+// canonicals the probe already names (D20), never map-owned storage.
+#define SM_KEY_CLONE(p, a) ((object_string*)(p))
 #define SM_NO_DEINIT(k, a) ((void)0)
 
 MAP_DEFINE(method_map,
@@ -977,7 +989,7 @@ void object_debug_print(object* p_object) {
     break;
   }
   case OBJ_UPVALUE: {
-    printf("<upvalue %p>", p_object);
+    printf("<upvalue %p>", (void*)p_object);
     break;
   }
   case OBJ_NATIVE_VALUE: {
@@ -986,7 +998,7 @@ void object_debug_print(object* p_object) {
   }
   case OBJ_NATIVE_FUNCTION: {
     object_native_function* fu = (object_native_function*)p_object;
-    printf("<native function %s a: %d %p>", fu->name.chars, fu->arity, fu->function);
+    printf("<native function %s a: %d %p>", fu->name.chars, fu->arity, (void*)(uintptr_t)fu->function);
     break;
   }
   case OBJ_ARRAY: {

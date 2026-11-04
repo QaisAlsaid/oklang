@@ -53,6 +53,9 @@ jobs:
         working-directory: build
         run: ./tests/e2e/oktest-e2e-runner ./ok ../tests/e2e/tests/
 
+      - name: cli tests
+        run: bash tests/cli/run.sh "$PWD/build/ok"
+
       - name: embedding test
         run: ./build/tests/integration/embedding/oktest_embedding
 

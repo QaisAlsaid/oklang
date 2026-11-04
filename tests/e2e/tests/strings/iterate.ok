@@ -1,0 +1,55 @@
+// the P2 codepoint amendment: `for c in s` walks CODEPOINTS through the
+// str hidden shape (a utf8 byte cursor, one decode per step)
+let s = "héllo";
+let mut count = 0;
+for let c : s {
+  count += 1;
+}
+print count; // expect: 5
+
+// each c is a fresh one-codepoint string
+let mut second = "";
+let mut i = 0;
+for let c : "héllo" {
+  if i == 1 {
+    second = c;
+  }
+  i += 1;
+}
+print second; // expect: é
+print len(second); // expect: 1
+
+// ascii strings ride the same shape
+let mut built = "";
+for let c : "abc" {
+  built += c;
+}
+print built; // expect: abc
+
+// empty string: zero trips
+let mut trips = 0;
+for let c : "" {
+  trips += 1;
+}
+print trips; // expect: 0
+
+// 4-byte codepoints are one trip each
+let mut emoji = 0;
+for let c : "a😀b" {
+  emoji += 1;
+}
+print emoji; // expect: 3
+
+// conformance: the hidden shape and the manual index walk agree - the
+// contract the roadmap ruled ("observationally identical")
+let u = "αβγδ";
+let mut by_shape = "";
+for let c : u {
+  by_shape += c;
+}
+let mut by_index = "";
+for let k = 0 : len(u) {
+  by_index += u[k];
+}
+print by_shape == by_index; // expect: true
+print by_index; // expect: αβγδ

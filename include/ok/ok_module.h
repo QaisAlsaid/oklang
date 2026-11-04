@@ -78,7 +78,9 @@ typedef struct ok_native_fn_def {
   ok_native_fn call;
 } ok_native_fn_def;
 
-typedef struct ok_native_module {
+// the definition carries the tag only: the name binding lives in ok_fwd.h's
+// forward typedef, so C99 sees one typedef, not two (the P1 warning sweep).
+struct ok_native_module {
   uint32_t abi;        // must equal OK_NATIVE_ABI, checked at load
   const char* name;    // self-declared; must match the import stem for graph loads
   const char* version; // the module's own version string, display only
@@ -96,7 +98,7 @@ typedef struct ok_native_module {
   // or call into the api beyond simple teardown.
   bool (*on_load)(ok* p_ok);
   void (*on_unload)(ok* p_ok);
-} ok_native_module;
+};
 
 typedef const ok_native_module* (*ok_native_export_fn)(const ok_api* p_api);
 

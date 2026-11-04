@@ -1,0 +1,18 @@
+// the P2 string-scanner rework: escapes translate at the parser's unescape
+// lane; the scanner itself only learns that a backslash never terminates.
+print "a\tb";
+// expect: a	b
+print "line1\nline2";
+// expect: line1
+// expect: line2
+print "back\\slash"; // expect: back\slash
+print "quote\"inside"; // expect: quote"inside
+print 'single\'quote'; // expect: single'quote
+// the \r escape rides the comparison lane (a raw \r would not split the
+// expect line, so equality proves the byte)
+print "a\rb" == "a\u{D}b"; // expect: true
+// \u{} escapes: the codepoint's utf-8 encoding, inlined
+print "\u{41}"; // expect: A
+print "\u{E9}" == "é"; // expect: true
+print len("\u{1F600}"); // expect: 1
+print "\u{1F600}" == "😀"; // expect: true

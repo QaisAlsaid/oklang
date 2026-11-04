@@ -1,0 +1,3 @@
+// a raw C0 control byte (only tab, newline, return are allowed)
+// expect error: not acceptable utf-8
+print "ab";

@@ -1,0 +1,13 @@
+// the reverse-check lexer + the front door: identifiers accept any
+// well-formed non-ascii codepoint. the lexer never learns unicode exists.
+let π = 3.14159;
+print π > 3.14; // expect: true
+let 名字 = "oklang";
+print 名字; // expect: oklang
+print len(名字); // expect: 6
+fu λ(x) {
+  return x * 2;
+}
+print λ(21); // expect: 42
+let Greek_αβγ = "letters";
+print Greek_αβγ == "letters"; // expect: true

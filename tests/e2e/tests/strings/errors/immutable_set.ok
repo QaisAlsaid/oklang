@@ -1,0 +1,4 @@
+// strings are immutable: the write side refuses outright
+let mut s = "ab";
+s[0] = "x";
+// expect error: strings are immutable

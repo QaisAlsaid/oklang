@@ -28,8 +28,12 @@ typedef enum {
   OK_CAP_NATIVE_LOAD = 1u << 0,  // dlopen natives (import + force-load)
   OK_CAP_NATIVE_BUILD = 1u << 1, // run declared native build commands (OR-4)
   OK_CAP_HOST = 1u << 2,         // host-touching stdlib (fs/env/clock, later)
-  OK_CAP_ALL = 0xffffffffu,
 } ok_cap;
+
+// every capability bit at once. a macro, not an enumerator: C99 keeps
+// enumerator values inside int and the full mask does not fit (the P1
+// warning sweep's find; the value is unchanged).
+#define OK_CAP_ALL ((ok_cap)0xffffffffu)
 
 struct ok_specs {
   ok_allocators allocators;

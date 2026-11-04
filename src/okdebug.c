@@ -275,7 +275,7 @@ bool debug_disassemble_chunk(disassembler* p_disassembler, const char* p_name) {
   int last_line = -1;
   for (uint32_t offset = 0; offset < chunk->code.count;) {
     const ok_line_info_repeated* info = chunk_find_line_info(chunk, offset);
-    if (info != NULL && info->line_info.line != last_line) {
+    if (info != NULL && (last_line < 0 || (uint32_t)last_line != info->line_info.line)) {
       last_line = (int)info->line_info.line;
       printf("          ; line %d\n", last_line);
     }

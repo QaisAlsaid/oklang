@@ -10,6 +10,12 @@
 #include <string_view>
 #include <sys/wait.h>
 
+// the compiled-in OK_ROOT fallback (P1): cmake passes the checkout; an
+// environment OK_ROOT always wins at runtime
+#ifndef OKTEST_ROOT_PREFIX
+#define OKTEST_ROOT_PREFIX ""
+#endif
+
 #define COLOR_RED "\x1b[31m"
 #define COLOR_GREEN "\x1b[32m"
 #define COLOR_YELLOW "\x1b[33m"
@@ -39,13 +45,15 @@ int decode_system_status(int status) {
   return status;
 }
 
-run_result run_oklang(const std::string_view path, const std::string_view okpath, const std::string_view okpath_value,
+run_result run_oklang(const std::string_view path,
+                      const std::string_view okpath,
+                      const std::string_view okpath_value,
                       const std::string_view flags = "") {
   std::stringstream cmd;
   std::string stdout_file = "out.log";
   std::string stderr_file = "err.log";
-  cmd << "OKPATH=\"" << okpath_value << "\" \"" << okpath << "\" " << flags << (flags.empty() ? "" : " ")
-      << "\"" << path << "\" > " << stdout_file << " 2> " << stderr_file;
+  cmd << "OKPATH=\"" << okpath_value << "\" \"" << okpath << "\" " << flags << (flags.empty() ? "" : " ") << "\""
+      << path << "\" > " << stdout_file << " 2> " << stderr_file;
 
   std::string cmd_str = cmd.str();
   int ret = system(cmd_str.c_str());
@@ -225,7 +233,15 @@ int main(int argc, char** argv) {
     ok_debug_path = argv[3];
   }
 
-  uint32_t ok = 0, notok = 0, skipped = 0;
+  // OK_ROOT (P1): the checkout the fixtures and build commands reach the
+  // headers through, exported to every child (fixture build.sh runs and ok
+  // invocations alike). the environment wins; the compiled-in prefix is the
+  // fallback. the relative ../../ reaches are dead.
+  if (std::getenv("OK_ROOT") == nullptr && OKTEST_ROOT_PREFIX[0] != '\0') {
+    setenv("OK_ROOT", OKTEST_ROOT_PREFIX, 0);
+  }
+
+  uint32_t ok = 0, notok = 0, skipped = 0, fixtures = 0;
 
   build_native_fixtures(tests_path, okpath);
 
@@ -240,7 +256,7 @@ int main(int argc, char** argv) {
       continue;
     }
     if (is_fixture(entry.path(), tests_path)) {
-      skipped++;
+      fixtures++;
       continue;
     }
 
@@ -291,6 +307,6 @@ int main(int argc, char** argv) {
     }
   }
 
-  std::println("\nsummary: [{} OK], [{} NOTOK], [{} SKIP]", ok, notok, skipped);
+  std::println("\nsummary: [{} OK], [{} NOTOK], [{} SKIP], [{} FIXTURED AMALGAMATED]", ok, notok, skipped, fixtures);
   return notok == 0 ? 0 : 1;
 }

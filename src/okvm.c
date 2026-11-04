@@ -15,6 +15,7 @@
 #endif // defined(OK_TRACE_EXECUTION)
 
 #include "okarray.h"
+#include "okutf8.h"
 #include "okdiag.h"
 #include "okgc.h"
 #include "okglobals_store.h"
@@ -80,10 +81,10 @@ static inline bool call(vm* p_vm,
                         uint16_t p_argc,
                         uint32_t p_retc);
 static bool stage_defer_thunk(vm* p_vm, execution_state* p_exe, register_file* p_reg, object_closure* p_thunk);
-static bool run_pending_defers(vm* p_vm, uint32_t p_from, uint32_t p_uptill);
 static interpret_result create_closure(
     vm* p_vm, execution_state* p_exe, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, uint16_t p_src);
 void interpret_result_deinit(interpret_result* p_interpret_result) {
+  (void)p_interpret_result;
 }
 
 // a runtime error fired somewhere under the current C entry point. callers
@@ -439,6 +440,7 @@ interpret_result vm_interpret(vm* p_vm, interpret_specs p_specs) {
 }
 
 interpret_result vm_call(vm* p_vm, value p_callee, uint32_t p_argc) {
+  (void)p_callee;
   execution_state* exe = p_vm->current_execution_state;
   register_file* reg = &exe->registers;
   const uint32_t call_depth = exe->call_stack.count;
@@ -1826,6 +1828,7 @@ static ok_value as_num(vm* p_vm, ok_value p_value, value* p_result) {
 }
 
 static ok_value as_bool(vm* p_vm, value p_value, value* p_result) {
+  (void)p_vm;
   if (IS_VALUE_STRICTLY_BOOL(p_value)) {
     *p_result = p_value;
   } else if (IS_VALUE_STRICTLY_NULL(p_value)) {
@@ -2147,6 +2150,50 @@ static inline interpret_result top_level_return(register_file* p_registers, call
 }
 
 // array index resolution shared by OP_INDEX_GET / OP_INDEX_SET
+// the P2 string lane: s[i] is the i-th CODEPOINT as a fresh one-codepoint
+// string, never the i-th byte. the walk is lossy over malformed runtime
+// strings (one U+FFFD per bad byte), mirroring len and iteration exactly.
+static bool string_index_get(vm* p_vm, value p_base, value p_index, value* p_out) {
+  const object_string* str = (object_string*)VALUE_AS_OBJECT(p_base);
+  double wanted = 0.0;
+  if (IS_VALUE_NUMBER(p_index)) {
+    wanted = VALUE_AS_NUMBER(p_index);
+    if (!(wanted >= MIN_SAFE_INTEGER && wanted <= MAX_SAFE_INTEGER) || wanted != (double)(int64_t)wanted) {
+      runtime_error(p_vm, OK_EK_INDEX, "string index must be a whole number, got %g.", wanted);
+      return false;
+    }
+  } else if (IS_VALUE_INT(p_index)) {
+    wanted = (double)VALUE_AS_INT(p_index);
+  } else {
+    runtime_error(p_vm, OK_EK_INDEX, "string index must be a whole number.");
+    return false;
+  }
+  if (wanted < 0.0 || (uint64_t)wanted >= str->codepoints) {
+    runtime_error(p_vm, OK_EK_INDEX, "index out of bounds: %g (len %llu).", wanted, (unsigned long long)str->codepoints);
+    return false;
+  }
+  const char* chars = str->string.chars;
+  const size_t bytes = (size_t)string_get_length(&str->string);
+  size_t byte_offset = 0;
+  for (uint64_t k = 0; k < (uint64_t)wanted; ++k) {
+    uint8_t len = 1;
+    (void)ok_utf8_decode(chars + byte_offset, bytes - byte_offset, &len);
+    byte_offset += len;
+  }
+  uint8_t len = 1;
+  (void)ok_utf8_decode(chars + byte_offset, bytes - byte_offset, &len);
+  object_specs s = {p_vm->alloc, p_vm->objects_store};
+  object_string* piece = create_object_string(ok_create_string_view(chars + byte_offset, len, false), &s);
+  if (piece == NULL) {
+    runtime_oom(p_vm, "out of memory: failed to allocate the codepoint string.");
+    return false;
+  }
+  gc_guard_up(p_vm->alloc->gc, OBJECT_AS_VALUE(piece));
+  *p_out = OBJECT_AS_VALUE(piece);
+  gc_guard_down(p_vm->alloc->gc);
+  return true;
+}
+
 static bool resolve_array_index(vm* p_vm, value p_index, uint32_t p_count, uint32_t* p_out) {
   if (IS_VALUE_NUMBER(p_index)) {
     const double d = VALUE_AS_NUMBER(p_index);
@@ -2510,9 +2557,8 @@ static bool run_pending_defers_ex(vm* p_vm, uint32_t p_from, uint32_t p_uptill, 
   return true;
 }
 
-static bool run_pending_defers(vm* p_vm, uint32_t p_from, uint32_t p_uptill) {
-  return run_pending_defers_ex(p_vm, p_from, p_uptill, false);
-}
+// (a run_pending_defers convenience wrapper over run_pending_defers_ex
+// lived here until the P1 sweep: nothing ever called it.)
 
 // the unwind. walk the handler
 // stack top-down, the first live record above this run_until's depth wins:
@@ -3542,6 +3588,21 @@ static void* ok_dispatch_table[OP__COUNT] = {
 #else
     switch (op_of(instruction)) {
 #endif
+#if !defined(OK_DISPATCH_THREADED)
+    // the classic switch spells out what the threaded table aliases: the
+    // four pre-patch NAME forms never dispatch in a well-formed chunk
+    // (patch_chunk_fields rewrites them at class freeze), and the sentinel
+    // can only come out of a corrupt word. skipping both, identically to
+    // the table's NOP entries, keeps the two dispatch modes byte-identical
+    // in that (impossible) case.
+    CASE(OP_GET_FIELD_NAME):
+    CASE(OP_GET_FIELD_NAME_LONG):
+    CASE(OP_STORE_FIELD_NAME):
+    CASE(OP_STORE_FIELD_NAME_LONG):
+    CASE(OP__COUNT): {
+      DISPATCH();
+    }
+#endif
     CASE(OP_NOP): {
       DISPATCH();
     }
@@ -3763,8 +3824,8 @@ static void* ok_dispatch_table[OP__COUNT] = {
                       reg,
                       frame->registers_base,
                       a,
-                      p ? reg->top - (frame->registers_base + a + 1) : b,
-                      c == 0 ? RETURN_COUNT_DYNAMIC : c - 1)) {
+                      p ? (uint16_t)(reg->top - (frame->registers_base + a + 1)) : b,
+                      c == 0 ? RETURN_COUNT_DYNAMIC : (uint32_t)(c - 1))) {
         FAIL_PATH();
       }
       // not sure if exe is gonna be modified here or not (resume??) but we set it anyways
@@ -3789,8 +3850,8 @@ static void* ok_dispatch_table[OP__COUNT] = {
                       reg,
                       frame->registers_base,
                       A,
-                      p ? reg->top - (frame->registers_base + A + 1) : B,
-                      C == 0 ? RETURN_COUNT_DYNAMIC : C - 1)) {
+                      p ? (uint16_t)(reg->top - (frame->registers_base + A + 1)) : B,
+                      C == 0 ? RETURN_COUNT_DYNAMIC : (uint32_t)(C - 1))) {
         FAIL_PATH();
       }
       // not sure if exe is gonna be modified here or not (resume??) but we set it anyways
@@ -4491,6 +4552,15 @@ static void* ok_dispatch_table[OP__COUNT] = {
           DISPATCH();
         }
       }
+      if (value_is_object_type(base, OBJ_STRING)) {
+        // P2: s[i] is the i-th codepoint, a fresh one-codepoint string
+        value read;
+        if (!string_index_get(p_vm, base, key, &read)) {
+          FAIL_PATH();
+        }
+        REG_AT(a) = read;
+        DISPATCH();
+      }
       const object_array* arr = resolve_array_base(p_vm, base);
       uint32_t index = 0;
       if (arr == NULL || !resolve_array_index(p_vm, key, arr->values.count, &index)) {
@@ -4525,6 +4595,14 @@ static void* ok_dispatch_table[OP__COUNT] = {
           REFRESH_AFTER_NESTED();
           DISPATCH();
         }
+      }
+      if (value_is_object_type(base, OBJ_STRING)) {
+        value read;
+        if (!string_index_get(p_vm, base, key, &read)) {
+          FAIL_PATH();
+        }
+        REG_AT(A) = read;
+        DISPATCH();
       }
       const object_array* arr = resolve_array_base(p_vm, base);
       uint32_t index = 0;
@@ -4563,6 +4641,12 @@ static void* ok_dispatch_table[OP__COUNT] = {
           DISPATCH();
         }
       }
+      if (value_is_object_type(base, OBJ_STRING)) {
+        // P2: strings are immutable - reading is codepoint-shaped, writing
+        // refuses outright (build a new string; concatenation exists)
+        runtime_error(p_vm, OK_EK_TYPE, "strings are immutable: cannot assign to an index.");
+        FAIL_PATH();
+      }
       const object_array* arr = resolve_array_base(p_vm, base);
       uint32_t index = 0;
       if (arr == NULL || !resolve_array_index(p_vm, key, arr->values.count, &index)) {
@@ -4597,6 +4681,10 @@ static void* ok_dispatch_table[OP__COUNT] = {
           REFRESH_AFTER_NESTED();
           DISPATCH();
         }
+      }
+      if (value_is_object_type(base, OBJ_STRING)) {
+        runtime_error(p_vm, OK_EK_TYPE, "strings are immutable: cannot assign to an index.");
+        FAIL_PATH();
       }
       const object_array* arr = resolve_array_base(p_vm, base);
       uint32_t index = 0;
@@ -4682,6 +4770,22 @@ static void* ok_dispatch_table[OP__COUNT] = {
         }
         DISPATCH();
       }
+      if (value_is_object_type(iterable, OBJ_STRING)) {
+        if (p) {
+          runtime_error(p_vm, OK_EK_TYPE, "string iteration binds one loop variable.");
+          FAIL_PATH();
+        }
+        // the str shape (P2): a utf8 byte cursor against the byte end.
+        // strings are immutable, so no map-style version check - the body
+        // cannot move the bytes under the cursor.
+        const uint64_t bytes = string_get_length(&((object_string*)VALUE_AS_OBJECT(iterable))->string);
+        REG_AT(B + 1) = NUMBER_AS_VALUE(0);
+        REG_AT(B + 2) = NUMBER_AS_VALUE((double)bytes);
+        if (bytes == 0) {
+          ip += A;
+        }
+        DISPATCH();
+      }
       if (value_is_object_type(iterable, OBJ_MAP)) {
         // snapshot the version for the back edge's size-change check, then
         // park the cursor on the first occupied slot.
@@ -4708,6 +4812,33 @@ static void* ok_dispatch_table[OP__COUNT] = {
       const value iterable = REG_AT(B);
       // cursor: written only by PREP/LOOP as a plain number, read raw
       const uint32_t cursor = (uint32_t)VALUE_AS_NUMBER(REG_AT(B + 1));
+      if (value_is_object_type(iterable, OBJ_STRING)) {
+        // the P2 str shape: decode the codepoint at the byte cursor. a
+        // malformed byte (runtime strings are lossy, never rejected)
+        // yields the U+FFFD replacement and advances one byte - the same
+        // rule len counts by.
+        const object_string* str = (object_string*)VALUE_AS_OBJECT(iterable);
+        const char* chars = str->string.chars;
+        const size_t bytes = (size_t)string_get_length(&str->string);
+        uint8_t len = 1;
+        const uint32_t cp = ok_utf8_decode(chars + cursor, bytes - cursor, &len);
+        object_specs s = {p_vm->alloc, p_vm->objects_store};
+        object_string* piece;
+        if (cp == 0) {
+          static const char fffd[3] = {(char)0xEF, (char)0xBF, (char)0xBD};
+          piece = create_object_string(ok_create_string_view(fffd, 3, false), &s);
+        } else {
+          piece = create_object_string(ok_create_string_view(chars + cursor, len, false), &s);
+        }
+        if (piece == NULL) {
+          runtime_oom(p_vm, "out of memory: failed to allocate the codepoint string.");
+          FAIL_PATH();
+        }
+        gc_guard_up(p_vm->alloc->gc, OBJECT_AS_VALUE(piece));
+        REG_AT(C) = OBJECT_AS_VALUE(piece);
+        gc_guard_down(p_vm->alloc->gc);
+        DISPATCH();
+      }
       if (value_is_object_type(iterable, OBJ_ARRAY)) {
         REG_AT(C) = VALUE_AS_ARRAY(iterable)->values.data[cursor];
       } else {
@@ -4725,6 +4856,24 @@ static void* ok_dispatch_table[OP__COUNT] = {
       const uint16_t A = A_of(words); // backward offset to the body top
       const uint16_t B = B_of(words); // state base
       const value iterable = REG_AT(B);
+      if (value_is_object_type(iterable, OBJ_STRING)) {
+        // advance the byte cursor past the codepoint GET just served
+        // (re-decoded here: the decode is a handful of byte compares, and
+        // keeping the register protocol identical to the array shape -
+        // cursor written by PREP/LOOP only - is worth the second look)
+        const object_string* str = (object_string*)VALUE_AS_OBJECT(iterable);
+        const char* chars = str->string.chars;
+        const size_t bytes = (size_t)string_get_length(&str->string);
+        uint32_t cursor = (uint32_t)VALUE_AS_NUMBER(REG_AT(B + 1));
+        uint8_t len = 1;
+        (void)ok_utf8_decode(chars + cursor, bytes - cursor, &len);
+        cursor += len;
+        REG_AT(B + 1) = NUMBER_AS_VALUE((double)cursor);
+        if ((double)cursor < VALUE_AS_NUMBER(REG_AT(B + 2))) {
+          ip -= A;
+        }
+        DISPATCH();
+      }
       if (value_is_object_type(iterable, OBJ_ARRAY)) {
         // the frozen end makes pushes during the body invisible to this trip
         // (lua-style): the loop runs to the entry-time element count.
@@ -6737,6 +6886,7 @@ invalid_call:
 
 static interpret_result create_closure(
     vm* p_vm, execution_state* p_exe, register_file* p_reg, call_frame* p_frame, uint16_t p_dest, uint16_t p_src) {
+    (void)p_exe;
   object_function* function = VALUE_AS_FUNCTION(p_frame->closure->function->chunk.constants.data[p_src]);
   object_specs s = {p_vm->alloc, p_vm->objects_store};
   object_closure* closure = create_object_closure(function, &s);
@@ -6847,7 +6997,7 @@ static inline value* upvalue_cell(vm* p_vm, execution_state* p_exe, object_upval
 ARRAY_DEFINE_DEFAULT(register_array, value, ARRAY_DEFAULT_TYPE_DEINIT)
 ARRAY_DEFINE_DEFAULT(vm_sources, vm_source_entry, ARRAY_DEFAULT_TYPE_DEINIT)
 ARRAY_DEFINE_DEFAULT(handler_stack, handler_record, ARRAY_DEFAULT_TYPE_DEINIT)
-ARRAY_DEFINE_DEFAULT(call_stack, call_frame, ARRAY_DEFAULT_TYPE_DEINIT);
+ARRAY_DEFINE_DEFAULT(call_stack, call_frame, ARRAY_DEFAULT_TYPE_DEINIT)
 
 void register_file_init(register_file* p_registers, allocators* p_alloc) {
   p_registers->top = 0;

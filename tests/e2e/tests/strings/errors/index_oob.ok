@@ -1,0 +1,4 @@
+// s[i] past the codepoint count refuses like the array lane
+let s = "ab";
+print s[5];
+// expect error: index out of bounds: 5 (len 2)

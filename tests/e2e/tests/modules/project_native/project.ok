@@ -6,7 +6,7 @@ pub let project = {
   "natives": {
     "adder": {
       "dir": "native",
-      "build": "gcc -shared -fPIC -I../../../../../include -o adder.so native/adder.c",
+      "build": "gcc -shared -fPIC -I$OK_ROOT/include -o adder.so native/adder.c",
       "artifact": "adder.so",
     },
   },

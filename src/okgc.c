@@ -173,7 +173,7 @@ static bool mark_object(gc* p_gc, object* p_object) {
   }
   object_set_marked(p_object, true);
 #ifdef OK_LOG_GC
-  printf("marked object: %p ", p_object);
+  printf("marked object: %p ", (void*)p_object);
   object_debug_print(p_object);
   puts("\n");
 #endif
@@ -386,7 +386,7 @@ static bool sweep(gc* p_gc) {
         p_gc->object_store->objects = curr;
       }
 #ifdef OK_LOG_GC
-      printf("sweeping object: %p: ", unreached);
+      printf("sweeping object: %p: ", (void*)unreached);
       object_debug_print(unreached);
       puts("\n");
 #endif // OK_LOG_GC
@@ -428,7 +428,7 @@ static bool collect(gc* p_gc) {
 
 static bool trace_object(gc* p_gc, object* p_object) {
 #ifdef OK_LOG_GC
-  printf("tracing object: %p ", p_object);
+  printf("tracing object: %p ", (void*)p_object);
   object_debug_print(p_object);
   puts("\n");
 #endif // OK_LOG_GC

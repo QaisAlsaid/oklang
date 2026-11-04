@@ -4,4 +4,5 @@
 # is the runner's gift (the fixture-build contract).
 set -e
 cd "$(dirname "$0")"
-"${OK_BIN:-../../../../../build-gcc/ok}" build --yes
+: "${OK_BIN:?the e2e runner sets OK_BIN; export it for a hand run}"
+"$OK_BIN" build --yes

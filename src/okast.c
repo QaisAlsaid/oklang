@@ -67,10 +67,12 @@ void ast_node_deinit(ast_node* p_node) {
 }
 
 bool ast_node_print(const ast_node* p_node) {
+  (void)p_node;
   return false;
 }
 
 string ast_node_asprint(const ast_node* p_node) {
+  (void)p_node;
   return create_static_string(NULL, 0);
 }
 
@@ -86,10 +88,12 @@ void ast_expression_deinit(ast_expression* p_expression) {
 }
 
 bool ast_expression_print(const ast_expression* p_expression) {
+  (void)p_expression;
   return false;
 }
 
 string ast_expression_asprint(const ast_expression* p_expression) {
+  (void)p_expression;
   return create_static_string(NULL, 0);
 }
 
@@ -105,15 +109,17 @@ void ast_statement_deinit(ast_statement* p_statement) {
 }
 
 bool ast_statement_print(const ast_statement* p_statement) {
+  (void)p_statement;
   return false;
 }
 
 string ast_statement_asprint(const ast_statement* p_statement) {
+  (void)p_statement;
   return create_static_string(NULL, 0);
 }
 
 string ast_binding_modifiers_asprint(ast_binding_modifiers_t p_modifiers) {
-  if (p_modifiers == BINDING_NONE != 0) {
+  if (p_modifiers == BINDING_NONE) {
     return create_static_string("", 0);
   }
   if ((p_modifiers & BINDING_MUT) != 0) {
@@ -356,14 +362,23 @@ string ast_number_expression_asprint(const ast_number_expression* p_number) {
 
 void ast_string_expression_init(ast_string_expression* p_string, token p_token, ast_specs* p_specs) {
   ast_expression_init(&p_string->expression, AST_STRING_EXPRESSION, p_token, p_specs);
+  p_string->unescaped = NULL;
+  p_string->unescaped_length = 0;
 }
 
 void ast_string_expression_deinit(ast_string_expression* p_string) {
+  if (p_string->unescaped != NULL) {
+    p_string->expression.node.alloc->release(p_string->expression.node.alloc, p_string->unescaped);
+    p_string->unescaped = NULL;
+  }
   ast_expression_deinit(&p_string->expression);
 }
 
 ok_string_view ast_string_expression_get_value(const ast_string_expression* p_string) {
   const ast_node* node = &p_string->expression.node;
+  if (p_string->unescaped != NULL) {
+    return ok_create_string_view(p_string->unescaped, p_string->unescaped_length, false);
+  }
   return ok_create_string_view(node->token.start + 1, node->token.length - 2, false);
 }
 
@@ -414,6 +429,7 @@ void ast_null_expression_deinit(ast_null_expression* p_null) {
 }
 
 bool ast_null_expression_print(const ast_null_expression* p_null) {
+  (void)p_null;
   return printf("null") > 0;
 }
 
@@ -430,6 +446,7 @@ void ast_this_expression_deinit(ast_this_expression* p_this) {
 }
 
 bool ast_this_expression_print(const ast_this_expression* p_this) {
+  (void)p_this;
   return printf("this") > 0;
 }
 
@@ -446,6 +463,7 @@ void ast_super_expression_deinit(ast_super_expression* p_super) {
 }
 
 bool ast_super_expression_print(const ast_super_expression* p_super) {
+  (void)p_super;
   return printf("super") > 0;
 }
 
@@ -1104,10 +1122,12 @@ void ast_eof_statement_deinit(ast_eof_statement* p_eof) {
 }
 
 bool ast_eof_statement_print(const ast_eof_statement* p_eof) {
+  (void)p_eof;
   return true;
 }
 
 string ast_eof_statement_asprint(const ast_eof_statement* p_eof) {
+  (void)p_eof;
   return create_static_string("", 0);
 }
 
@@ -1120,10 +1140,12 @@ void ast_empty_statement_deinit(ast_empty_statement* p_empty) {
 }
 
 bool ast_empty_statement_print(const ast_empty_statement* p_empty) {
+  (void)p_empty;
   return true;
 }
 
 string ast_empty_statement_asprint(const ast_empty_statement* p_empty) {
+  (void)p_empty;
   return create_static_string("", 0);
 }
 
@@ -1351,6 +1373,7 @@ bool ast_for_in_statement_print(const ast_for_in_statement* p_for_in) {
 }
 
 string ast_for_in_statement_asprint(const ast_for_in_statement* p_for_in) {
+  (void)p_for_in;
   return create_static_string("for in", STRING_CALCULATE_LENGTH);
 }
 
@@ -1401,6 +1424,7 @@ bool ast_for_numeric_statement_print(const ast_for_numeric_statement* p_for_nume
 }
 
 string ast_for_numeric_statement_asprint(const ast_for_numeric_statement* p_for_numeric) {
+  (void)p_for_numeric;
   return create_static_string("for numeric", STRING_CALCULATE_LENGTH);
 }
 
@@ -1698,6 +1722,7 @@ void ast_import_statement_deinit(ast_import_statement* p_import) {
 }
 
 bool ast_import_statement_print(const ast_import_statement* p_import) {
+  (void)p_import;
   return printf("import") > 0;
 }
 

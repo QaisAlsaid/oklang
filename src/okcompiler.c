@@ -10,7 +10,7 @@
 #include "okutils.h"
 #include "okvalue.h"
 
-ARRAY_DEFINE_DEFAULT(top_level_declarations, variable_declaration, ARRAY_DEFAULT_TYPE_DEINIT);
+ARRAY_DEFINE_DEFAULT(top_level_declarations, variable_declaration, ARRAY_DEFAULT_TYPE_DEINIT)
 
 #define SR_KEY_IS_EMPTY(k) ((k).chars == NULL)
 #define SR_KEY_SET_EMPTY(k)                                                                                            \
@@ -1460,7 +1460,6 @@ static bool write_upvalue(compiler* p_compiler, upvalue p_upvalue, expression_re
 
 static global add_global(compiler* p_compiler, variable_declaration p_declaration, ast_node* p_author) {
   allocators* alloc = p_compiler->alloc;
-  chunk* chunk = current_chunk(p_compiler);
   global index = globals_store_add(p_compiler->globals_store,
                                    p_declaration.identifier,
                                    (p_declaration.flags & VARIABLE_DECLARATION_FLAGS_MUTABLE) != 0);
@@ -2033,7 +2032,6 @@ store_global(compiler* p_compiler, location p_global_location, expression_result
 
 static bool
 store_local(compiler* p_compiler, location p_local_location, expression_result p_value, ast_node* p_author) {
-  allocators* alloc = p_compiler->alloc;
   _register local = current_context(p_compiler)->register_allocator.registers.data[p_local_location.index];
   if ((local.flags & REGISTER_FLAG_MUTABLE) == 0) {
     ok_note note;
@@ -2683,6 +2681,7 @@ static bool compile_identifier(compiler* p_compiler,
                                _register p_dest,
                                uint32_t p_requested_count,
                                expression_result* p_out) {
+                               (void)p_dest;
   ASSERT_MSG(p_requested_count <= 1, "invalid requested count to compile_identifier.");
   if (p_requested_count == 0) {
     return true;
@@ -2701,6 +2700,8 @@ static bool compile_identifier(compiler* p_compiler,
 }
 
 bool compile_eof_statement(compiler* p_compiler, ast_eof_statement* p_eof) {
+  (void)p_compiler;
+  (void)p_eof;
   return true;
 }
 
@@ -2754,7 +2755,6 @@ static bool emit_incomplete_jump(compiler* p_compiler, opcode p_op, uint32_t* p_
 }
 
 static bool emit_loop(compiler* p_compiler, const uint32_t p_loop_start, ast_node* p_author) {
-  allocators* alloc = p_compiler->alloc;
   chunk* chunk = current_chunk(p_compiler);
   // OP_LOOP reads its offset from the ip after instruction, which is (this word index + 1)
   const uint32_t loop_length = (chunk->code.count + 1) - p_loop_start;
@@ -2870,12 +2870,10 @@ static fused_condition_result compile_fused_condition_jump(
           p_compiler, &is_rhs_const, LOCATION_KIND_CONSTANT, &rhs.value, rhs_dest, p_author)) {
     return FUSED_CONDITION_ERROR;
   }
-  if (lhs.value.index > B_MAX || rhs.value.index > C_MAX) {
-    // the 2w form carries 16 bit operands; a compile window this wide keeps
-    // the generic path (whose LONG variants exist) rather than growing a
-    // fused LONG spelling nobody has benched yet.
-    return FUSED_CONDITION_UNSUPPORTED;
-  }
+  // (P1 sweep note: no width guard is needed here - ok_index and the 2w
+  // operand fields are both 16 bit, so the fused window is structural.
+  // the guard this replaces compared a uint16 against UINT16_MAX and
+  // could never fire.)
   *p_out = current_chunk(p_compiler)->code.count;
   if (!emit_word2(p_compiler,
                   encode_OPPABCQC(OP_JUMP_IF_CMP,
@@ -2993,7 +2991,6 @@ static bool patch_jump_if_set(compiler* p_compiler,
   const opcode op = op_of(words[0]);
   const bool p = p_of(words[0]);
   const uint16_t B = B_of(joined);
-  const uint16_t C = C_of(joined);
   const bool Q = Q_of(joined);
   word2 patched = encode_OPPABCQ(op, p, jmp, B, p_target.index, Q);
   words[0] = (word)(patched & UINT64_C(0xffffffff));
@@ -3351,7 +3348,6 @@ static bool compile_throw_statement(compiler* p_compiler, ast_throw_statement* p
 // (temps die, locals stay). entering the handler consumes the record, so a throw inside H finds
 // only outer handlers. and a bare `throw;` reads e's register directly.
 static bool compile_try_statement(compiler* p_compiler, ast_try_statement* p_try) {
-  allocators* alloc = p_compiler->alloc;
   compile_context* ctx = current_context(p_compiler);
   ast_node* author = (ast_node*)p_try;
 
@@ -3732,6 +3728,7 @@ static bool compile_number_expression(compiler* p_compiler,
                                       _register p_dest,
                                       uint32_t p_requested_count,
                                       expression_result* p_out) {
+                                      (void)p_dest;
   ASSERT(p_requested_count <= 1);
   if (p_requested_count == 0) {
     return true;
@@ -3763,6 +3760,7 @@ static bool compile_string_expression(compiler* p_compiler,
                                       _register p_dest,
                                       uint32_t p_requested_count,
                                       expression_result* p_out) {
+                                      (void)p_dest;
   ASSERT(p_requested_count <= 1);
   if (p_requested_count == 0) {
     return true;
@@ -3859,7 +3857,6 @@ static bool compile_logical_operator(compiler* p_compiler,
                                      expression_result* p_result) {
   expression_result lhs;
   expression_result rhs;
-  register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
 
   if (!compile_expression(p_compiler, p_logical->left, p_dest, 1, &lhs)) {
     return false;
@@ -4322,7 +4319,6 @@ bool compile_call_expression(compiler* p_compiler,
   //   n >= 2 = destructuring position - the binding count (the destructuring
   //       let is the only caller that passes n. call() checks it).
   allocators* alloc = p_compiler->alloc;
-  register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
   // the fused lanes: obj.name(args) is one OP_INVOKE (the receiver doubles as
   // the call window base), super.name(args) and the bare super(args) are one
   // OP_SUPER_INVOKE (the receiver rides the running method's register 0).
@@ -4726,6 +4722,7 @@ static bool compile_compound_assign_expression(compiler* p_compiler,
                                                _register p_dest,
                                                uint32_t p_requested_count,
                                                expression_result* p_out) {
+                                               (void)p_dest;
   CRASH_MSG(p_requested_count <= 1, "unimplemented multi-assign.");
   register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
   ast_node* author = (ast_node*)p_compound;
@@ -5086,12 +5083,27 @@ static bool compile_for_numeric_statement(compiler* p_compiler, ast_for_numeric_
 
   // counter = <start>. the counter stays uninitialized while the start resolves,
   // so it behaves like a let initializer: `for let i = i : ...` sees the outer i.
+  // the three slots compile through a TEMP first, then move into their
+  // local. a call whose dest sits below other locals breaks the call
+  // window's contiguity (the callable at dest, the args at dest + 1..,
+  // but temps stage above ALL locals) - the P2 find: `for let i = 0 :
+  // len(a)` read the uninitialized slot above the limit as its argument.
+  // the let initializer never sees this (its local is the top of locals at
+  // init time); the numeric for's hidden limit/step locals broke it.
   {
-    expression_result start;
-    if (!compile_expression(p_compiler, p_for_numeric->start, counter, 1, &start)) {
+    _register temp;
+    if (!register_allocator_allocate_temp(regalloc, &temp)) {
+      report_oom(p_compiler, author);
       goto fail;
     }
-    if (!materialize_into(p_compiler, &start.value, counter, author)) {
+    expression_result start;
+    if (!compile_expression(p_compiler, p_for_numeric->start, temp, 1, &start)) {
+      goto fail;
+    }
+    if (!materialize_into(p_compiler, &start.value, temp, author)) {
+      goto fail;
+    }
+    if (!materialize_into(p_compiler, &(location){temp.index, LOCATION_KIND_REGISTER, LOCATION_OK}, counter, author)) {
       goto fail;
     }
   }
@@ -5100,22 +5112,38 @@ static bool compile_for_numeric_statement(compiler* p_compiler, ast_for_numeric_
 
   // limit = <limit expr> (evaluated once, frozen for the whole trip)
   {
-    expression_result limit_value;
-    if (!compile_expression(p_compiler, p_for_numeric->limit, limit, 1, &limit_value)) {
+    _register temp;
+    if (!register_allocator_allocate_temp(regalloc, &temp)) {
+      report_oom(p_compiler, author);
       goto fail;
     }
-    if (!materialize_into(p_compiler, &limit_value.value, limit, author)) {
+    expression_result limit_value;
+    if (!compile_expression(p_compiler, p_for_numeric->limit, temp, 1, &limit_value)) {
+      goto fail;
+    }
+    if (!materialize_into(p_compiler, &limit_value.value, temp, author)) {
+      goto fail;
+    }
+    if (!materialize_into(p_compiler, &(location){temp.index, LOCATION_KIND_REGISTER, LOCATION_OK}, limit, author)) {
       goto fail;
     }
   }
 
   // step = <step expr> or the default 1
   if (p_for_numeric->step != NULL) {
-    expression_result step_value;
-    if (!compile_expression(p_compiler, p_for_numeric->step, step, 1, &step_value)) {
+    _register temp;
+    if (!register_allocator_allocate_temp(regalloc, &temp)) {
+      report_oom(p_compiler, author);
       goto fail;
     }
-    if (!materialize_into(p_compiler, &step_value.value, step, author)) {
+    expression_result step_value;
+    if (!compile_expression(p_compiler, p_for_numeric->step, temp, 1, &step_value)) {
+      goto fail;
+    }
+    if (!materialize_into(p_compiler, &step_value.value, temp, author)) {
+      goto fail;
+    }
+    if (!materialize_into(p_compiler, &(location){temp.index, LOCATION_KIND_REGISTER, LOCATION_OK}, step, author)) {
       goto fail;
     }
   } else {
@@ -5184,6 +5212,11 @@ static bool compile_postfix_unary_expression(compiler* p_compiler,
                                              _register p_dest,
                                              uint32_t p_requested_count,
                                              expression_result* p_out) {
+                                             (void)p_compiler;
+                                             (void)p_dest;
+                                             (void)p_expression;
+                                             (void)p_out;
+                                             (void)p_requested_count;
   CRASH_MSG(false, "unimplemented postfix expression.");
   return false;
 }

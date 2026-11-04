@@ -1,3 +1,4 @@
-// str carries no methods in v0.5.0 (nothing existed as a str function
-// builtin to mirror, and the ruling is no new stdlib)
-print("abc".len()); // expect error: class 'str' has no method 'len'
+// str carried no methods through 0.8.0; P2's len ruling made it str's
+// first. the unknown-method error lane stays pinned - on a name that
+// genuinely does not exist.
+print("abc".bogus()); // expect error: has no method

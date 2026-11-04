@@ -13,6 +13,7 @@
 
 #include <ok/ok.h>
 #include <ok/ok_module.h>
+#include <ok/ok_version.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -229,6 +230,19 @@ int main(void) {
   CHECK(OK_ABI_MAJOR == 0u);
   CHECK(OK_ABI_MINOR >= 3u);
   CHECK(((OK_ABI_MAJOR << 16) | OK_ABI_MINOR) == OK_NATIVE_ABI);
+  // the version stamp composes (P1): the numbers and the lane must equal
+  // the hand-written string - drift between them fails the gate, which is
+  // the whole point of a single source of truth.
+  {
+    char composed[64];
+    if (OK_VERSION_LANE[0] == '\0') {
+      snprintf(composed, sizeof composed, "%u.%u.%u", OK_VERSION_MAJOR, OK_VERSION_MINOR, OK_VERSION_PATCH);
+    } else {
+      snprintf(composed, sizeof composed, "%u.%u.%u-%s", OK_VERSION_MAJOR, OK_VERSION_MINOR, OK_VERSION_PATCH,
+               OK_VERSION_LANE);
+    }
+    CHECK(strcmp(composed, OK_VERSION_STRING) == 0);
+  }
 
   ok_specs specs = {};
   ok* p_ok = ok_create(specs);

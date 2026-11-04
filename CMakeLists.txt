@@ -102,11 +102,23 @@ if(UNIX)
   target_link_libraries(ok PUBLIC ${CMAKE_DL_LIBS})
 endif()
 
-target_compile_options(ok PRIVATE
-  -Wall
-  -Wextra
-  -Wpedantic
-)
+# the P1 gate: c99 + -Werror on every gcc/clang build. -pedantic rides only
+# the strict-C shape - the threaded dispatch lane rides labels-as-values, a
+# deliberate GNU extension (see the dispatch comment above), and OK_PURE is
+# the portable gate that earns the pedantic spelling. -Wno-missing-braces
+# keeps the flat-initializer idiom legal (the tagged index types initialize
+# flat everywhere; C23's {} is the eventual home).
+if (CMAKE_C_COMPILER_ID STREQUAL "GNU" OR CMAKE_C_COMPILER_ID MATCHES "Clang")
+    if (OK_PURE)
+        target_compile_options(ok PRIVATE -Wall -Wextra -Wpedantic -Werror -Wno-missing-braces)
+    else()
+        target_compile_options(ok PRIVATE -Wall -Wextra -Werror -Wno-missing-braces)
+    endif()
+else()
+    # other compilers keep the advisory flags; the gate earns its spelling
+    # per-compiler when one ships in CI
+    target_compile_options(ok PRIVATE -Wall -Wextra -Wpedantic)
+endif()
 
 add_library(ok_sanitizers INTERFACE)
 
