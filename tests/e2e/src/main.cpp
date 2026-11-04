@@ -39,11 +39,12 @@ int decode_system_status(int status) {
   return status;
 }
 
-run_result run_oklang(const std::string_view path, const std::string_view okpath, const std::string_view okpath_value) {
+run_result run_oklang(const std::string_view path, const std::string_view okpath, const std::string_view okpath_value,
+                      const std::string_view flags = "") {
   std::stringstream cmd;
   std::string stdout_file = "out.log";
   std::string stderr_file = "err.log";
-  cmd << "OKPATH=\"" << okpath_value << "\" \"" << okpath << "\" "
+  cmd << "OKPATH=\"" << okpath_value << "\" \"" << okpath << "\" " << flags << (flags.empty() ? "" : " ")
       << "\"" << path << "\" > " << stdout_file << " 2> " << stderr_file;
 
   std::string cmd_str = cmd.str();
@@ -148,6 +149,62 @@ std::string parse_okpath(const std::filesystem::path& path) {
   return "";
 }
 
+// the `// okflags: --restrict --native x.so` directive (OR-3): CLI flags for
+// this one run. relative --native paths resolve against the test file's
+// directory, exactly the okpath precedent.
+std::string parse_okflags(const std::filesystem::path& path) {
+  std::regex okflags_re(R"(//\s*okflags:\s*(.*))");
+  std::ifstream fs(path);
+  std::string line;
+  while (std::getline(fs, line)) {
+    std::smatch match;
+    if (std::regex_search(line, match, okflags_re)) {
+      const std::string value = match[1].str();
+      const std::filesystem::path dir = path.parent_path();
+      std::string expanded;
+      std::string prev;
+      size_t start = 0;
+      for (;;) {
+        const size_t space = value.find(' ', start);
+        std::string part = value.substr(start, space == std::string::npos ? std::string::npos : space - start);
+        if (!part.empty()) {
+          if (prev == "--native" && !part.starts_with("/")) {
+            part = (dir / part).string();
+          }
+          if (!expanded.empty()) {
+            expanded += " ";
+          }
+          expanded += part;
+          prev = part;
+        }
+        if (space == std::string::npos) {
+          break;
+        }
+        start = space + 1;
+      }
+      return expanded;
+    }
+  }
+  return "";
+}
+
+// the native fixture builds (OR-3): every build.sh under the tests root,
+// from its own directory, before any test runs. the declared-build contract:
+// whatever toolchain, idempotent, quiet on success.
+void build_native_fixtures(const std::string& tests_path) {
+  for (auto& entry : std::filesystem::recursive_directory_iterator(tests_path)) {
+    if (entry.path().filename() != "build.sh") {
+      continue;
+    }
+    const std::string dir = entry.path().parent_path().string();
+    const std::string cmd = "cd \"" + dir + "\" && bash build.sh";
+    if (decode_system_status(system(cmd.c_str())) != 0) {
+      std::println(stderr, "FIXTURE BUILD FAILED: {}", entry.path().string());
+      std::exit(1);
+    }
+  }
+}
+
 int main(int argc, char** argv) {
   bool has_debug_build = false;
   if (argc < 3) {
@@ -169,6 +226,8 @@ int main(int argc, char** argv) {
 
   uint32_t ok = 0, notok = 0, skipped = 0;
 
+  build_native_fixtures(tests_path);
+
   for (auto& entry : std::filesystem::recursive_directory_iterator(tests_path)) {
     if (entry.path().extension() != ".ok")
       continue;
@@ -185,8 +244,9 @@ int main(int argc, char** argv) {
     }
 
     const std::string okpath_value = parse_okpath(entry.path());
+    const std::string flags = parse_okflags(entry.path());
     auto tc = parse_test_file(test_path);
-    auto rr = run_oklang(test_path, okpath, okpath_value);
+    auto rr = run_oklang(test_path, okpath, okpath_value, flags);
 
     if (!tc.has_expectation) {
       std::println("{}[NOTOK]{}: '{}'", COLOR_RED, COLOR_RESET, test_path);

@@ -244,6 +244,45 @@ ok_value ok_coro_current(ok* p_ok);
 // catch), or the call site is not a native at all.
 bool ok_native_suspend(ok* p_ok);
 
+/* capabilities (OR-3) */
+
+// the granted set (a subset of what the instance was born with: unknown
+// bits are never invented). the families: OK_CAP_NATIVE_LOAD (dlopen
+// natives, import + force-load), OK_CAP_NATIVE_BUILD (declared build
+// commands, the OR-4 half), OK_CAP_HOST (fs/env/clock stdlib as it lands).
+// see ok_specs.h for the birth mask.
+uint32_t ok_caps_get(ok* p_ok);
+
+// the ratchet's only write: DROP. a grant is impossible after ok_create by
+// construction, nothing can clear these bits: not a native, not a script,
+// not a manifest. that one-way door is the security property.
+void ok_caps_drop(ok* p_ok, uint32_t p_caps);
+
+/* modules (embedder side, OR-3) */
+
+// the loaded-module registry, load order. file modules key by their resolved
+// absolute path, std modules by "std/<stem>", force-loaded natives by their
+// declared name (ok_module.h's lane). the read side the CLI and embedders
+// harvest exports through: a module value's pub exports, declaration order.
+uint32_t ok_module_count(ok* p_ok);
+// NULL (or a null value) when the index is out of range.
+const char* ok_module_path(ok* p_ok, uint32_t p_index);
+ok_value ok_module_value(ok* p_ok, uint32_t p_index);
+// a loaded module's value by registry key, or a null value when not loaded.
+ok_value ok_module_find(ok* p_ok, const char* p_canonical);
+
+// module <p_index>'s own imports (the graph edges): deduped registry keys,
+// load order. 0 (or NULL) when out of range.
+uint32_t ok_module_import_count(ok* p_ok, uint32_t p_index);
+const char* ok_module_import_path(ok* p_ok, uint32_t p_index, uint32_t p_import);
+
+// one module value's pub exports, declaration order. p_module is any module
+// namespace (an ok_module_value/ok_module_find result, or a module binding
+// handed back by script through a native). a non-module answers 0/NULL/null.
+uint32_t ok_module_export_count(ok* p_ok, ok_value p_module);
+const char* ok_module_export_name(ok* p_ok, ok_value p_module, uint32_t p_index);
+ok_value ok_module_export_get(ok* p_ok, ok_value p_module, uint32_t p_index);
+
 /* output */
 
 // print statements route through p_cb when set. the default (NULL) keeps the

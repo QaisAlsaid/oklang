@@ -1,0 +1,10 @@
+// pub re-export pins: a module may re-export imported members and modules
+import "./rexport.ok";
+
+print rexport.member; // expect: 21
+print rexport.whole.val; // expect: 21
+print rexport.whole.hi(); // expect: re-hi
+
+// from-import the re-exports like any pub surface
+from "./rexport.ok" import member;
+print member; // expect: 21

@@ -12,9 +12,11 @@
 // is under test.
 
 #include <ok/ok.h>
+#include <ok/ok_module.h>
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int g_checks = 0;
@@ -132,6 +134,50 @@ static bool run(ok* p_ok, const char* p_code) {
   log_reset();
   ok_source source = {p_code, "capi.ok"};
   return ok_run(p_ok, source) == OK;
+}
+
+// ---------- the memory-backed loader (OR-3's embedder example) ----------
+// a virtual import graph served from static storage: zero filesystem. the
+// read buffers come from the instance's own (default, libc) allocators,
+// which is the documented loader contract: the instance frees them with its
+// release call after each tree is consumed.
+typedef struct {
+  const char* path;
+  const char* code;
+} mem_source;
+
+static const mem_source g_mem_sources[] = {
+    {"mem:/main.ok",
+     "import \"./answer.ok\";\n"
+     "import \"std/array\";\n"
+     "glob let the_answer = answer.value;\n"
+     "glob let deep_answer = answer.deep_value;\n"
+     "glob let array_len = std.array.len([1, 2, 3]);\n"},
+    {"mem:/answer.ok",
+     "import \"./deep.ok\";\n"
+     "pub let value = 6;\n"
+     "pub let deep_value = deep.val;\n"
+     "pub fu hi() { return \"mem-hi\"; }\n"},
+    {"mem:/deep.ok",
+     "pub let val = 7;\n"},
+};
+
+static bool mem_read_source(void* p_ctx, const char* p_path, ok_source* p_out) {
+  (void)p_ctx;
+  for (uint32_t i = 0; i < (uint32_t)(sizeof(g_mem_sources) / sizeof(g_mem_sources[0])); ++i) {
+    if (strcmp(g_mem_sources[i].path, p_path) == 0) {
+      const size_t n = strlen(g_mem_sources[i].code);
+      char* copy = (char*)malloc(n + 1);
+      if (copy == NULL) {
+        return false;
+      }
+      memcpy(copy, g_mem_sources[i].code, n + 1);
+      p_out->code = copy;
+      p_out->path = p_path;
+      return true;
+    }
+  }
+  return false;
 }
 
 int main(void) {
@@ -434,6 +480,137 @@ int main(void) {
   // ---------- 10. status of a non-coro, teardown ----------
   CHECK(ok_coro_status(p_ok, ok_value_number(1)) == UINT32_MAX);
   CHECK(!ok_value_is_coro(ok_value_string(p_ok, sv("x"))));
+
+  // ---------- 11. the module registry read side (OR-3) ----------
+  // its own instance: the lanes above never touch the module world, and this
+  // section must not see their globals. the std lane needs no filesystem.
+  {
+    ok_specs mspecs = {};
+    ok* m_ok = ok_create(mspecs);
+    CHECK(m_ok != NULL);
+    ok_set_print(m_ok, log_print, NULL);
+    CHECK(run(m_ok,
+              "import \"std/array\";\n"
+              "import \"std/map\";\n"
+              "glob let total = std.array.len([7, 8]);\n"
+              "glob let keys = std.map.len({\"a\": 1, \"b\": 2});\n"));
+    ok_value total = ok_value_null();
+    CHECK(ok_global_get(m_ok, sv("total"), &total));
+    CHECK(ok_value_is_number(total) && ok_value_as_number(total) == 2.0);
+    ok_value keys = ok_value_null();
+    CHECK(ok_global_get(m_ok, sv("keys"), &keys));
+    CHECK(ok_value_is_number(keys) && ok_value_as_number(keys) == 2.0);
+    CHECK(ok_module_count(m_ok) == 2);
+    // load order: array first, map second; out of range answers NULL
+    CHECK(strcmp(ok_module_path(m_ok, 0), "std/array") == 0);
+    CHECK(strcmp(ok_module_path(m_ok, 1), "std/map") == 0);
+    CHECK(ok_module_path(m_ok, 2) == NULL);
+    CHECK(ok_value_is_null(ok_module_value(m_ok, 2)));
+    ok_value arr = ok_module_find(m_ok, "std/array");
+    CHECK(!ok_value_is_null(arr));
+    CHECK(ok_value_is_null(ok_module_find(m_ok, "std/nope")));
+    // the export enumeration, declaration order
+    CHECK(ok_module_export_count(m_ok, arr) == 4);
+    CHECK(strcmp(ok_module_export_name(m_ok, arr, 0), "len") == 0);
+    CHECK(strcmp(ok_module_export_name(m_ok, arr, 1), "push") == 0);
+    CHECK(strcmp(ok_module_export_name(m_ok, arr, 2), "pop") == 0);
+    CHECK(strcmp(ok_module_export_name(m_ok, arr, 3), "remove") == 0);
+    CHECK(ok_module_export_name(m_ok, arr, 4) == NULL);
+    CHECK(!ok_value_is_null(ok_module_export_get(m_ok, arr, 0)));
+    CHECK(ok_value_is_null(ok_module_export_get(m_ok, arr, 4)));
+    // std modules import nothing
+    CHECK(ok_module_import_count(m_ok, 0) == 0);
+    CHECK(ok_module_import_path(m_ok, 0, 0) == NULL);
+    // a non-module value answers the empty enumeration
+    CHECK(ok_module_export_count(m_ok, ok_value_number(3)) == 0);
+    CHECK(ok_module_export_name(m_ok, ok_value_number(3), 0) == NULL);
+    CHECK(ok_value_is_null(ok_module_export_get(m_ok, ok_value_number(3), 0)));
+    // the module value is an ordinary value: glob it from script, read the
+    // same namespace back through the global
+    CHECK(run(m_ok, "import \"std/array\";\nglob let g = std.array;\n"));
+    CHECK(ok_module_count(m_ok) == 2); // cached: the second run loads nothing
+    ok_value g = ok_value_null();
+    CHECK(ok_global_get(m_ok, sv("g"), &g));
+    CHECK(ok_module_export_count(m_ok, g) == 4);
+    ok_free(m_ok);
+  }
+
+  // ---------- 12. the embedder loader + the capability ratchet (OR-3) ----------
+  {
+    ok_specs lspecs = {};
+    ok* l_ok = ok_create(lspecs);
+    CHECK(l_ok != NULL);
+
+    ok_loader loader;
+    loader.read_source = mem_read_source;
+    loader.load_native = NULL; // natives are denied through this loader, by construction
+    loader.p_ctx = NULL;
+    ok_set_loader(l_ok, loader);
+
+    // the whole graph runs from memory: the virtual entry, a two-deep chain,
+    // and the std registry (which never needs the loader)
+    ok_source entry = {g_mem_sources[0].code, g_mem_sources[0].path};
+    CHECK(ok_run(l_ok, entry) == OK);
+    ok_value answer = ok_value_null();
+    CHECK(ok_global_get(l_ok, sv("the_answer"), &answer));
+    CHECK(ok_value_is_number(answer) && ok_value_as_number(answer) == 6.0);
+    ok_value deep_answer = ok_value_null();
+    CHECK(ok_global_get(l_ok, sv("deep_answer"), &deep_answer));
+    CHECK(ok_value_is_number(deep_answer) && ok_value_as_number(deep_answer) == 7.0);
+    ok_value array_len = ok_value_null();
+    CHECK(ok_global_get(l_ok, sv("array_len"), &array_len));
+    CHECK(ok_value_is_number(array_len) && ok_value_as_number(array_len) == 3.0);
+
+    // the registry read side over virtual keys: realpath refuses them, the
+    // resolved path itself is the key (the documented fallback)
+    CHECK(ok_module_count(l_ok) == 3); // answer, deep, std/array (load order)
+    CHECK(strcmp(ok_module_path(l_ok, 0), "mem:/deep.ok") == 0);
+    CHECK(strcmp(ok_module_path(l_ok, 1), "mem:/answer.ok") == 0);
+    CHECK(strcmp(ok_module_path(l_ok, 2), "std/array") == 0);
+    ok_value answer_module = ok_module_find(l_ok, "mem:/answer.ok");
+    CHECK(!ok_value_is_null(answer_module));
+    CHECK(ok_module_export_count(l_ok, answer_module) == 3);
+    CHECK(strcmp(ok_module_export_name(l_ok, answer_module, 0), "value") == 0);
+    CHECK(strcmp(ok_module_export_name(l_ok, answer_module, 2), "hi") == 0);
+    // the graph edges: the answer module imports deep (the entry's own
+    // edges, answer and std/array, belong to the entry TU, which is not a
+    // module and keeps no record)
+    CHECK(ok_module_import_count(l_ok, 1) == 1);
+    CHECK(strcmp(ok_module_import_path(l_ok, 1, 0), "mem:/deep.ok") == 0);
+    CHECK(ok_module_import_path(l_ok, 1, 1) == NULL);
+
+    // a native import through this loader is refused (no native lane), the
+    // 404 teaches
+    CHECK(!run(l_ok, "import \"./nope.so\";\n"));
+
+    // the ratchet: read, drop, read again. a grant is impossible.
+    CHECK(ok_caps_get(l_ok) == OK_CAP_ALL);
+    ok_caps_drop(l_ok, OK_CAP_NATIVE_LOAD | OK_CAP_HOST);
+    CHECK(ok_caps_get(l_ok) == (OK_CAP_ALL & ~(OK_CAP_NATIVE_LOAD | OK_CAP_HOST)));
+    ok_caps_drop(l_ok, 0); // a no-op drop changes nothing
+    CHECK(ok_caps_get(l_ok) == (OK_CAP_ALL & ~(OK_CAP_NATIVE_LOAD | OK_CAP_HOST)));
+
+    ok_free(l_ok);
+
+    // a locked instance is pure compute: every capability refused at birth,
+    // the language itself runs
+    ok_specs locked_specs = {};
+    locked_specs.caps_dropped = OK_CAP_ALL;
+    ok* s_ok = ok_create(locked_specs);
+    CHECK(s_ok != NULL);
+    CHECK(ok_caps_get(s_ok) == 0);
+    CHECK(run(s_ok, "glob let locked_sum = 1 + 1;\n"));
+    ok_value locked_sum = ok_value_null();
+    CHECK(ok_global_get(s_ok, sv("locked_sum"), &locked_sum));
+    CHECK(ok_value_is_number(locked_sum) && ok_value_as_number(locked_sum) == 2.0);
+    // the std registry is built-in pure compute: a locked instance still
+    // imports it (the gates are native load, native build, and host surface)
+    CHECK(run(s_ok, "import \"std/array\";\nglob let locked_len = std.array.len([4, 5]);\n"));
+    ok_value locked_len = ok_value_null();
+    CHECK(ok_global_get(s_ok, sv("locked_len"), &locked_len));
+    CHECK(ok_value_is_number(locked_len) && ok_value_as_number(locked_len) == 2.0);
+    ok_free(s_ok);
+  }
 
   ok_free(p_ok);
 

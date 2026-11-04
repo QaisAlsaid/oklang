@@ -1,0 +1,21 @@
+// glob of module values, every shape (Q's ruling round: nothing is hidden
+// from the surface, the module value is just a value)
+import "./glib.ok";
+import "./pkg/inner.ok";
+
+// the module itself, under a new name
+glob let g = glib;
+print g.val; // expect: 11
+print g.hi(); // expect: surface-hi
+
+// the module itself, under the SAME name (global and local coexist)
+glob let glib_again = glib;
+print glib_again.val; // expect: 11
+
+// a multi-segment root namespace, globbed whole
+glob let gp = pkg;
+print gp.inner.val; // expect: 7
+
+// globbed from inside a function, the global survives scopes
+fu later() { return g.hi(); }
+print later(); // expect: surface-hi

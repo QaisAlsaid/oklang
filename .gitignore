@@ -3,3 +3,6 @@ build/
 build*/
 out.log
 err.log
+
+# OR-3 native fixture artifacts: build.sh builds them, never ship them
+tests/e2e/tests/modules/*/*.so

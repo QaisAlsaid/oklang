@@ -1,0 +1,2 @@
+pub let val = 21;
+pub fu hi() { return "re-hi"; }

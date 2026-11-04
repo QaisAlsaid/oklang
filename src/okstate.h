@@ -41,6 +41,11 @@ struct ok {
   ok_source source; // the CURRENT run's source (code borrowed for the run)
   allocators alloc; // gc-hooked wrapper
   ok_allocators raw_alloc;
+  // OR-3: the capability ratchet's state (granted = OK_CAP_ALL & ~caps_dropped,
+  // only ever shrinking after ok_create) and the resolved dylib table
+  // (ok_specs.dylib, else the platform wrapper, else NULL = no loading).
+  uint32_t caps_dropped;
+  const ok_dylib* dylib;
   bool dump_bytecode;
   bool dump_skip_run;
 };

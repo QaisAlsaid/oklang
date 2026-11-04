@@ -59,6 +59,8 @@ target_sources(ok PRIVATE
   src/okglobals_store.c
   src/oklexer.c
   src/okmm.c
+  src/okapi.c
+  src/okdylib.c
   src/okmodules.c
   src/okobject.c
   src/okobject_store.c
@@ -94,6 +96,11 @@ target_include_directories(ok PUBLIC
 )
 
 target_link_libraries(ok PUBLIC m)
+# OR-3: the dynamic-library wrapper links the platform loader. modern glibc
+# (2.34+) folds dl into libc, older libcs and friends need it explicit.
+if(UNIX)
+  target_link_libraries(ok PUBLIC ${CMAKE_DL_LIBS})
+endif()
 
 target_compile_options(ok PRIVATE
   -Wall

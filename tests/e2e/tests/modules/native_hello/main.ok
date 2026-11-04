@@ -1,0 +1,12 @@
+// the OR-3 acceptance lane: a native module end to end, the sample shape
+import "./hello";
+from "./hello" import greet, magic;
+
+print hello.greet("oklang"); // expect: hello, oklang!
+print greet("world"); // expect: hello, world!
+print magic; // expect: 42
+print hello.magic; // expect: 42
+
+let g = hello.Greeter();
+print g.greet("class"); // expect: hi, class!
+print hello.Greeter().greet("again"); // expect: hi, again!

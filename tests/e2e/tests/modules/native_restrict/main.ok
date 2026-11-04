@@ -1,0 +1,5 @@
+// the sandbox refusal: --restrict drops OK_CAP_NATIVE_LOAD, the native
+// candidate is never even probed, the 404 teaches why.
+// okflags: --restrict
+import "../native_hello/hello";
+// expect error: OK_CAP_NATIVE_LOAD is dropped in this ok instance.

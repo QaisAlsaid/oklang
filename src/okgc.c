@@ -294,6 +294,8 @@ static bool mark_value_array(gc* p_gc, value_array* p_array) {
 // OR-1: the module registry's namespaces and the pending-roots window (the
 // roots a TU built but its constants have not adopted yet). the canonical
 // path strings and the namespace classes ride through the instances.
+// OR-3: the native mount window's staged values ride here too (between
+// api->module_export and the namespace freeze).
 static bool mark_modules(gc* p_gc) {
   module_system* modules = p_gc->modules;
   for (uint32_t i = 0; i < modules->loaded.count; ++i) {
@@ -301,7 +303,13 @@ static bool mark_modules(gc* p_gc) {
       return false;
     }
   }
-  return mark_value_array(p_gc, &modules->pending_roots);
+  if (!mark_value_array(p_gc, &modules->pending_roots)) {
+    return false;
+  }
+  if (modules->mounting != NULL && !mark_value_array(p_gc, &modules->mounting->values)) {
+    return false;
+  }
+  return true;
 }
 
 static bool mark(gc* p_gc) {

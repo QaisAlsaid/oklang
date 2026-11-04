@@ -1,0 +1,6 @@
+// `ok run --native forced.so app.ok` (M3's last resort): the module is
+// registered under its declared name before the run, bare imports resolve.
+// okflags: --native forced.so
+import "forced";
+
+print forced.greet("hi"); // expect: forced says hi

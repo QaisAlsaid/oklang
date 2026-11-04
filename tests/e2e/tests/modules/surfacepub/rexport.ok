@@ -1,0 +1,6 @@
+// pin: pub re-exports, both shapes. the same NAME would be a duplicate
+// binding of the import (M13's ordinary rule), another name is free.
+import "./rexport_inner.ok" as inner;
+
+pub let member = inner.val;
+pub let whole = inner;

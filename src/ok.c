@@ -3,6 +3,7 @@
 
 #define OK_GC_EXPOSE
 #include "ok/ok.h"
+#include "ok/ok_module.h"
 #include "okcompiler.h"
 #include "okdebug.h"
 #include "okgc.h"
@@ -431,6 +432,12 @@ ok* ok_create(ok_specs p_specs) {
   okay->alloc = create_allocators(&okay->raw_alloc);
   okay->dump_bytecode = false;
   okay->dump_skip_run = false;
+  // OR-3: the capability ratchet's birth state and the resolved dylib
+  // table (the host's hooks, else the platform wrapper, else NULL: the
+  // no-loading stance). set before anything can allocate: the loader and
+  // the caps gates read them.
+  okay->caps_dropped = p_specs.caps_dropped;
+  okay->dylib = p_specs.dylib != NULL ? p_specs.dylib : ok_dylib_platform();
 
   object_store_init(&okay->objects_store, &okay->alloc);
 
@@ -539,10 +546,21 @@ ok_result ok_run(ok* p_ok, ok_source p_source) {
       // adopted by its compiled constants, and its bindings are spent.
       p_ok->modules.pending_roots.count = 0;
       for (uint32_t i = 0; i < p_ok->modules.name_arena_count; ++i) {
-        free(p_ok->modules.name_arena[i]);
+        p_ok->raw_alloc.release(p_ok->modules.name_arena[i]);
       }
       p_ok->modules.name_arena_count = 0;
-      result = ok_modules_prepare(&p_ok->modules, parsed.root, &p_ok->source, &bindings);
+      char** entry_imports = NULL;
+      uint32_t entry_imports_count = 0;
+      result = ok_modules_prepare(&p_ok->modules, parsed.root, &p_ok->source, &bindings, &entry_imports,
+                                  &entry_imports_count);
+      // the entry TU is not a module: its edge list is information for the
+      // host (the registry reads it per module), not state we keep.
+      for (uint32_t i = 0; i < entry_imports_count; ++i) {
+        p_ok->raw_alloc.release(entry_imports[i]);
+      }
+      if (entry_imports != NULL) {
+        p_ok->raw_alloc.release(entry_imports);
+      }
     }
   }
   if (result == OK) {
@@ -556,6 +574,129 @@ ok_result ok_run(ok* p_ok, ok_source p_source) {
 
 void ok_retain_source(ok* p_ok, bool p_retain) {
   p_ok->vm.retain_source = p_retain;
+}
+
+/* capabilities (OR-3) */
+
+// the ratchet's read side: the granted set, always a subset of what the
+// instance was born with. unknown bits are not invented.
+uint32_t ok_caps_get(ok* p_ok) {
+  return OK_CAP_ALL & ~p_ok->caps_dropped;
+}
+
+// the ratchet's only write: DROP. grants are impossible after ok_create by
+// construction (nothing can clear these bits), which is the security
+// property: not a native, not a script, not a manifest can escalate.
+void ok_caps_drop(ok* p_ok, uint32_t p_caps) {
+  p_ok->caps_dropped |= p_caps;
+}
+
+/* the loader (OR-3, the public ok_module.h door) */
+
+// install the loader before ok_run. replaces the default (fs reads + the
+// dylib native lane) wholesale: a host that only wants custom sources but
+// keeps the native lane wraps ok_load_native_default (ok_module.h).
+void ok_set_loader(ok* p_ok, ok_loader p_loader) {
+  ok_modules_set_loader(&p_ok->modules, p_loader);
+}
+
+/* modules (embedder side, OR-3) */
+
+// the registry read side: what got loaded, in load order. file modules key
+// by their canonical absolute path, std modules by "std/<stem>", force-
+// loaded natives by their declared name (the ok_module.h lane). this is the
+// surface the CLI (and OR-4's manifest harvest) reads a module's exports
+// through, and the embedder's window into what a run pulled in.
+uint32_t ok_module_count(ok* p_ok) {
+  return p_ok->modules.loaded.count;
+}
+
+const char* ok_module_path(ok* p_ok, uint32_t p_index) {
+  if (p_index >= p_ok->modules.loaded.count) {
+    return NULL;
+  }
+  return p_ok->modules.loaded.data[p_index].canonical;
+}
+
+ok_value ok_module_value(ok* p_ok, uint32_t p_index) {
+  if (p_index >= p_ok->modules.loaded.count) {
+    return ok_value_null();
+  }
+  return p_ok->modules.loaded.data[p_index].namespace;
+}
+
+ok_value ok_module_find(ok* p_ok, const char* p_canonical) {
+  if (p_canonical == NULL) {
+    return ok_value_null();
+  }
+  for (uint32_t i = 0; i < p_ok->modules.loaded.count; ++i) {
+    if (strcmp(p_ok->modules.loaded.data[i].canonical, p_canonical) == 0) {
+      return p_ok->modules.loaded.data[i].namespace;
+    }
+  }
+  return ok_value_null();
+}
+
+uint32_t ok_module_import_count(ok* p_ok, uint32_t p_index) {
+  if (p_index >= p_ok->modules.loaded.count) {
+    return 0;
+  }
+  return p_ok->modules.loaded.data[p_index].imports_count;
+}
+
+const char* ok_module_import_path(ok* p_ok, uint32_t p_index, uint32_t p_import) {
+  if (p_index >= p_ok->modules.loaded.count || p_import >= p_ok->modules.loaded.data[p_index].imports_count) {
+    return NULL;
+  }
+  return p_ok->modules.loaded.data[p_index].imports[p_import];
+}
+
+// a module namespace's class, or NULL for anything else (the read API's
+// gate: only sealed namespace instances answer the export enumeration).
+static const object_class* module_namespace_class_of(ok_value p_module) {
+  if (!IS_VALUE_INSTANCE(p_module)) {
+    return NULL;
+  }
+  const object_class* klass = VALUE_AS_INSTANCE(p_module)->klass;
+  if (!klass->module_namespace) {
+    return NULL;
+  }
+  return klass;
+}
+
+// one module's pub exports, declaration order. p_module is any module value
+// (an ok_module_value/ok_module_find result, or a module binding passed back
+// by script through a native). 0 for anything that is not a module namespace.
+uint32_t ok_module_export_count(ok* p_ok, ok_value p_module) {
+  (void)p_ok;
+  const object_class* klass = module_namespace_class_of(p_module);
+  if (klass == NULL) {
+    return 0;
+  }
+  return klass->own_names.count;
+}
+
+const char* ok_module_export_name(ok* p_ok, ok_value p_module, uint32_t p_index) {
+  (void)p_ok;
+  const object_class* klass = module_namespace_class_of(p_module);
+  if (klass == NULL || p_index >= klass->own_names.count) {
+    return NULL;
+  }
+  return klass->own_names.data[p_index]->string.chars;
+}
+
+ok_value ok_module_export_get(ok* p_ok, ok_value p_module, uint32_t p_index) {
+  const object_class* klass = module_namespace_class_of(p_module);
+  if (klass == NULL || p_index >= klass->own_names.count) {
+    return ok_value_null();
+  }
+  object_instance* instance = VALUE_AS_INSTANCE(p_module);
+  const object_string* name = klass->own_names.data[p_index];
+  const field_entry* field = object_class_find_field(klass, name);
+  if (field == NULL) {
+    return ok_value_null(); // unreachable on a frozen namespace
+  }
+  return instance->fields[field->slot];
 }
 
 /* classes (embedder side) */

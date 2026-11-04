@@ -1,0 +1,2 @@
+import "./badname";
+// expect error: the shared object declares the name 'impostor', the import stem is 'badname'.

@@ -19,8 +19,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "ok/ok_fwd.h"
 #include "ok/ok.h"
+#include "ok/ok_module.h"
 #include "ok/ok_source.h"
 #include "ok/ok_string.h"
 
@@ -35,24 +35,44 @@
 // blowing it (the draft's depth guard - there was no existing one to share).
 #define OK_MODULES_MAX_DEPTH 128
 
-typedef struct ok_loader {
-  // reads the source at an absolute path into *p_out (code: a malloc'd,
-  // NUL-terminated buffer the CALLER frees; path: the canonical path).
-  // false = unreadable (the driver turns it into the 404's IO note).
-  bool (*read_source)(void* p_ctx, const char* p_path, ok_source* p_out);
-  // load_native arrives with OR-3 (sandbox + the ok_api vtable). NULL today.
-  void* p_ctx;
-} ok_loader;
+// the loader vtable is the PUBLIC one (ok_module.h, OR-3): read_source for
+// ok modules, load_native for the native lane. the CLI default (installed
+// by init) is fs reads + the dylib-based native loader; an embedder
+// replaces the whole table through ok_set_loader.
 
 // one loaded module. the registry is a plain array probed by strcmp on the
 // canonical path - module counts are tens, not thousands, and the load path
 // is not hot; the okmap upgrade can come when a profile asks for it.
 typedef struct {
-  char* canonical;             // the resolved absolute path (owned)
+  char* canonical;             // the registry key: resolved absolute path, "std/<stem>", or a
+                               // force-loaded native's declared name (owned, user allocators)
   object_string* name;         // the canonical, interned (the namespace class's name)
   object_class* namespace_class;
   value namespace;             // the sealed namespace instance
+  // the module's own imports, the graph edge list (deduped canonical paths
+  // in load order). owned, user allocators. the read side is
+  // ok_module_import_count / ok_module_import_path (ok.h).
+  char** imports;
+  uint32_t imports_count;
+  // OR-3: a native module. the descriptor is borrowed (the dylib handle
+  // keeps it alive until ok_free's close sweep); on_unload fires there.
+  bool is_native;
+  const ok_native_module* descriptor;
 } ok_module_record;
+
+// the mount window (OR-3): a native module's non-function exports, staged
+// between mount_classes' start and the namespace freeze. api->module_export
+// (okapi.c) appends here; the loader turns the list into namespace fields.
+// the values ride UNROOTED between export and freeze, so mark_modules walks
+// the window and every append is a gc-safe moment (the guard stack is not
+// deep enough for a mount's worth of values).
+typedef struct {
+  char** names;                // owned copies, user allocators
+  value_array values;
+  uint32_t count;
+  uint32_t capacity;
+  const char* failure;         // NULL, or the reason a mount export was refused
+} native_mount;
 
 ARRAY_DECLARE_DEFAULT(ok_module_records, ok_module_record)
 ARRAY_DECLARE_DEFAULT(ok_import_binding_array, ok_import_binding)
@@ -74,7 +94,16 @@ typedef struct module_system {
   char** name_arena;
   uint32_t name_arena_count;
   uint32_t name_arena_capacity;
-  ok_loader loader;            // the host's loader (init installs the fs default)
+  ok_loader loader;            // the host's loader (init installs the fs + dylib default)
+  // OR-3: the active native mount window (NULL outside mount_classes).
+  // api->module_export appends here; mark_modules walks it.
+  native_mount* mounting;
+  // OR-3: handles opened by the DEFAULT native lane (the dylib table lives
+  // in ok->dylib). closed at ok_free after the on_unload sweep. host
+  // load_native implementations own their own handles.
+  void** native_handles;
+  uint32_t native_handles_count;
+  uint32_t native_handles_capacity;
 } module_system;
 
 void ok_modules_init(module_system* p_modules, ok* p_ok, allocators* p_alloc);
@@ -92,14 +121,35 @@ void ok_modules_set_loader(module_system* p_modules, ok_loader p_loader);
 // same-root imports merge), and fills the ordered binding table the compiler
 // consumes. p_bindings is caller-initialized and caller-deinitialized; the
 // values inside are borrowed (the registry and pending_roots root them).
+// p_out_imports/p_out_imports_count receive the TU's own resolved imports
+// (deduped canonical paths, load order, user-allocator owned): the caller
+// attaches them to the module's registry record, or frees them (the entry
+// TU is not a module). NULL/0 on a failed prepare.
 ok_result ok_modules_prepare(module_system* p_modules,
                              ast_root* p_root,
                              const ok_source* p_source,
-                             ok_import_binding_array* p_bindings);
+                             ok_import_binding_array* p_bindings,
+                             char*** p_out_imports,
+                             uint32_t* p_out_imports_count);
 
-// the gc's walk (called from okgc.c's mark): the registry's namespaces and
-// the pending-roots window. canonical/name/class strings ride the class
-// (reachable through the namespace instance), so only the values need walks.
+// okapi.c: the shared static ok_api table (OR-3). stateless trampolines
+// over the ok.h surface, one table per process, every ok instance.
+const ok_api* ok_api_table(void);
+
+// the gc's walk (called from okgc.c's mark): the registry's namespaces, the
+// pending-roots window, and the native mount window's staged values.
+// canonical/name/class strings ride the class (reachable through the
+// namespace instance), so only the values need walks.
 bool ok_modules_mark(gc* p_gc, module_system* p_modules);
+
+// OR-3: the dylib-based default native lane's vtable thunk (okdylib.c).
+// p_ctx is the module system (the default loader pair shares one ctx).
+bool ok_load_native_thunk(void* p_ctx,
+                          const char* p_path,
+                          const ok_api* p_api,
+                          const ok_native_module** p_out,
+                          void** p_handle,
+                          char* p_err,
+                          size_t p_err_capacity);
 
 #endif // OK_MODULES_H

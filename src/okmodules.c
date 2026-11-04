@@ -31,23 +31,71 @@
 #include "okvm.h"
 
 // the arrays okmodules.h declares (this file is their one definition site).
-// a registry record owns its canonical path (raw strdup); the deinit hook is
-// the array macro's per-element call.
+// a registry record owns its canonical path and its import list (raw copies
+// through the user's allocators); the deinit hook is the array macro's
+// per-element call.
 static void ok_module_record_deinit(ok_module_record* p_record, allocators* p_alloc) {
-  (void)p_alloc;
-  free(p_record->canonical);
+  for (uint32_t i = 0; i < p_record->imports_count; ++i) {
+    p_alloc->release(p_alloc, p_record->imports[i]);
+  }
+  if (p_record->imports != NULL) {
+    p_alloc->release(p_alloc, p_record->imports);
+  }
+  p_record->imports = NULL;
+  p_record->imports_count = 0;
+  p_alloc->release(p_alloc, p_record->canonical);
   p_record->canonical = NULL;
 }
 
 ARRAY_DEFINE_DEFAULT(ok_module_records, ok_module_record, ok_module_record_deinit)
 ARRAY_DEFINE_DEFAULT(ok_import_binding_array, ok_import_binding, ARRAY_DEFAULT_TYPE_DEINIT)
 
+// ---------------------------------------------------------------- the user's allocators
+
+// the module system's plumbing is raw bytes (paths, arenas, traces,
+// loader buffers), invisible to the gc, so it rides the USER's raw table
+// straight, never libc: a host that routes allocations through its own
+// allocator sees every byte this file touches. value-bearing arrays keep
+// the gc-hooked wrapper (ok->alloc), same as the rest of the library.
+static void* mod_alloc(const ok_allocators* p_a, const size_t p_size) {
+  return p_a->allocate(p_size);
+}
+
+static void* mod_realloc(const ok_allocators* p_a, void* p_ptr, const size_t p_size) {
+  return p_a->reallocate(p_ptr, p_size);
+}
+
+static void mod_free(const ok_allocators* p_a, void* p_ptr) {
+  p_a->release(p_ptr);
+}
+
+static char* mod_strdup(const ok_allocators* p_a, const char* p_text) {
+  const size_t length = strlen(p_text) + 1;
+  char* out = (char*)mod_alloc(p_a, length);
+  if (out != NULL) {
+    memcpy(out, p_text, length);
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------- the fs loader
 
 // the CLI default. an embedder replaces it through ok_modules_set_loader
 // (OR-3 exposes that door publicly); the language never guesses a filesystem.
+// the read buffer comes from the instance's own user allocators: the loader
+// contract (okmodules.h) is "a buffer the instance may free with its release
+// allocator", and the default loader honors it by construction.
 static bool fs_read_source(void* p_ctx, const char* p_path, ok_source* p_out) {
-  (void)p_ctx;
+  module_system* modules = (module_system*)p_ctx;
+  const ok_allocators* a = &modules->ok->raw_alloc;
+  // a regular file only: fopen alone happily "opens" a directory on linux,
+  // and ftell then answers a garbage-huge size (the allocation blast asan
+  // caught). the probe contract needs the read to fail for anything that is
+  // not a file.
+  struct stat info;
+  if (stat(p_path, &info) != 0 || !S_ISREG(info.st_mode)) {
+    return false;
+  }
   FILE* file = fopen(p_path, "rb");
   if (file == NULL) {
     return false;
@@ -58,11 +106,12 @@ static bool fs_read_source(void* p_ctx, const char* p_path, ok_source* p_out) {
   }
   const long size = ftell(file);
   rewind(file);
-  if (size < 0) {
+  if (size < 0 || (unsigned long)size > (1u << 30)) {
+    // unreadable or absurd: refuse rather than trust ftell on exotic nodes
     fclose(file);
     return false;
   }
-  char* buff = (char*)malloc((size_t)size + 1);
+  char* buff = (char*)mod_alloc(a, (size_t)size + 1);
   if (buff == NULL) {
     fclose(file);
     return false;
@@ -70,7 +119,7 @@ static bool fs_read_source(void* p_ctx, const char* p_path, ok_source* p_out) {
   const size_t read = fread(buff, sizeof(char), (size_t)size, file);
   fclose(file);
   if (read != (size_t)size) {
-    free(buff);
+    mod_free(a, buff);
     return false;
   }
   buff[read] = '\0';
@@ -108,8 +157,8 @@ static void module_note(const ok_source* p_source, const token* p_site, const ch
 
 // ---------------------------------------------------------------- path plumbing
 
-// a growable list of malloc'd strings (the 404's trace). raw malloc: these
-// live only inside one resolve call.
+// a growable list of copied strings (the 404's trace). raw user-allocator
+// copies: these live only inside one resolve call.
 typedef struct {
   char** items;
   uint32_t count;
@@ -122,27 +171,29 @@ static void str_list_init(str_list* p_list) {
   p_list->capacity = 0;
 }
 
-static void str_list_deinit(str_list* p_list) {
+static void str_list_deinit(str_list* p_list, const ok_allocators* p_a) {
   for (uint32_t i = 0; i < p_list->count; ++i) {
-    free(p_list->items[i]);
+    mod_free(p_a, p_list->items[i]);
   }
-  free(p_list->items);
+  if (p_list->items != NULL) {
+    mod_free(p_a, p_list->items);
+  }
   p_list->items = NULL;
   p_list->count = 0;
   p_list->capacity = 0;
 }
 
-static bool str_list_append(str_list* p_list, const char* p_text) {
+static bool str_list_append(str_list* p_list, const ok_allocators* p_a, const char* p_text) {
   if (p_list->count == p_list->capacity) {
     const uint32_t grown = p_list->capacity == 0 ? 8 : p_list->capacity * 2;
-    char** items = (char**)realloc(p_list->items, sizeof(char*) * grown);
+    char** items = (char**)mod_realloc(p_a, p_list->items, sizeof(char*) * grown);
     if (items == NULL) {
       return false;
     }
     p_list->items = items;
     p_list->capacity = grown;
   }
-  char* copy = strdup(p_text);
+  char* copy = mod_strdup(p_a, p_text);
   if (copy == NULL) {
     return false;
   }
@@ -150,31 +201,85 @@ static bool str_list_append(str_list* p_list, const char* p_text) {
   return true;
 }
 
-// a module source is a regular file: fopen alone happily "opens" a directory,
-// which would let the ladder bind a directory as a module and die at the read.
-static bool file_readable(const char* p_path) {
-  struct stat info;
-  if (stat(p_path, &info) != 0) {
-    return false;
-  }
-  if (!S_ISREG(info.st_mode)) {
-    return false;
-  }
-  FILE* file = fopen(p_path, "rb");
-  if (file == NULL) {
-    return false;
-  }
-  fclose(file);
-  return true;
+// does the text end with the given suffix?
+static bool ends_with(const char* p_text, const char* p_suffix) {
+  const size_t length = strlen(p_text);
+  const size_t suffix = strlen(p_suffix);
+  return length >= suffix && memcmp(p_text + length - suffix, p_suffix, suffix) == 0;
 }
+
+// one resolved import: everything load_module needs, nothing more. the
+// canonical is owned; the source's code is the loader's read (the driver
+// frees it with the user's release); natives carry no source, only the
+// loader's descriptor and handle.
+typedef struct {
+  char* canonical;
+  ok_source source;
+  bool is_native;
+  const ok_native_module* descriptor;
+  void* handle;
+} resolved_module;
+
+static void resolved_init(resolved_module* p_resolved) {
+  p_resolved->canonical = NULL;
+  p_resolved->source.code = NULL;
+  p_resolved->source.path = NULL;
+  p_resolved->is_native = false;
+  p_resolved->descriptor = NULL;
+  p_resolved->handle = NULL;
+}
+
+static void resolved_deinit(const ok_allocators* p_a, resolved_module* p_resolved) {
+  if (p_resolved->source.code != NULL) {
+    mod_free(p_a, (void*)p_resolved->source.code);
+  }
+  if (p_resolved->canonical != NULL) {
+    mod_free(p_a, p_resolved->canonical);
+  }
+  resolved_init(p_resolved);
+}
+
+// consume the resolved's read buffer (the loader's allocation): the one
+// free per exit, idempotent so the caller's resolved_deinit never doubles.
+static void resolved_consume_code(const ok_allocators* p_a, resolved_module* p_resolved) {
+  if (p_resolved->source.code != NULL) {
+    mod_free(p_a, (void*)p_resolved->source.code);
+    p_resolved->source.code = NULL;
+  }
+}
+
+// the registry's probe, needed by the ladder (defined in the registry
+// section below)
+static ok_module_record* registry_find(module_system* p_modules, const char* p_canonical);
+
+// canonicalize (symlinks resolved): the registry key, the class name, and
+// the stack-trace path all use this one spelling. realpath's own buffer is
+// libc's, so a hit is copied onto the user's allocators and the original
+// released: the registry only ever frees what it allocated. a realpath
+// refusal (exotic fs, or a memory-backed loader's virtual path) keeps the
+// found path itself as the key.
+static char* canonicalize_path(const ok_allocators* p_a, char* p_found) {
+  char* real = realpath(p_found, NULL);
+  if (real == NULL) {
+    return p_found;
+  }
+  char* owned = mod_strdup(p_a, real);
+  free(real);
+  mod_free(p_a, p_found);
+  return owned; // NULL only on OOM
+}
+
+// the module source probe is the loader's read: the library never stats
+// or opens files itself (M14), and a memory-backed loader serves virtual
+// paths through the same door. a failed read is a plain miss.
 
 // lexical join + normalize: dir's segments, then rel's, with '.' skipped and
 // '..' popping. rel never starts with '/' (the parser rejects absolute
-// paths). the result is malloc'd; NULL = OOM.
-static char* join_normalize(const char* p_dir, const ok_string_view p_rel) {
+// paths). the result rides the user's allocators; NULL = OOM.
+static char* join_normalize(const ok_allocators* p_a, const char* p_dir, const ok_string_view p_rel) {
   const size_t dir_length = strlen(p_dir);
   const uint64_t rel_length = ok_string_view_get_length(&p_rel);
-  char* out = (char*)malloc(dir_length + rel_length + 4);
+  char* out = (char*)mod_alloc(p_a, dir_length + rel_length + 4);
   if (out == NULL) {
     return NULL;
   }
@@ -219,49 +324,114 @@ static char* join_normalize(const char* p_dir, const ok_string_view p_rel) {
 }
 
 // the resolution ladder at one candidate location (M3/M6): the exact file,
-// then + ".ok", then + "/index.ok". a native candidate (.so today - the
-// platform table widens with OR-3) is detected but not loaded: natives land
-// with OR-3's sandboxed loader, and the error says so.
-static char* ladder_at(const char* p_base, str_list* p_tried, bool* p_native_found) {
+// then + ".ok", then + "/index.ok", each probed through the loader's read,
+// then the native candidate, probed through load_native. the
+// OK_CAP_NATIVE_LOAD gate applies: a refused capability skips the native
+// probe entirely. p_native_error carries the loader's message when a
+// native candidate EXISTS but is broken: that is a hard error, not a miss.
+static bool probe_ladder(module_system* p_modules,
+                         const char* p_base,
+                         str_list* p_tried,
+                         char* p_native_error,
+                         size_t p_native_error_capacity,
+                         resolved_module* p_out) {
+  const ok_allocators* a = &p_modules->ok->raw_alloc;
   static const char* const forms[] = {"", ".ok", "/index.ok"};
+  const char* ext = ok_dylib_extension();
+
   for (uint32_t f = 0; f < 3; ++f) {
     const size_t base_length = strlen(p_base);
-    char* candidate = (char*)malloc(base_length + strlen(forms[f]) + 1);
+    char* candidate = (char*)mod_alloc(a, base_length + strlen(forms[f]) + 1);
     if (candidate == NULL) {
-      return NULL;
+      return false;
     }
     memcpy(candidate, p_base, base_length);
     strcpy(candidate + base_length, forms[f]);
-    if (file_readable(candidate)) {
-      return candidate;
+    // a candidate named like a native is a native candidate, never an ok
+    // source: reading a shared object as code would parse garbage
+    if (ends_with(candidate, ext)) {
+      str_list_append(p_tried, a, candidate); // best effort: the trace wants it
+      mod_free(a, candidate);
+      continue;
     }
-    str_list_append(p_tried, candidate); // best effort: the trace wants it
-    free(candidate);
-  }
-  const size_t base_length = strlen(p_base);
-  char* native_candidate = (char*)malloc(base_length + 4);
-  if (native_candidate != NULL) {
-    memcpy(native_candidate, p_base, base_length);
-    strcpy(native_candidate + base_length, ".so");
-    if (file_readable(native_candidate)) {
-      *p_native_found = true;
+    if (p_modules->loader.read_source != NULL &&
+        p_modules->loader.read_source(p_modules->loader.p_ctx, candidate, &p_out->source)) {
+      p_out->canonical = canonicalize_path(a, candidate);
+      if (p_out->canonical == NULL) {
+        mod_free(a, (void*)p_out->source.code);
+        p_out->source.code = NULL;
+        return false;
+      }
+      p_out->source.path = p_out->canonical;
+      return true;
     }
-    free(native_candidate);
+    str_list_append(p_tried, a, candidate); // best effort: the trace wants it
+    mod_free(a, candidate);
   }
-  return NULL;
+
+  // the native lane (M6: natives are first-class at every step)
+  if ((p_modules->ok->caps_dropped & OK_CAP_NATIVE_LOAD) != 0 || p_modules->loader.load_native == NULL) {
+    return false;
+  }
+  char* candidate = NULL;
+  if (ends_with(p_base, ext)) {
+    candidate = mod_strdup(a, p_base); // the explicit spelling: import "./x.so"
+  } else {
+    const size_t base_length = strlen(p_base);
+    candidate = (char*)mod_alloc(a, base_length + strlen(ext) + 1);
+    if (candidate != NULL) {
+      memcpy(candidate, p_base, base_length);
+      strcpy(candidate + base_length, ext);
+    }
+  }
+  if (candidate == NULL) {
+    return false;
+  }
+  char* canonical = canonicalize_path(a, candidate);
+  if (canonical == NULL) {
+    return false;
+  }
+  // an already-registered native answers from the registry (a module loads
+  // once per ok instance, ever)
+  if (registry_find(p_modules, canonical) != NULL) {
+    p_out->canonical = canonical;
+    p_out->is_native = true;
+    return true;
+  }
+  const ok_native_module* descriptor = NULL;
+  void* handle = NULL;
+  char err[256];
+  err[0] = '\0';
+  const bool loaded = p_modules->loader.load_native(p_modules->loader.p_ctx, canonical, ok_api_table(), &descriptor,
+                                                   &handle, err, sizeof(err));
+  if (!loaded) {
+    if (err[0] != '\0') {
+      // the loader's contract: a message means a native EXISTS here but is
+      // broken. that is a hard error, the caller reports it.
+      snprintf(p_native_error, p_native_error_capacity, "%s", err);
+    }
+    str_list_append(p_tried, a, canonical); // best effort: the trace wants it
+    mod_free(a, canonical);
+    return false;
+  }
+  p_out->canonical = canonical;
+  p_out->is_native = true;
+  p_out->descriptor = descriptor;
+  p_out->handle = handle;
+  return true;
 }
 
-// the importing file's directory ("" -> "."). returns a malloc'd copy.
-static char* directory_of(const char* p_path) {
+// the importing file's directory ("" -> "."). a copy on the user's allocators.
+static char* directory_of(const ok_allocators* p_a, const char* p_path) {
   const char* last = strrchr(p_path, '/');
   if (last == NULL) {
-    return strdup(".");
+    return mod_strdup(p_a, ".");
   }
   if (last == p_path) {
-    return strdup("/");
+    return mod_strdup(p_a, "/");
   }
   const size_t length = (size_t)(last - p_path);
-  char* dir = (char*)malloc(length + 1);
+  char* dir = (char*)mod_alloc(p_a, length + 1);
   if (dir == NULL) {
     return NULL;
   }
@@ -284,19 +454,20 @@ static bool view_equals(const ok_string_view p_view, const char* p_text) {
 
 // ---------------------------------------------------------------- the registry
 
-// the per-run name arena (root names the binding table views). raw malloc,
-// freed at the next ok_run's reset (ok.c) and at deinit.
+// the per-run name arena (root names the binding table views). user
+// allocators, freed at the next ok_run's reset (ok.c) and at deinit.
 static char* arena_strdup(module_system* p_modules, const char* p_text) {
+  const ok_allocators* a = &p_modules->ok->raw_alloc;
   if (p_modules->name_arena_count == p_modules->name_arena_capacity) {
     const uint32_t grown = p_modules->name_arena_capacity == 0 ? 16 : p_modules->name_arena_capacity * 2;
-    char** arena = (char**)realloc(p_modules->name_arena, sizeof(char*) * grown);
+    char** arena = (char**)mod_realloc(a, p_modules->name_arena, sizeof(char*) * grown);
     if (arena == NULL) {
       return NULL;
     }
     p_modules->name_arena = arena;
     p_modules->name_arena_capacity = grown;
   }
-  char* copy = strdup(p_text);
+  char* copy = mod_strdup(a, p_text);
   if (copy == NULL) {
     return NULL;
   }
@@ -307,6 +478,22 @@ static char* arena_strdup(module_system* p_modules, const char* p_text) {
 static ok_module_record* registry_find(module_system* p_modules, const char* p_canonical) {
   for (uint32_t i = 0; i < p_modules->loaded.count; ++i) {
     if (strcmp(p_modules->loaded.data[i].canonical, p_canonical) == 0) {
+      return &p_modules->loaded.data[i];
+    }
+  }
+  return NULL;
+}
+
+// the bare-name probe for force-loaded natives: only they register under a
+// bare name (file keys are absolute, std keys carry the "std/" prefix). the
+// import literal is a LEXER SLICE, not a NUL-terminated string: the compare
+// is length-bounded, never a strcmp over the view.
+static ok_module_record* registry_find_native(module_system* p_modules, const ok_string_view p_name) {
+  const uint64_t length = ok_string_view_get_length(&p_name);
+  for (uint32_t i = 0; i < p_modules->loaded.count; ++i) {
+    const ok_module_record* record = &p_modules->loaded.data[i];
+    if (record->is_native && strlen(record->canonical) == length &&
+        memcmp(record->canonical, p_name.chars, length) == 0) {
       return &p_modules->loaded.data[i];
     }
   }
@@ -393,7 +580,7 @@ static bool build_namespace(module_system* p_modules,
 // nodes OWN their names (strdup) - the segment buffers they came from die
 // with each import statement, the tree lives until materialization.
 typedef struct pending_ns {
-  char* name;               // the segment, owned
+  char* name;               // the segment, owned (user allocators)
   value module_leaf;        // set when a module lands exactly here
   bool has_leaf;
   struct pending_ns* children;
@@ -401,8 +588,8 @@ typedef struct pending_ns {
   uint32_t children_capacity;
 } pending_ns;
 
-static void pending_ns_init(pending_ns* p_node, const char* p_name) {
-  p_node->name = strdup(p_name);
+static void pending_ns_init(const ok_allocators* p_a, pending_ns* p_node, const char* p_name) {
+  p_node->name = mod_strdup(p_a, p_name);
   p_node->module_leaf = NULL_AS_VALUE();
   p_node->has_leaf = false;
   p_node->children = NULL;
@@ -410,19 +597,21 @@ static void pending_ns_init(pending_ns* p_node, const char* p_name) {
   p_node->children_capacity = 0;
 }
 
-static void pending_ns_deinit(pending_ns* p_node) {
+static void pending_ns_deinit(const ok_allocators* p_a, pending_ns* p_node) {
   for (uint32_t i = 0; i < p_node->children_count; ++i) {
-    pending_ns_deinit(&p_node->children[i]);
+    pending_ns_deinit(p_a, &p_node->children[i]);
   }
-  free(p_node->children);
-  free(p_node->name);
+  if (p_node->children != NULL) {
+    mod_free(p_a, p_node->children);
+  }
+  mod_free(p_a, p_node->name);
   p_node->name = NULL;
   p_node->children = NULL;
   p_node->children_count = 0;
   p_node->children_capacity = 0;
 }
 
-static pending_ns* pending_ns_child(pending_ns* p_node, const char* p_name) {
+static pending_ns* pending_ns_child(const ok_allocators* p_a, pending_ns* p_node, const char* p_name) {
   for (uint32_t i = 0; i < p_node->children_count; ++i) {
     if (strcmp(p_node->children[i].name, p_name) == 0) {
       return &p_node->children[i];
@@ -430,7 +619,7 @@ static pending_ns* pending_ns_child(pending_ns* p_node, const char* p_name) {
   }
   if (p_node->children_count == p_node->children_capacity) {
     const uint32_t grown = p_node->children_capacity == 0 ? 4 : p_node->children_capacity * 2;
-    pending_ns* children = (pending_ns*)realloc(p_node->children, sizeof(pending_ns) * grown);
+    pending_ns* children = (pending_ns*)mod_realloc(p_a, p_node->children, sizeof(pending_ns) * grown);
     if (children == NULL) {
       return NULL;
     }
@@ -438,7 +627,7 @@ static pending_ns* pending_ns_child(pending_ns* p_node, const char* p_name) {
     p_node->children_capacity = grown;
   }
   pending_ns* child = &p_node->children[p_node->children_count++];
-  pending_ns_init(child, p_name);
+  pending_ns_init(p_a, child, p_name);
   return child;
 }
 
@@ -522,17 +711,333 @@ static bool materialize_ns(module_system* p_modules, pending_ns* p_node, value* 
 
 // ---------------------------------------------------------------- module loading
 
-// load (or find) one module by canonical path, depth-first. the site + the
-// importing source position every diagnostic this can raise.
+// build one namespace from live (name, value) pairs: the native lane's
+// builder (the fn table + the mount window's exports). same shape as
+// build_namespace: fresh module-namespace class, one immutable field per
+// export in order, frozen, instantiated, filled. the values are either
+// guarded by the caller or already rooted (the mount window is marked).
+static bool build_namespace_members(module_system* p_modules,
+                                    const char* p_canonical,
+                                    const char* const* p_names,
+                                    const value* p_values,
+                                    uint32_t p_count,
+                                    value* p_out) {
+  ok* okay = p_modules->ok;
+  object_specs specs = {&okay->alloc, &okay->objects_store};
+  gc* collector = okay->alloc.gc;
+
+  object_string* name = string_interner_intern(
+      &okay->interner, ok_create_string_view(p_canonical, (uint32_t)strlen(p_canonical), true), &specs);
+  if (name == NULL) {
+    return false;
+  }
+  if (!gc_guard_up(collector, OBJECT_AS_VALUE(name))) {
+    return false;
+  }
+  object_class* klass = create_object_class(name, okay->vm.object_singleton, &specs);
+  gc_guard_down(collector); // the class roots its name from here
+  if (klass == NULL) {
+    return false;
+  }
+  klass->module_namespace = true;
+  if (!gc_guard_up(collector, OBJECT_AS_VALUE(klass))) {
+    return false;
+  }
+  for (uint32_t i = 0; i < p_count; ++i) {
+    object_string* field_name = string_interner_intern(
+        &okay->interner, ok_create_string_view(p_names[i], (uint32_t)strlen(p_names[i]), true), &specs);
+    if (field_name == NULL) {
+      gc_guard_down(collector);
+      return false;
+    }
+    if (!gc_guard_up(collector, OBJECT_AS_VALUE(field_name))) {
+      gc_guard_down(collector);
+      return false;
+    }
+    const object_string* previous_owner = NULL;
+    const bool added =
+        object_class_add_field(klass, field_name, false /* mut */, NULL /* init thunk */, &previous_owner);
+    gc_guard_down(collector); // the class owns the name now
+    if (!added) {
+      gc_guard_down(collector);
+      return false;
+    }
+  }
+  if (!object_class_freeze(klass)) {
+    gc_guard_down(collector);
+    return false;
+  }
+  object_instance* inst = create_object_instance(klass, &specs);
+  gc_guard_down(collector); // the instance roots the class
+  if (inst == NULL) {
+    return false;
+  }
+  if (!gc_guard_up(collector, OBJECT_AS_VALUE(inst))) {
+    return false;
+  }
+  for (uint32_t i = 0; i < p_count; ++i) {
+    inst->fields[i] = p_values[i]; // the store roots each value
+  }
+  *p_out = OBJECT_AS_VALUE(inst);
+  gc_guard_down(collector);
+  return true;
+}
+
+// one diagnostic without an import site: the force-load lane (the CLI's
+// --native). bare `error: message` + a note, same renderer as the rest.
+static void plain_report(const char* p_path, const char* p_message) {
+  bool panic = false;
+  bool had_error = false;
+  okdiag_report(&panic,
+                &had_error,
+                p_path,
+                NULL,
+                NULL,
+                false,
+                REPORT_SEVERITY_ERROR,
+                ok_create_string_view(p_message, OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                NULL);
+}
+
+// the register lane's one report: at the import site when there is one,
+// bare with the module's own path when there is not (force-load).
+static void module_report_or_plain(const ok_source* p_from_source,
+                                   const token* p_site,
+                                   const char* p_display,
+                                   const char* p_message) {
+  if (p_from_source != NULL) {
+    module_report(p_from_source, p_site, p_message);
+  } else {
+    plain_report(p_display, p_message);
+  }
+}
+
+// a formatted report for the same two lanes (the messages that name the
+// module). NULL p_message.chars degrades to p_fallback.
+static void module_report_or_plain_fmt(const ok_source* p_from_source,
+                                       const token* p_site,
+                                       const char* p_display,
+                                       const string* p_message,
+                                       const char* p_fallback) {
+  module_report_or_plain(p_from_source, p_site, p_display,
+                         p_message->chars != NULL ? p_message->chars : p_fallback);
+}
+
+// the last path segment of a canonical, extension stripped: the import
+// stem the native name check compares against ("/a/b/hello.so" -> "hello").
+static bool import_stem_of(const char* p_canonical, char* p_buffer, size_t p_capacity) {
+  const char* last = strrchr(p_canonical, '/');
+  const char* stem = last != NULL ? last + 1 : p_canonical;
+  size_t length = strlen(stem);
+  const char* ext = ok_dylib_extension();
+  const size_t ext_length = strlen(ext);
+  if (length > ext_length && memcmp(stem + length - ext_length, ext, ext_length) == 0) {
+    length -= ext_length;
+  }
+  if (length == 0 || length + 1 > p_capacity) {
+    return false;
+  }
+  memcpy(p_buffer, stem, length);
+  p_buffer[length] = '\0';
+  return true;
+}
+
+// the native registration: everything after load_native said yes. checks
+// abi + name, runs the lifecycle, stages the members, freezes, registers.
+// p_key overrides the registry key (the force-load lane registers under
+// the declared name); p_display names the shared object in diagnostics.
+// p_from_source/p_site locate the import site (both NULL = force-load).
+static ok_result register_native(module_system* p_modules,
+                                  const ok_native_module* p_descriptor,
+                                  void* p_handle,
+                                  const char* p_key,
+                                  const char* p_display,
+                                  const ok_source* p_from_source,
+                                  const token* p_site,
+                                  const char* p_import_stem) {
+  ok* okay = p_modules->ok;
+  const ok_allocators* a = &okay->raw_alloc;
+
+  // the abi check (both directions is the module's own job at export time,
+  // comparing against the api table it was handed)
+  if (p_descriptor->abi != OK_NATIVE_ABI) {
+    string message = asprint(&okay->alloc,
+                             "module '%s': abi %u, expected %u, rebuild it against include/ok/ok_module.h.",
+                             p_display,
+                             (unsigned)p_descriptor->abi,
+                             (unsigned)OK_NATIVE_ABI);
+    module_report_or_plain_fmt(p_from_source, p_site, p_display, &message, "native module abi mismatch.");
+    string_deinit(&message, &okay->alloc);
+    return OK_COMPILE_ERROR;
+  }
+  // the name check (graph loads): the descriptor's declared name and the
+  // import's stem must agree, so a moved or renamed .so cannot lie about
+  // what it is. force-loads skip it (the name IS the registration).
+  if (p_import_stem != NULL && strcmp(p_descriptor->name, p_import_stem) != 0) {
+    string message =
+        asprint(&okay->alloc, "the shared object declares the name '%s', the import stem is '%s'.", p_descriptor->name,
+                p_import_stem);
+    module_report_or_plain_fmt(p_from_source, p_site, p_display, &message, "native module name mismatch.");
+    string_deinit(&message, &okay->alloc);
+    return OK_COMPILE_ERROR;
+  }
+
+  // on_load: the module's C init, before anything else touches it. a failed
+  // on_load fires on_unload (its cleanup chance) and refuses the load.
+  if (p_descriptor->on_load != NULL && !p_descriptor->on_load(okay)) {
+    if (p_descriptor->on_unload != NULL) {
+      p_descriptor->on_unload(okay);
+    }
+    string message = asprint(&okay->alloc, "module '%s': the on_load callback failed.", p_display);
+    module_report_or_plain_fmt(p_from_source, p_site, p_display, &message, "native on_load failed.");
+    string_deinit(&message, &okay->alloc);
+    return OK_COMPILE_ERROR;
+  }
+
+  // stage the fn members (guarded one at a time into the marked mount
+  // window, then the values list carries them). the window is marked for
+  // the WHOLE staging+mount+build stretch: aggressive gc collects on every
+  // allocation, and the staged values ride the window until the namespace
+  // instance's fields root them (the matrix caught exactly this window).
+  native_mount mount;
+  mount.names = NULL;
+  value_array_init(&mount.values, &okay->alloc);
+  mount.count = 0;
+  mount.capacity = 0;
+  mount.failure = NULL;
+  p_modules->mounting = &mount;
+
+  for (uint32_t i = 0; i < p_descriptor->fn_count; ++i) {
+    const ok_native_fn_def* fn = &p_descriptor->fns[i];
+    if (fn->name == NULL || fn->call == NULL) {
+      continue;
+    }
+    if (fn->arity != OK_NATIVE_ARITY_ANY && fn->arity > UINT8_MAX) {
+      mount.failure = "a native function arity above 255 is not representable.";
+      break;
+    }
+    // duplicate fn names refuse the load (M13's collision rule)
+    bool duplicate = false;
+    for (uint32_t j = 0; j < mount.count; ++j) {
+      if (strcmp(mount.names[j], fn->name) == 0) {
+        duplicate = true;
+        break;
+      }
+    }
+    if (duplicate) {
+      mount.failure = "duplicate export name in the fn table.";
+      break;
+    }
+    if (mount.count == mount.capacity) {
+      const uint32_t grown = mount.capacity == 0 ? 8 : mount.capacity * 2;
+      char** names = mod_realloc(a, mount.names, sizeof(char*) * grown);
+      if (names == NULL) {
+        mount.failure = "out of memory while staging the module's functions.";
+        break;
+      }
+      mount.names = names;
+      mount.capacity = grown;
+    }
+    object_specs obj_specs = {&okay->alloc, &okay->objects_store};
+    object_native_function* native = create_object_native_function(
+        ok_create_string_view(fn->name, (uint32_t)strlen(fn->name), true), fn->arity, fn->call, &obj_specs);
+    if (native == NULL) {
+      mount.failure = "out of memory while staging the module's functions.";
+      break;
+    }
+    if (!gc_guard_up(&okay->gc, OBJECT_AS_VALUE(native))) {
+      mount.failure = "out of memory while staging the module's functions.";
+      break;
+    }
+    if (!value_array_append(&mount.values, OBJECT_AS_VALUE(native))) {
+      gc_guard_down(&okay->gc);
+      mount.failure = "out of memory while staging the module's functions.";
+      break;
+    }
+    gc_guard_down(&okay->gc); // the marked window roots it now
+    mount.names[mount.count++] = mod_strdup(a, fn->name);
+    if (mount.names[mount.count - 1] == NULL) {
+      mount.count--; // the value stays staged, the name slot is retried never: OOM refuses below
+      mount.failure = "out of memory while staging the module's functions.";
+      break;
+    }
+  }
+
+  // the mount window: the class surface (and any constants) joins the same
+  // list, api->module_export appends through the same marked window
+  if (mount.failure == NULL && p_descriptor->mount_classes != NULL) {
+    const bool mounted = p_descriptor->mount_classes(okay);
+    if (!mounted) {
+      mount.failure = mount.failure != NULL ? mount.failure : "the mount callback failed.";
+    }
+  }
+
+  ok_result result = OK;
+  value namespace = NULL_AS_VALUE();
+  if (mount.failure != NULL) {
+    string message = asprint(&okay->alloc, "module '%s': %s", p_display, mount.failure);
+    module_report_or_plain_fmt(p_from_source, p_site, p_display, &message, "native module mount failed.");
+    string_deinit(&message, &okay->alloc);
+    result = OK_COMPILE_ERROR;
+  } else if (!build_namespace_members(p_modules, p_key, (const char* const*)mount.names, mount.values.data,
+                                      mount.count, &namespace)) {
+    module_report_or_plain(p_from_source, p_site, p_display, "out of memory while building the module's namespace.");
+    result = OK_INIT_ERROR;
+  } else {
+    ok_module_record record;
+    record.canonical = mod_strdup(a, p_key);
+    record.name = VALUE_AS_INSTANCE(namespace)->klass->name;
+    record.namespace_class = VALUE_AS_INSTANCE(namespace)->klass;
+    record.namespace = namespace;
+    record.imports = NULL;
+    record.imports_count = 0;
+    record.is_native = true;
+    record.descriptor = p_descriptor;
+    if (!gc_guard_up(&okay->gc, namespace)) {
+      ok_module_record_deinit(&record, &okay->alloc);
+      module_report_or_plain(p_from_source, p_site, p_display, "out of memory while registering the module.");
+      result = OK_INIT_ERROR;
+    } else {
+      const bool registered = record.canonical != NULL && ok_module_records_append(&p_modules->loaded, record);
+      gc_guard_down(&okay->gc);
+      if (!registered) {
+        ok_module_record_deinit(&record, &okay->alloc);
+        module_report_or_plain(p_from_source, p_site, p_display, "out of memory while registering the module.");
+        result = OK_INIT_ERROR;
+      }
+    }
+  }
+
+  p_modules->mounting = NULL; // the namespace (or the failure) owns everything now
+
+  for (uint32_t i = 0; i < mount.count; ++i) {
+    mod_free(a, mount.names[i]);
+  }
+  if (mount.names != NULL) {
+    mod_free(a, mount.names);
+  }
+  value_array_deinit(&mount.values, &okay->alloc);
+  (void)p_handle; // closed by the default lane at ok_free, never mid-run
+  return result;
+}
+
+// load (or find) one module, depth-first. the site + the importing source
+// position every diagnostic this can raise; a NULL site is the force-load
+// lane (bare reporting, the module's own path as the location).
 static ok_result load_module(module_system* p_modules,
-                            const char* p_canonical,
+                            resolved_module* p_resolved,
                             const ok_source* p_from_source,
                             const token* p_site) {
   ok* okay = p_modules->ok;
+  const ok_allocators* a = &okay->raw_alloc;
+  const char* p_canonical = p_resolved->canonical;
 
   // loaded already? one TU per module, ever (the registry is the cache).
+  // the probe's read (a cache hit re-read the source for nothing) dies
+  // here. the RESOLVED stays the caller's: prepare still views the canonical.
   ok_module_record* found = registry_find(p_modules, p_canonical);
   if (found != NULL) {
+    resolved_consume_code(a, p_resolved);
     return OK;
   }
   // in the active chain? a cycle (M13): the design is in the importer's
@@ -561,23 +1066,25 @@ static ok_result load_module(module_system* p_modules,
     return OK_COMPILE_ERROR;
   }
 
-  // read + parse
-  ok_source source;
-  source.code = NULL;
-  source.path = p_canonical;
-  if (p_modules->loader.read_source == NULL || !p_modules->loader.read_source(p_modules->loader.p_ctx, p_canonical, &source)) {
-    module_report(p_from_source, p_site, "module source is unreadable (the resolver found it, the read failed).");
-    module_note(p_from_source, p_site, p_canonical);
-    return OK_COMPILE_ERROR;
+  // the native lane: the loader already opened the shared object and handed
+  // back the descriptor. the import's stem rides the chain for the name
+  // check (binding_segments' spelling of the last segment).
+  if (p_resolved->is_native) {
+    char stem[256];
+    return register_native(p_modules, p_resolved->descriptor, p_resolved->handle, p_canonical, p_canonical,
+                           p_from_source, p_site, import_stem_of(p_canonical, stem, sizeof(stem)) ? stem : NULL);
   }
+
+  // parse (the source is the probe's read, its path the canonical)
   parser parser;
-  parser_specs parser_specs = {.alloc = &okay->alloc, .source = &source};
+  parser_specs parser_specs = {.alloc = &okay->alloc, .source = &p_resolved->source};
   parser_init(&parser, parser_specs);
   parse_result parsed = parser_parse(&parser);
   if (parsed.status != PARSE_OK) {
     parser_deinit(&parser);
     parse_result_deinit(&parsed);
-    free((void*)source.code);
+    resolved_consume_code(a, p_resolved);
+    p_resolved->source.code = NULL;
     return OK_PARSE_ERROR;
   }
 
@@ -585,20 +1092,23 @@ static ok_result load_module(module_system* p_modules,
   p_modules->chain[p_modules->chain_depth++] = p_canonical;
   ok_import_binding_array bindings;
   ok_import_binding_array_init(&bindings, &okay->alloc);
-  const ok_result prepared = ok_modules_prepare(p_modules, parsed.root, &source, &bindings);
+  char** imports_owned = NULL; // ownership moves to the record below
+  uint32_t imports_owned_count = 0;
+  const ok_result prepared = ok_modules_prepare(
+      p_modules, parsed.root, &p_resolved->source, &bindings, &imports_owned, &imports_owned_count);
   p_modules->chain_depth--;
   if (prepared != OK) {
     parser_deinit(&parser);
     parse_result_deinit(&parsed);
     ok_import_binding_array_deinit(&bindings, &okay->alloc);
-    free((void*)source.code);
+    resolved_consume_code(a, p_resolved);
     return prepared;
   }
 
   // compile in module mode: pub top-levels recorded, the export epilogue
   // emitted, an early top-level return refused.
   compile_specs compile_specs;
-  compile_specs.source = &source;
+  compile_specs.source = &p_resolved->source;
   compile_specs.root = parsed.root;
   bool err = false;
   compile_specs.top_level_declarations = ok_get_top_level_declarations(okay, &err);
@@ -606,7 +1116,7 @@ static ok_result load_module(module_system* p_modules,
     parser_deinit(&parser);
     parse_result_deinit(&parsed);
     ok_import_binding_array_deinit(&bindings, &okay->alloc);
-    free((void*)source.code);
+    resolved_consume_code(a, p_resolved);
     return OK_INIT_ERROR;
   }
   compile_specs.imports = (ok_import_bindings){bindings.data, bindings.count};
@@ -619,7 +1129,7 @@ static ok_result load_module(module_system* p_modules,
   if (compiled.status != COMPILE_OK) {
     parse_result_deinit(&parsed);
     module_exports_deinit(&compiled.exports, &okay->alloc);
-    free((void*)source.code);
+    resolved_consume_code(a, p_resolved);
     return OK_COMPILE_ERROR;
   }
 
@@ -629,18 +1139,18 @@ static ok_result load_module(module_system* p_modules,
   if (!gc_guard_up(&okay->gc, OBJECT_AS_VALUE(compiled.function))) {
     parse_result_deinit(&parsed);
     module_exports_deinit(&compiled.exports, &okay->alloc);
-    free((void*)source.code);
+    resolved_consume_code(a, p_resolved);
     module_report(p_from_source, p_site, "out of memory while running the module's top level.");
     return OK_INIT_ERROR;
   }
   // run: one source registration per module (stack traces stay honest in
   // multi-file runs), seeds staged like any <main>.
-  const uint32_t source_id = vm_begin_source(&okay->vm, source.code, source.path);
+  const uint32_t source_id = vm_begin_source(&okay->vm, p_resolved->source.code, p_resolved->source.path);
   if (source_id == VM_SOURCE_UNSTAMPED) {
     gc_guard_down(&okay->gc);
     parse_result_deinit(&parsed);
     module_exports_deinit(&compiled.exports, &okay->alloc);
-    free((void*)source.code);
+    resolved_consume_code(a, p_resolved);
     return OK_INIT_ERROR;
   }
   ok_stamp_source_ids(compiled.function, source_id);
@@ -656,7 +1166,7 @@ static ok_result load_module(module_system* p_modules,
   if (err || ran.status != RUNTIME_OK) {
     parse_result_deinit(&parsed);
     module_exports_deinit(&compiled.exports, &okay->alloc);
-    free((void*)source.code);
+    resolved_consume_code(a, p_resolved);
     // the runtime error already printed with the module's own path and
     // trace; this note ties it to the import that pulled it in.
     module_note(p_from_source, p_site, "while loading this module (its top level failed).");
@@ -668,20 +1178,24 @@ static ok_result load_module(module_system* p_modules,
   if (!build_namespace(p_modules, p_canonical, &compiled.exports, &namespace)) {
     parse_result_deinit(&parsed);
     module_exports_deinit(&compiled.exports, &okay->alloc);
-    free((void*)source.code);
+    resolved_consume_code(a, p_resolved);
     module_report(p_from_source, p_site, "out of memory while building the module's namespace.");
     return OK_INIT_ERROR;
   }
   ok_module_record record;
-  record.canonical = strdup(p_canonical);
+  record.canonical = mod_strdup(a, p_canonical);
   record.name = VALUE_AS_INSTANCE(namespace)->klass->name;
   record.namespace_class = VALUE_AS_INSTANCE(namespace)->klass;
   record.namespace = namespace;
+  record.imports = imports_owned;
+  record.imports_count = imports_owned_count;
+  record.is_native = false;
+  record.descriptor = NULL;
   if (!gc_guard_up(&okay->gc, namespace)) {
-    free(record.canonical);
+    ok_module_record_deinit(&record, &okay->alloc);
     parse_result_deinit(&parsed);
     module_exports_deinit(&compiled.exports, &okay->alloc);
-    free((void*)source.code);
+    resolved_consume_code(a, p_resolved);
     module_report(p_from_source, p_site, "out of memory while registering the module.");
     return OK_INIT_ERROR;
   }
@@ -689,9 +1203,9 @@ static ok_result load_module(module_system* p_modules,
   gc_guard_down(&okay->gc);
   parse_result_deinit(&parsed);
   module_exports_deinit(&compiled.exports, &okay->alloc);
-  free((void*)source.code);
+  resolved_consume_code(a, p_resolved);
   if (!registered) {
-    free(record.canonical);
+    ok_module_record_deinit(&record, &okay->alloc);
     module_report(p_from_source, p_site, "out of memory while registering the module.");
     return OK_INIT_ERROR;
   }
@@ -763,6 +1277,7 @@ static bool std_canonical_of(const std_module_def* p_def, char* p_buffer, size_t
 // pays for it.
 static ok_result std_build_module(module_system* p_modules, const std_module_def* p_def) {
   ok* okay = p_modules->ok;
+  const ok_allocators* a = &okay->raw_alloc;
   char canonical[32];
   if (!std_canonical_of(p_def, canonical, sizeof(canonical))) {
     return OK_INIT_ERROR;
@@ -796,18 +1311,22 @@ static ok_result std_build_module(module_system* p_modules, const std_module_def
       result = OK_INIT_ERROR;
     } else {
       ok_module_record record;
-      record.canonical = strdup(canonical);
+      record.canonical = mod_strdup(a, canonical);
       record.name = VALUE_AS_INSTANCE(namespace)->klass->name;
       record.namespace_class = VALUE_AS_INSTANCE(namespace)->klass;
       record.namespace = namespace;
+      record.imports = NULL;
+      record.imports_count = 0;
+      record.is_native = false;
+      record.descriptor = NULL;
       if (!gc_guard_up(&okay->gc, namespace)) {
-        free(record.canonical);
+        ok_module_record_deinit(&record, &okay->alloc);
         result = OK_INIT_ERROR;
       } else {
         const bool registered = record.canonical != NULL && ok_module_records_append(&p_modules->loaded, record);
         gc_guard_down(&okay->gc);
         if (!registered) {
-          free(record.canonical);
+          ok_module_record_deinit(&record, &okay->alloc);
           result = OK_INIT_ERROR;
         }
       }
@@ -819,33 +1338,37 @@ static ok_result std_build_module(module_system* p_modules, const std_module_def
 
 // ---------------------------------------------------------------- resolution
 
-// resolve one import path from one importing file. produces the canonical
-// (realpath'd, malloc'd) path, or prints the teaching 404 with the full
-// trace of locations and forms tried (and returns false).
+// resolve one import path from one importing file. produces the resolved
+// module (canonical + the loader's read, or the native lane's descriptor),
+// or prints the teaching 404 with the full trace of locations and forms
+// tried (and returns false).
 static bool resolve_import(module_system* p_modules,
                            const ok_string_view p_path,
                            const char* p_from_dir,
                            const ok_source* p_source,
                            const token* p_site,
-                           char** p_out_canonical) {
+                           resolved_module* p_out) {
+  const ok_allocators* a = &p_modules->ok->raw_alloc;
   str_list tried;
   str_list_init(&tried);
-  char* found = NULL;
-  bool native_found = false;
+  char native_error[256];
+  native_error[0] = '\0';
+  bool resolved = false;
 
   if (view_starts_with(p_path, "./") || view_starts_with(p_path, "../")) {
-    // the file-relative lane (M3): raw ok files, no project needed.
-    char* joined = join_normalize(p_from_dir, p_path);
+    // the file-relative lane (M3): raw ok files and natives, no project
+    // needed.
+    char* joined = join_normalize(a, p_from_dir, p_path);
     if (joined != NULL) {
-      found = ladder_at(joined, &tried, &native_found);
-      free(joined);
+      resolved = probe_ladder(p_modules, joined, &tried, native_error, sizeof(native_error), p_out);
+      mod_free(a, joined);
     }
   } else if (view_equals(p_path, "std")) {
     // the bare root imports nothing: the std library is a tree of modules.
     module_report(p_source,
                   p_site,
                   "the std root is a namespace: import a module under it, like \"std/array\".");
-    str_list_deinit(&tried);
+    str_list_deinit(&tried, a);
     return false;
   } else if (view_starts_with(p_path, "std/")) {
     // the std lane (M8, OR-2): the built-in registry only. it never falls
@@ -862,59 +1385,75 @@ static bool resolve_import(module_system* p_modules,
                                stem.chars);
       module_report(p_source, p_site, message.chars != NULL ? message.chars : "no such std module.");
       string_deinit(&message, &p_modules->ok->alloc);
-      str_list_deinit(&tried);
+      str_list_deinit(&tried, a);
       return false;
     }
     if (std_build_module(p_modules, def) != OK) {
       module_report(p_source, p_site, "out of memory while building the module's namespace.");
-      str_list_deinit(&tried);
+      str_list_deinit(&tried, a);
       return false;
     }
     char canonical[32];
     if (!std_canonical_of(def, canonical, sizeof(canonical))) {
-      str_list_deinit(&tried);
+      str_list_deinit(&tried, a);
       return false;
     }
-    char* owned = strdup(canonical);
-    if (owned == NULL) {
-      str_list_deinit(&tried);
+    p_out->canonical = mod_strdup(a, canonical);
+    if (p_out->canonical == NULL) {
+      str_list_deinit(&tried, a);
       return false;
     }
-    str_list_deinit(&tried);
-    *p_out_canonical = owned;
+    str_list_deinit(&tried, a);
     return true;
   } else {
+    // a bare name: a force-loaded native answers first (its registry key is
+    // its declared name, ok_native_force_load's lane). the copy is
+    // length-bounded: the import literal is a lexer slice, not a C string.
+    if (registry_find_native(p_modules, p_path) != NULL) {
+      const uint64_t length = ok_string_view_get_length(&p_path);
+      char* owned = (char*)mod_alloc(a, length + 1);
+      if (owned != NULL) {
+        memcpy(owned, p_path.chars, length);
+        owned[length] = '\0';
+      }
+      p_out->canonical = owned;
+      p_out->is_native = true;
+      str_list_deinit(&tried, a);
+      return p_out->canonical != NULL;
+    }
     // the OKPATH lane: colon-separated roots, the same ladder at each.
     const char* okpath = getenv("OKPATH");
     if (okpath != NULL && *okpath != '\0') {
-      char* roots = strdup(okpath);
+      char* roots = mod_strdup(a, okpath);
       if (roots != NULL) {
         char* cursor = roots;
-        while (cursor != NULL && *cursor != '\0' && found == NULL) {
+        while (cursor != NULL && *cursor != '\0' && !resolved) {
           char* colon = strchr(cursor, ':');
           if (colon != NULL) {
             *colon = '\0';
           }
           if (*cursor != '\0') {
-            char* joined = join_normalize(cursor, p_path);
+            char* joined = join_normalize(a, cursor, p_path);
             if (joined != NULL) {
-              found = ladder_at(joined, &tried, &native_found);
-              free(joined);
+              resolved = probe_ladder(p_modules, joined, &tried, native_error, sizeof(native_error), p_out);
+              mod_free(a, joined);
             }
           }
           cursor = colon != NULL ? colon + 1 : NULL;
         }
-        free(roots);
+        mod_free(a, roots);
       }
     }
   }
 
-  if (found == NULL) {
-    if (native_found) {
-      module_report(p_source,
-                    p_site,
-                    "a native module was found, but native loading is not available yet.");
-      str_list_deinit(&tried);
+  if (!resolved) {
+    // a native candidate existed but is broken: the hard error, its own
+    // message is the note (a text file named .so, a corrupt image, a
+    // missing ok_native_export)
+    if (native_error[0] != '\0') {
+      module_report(p_source, p_site, "the native module could not be loaded.");
+      module_note(p_source, p_site, native_error);
+      str_list_deinit(&tried, a);
       return false;
     }
     // the 404 must teach (M3): every location and form tried, plus the hint.
@@ -922,39 +1461,35 @@ static bool resolve_import(module_system* p_modules,
     for (uint32_t i = 0; i < tried.count; ++i) {
       module_note(p_source, p_site, tried.items[i]);
     }
+    if ((p_modules->ok->caps_dropped & OK_CAP_NATIVE_LOAD) != 0) {
+      module_note(p_source, p_site,
+                  "native modules are not searched: OK_CAP_NATIVE_LOAD is dropped in this ok instance.");
+    }
     if (tried.count == 0) {
       module_note(p_source, p_site, "no locations were searched: file-relative paths need './' or '../', "
                                     "bare names search OKPATH (unset).");
     } else {
       module_note(p_source, p_site, "add the module's directory to OKPATH, or fix the path.");
     }
-    str_list_deinit(&tried);
+    str_list_deinit(&tried, a);
     return false;
   }
-
-  // canonicalize (symlinks resolved): the registry key, the class name, and
-  // the stack-trace path all use this one spelling.
-  char* canonical = realpath(found, NULL);
-  if (canonical == NULL) {
-    canonical = found; // realpath refused (exotic fs): the found path is the key
-  } else {
-    free(found);
-  }
-  *p_out_canonical = canonical;
-  str_list_deinit(&tried);
-  if (canonical == NULL) {
-    module_report(p_source, p_site, "out of memory while resolving the module path.");
-    return false;
-  }
+  str_list_deinit(&tried, a);
   return true;
 }
 
 // the binding segments (M5): the import literal's own segments, '.' skipped,
 // '..' popped where possible and dropped at the front (they climb toward the
-// importer's directory - the NAME is the remainder), a trailing '.ok'
-// stripped. "a/b" -> [a, b]; "./util.ok" -> [util]; "../lib/h" -> [lib, h].
-static bool binding_segments(const ok_string_view p_path, char*** p_out, uint32_t* p_out_count) {
+// importer's directory - the NAME is the remainder), a trailing '.ok' or the
+// native extension stripped. "a/b" -> [a, b]; "./util.ok" -> [util];
+// "../lib/h" -> [lib, h]; "./x.so" -> [x].
+static bool binding_segments(const ok_allocators* p_a,
+                              const ok_string_view p_path,
+                              char*** p_out,
+                              uint32_t* p_out_count) {
   const uint64_t length = ok_string_view_get_length(&p_path);
+  const char* ext = ok_dylib_extension();
+  const uint64_t ext_length = (uint64_t)strlen(ext);
   char** segments = NULL;
   uint32_t count = 0;
   uint32_t capacity = 0;
@@ -968,11 +1503,11 @@ static bool binding_segments(const ok_string_view p_path, char*** p_out, uint32_
     const bool is_dot = seg_length == 1 && p_path.chars[i] == '.';
     const bool is_dotdot = seg_length == 2 && p_path.chars[i] == '.' && p_path.chars[i + 1] == '.';
     if (is_dotdot && count > 0) {
-      free(segments[--count]);
+      mod_free(p_a, segments[--count]);
     } else if (!is_dot && !is_dotdot && seg_length > 0) {
       if (count == capacity) {
         const uint32_t grown = capacity == 0 ? 4 : capacity * 2;
-        char** grown_segments = (char**)realloc(segments, sizeof(char*) * grown);
+        char** grown_segments = (char**)mod_realloc(p_a, segments, sizeof(char*) * grown);
         if (grown_segments == NULL) {
           goto oom;
         }
@@ -982,12 +1517,14 @@ static bool binding_segments(const ok_string_view p_path, char*** p_out, uint32_
       uint64_t name_length = seg_length;
       if (name_length > 3 && memcmp(p_path.chars + i + name_length - 3, ".ok", 3) == 0) {
         name_length -= 3;
+      } else if (name_length > ext_length && memcmp(p_path.chars + i + name_length - ext_length, ext, ext_length) == 0) {
+        name_length -= ext_length;
       }
       if (name_length == 0) {
         i = j + 1;
         continue;
       }
-      char* segment = (char*)malloc(name_length + 1);
+      char* segment = (char*)mod_alloc(p_a, name_length + 1);
       if (segment == NULL) {
         goto oom;
       }
@@ -1005,17 +1542,21 @@ static bool binding_segments(const ok_string_view p_path, char*** p_out, uint32_
   return true;
 oom:
   for (uint32_t k = 0; k < count; ++k) {
-    free(segments[k]);
+    mod_free(p_a, segments[k]);
   }
-  free(segments);
+  if (segments != NULL) {
+    mod_free(p_a, segments);
+  }
   return false;
 }
 
-static void free_segments(char** p_segments, uint32_t p_count) {
+static void free_segments(const ok_allocators* p_a, char** p_segments, uint32_t p_count) {
   for (uint32_t i = 0; i < p_count; ++i) {
-    free(p_segments[i]);
+    mod_free(p_a, p_segments[i]);
   }
-  free(p_segments);
+  if (p_segments != NULL) {
+    mod_free(p_a, p_segments);
+  }
 }
 
 // ---------------------------------------------------------------- prepare (the graph phase)
@@ -1023,18 +1564,28 @@ static void free_segments(char** p_segments, uint32_t p_count) {
 ok_result ok_modules_prepare(module_system* p_modules,
                              ast_root* p_root,
                              const ok_source* p_source,
-                             ok_import_binding_array* p_bindings) {
+                             ok_import_binding_array* p_bindings,
+                             char*** p_out_imports,
+                             uint32_t* p_out_imports_count) {
   ok* okay = p_modules->ok;
-  char* from_dir = directory_of(p_source->path);
+  const ok_allocators* a = &okay->raw_alloc;
+  char* from_dir = directory_of(a, p_source->path);
   if (from_dir == NULL) {
     return OK_INIT_ERROR;
   }
   ok_result result = OK;
 
+  // the TU's resolved imports (the graph edges): deduped canonical paths,
+  // load order. ownership moves to the caller on success (the record, or
+  // the entry run's discard), stays here on failure.
+  char** imports = NULL;
+  uint32_t imports_count = 0;
+  uint32_t imports_capacity = 0;
+
   // the TU's root forest + the deferred bindings awaiting their roots
   pending_ns forest;
-  pending_ns_init(&forest, "");
-  uint32_t* deferred = NULL;      // binding indices (raw malloc)
+  pending_ns_init(a, &forest, "");
+  uint32_t* deferred = NULL;      // binding indices (raw user allocators)
   char** deferred_roots = NULL; // parallel: the arena'd root name each lands under
   uint32_t deferred_count = 0;
   uint32_t deferred_capacity = 0;
@@ -1052,25 +1603,57 @@ ok_result ok_modules_prepare(module_system* p_modules,
     const token* site = &import->statement.node.token;
 
     char* canonical = NULL;
-    if (!resolve_import(p_modules, path, from_dir, p_source, site, &canonical)) {
+    resolved_module resolved;
+    resolved_init(&resolved);
+    if (!resolve_import(p_modules, path, from_dir, p_source, site, &resolved)) {
       result = OK_COMPILE_ERROR;
       break;
     }
-    const ok_result loaded = load_module(p_modules, canonical, p_source, site);
+    canonical = resolved.canonical; // borrowed view for the edge bookkeeping
+    const ok_result loaded = load_module(p_modules, &resolved, p_source, site);
     if (loaded != OK) {
-      free(canonical);
+      resolved_deinit(a, &resolved);
       result = loaded;
       break;
     }
     ok_module_record* record = registry_find(p_modules, canonical);
     // cannot be NULL: load_module just registered it (or it was there)
-    free(canonical);
-    canonical = NULL;
     if (record == NULL) {
+      resolved_deinit(a, &resolved);
       module_report(p_source, site, "internal error: the loaded module did not register.");
       result = OK_INIT_ERROR;
       break;
     }
+    // record the edge (dedup: the same module imported twice lists once)
+    bool edge_new = true;
+    for (uint32_t e = 0; e < imports_count; ++e) {
+      if (strcmp(imports[e], canonical) == 0) {
+        edge_new = false;
+        break;
+      }
+    }
+    if (edge_new) {
+      if (imports_count == imports_capacity) {
+        const uint32_t grown = imports_capacity == 0 ? 8 : imports_capacity * 2;
+        char** grown_imports = (char**)mod_realloc(a, imports, sizeof(char*) * grown);
+        if (grown_imports == NULL) {
+          resolved_deinit(a, &resolved);
+          result = OK_INIT_ERROR;
+          break;
+        }
+        imports = grown_imports;
+        imports_capacity = grown;
+      }
+      imports[imports_count] = mod_strdup(a, canonical);
+      if (imports[imports_count] == NULL) {
+        resolved_deinit(a, &resolved);
+        result = OK_INIT_ERROR;
+        break;
+      }
+      imports_count++;
+    }
+    resolved_deinit(a, &resolved);
+    canonical = NULL;
 
     if (import->symbols.count == 0) {
       // the path form: `import "a/b";` binds the root; `import "a/b" as c;`
@@ -1089,7 +1672,7 @@ ok_result ok_modules_prepare(module_system* p_modules,
       }
       char** segments = NULL;
       uint32_t segment_count = 0;
-      if (!binding_segments(path, &segments, &segment_count)) {
+      if (!binding_segments(a, path, &segments, &segment_count)) {
         module_report(p_source, site, "the import path has no name to bind.");
         result = OK_COMPILE_ERROR;
         break;
@@ -1099,7 +1682,7 @@ ok_result ok_modules_prepare(module_system* p_modules,
       // dies at the end of it).
       char* root_owned = arena_strdup(p_modules, segments[0]);
       if (root_owned == NULL) {
-        free_segments(segments, segment_count);
+        free_segments(a, segments, segment_count);
         result = OK_INIT_ERROR;
         break;
       }
@@ -1112,7 +1695,7 @@ ok_result ok_modules_prepare(module_system* p_modules,
         module_report(p_source,
                       site,
                       "the name 'std' is reserved for the standard library's namespace.");
-        free_segments(segments, segment_count);
+        free_segments(a, segments, segment_count);
         result = OK_COMPILE_ERROR;
         break;
       }
@@ -1129,9 +1712,10 @@ ok_result ok_modules_prepare(module_system* p_modules,
       if (!already_bound) {
         if (bound_count == bound_capacity) {
           const uint32_t grown = bound_capacity == 0 ? 4 : bound_capacity * 2;
-          ok_string_view* grown_roots = (ok_string_view*)realloc(bound_roots, sizeof(ok_string_view) * grown);
+          ok_string_view* grown_roots =
+              (ok_string_view*)mod_realloc(a, bound_roots, sizeof(ok_string_view) * grown);
           if (grown_roots == NULL) {
-            free_segments(segments, segment_count);
+            free_segments(a, segments, segment_count);
             result = OK_INIT_ERROR;
             break;
           }
@@ -1145,9 +1729,9 @@ ok_result ok_modules_prepare(module_system* p_modules,
       pending_ns* node = &forest;
       bool conflict = false;
       for (uint32_t i = 0; i < segment_count; ++i) {
-        pending_ns* child = pending_ns_child(node, segments[i]);
+        pending_ns* child = pending_ns_child(a, node, segments[i]);
         if (child == NULL) {
-          free_segments(segments, segment_count);
+          free_segments(a, segments, segment_count);
           result = OK_INIT_ERROR;
           break;
         }
@@ -1173,12 +1757,12 @@ ok_result ok_modules_prepare(module_system* p_modules,
         if (conflict) {
           result = OK_COMPILE_ERROR;
         }
-        free_segments(segments, segment_count);
+        free_segments(a, segments, segment_count);
         break;
       }
       node->module_leaf = record->namespace;
       node->has_leaf = true;
-      free_segments(segments, segment_count);
+      free_segments(a, segments, segment_count);
 
       const ok_import_binding binding = {
           .name = root_name,
@@ -1194,10 +1778,10 @@ ok_result ok_modules_prepare(module_system* p_modules,
         // (matched by name - the tree's arrays move as they grow)
         if (deferred_count == deferred_capacity) {
           const uint32_t grown = deferred_capacity == 0 ? 4 : deferred_capacity * 2;
-          uint32_t* grown_deferred = (uint32_t*)realloc(deferred, sizeof(uint32_t) * grown);
-          char** grown_roots = (char**)realloc(deferred_roots, sizeof(char*) * grown);
+          uint32_t* grown_deferred = (uint32_t*)mod_realloc(a, deferred, sizeof(uint32_t) * grown);
+          char** grown_roots = (char**)mod_realloc(a, deferred_roots, sizeof(char*) * grown);
           if (grown_deferred == NULL || grown_roots == NULL) {
-            free(grown_deferred != NULL ? grown_deferred : deferred);
+            mod_free(a, grown_deferred != NULL ? grown_deferred : deferred);
             if (grown_roots != NULL) {
               deferred_roots = grown_roots; // keep the bigger one; freed below
             }
@@ -1295,11 +1879,28 @@ ok_result ok_modules_prepare(module_system* p_modules,
     }
   }
 
-  pending_ns_deinit(&forest);
-  free(deferred);
-  free(deferred_roots);
-  free(bound_roots);
-  free(from_dir);
+  pending_ns_deinit(a, &forest);
+  if (deferred != NULL) {
+    mod_free(a, deferred);
+  }
+  if (deferred_roots != NULL) {
+    mod_free(a, deferred_roots);
+  }
+  if (bound_roots != NULL) {
+    mod_free(a, bound_roots);
+  }
+  mod_free(a, from_dir);
+  if (result != OK) {
+    for (uint32_t i = 0; i < imports_count; ++i) {
+      mod_free(a, imports[i]);
+    }
+    if (imports != NULL) {
+      mod_free(a, imports);
+    }
+    return result;
+  }
+  *p_out_imports = imports;
+  *p_out_imports_count = imports_count;
   return result;
 }
 
@@ -1316,25 +1917,106 @@ void ok_modules_init(module_system* p_modules, ok* p_ok, allocators* p_alloc) {
   p_modules->name_arena = NULL;
   p_modules->name_arena_count = 0;
   p_modules->name_arena_capacity = 0;
+  p_modules->mounting = NULL;
+  p_modules->native_handles = NULL;
+  p_modules->native_handles_count = 0;
+  p_modules->native_handles_capacity = 0;
+  // the CLI default loader: fs reads (this file) + the dylib-based native
+  // lane (okdylib.c). both halves reach the instance through the shared ctx.
   ok_loader loader;
   loader.read_source = fs_read_source;
-  loader.p_ctx = NULL;
+  loader.load_native = ok_load_native_thunk;
+  loader.p_ctx = p_modules;
   p_modules->loader = loader;
 }
 
 void ok_modules_deinit(module_system* p_modules) {
+  const ok_allocators* a = &p_modules->ok->raw_alloc;
+  // the native lifecycle first, while the vm is fully alive: on_unload is
+  // for releasing the module's own C resources (the lua lesson: never
+  // mid-run, only here). the default lane's handles close after, so the
+  // unload code is still mapped while it runs.
+  for (uint32_t i = 0; i < p_modules->loaded.count; ++i) {
+    const ok_module_record* record = &p_modules->loaded.data[i];
+    if (record->is_native && record->descriptor != NULL && record->descriptor->on_unload != NULL) {
+      record->descriptor->on_unload(p_modules->ok);
+    }
+  }
   ok_module_records_deinit(&p_modules->loaded, p_modules->loaded.alloc);
   value_array_deinit(&p_modules->pending_roots, p_modules->pending_roots.alloc);
   for (uint32_t i = 0; i < p_modules->name_arena_count; ++i) {
-    free(p_modules->name_arena[i]);
+    mod_free(a, p_modules->name_arena[i]);
   }
-  free(p_modules->name_arena);
+  if (p_modules->name_arena != NULL) {
+    mod_free(a, p_modules->name_arena);
+  }
   p_modules->name_arena = NULL;
   p_modules->name_arena_count = 0;
   p_modules->name_arena_capacity = 0;
+  // the default lane's handles (a host load_native owns its own)
+  if (p_modules->ok->dylib != NULL) {
+    for (uint32_t i = 0; i < p_modules->native_handles_count; ++i) {
+      p_modules->ok->dylib->close(p_modules->ok->dylib->p_ctx, p_modules->native_handles[i]);
+    }
+  }
+  if (p_modules->native_handles != NULL) {
+    mod_free(a, p_modules->native_handles);
+  }
+  p_modules->native_handles = NULL;
+  p_modules->native_handles_count = 0;
+  p_modules->native_handles_capacity = 0;
   p_modules->ok = NULL;
 }
 
 void ok_modules_set_loader(module_system* p_modules, ok_loader p_loader) {
   p_modules->loader = p_loader;
+}
+
+// ---------------------------------------------------------------- force-load (OR-3)
+
+// `ok run --native m.so app.ok` (M3's last resort): load a native outside
+// any project, register it under its declared name (or p_name), so bare
+// imports resolve to it. the capability gate applies, failures print their
+// own diagnostic (no import site exists yet).
+bool ok_native_force_load(ok* p_ok, const char* p_path, const char* p_name) {
+  module_system* modules = &p_ok->modules;
+  const ok_allocators* a = &p_ok->raw_alloc;
+
+  if ((p_ok->caps_dropped & OK_CAP_NATIVE_LOAD) != 0) {
+    plain_report(p_path, "native loading is refused: OK_CAP_NATIVE_LOAD is dropped in this ok instance.");
+    return false;
+  }
+  if (modules->loader.load_native == NULL) {
+    plain_report(p_path, "this ok instance's loader has no native lane.");
+    return false;
+  }
+  const ok_native_module* descriptor = NULL;
+  void* handle = NULL;
+  char err[256];
+  err[0] = '\0';
+  if (!modules->loader.load_native(modules->loader.p_ctx, p_path, ok_api_table(), &descriptor, &handle, err,
+                                   sizeof(err))) {
+    if (err[0] != '\0') {
+      plain_report(p_path, "the native module could not be loaded.");
+      fprintf(stderr, "note: %s\n", err);
+    } else {
+      plain_report(p_path, "no native module at this path.");
+    }
+    return false;
+  }
+  const char* key = p_name != NULL ? p_name : descriptor->name;
+  if (registry_find(modules, key) != NULL) {
+    string message = asprint(&p_ok->alloc, "a module is already registered under the name '%s'.", key);
+    plain_report(p_path, message.chars != NULL ? message.chars : "a module is already registered under that name.");
+    string_deinit(&message, &p_ok->alloc);
+    return false;
+  }
+  char* key_owned = mod_strdup(a, key);
+  if (key_owned == NULL) {
+    plain_report(p_path, "out of memory while registering the module.");
+    return false;
+  }
+  const ok_result registered = register_native(modules, descriptor, handle, key_owned, p_path, NULL, NULL, NULL);
+  mod_free(a, key_owned);
+  return registered == OK;
 }

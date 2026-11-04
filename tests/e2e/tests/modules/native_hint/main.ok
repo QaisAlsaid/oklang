@@ -1,2 +1,5 @@
+// a native candidate that exists but is not loadable: the hard error with
+// the loader's own reason as the note (a text file named .so, a corrupt
+// image, a missing ok_native_export all land here)
 import "./fake";
-// expect error: native loading is not available yet
+// expect error: the native module could not be loaded.
