@@ -36,6 +36,7 @@
   X(AST_FUNCTION_EXPRESSION, ast_function_expression)                                                                  \
   X(AST_SPREAD_EXPRESSION, ast_spread_expression)                                                                      \
   X(AST_YIELD_EXPRESSION, ast_yield_expression)                                                                      \
+  X(AST_TO_STRING_EXPRESSION, ast_to_string_expression)                                                              \
   X(AST_EMPTY_STATEMENT, ast_empty_statement)                                                                          \
   X(AST_EXPRESSION_STATEMENT, ast_expression_statement)                                                                \
   X(AST_PRINT_STATEMENT, ast_print_statement)                                                                          \
@@ -395,6 +396,42 @@ bool ast_string_expression_print(const ast_string_expression* p_string) {
 
 string ast_string_expression_asprint(const ast_string_expression* p_string) {
   return create_string_from_string_view(ast_string_expression_get_value(p_string), p_string->expression.node.alloc);
+}
+
+// the P3 interpolation wrapper: one child, no surface syntax of its own
+// (only parse_fstring builds it, for each ${...} region).
+void ast_to_string_expression_init(ast_to_string_expression* p_to_string,
+                                   const token p_token,
+                                   ast_expression* p_right,
+                                   ast_specs* p_specs) {
+  ast_expression_init(&p_to_string->expression, AST_TO_STRING_EXPRESSION, p_token, p_specs);
+  p_to_string->right = p_right;
+}
+
+void ast_to_string_expression_deinit(ast_to_string_expression* p_to_string) {
+  if (p_to_string->right != NULL) {
+    ast_dispatch_deinit((ast_node*)p_to_string->right);
+    p_to_string->expression.node.alloc->release(p_to_string->expression.node.alloc, p_to_string->right);
+    p_to_string->right = NULL;
+  }
+  ast_expression_deinit(&p_to_string->expression);
+}
+
+bool ast_to_string_expression_print(const ast_to_string_expression* p_to_string) {
+  const bool head = printf("to_string(") > 0;
+  const bool body = ast_dispatch_print((ast_node*)p_to_string->right);
+  return head && body && printf(")") > 0;
+}
+
+string ast_to_string_expression_asprint(const ast_to_string_expression* p_to_string) {
+  string inner = ast_dispatch_asprint((ast_node*)p_to_string->right);
+  if (inner.chars == NULL) {
+    return inner;
+  }
+  allocators* alloc = p_to_string->expression.node.alloc;
+  string out = asprint(alloc, "to_string(%s)", inner.chars);
+  string_deinit(&inner, alloc);
+  return out;
 }
 
 void ast_boolean_expression_init(ast_boolean_expression* p_boolean, token p_token, ast_specs* p_specs) {

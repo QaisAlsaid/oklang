@@ -1,0 +1,27 @@
+// the P3 basics: ${} interpolates, everything else is literal. a $ not
+// followed by { is just a dollar, plain chunks stay plain, and the whole
+// literal desugars to string + to_string(expr) chains.
+let name = "ok";
+let n = 42;
+print f"hello ${name}!"; // expect: hello ok!
+print f"n = ${n}, doubled = ${n * 2}"; // expect: n = 42, doubled = 84
+print f"sum: ${1 + 2}"; // expect: sum: 3
+print f"arithmetic rides any expression: ${n > 40}"; // expect: arithmetic rides any expression: true
+print f"no interpolation here"; // expect: no interpolation here
+print f""; // expect:
+print f"$"; // expect: $
+print f"a$ b"; // expect: a$ b
+print f"${n}${n + 1}"; // expect: 4243
+print f"${"a literal region"}"; // expect: a literal region
+print f"leading ${n}"; // expect: leading 42
+print f"${n} trailing"; // expect: 42 trailing
+print f"a${n}b${n}c"; // expect: a42b42c
+print f"null is ${null}"; // expect: null is null
+print f"bools ${true} ${false}"; // expect: bools true false
+print f"doubles ${1.5} ${0.1 + 0.2}"; // expect: doubles 1.5 0.3
+print f"array: ${[1, 2, 3]}"; // expect: array: [1, 2, 3]
+let m = {"key": "value"};
+print f"map: ${m}"; // expect: map: {key: value}
+print f"member: ${m["key"]}"; // expect: member: value
+let outer = f"outer ${f"inner ${1 + 1}"} rest";
+print outer; // expect: outer inner 2 rest

@@ -55,6 +55,9 @@
   X(TOKEN_IDENTIFIER, "identifier")                                                                                    \
   X(TOKEN_NUMBER, "number")                                                                                            \
   X(TOKEN_STRING, "string")                                                                                            \
+  X(TOKEN_FSTRING, "f-string")                                                                                         \
+  X(TOKEN_MSTRING, "multiline string")                                                                                 \
+  X(TOKEN_FMSTRING, "multiline f-string")                                                                              \
   X(TOKEN_PRINT, "print")                                                                                              \
   X(TOKEN_IMPORT, "import")                                                                                            \
   X(TOKEN_FROM, "from")                                                                                                \
@@ -143,6 +146,9 @@ typedef enum {
   TOKEN_IDENTIFIER,
   TOKEN_NUMBER,
   TOKEN_STRING,
+  TOKEN_FSTRING,
+  TOKEN_MSTRING,
+  TOKEN_FMSTRING,
 
   TOKEN_PRINT,
   TOKEN_IMPORT,

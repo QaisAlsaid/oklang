@@ -1,0 +1,6 @@
+// a single-line string (f" or plain ") dies at its raw newline; the error
+// names the opening line (line 5 here), not the line the newline was
+// found on.
+print "before";
+print f"crosses
+a line"; // expect error: 5:7: error: unterminated string.

@@ -1,0 +1,23 @@
+// fm"" stacks both rulings: the m"" multiline body (literal newlines, no
+// dedent) with the f"" interpolation (regions may span the newlines, and
+// the tokens after the literal anchor to their real lines). fm is the
+// ruled stacking order; mf"..." is the identifier `mf` beside a plain
+// string (see errors/mf_is_an_identifier.ok).
+let n = 7;
+print fm"first ${n}
+second ${n + 1}
+third"; // expect: first 7
+// expect: second 8
+// expect: third
+let block = fm"
+  header: ${n}
+  footer
+";
+print len(block); // expect: 22
+print fm'quotes ${"both"} ways'; // expect: quotes both ways
+print fm"a region can
+span ${1 +
+2} lines"; // expect: a region can
+// expect: span 3 lines
+print fm"deep ${ f"x${ fm"y${n}" }" } end"; // expect: deep xy7 end
+print "line anchoring after"; // expect: line anchoring after

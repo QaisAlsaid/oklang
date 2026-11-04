@@ -1,0 +1,20 @@
+// the nesting rulings: expressions nest with brace tracking, so quoted
+// strings inside interpolations work - a brace hidden in a region's string
+// never closes the region, braces nest (map literals), comments hide theirs
+// to the newline, and an f-string inside a region takes the whole ride one
+// level down.
+fu first(s) {
+    return s;
+}
+
+print f"${first("}")}abc"; // expect: }abc
+print f"${first('{')}"; // expect: {
+let m = {"a": 1};
+print f"map literal nests: ${ {"a": 1} }"; // expect: map literal nests: {a: 1}
+print f"subscript rides it: ${m["a"]}"; // expect: subscript rides it: 1
+print f"deep ${ f"a${ f"b${ 3 }c" }d" } e"; // expect: deep ab3cd e
+print fm"comment ${1 // a comment hides the brace on this line
++ 2} tail"; // expect: comment 3 tail
+print f"quotes either way: ${first(' "') }"; // expect: quotes either way:  "
+print f"${[1, [2, 3]]}"; // expect: [1, [2, 3]]
+print f"${ {"in": {"out": true}} }"; // expect: {in: {out: true}}

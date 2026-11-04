@@ -568,6 +568,11 @@ static bool compile_string_expression(compiler* p_compiler,
                                       _register p_dest,
                                       uint32_t p_requested_count,
                                       expression_result* p_out);
+static bool compile_to_string_expression(compiler* p_compiler,
+                                         ast_to_string_expression* p_to_string,
+                                         _register p_dest,
+                                         uint32_t p_requested_count,
+                                         expression_result* p_out);
 static bool compile_prefix_unary_expression(compiler* p_compiler,
                                             ast_prefix_unary_expression* p_prefix,
                                             _register p_dest,
@@ -1067,6 +1072,10 @@ static bool compile_expression(compiler* p_compiler,
   case AST_STRING_EXPRESSION:
     result =
         compile_string_expression(p_compiler, (ast_string_expression*)p_expression, p_dest, p_requested_count, p_out);
+    break;
+  case AST_TO_STRING_EXPRESSION:
+    result = compile_to_string_expression(
+        p_compiler, (ast_to_string_expression*)p_expression, p_dest, p_requested_count, p_out);
     break;
   case AST_PREFIX_UNARY_EXPRESSION:
     result = compile_prefix_unary_expression(
@@ -3796,6 +3805,47 @@ static bool compile_string_expression(compiler* p_compiler,
   p_out->lvalue = (lvalue){LVALUE_INVALID, (location){0, LOCATION_KIND_INVALID, LOCATION_OK}};
   p_out->count = 1;
   gc_guard_down(alloc->gc);
+  return true;
+}
+
+// the P3 interpolation wrapper: compile the child, then OP_TOSTRING over the
+// result - the same conversion `x as str` rides, in place. the operand may
+// stay a constant (the p flag carries it; `f"${1}"` never materializes the 1).
+static bool compile_to_string_expression(compiler* p_compiler,
+                                         ast_to_string_expression* p_expression,
+                                         _register p_dest,
+                                         uint32_t p_requested_count,
+                                         expression_result* p_out) {
+  ASSERT(p_requested_count <= 1);
+  expression_result rhs;
+  if (!compile_expression(p_compiler, p_expression->right, p_dest, 1, &rhs)) {
+    return false;
+  }
+  bool is_constant = false;
+  if (!materialize_into_if_not_common(
+          p_compiler, &is_constant, LOCATION_KIND_CONSTANT, &rhs.value, p_dest, (ast_node*)p_expression)) {
+    return false;
+  }
+  if (p_dest.index > aprime_MAX || rhs.value.index > bprime_MAX) {
+    if (!emit_word2(p_compiler,
+                    encode_OPPABCQ(OP_TOSTRING_LONG, is_constant, p_dest.index, rhs.value.index, 0, 0),
+                    (ast_node*)p_expression)) {
+      report_oom(p_compiler, (ast_node*)p_expression);
+      return false;
+    }
+  } else {
+    if (!emit_word(p_compiler,
+                   encode_oppabprime(OP_TOSTRING, is_constant, p_dest.index, rhs.value.index),
+                   (ast_node*)p_expression)) {
+      report_oom(p_compiler, (ast_node*)p_expression);
+      return false;
+    }
+  }
+
+  p_out->type = EXPRESSION_VALUE;
+  p_out->value = (location){p_dest.index, LOCATION_KIND_REGISTER, LOCATION_OK};
+  p_out->lvalue = (lvalue){LVALUE_VARIABLE, (location){0, LOCATION_KIND_INVALID, LOCATION_OK}};
+  p_out->count = 1;
   return true;
 }
 

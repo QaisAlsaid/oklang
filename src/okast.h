@@ -50,7 +50,9 @@ typedef enum {
   AST_FUNCTION_EXPRESSION,
   AST_SPREAD_EXPRESSION,
   AST_YIELD_EXPRESSION,
-  AST_RANGE_EXPRESSION_END = AST_YIELD_EXPRESSION,
+  AST_TO_STRING_EXPRESSION, // the P3 interpolation wrapper: one child, compiled to
+                            // OP_TOSTRING. only parse_fstring builds it.
+  AST_RANGE_EXPRESSION_END = AST_TO_STRING_EXPRESSION,
 
   AST_RANGE_STATEMENT_BEGIN,
   AST_RANGE_PURE_STATEMENT_BEGIN,
@@ -222,6 +224,19 @@ void ast_string_expression_deinit(ast_string_expression* p_string);
 ok_string_view ast_string_expression_get_value(const ast_string_expression* p_string);
 bool ast_string_expression_print(const ast_string_expression* p_string);
 string ast_string_expression_asprint(const ast_string_expression* p_string);
+
+typedef struct {
+  ast_expression expression;
+  ast_expression* right;
+} ast_to_string_expression;
+
+void ast_to_string_expression_init(ast_to_string_expression* p_to_string,
+                                   const token p_token,
+                                   ast_expression* p_right,
+                                   ast_specs* p_specs);
+void ast_to_string_expression_deinit(ast_to_string_expression* p_to_string);
+bool ast_to_string_expression_print(const ast_to_string_expression* p_to_string);
+string ast_to_string_expression_asprint(const ast_to_string_expression* p_to_string);
 
 typedef struct {
   ast_expression expression;

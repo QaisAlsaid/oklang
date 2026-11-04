@@ -1115,6 +1115,25 @@ perform_negate(vm* p_vm, register_file* p_reg, call_frame* p_frame, uint16_t p_d
   return res;
 }
 
+// the P3 interpolation conversion: exactly the `as str` builtin lane (as_str),
+// reached from OP_TOSTRING. the conversion allocates but never runs nested
+// script, so the caller needs no REFRESH_AFTER_NESTED; every as_str arm makes
+// its final allocation last (the C buffer first, the string object second), so
+// no collect can land between the object's creation and the register write.
+static inline bool as_str(vm* p_vm, value p_value, value* p_result);
+static interpret_result perform_to_string(vm* p_vm,
+                                          register_file* p_reg,
+                                          call_frame* p_frame,
+                                          uint16_t p_dest,
+                                          value p_on) {
+  value out;
+  if (!as_str(p_vm, p_on, &out)) {
+    return (interpret_result){.status = RUNTIME_ERROR, .top_level_return = NULL_AS_VALUE()};
+  }
+  p_reg->array.data[p_frame->registers_base + p_dest] = out;
+  return (interpret_result){.status = RUNTIME_OK, .top_level_return = NULL_AS_VALUE()};
+}
+
 // the numeric union: doubles and the int48 lane, one comparison point. the
 // int48 payload converts to double exactly (2^48 < 2^53), so mixed compares
 // through f64 lose nothing.
@@ -3468,6 +3487,8 @@ static void* ok_dispatch_table[OP__COUNT] = {
   [OP_NOT_LONG] = &&L_OP_NOT_LONG,
   [OP_NEGATE] = &&L_OP_NEGATE,
   [OP_NEGATE_LONG] = &&L_OP_NEGATE_LONG,
+  [OP_TOSTRING] = &&L_OP_TOSTRING,
+  [OP_TOSTRING_LONG] = &&L_OP_TOSTRING_LONG,
   [OP_ADD] = &&L_OP_ADD,
   [OP_ADD_LONG] = &&L_OP_ADD_LONG,
   [OP_SUBTRACT] = &&L_OP_SUBTRACT,
@@ -4042,6 +4063,27 @@ static void* ok_dispatch_table[OP__COUNT] = {
         FAIL_PATH();
       }
       REFRESH_AFTER_NESTED();
+      DISPATCH();
+    }
+    CASE(OP_TOSTRING): {
+      const bool p = p_of(instruction);
+      const uint16_t ap = aprime_of(instruction);
+      const uint16_t bp = bprime_of(instruction);
+      interpret_result res = perform_to_string(p_vm, reg, frame, ap, resolve_operand(frame, reg, bp, p));
+      if (res.status != RUNTIME_OK) {
+        FAIL_PATH();
+      }
+      DISPATCH();
+    }
+    CASE(OP_TOSTRING_LONG): {
+      const word2 words = JOIN_WORD(instruction);
+      const bool p = p_of(instruction);
+      const uint16_t A = A_of(words);
+      const uint16_t B = B_of(words);
+      interpret_result res = perform_to_string(p_vm, reg, frame, A, resolve_operand(frame, reg, B, p));
+      if (res.status != RUNTIME_OK) {
+        FAIL_PATH();
+      }
       DISPATCH();
     }
     CASE(OP_ADD): {

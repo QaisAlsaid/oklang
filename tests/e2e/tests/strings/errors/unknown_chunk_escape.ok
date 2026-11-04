@@ -1,0 +1,3 @@
+// a chunk with a backslash rides the shared unescape lane; unknown escapes
+// never pass silently on any lane.
+print f"bad \q escape"; // expect error: unknown escape '\q'.

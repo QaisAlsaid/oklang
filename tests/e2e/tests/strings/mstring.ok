@@ -1,0 +1,24 @@
+// the m"" ruling: same escape set as normal strings for predictability
+// (so `\$` stays refused - see errors/dollar_escape_refused.ok), literal
+// newlines, no dedent magic, either quote char. an m"" with no ${} in its
+// body is just a string that happens to hold newlines.
+let ml = m"line one
+line two";
+print ml; // expect: line one
+// expect: line two
+print len(ml); // expect: 17
+let indented = m"
+  no dedent magic
+";
+print len(indented); // expect: 19
+print m'also single
+quoted'; // expect: also single
+// expect: quoted
+print m"escapes\nride\tthe same set"; // expect: escapes
+// expect: ride	the same set
+print m"braces { } are literal bytes"; // expect: braces { } are literal bytes
+print m"dollars $ stay dollars"; // expect: dollars $ stay dollars
+let with_quote = m"a \"quoted\" word";
+print with_quote; // expect: a "quoted" word
+print m"\u{1F600}"; // expect: 😀
+print "after"; // expect: after

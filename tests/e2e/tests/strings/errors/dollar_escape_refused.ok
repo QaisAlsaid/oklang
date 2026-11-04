@@ -1,0 +1,4 @@
+// the escape set is fixed: `\$` is refused in plain strings AND in m""
+// (same set as normal strings for predictability). only the interpolating
+// lanes take it - see strings/fstring_escapes.ok.
+print "\$"; // expect error: unknown escape '\$'.

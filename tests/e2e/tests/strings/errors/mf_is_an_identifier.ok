@@ -1,0 +1,4 @@
+// the P3 prefix scan: only immediate adjacency counts, and fm is the ruled
+// stacking order - mf"..." stays the identifier `mf` beside a plain string,
+// which is not a program.
+let x = mf"hi"; // expect error: expected ';' after let declaration.

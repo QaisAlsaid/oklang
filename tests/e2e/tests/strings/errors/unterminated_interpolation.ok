@@ -1,0 +1,4 @@
+// the region never closed, so the string never closed either - the lexer's
+// wall is the source's end, and the error names the string's opening.
+print f"before";
+print f"a${x"; // expect error: 2:7: error: unterminated string.

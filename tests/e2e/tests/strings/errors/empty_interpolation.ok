@@ -1,0 +1,1 @@
+print f"${}"; // expect error: an interpolation wants an expression - '${}' is empty.

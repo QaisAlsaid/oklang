@@ -1,0 +1,17 @@
+// full escaping at string level only, never any lower layer's. the f lane
+// adds exactly one form to the set: `\${` writes the literal dollar-brace
+// (and a `\$` can only mean a plain dollar); everything else is the fixed
+// set plain strings already keep.
+print f"literal \${not a region}"; // expect: literal ${not a region}
+print f"escaped dollar \$5"; // expect: escaped dollar $5
+print f"tab\there"; // expect: tab	here
+print f"nl${1}"; // expect: nl1
+print len(f"a\nb"); // expect: 3
+print len(f"\t${1}"); // expect: 2
+print f"\u{1F600} ok"; // expect: 😀 ok
+print len(f"\u{1F600}!"); // expect: 2
+print f"quotes \" and ' inside"; // expect: quotes " and ' inside
+print f"back\\slash ${1}"; // expect: back\slash 1
+print f"\${1} is not an interpolation"; // expect: ${1} is not an interpolation
+let key = "k";
+print f"\$${key}"; // expect: $k

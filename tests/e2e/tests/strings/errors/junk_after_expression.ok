@@ -1,0 +1,2 @@
+let a = 1;
+print f"${a b}"; // expect error: expected the interpolation to end with its '}'.

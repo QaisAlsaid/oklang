@@ -210,6 +210,9 @@ typedef enum {
   OP_NOT_LONG,           // 2w:   (p, A, B)       -> r[A] = p == 0 then !r[B] otherwise !k[B]
   OP_NEGATE,             // w:    (p, a', b')     -> r[a'] = p == 0 then -r[b'] otherwise -k[b']
   OP_NEGATE_LONG,        // 2w:   (p, A, B)       -> r[A] = p == 0 then -r[B] otherwise -k[B]
+  OP_TOSTRING,           // w:    (p, a', b')     -> r[a'] = (p == 0 then r[b'] otherwise k[b']) as str; the P3
+                         //                     f-string interpolation wrapper's opcode
+  OP_TOSTRING_LONG,      // 2w:   (p, A, B)       -> r[A] = (p == 0 then r[B] otherwise k[B]) as str
   OP_ADD,                // w:    (p, a, b, c)    -> r[a] = r[b] + p then k[c] otherwise r[c]
   OP_ADD_LONG,           // 2w:   (p, A, B, C, q) -> r[A] = q then k[B] otherwise r[B] + p then k[C] otherwise r[C];
   OP_SUBTRACT,           // w:    (p, a, b, c)    -> r[a] = r[b] - (p then k[c] otherwise r[c])
@@ -669,6 +672,7 @@ static inline uint32_t opcode_word_count(opcode p_op) {
   case OP_CLOSURE_LONG:
   case OP_NOT_LONG:
   case OP_NEGATE_LONG:
+  case OP_TOSTRING_LONG:
   case OP_ADD_LONG:
   case OP_SUBTRACT_LONG:
   case OP_MULTIPLY_LONG:

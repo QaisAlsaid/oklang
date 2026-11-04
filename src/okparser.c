@@ -73,6 +73,7 @@ static ast_expression* parse_access(
 static ast_expression* parse_this(parser* p_parser, token p_trigger);
 static ast_expression* parse_super(parser* p_parser, token p_trigger);
 static ast_expression* parse_string(parser* p_parser, token p_trigger);
+static ast_expression* parse_fstring(parser* p_parser, token p_trigger);
 static ast_expression* parse_number(parser* p_parser, token p_trigger);
 static ast_expression* parse_boolean(parser* p_parser, token p_trigger);
 static ast_expression* parse_null(parser* p_parser, token p_trigger);
@@ -148,6 +149,9 @@ static const parse_rule parse_rules[] = {
     [TOKEN_IDENTIFIER] = {parse_identifier, NULL, PREC_NONE},
     [TOKEN_NUMBER] = {parse_number, NULL, PREC_NONE},
     [TOKEN_STRING] = {parse_string, NULL, PREC_NONE},
+    [TOKEN_FSTRING] = {parse_fstring, NULL, PREC_NONE},
+    [TOKEN_MSTRING] = {parse_fstring, NULL, PREC_NONE},
+    [TOKEN_FMSTRING] = {parse_fstring, NULL, PREC_NONE},
     [TOKEN_PRINT] = {NULL, NULL, PREC_NONE},
     [TOKEN_IMPORT] = {NULL, NULL, PREC_NONE},
     [TOKEN_AS] = {NULL, parse_binary_infix, PREC_AS},
@@ -491,7 +495,15 @@ ast_expression* parse_identifier(parser* p_parser, token p_trigger) {
 // and \u{HEX} (1-6 digits, <= U+10FFFF, no surrogates). anything else
 // after a backslash is a located compile error - unknown escapes never
 // pass silently. returns false with the error already reported.
-static bool unescape_string_literal(parser* p_parser, token p_token, ast_string_expression* p_out) {
+// p_dollar_escape is the P3 f-string lane: `\${` writes the literal
+// dollar-brace (the ruling - the only way an interpolation can be kept out
+// of a body's reach), and a `\$` in an f-string can only mean a plain
+// dollar. plain strings keep the fixed escape set and refuse `\$` like any
+// unknown.
+static bool unescape_string_literal(parser* p_parser,
+                                    token p_token,
+                                    ast_string_expression* p_out,
+                                    bool p_dollar_escape) {
   allocators* alloc = p_parser->alloc;
   const char* raw = p_token.start + 1;
   const uint32_t raw_length = p_token.length >= 2 ? p_token.length - 2 : 0;
@@ -540,6 +552,23 @@ static bool unescape_string_literal(parser* p_parser, token p_token, ast_string_
     case '\'':
     case '"':
       out[written++] = e;
+      ++i;
+      break;
+    case '$':
+      if (!p_dollar_escape) {
+        char message[48];
+        const int printed = snprintf(message, sizeof(message), "unknown escape '\\%c'.", e);
+        if (printed > 0 && (size_t)printed < sizeof(message)) {
+          error_at(p_parser, p_token, ok_create_string_view(message, (uint32_t)printed, false));
+        } else {
+          error_at(p_parser,
+                   p_token,
+                   ok_create_string_view("unknown escape.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+        }
+        ok = false;
+        break;
+      }
+      out[written++] = '$';
       ++i;
       break;
     case 'u': {
@@ -655,7 +684,7 @@ ast_expression* parse_string(parser* p_parser, token p_trigger) {
     const uint32_t raw_length = p_trigger.length >= 2 ? p_trigger.length - 2 : 0;
     for (uint32_t i = 0; i < raw_length; ++i) {
       if (raw[i] == '\\') {
-        if (!unescape_string_literal(p_parser, p_trigger, string)) {
+        if (!unescape_string_literal(p_parser, p_trigger, string, false)) {
           ast_string_expression_deinit(string);
           alloc->release(alloc, string);
           return NULL;
@@ -665,6 +694,289 @@ ast_expression* parse_string(parser* p_parser, token p_trigger) {
     }
   }
   return (ast_expression*)string;
+}
+
+// a synthetic token over a slice of the f-string's body: the chunk and
+// region positions carry honest line/column/offset (walked from the
+// f-string token itself), so diagnostics inside multiline bodies land on
+// the real bytes.
+static token fstring_part_token(const token* p_base, const char* p_start, uint32_t p_length) {
+  token out;
+  out.type = TOKEN_STRING;
+  out.start = p_start;
+  out.length = p_length;
+  uint32_t line = p_base->line_info.line;
+  const char* last_newline = NULL;
+  for (const char* p = p_base->start; p < p_start; ++p) {
+    if (*p == '\n') {
+      ++line;
+      last_newline = p;
+    }
+  }
+  out.line_info.line = line;
+  out.line_info.column = last_newline != NULL
+                             ? (uint32_t)(p_start - last_newline)
+                             : p_base->line_info.column + (uint32_t)(p_start - p_base->start);
+  out.line_info.offset = p_base->line_info.offset + (uint32_t)(p_start - p_base->start);
+  return out;
+}
+
+// the real line start + number for a position inside the f-string token:
+// forward from the token for the count, then back to the previous newline
+// for the line's first byte (the region lexer anchors columns there, so
+// every token the interpolation mints carries a true column).
+static void fstring_line_of(const char* p_src_base,
+                            const token* p_base,
+                            const char* p_pos,
+                            const char** p_line_start,
+                            uint32_t* p_line) {
+  uint32_t line = p_base->line_info.line;
+  for (const char* p = p_base->start; p < p_pos; ++p) {
+    if (*p == '\n') {
+      ++line;
+    }
+  }
+  const char* line_start = p_pos;
+  while (line_start > p_src_base && line_start[-1] != '\n') {
+    --line_start;
+  }
+  *p_line_start = line_start;
+  *p_line = line;
+}
+
+// one literal chunk of an f-string body: a plain string node. the token is
+// synthetic - one byte left of the chunk, so the string slicing arithmetic
+// (start+1 / length-2) lands on the chunk exactly - and a chunk carrying a
+// backslash rides the shared unescape lane (the `\${` ruling on for the
+// interpolating lanes; plain strings keep the fixed escape set).
+static ast_expression* parse_fstring_chunk(parser* p_parser,
+                                           const token* p_base,
+                                           const char* p_start,
+                                           uint32_t p_length,
+                                           bool p_dollar_escape) {
+  allocators* alloc = p_parser->alloc;
+  ast_string_expression* string = (ast_string_expression*)alloc->allocate(alloc, sizeof(ast_string_expression));
+  if (string == NULL) {
+    error_at(p_parser,
+             *p_base,
+             ok_create_string_view("failed to allocate memory for string node.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL;
+  }
+  ast_specs s = {alloc};
+  const token slice = fstring_part_token(p_base, p_start - 1, p_length + 2u);
+  ast_string_expression_init(string, slice, &s);
+  for (uint32_t i = 0; i < p_length; ++i) {
+    if (p_start[i] == '\\') {
+      if (!unescape_string_literal(p_parser, slice, string, p_dollar_escape)) {
+        ast_string_expression_deinit(string);
+        alloc->release(alloc, string);
+        return NULL;
+      }
+      break;
+    }
+  }
+  return (ast_expression*)string;
+}
+
+// fold one more part onto the desugar chain: infix ADD, the same operator
+// two string operands already concatenate through (the VM's both-strings
+// lane). on failure p_next is released and p_acc stays alive for the caller.
+static ast_expression* parse_fstring_fold(parser* p_parser,
+                                          const token* p_base,
+                                          ast_expression* p_acc,
+                                          ast_expression* p_next) {
+  if (p_acc == NULL) {
+    return p_next;
+  }
+  allocators* alloc = p_parser->alloc;
+  token plus = fstring_part_token(p_base, p_base->start, p_base->length);
+  plus.type = TOKEN_PLUS;
+  ast_infix_binary_expression* infix =
+      (ast_infix_binary_expression*)alloc->allocate(alloc, sizeof(ast_infix_binary_expression));
+  if (infix == NULL) {
+    error_at(p_parser,
+             *p_base,
+             ok_create_string_view("failed to allocate memory for the f-string's fold node.",
+                                   OK_STRING_VIEW_CALCULATE_LENGTH,
+                                   true));
+    ast_dispatch_deinit((ast_node*)p_next);
+    alloc->release(alloc, p_next);
+    return NULL;
+  }
+  ast_specs s = {alloc};
+  ast_infix_binary_expression_init(
+      infix, plus, operator_type_from_token_type(TOKEN_PLUS, false), p_acc, p_next, &s);
+  return (ast_expression*)infix;
+}
+
+// one ${...} region: a sub-parser over the region's bytes. the region lexer
+// stops AT the closing brace (it mints the sub-parse's EOF wall), so nothing
+// inside can run past the interpolation; positions stay absolute, so the
+// region's diagnostics print the real source lines. the parsed expression
+// keeps its own nodes and rides into the parent tree untouched, through the
+// to_string wrapper.
+static ast_expression* parse_interpolation_region(parser* p_parser,
+                                                  const token* p_base,
+                                                  const char* p_start,
+                                                  const char* p_end) {
+  const char* line_start;
+  uint32_t line;
+  fstring_line_of(p_parser->source->code, p_base, p_start, &line_start, &line);
+  parser sub;
+  sub.panic = false;
+  sub.had_error = false;
+  sub.defer_serial = 0;
+  sub.source = p_parser->source;
+  sub.alloc = p_parser->alloc;
+  sub.current.type = TOKEN_EOF;
+  sub.current.start = p_start;
+  sub.current.length = 0;
+  sub.current.line_info.offset = (uint32_t)(p_start - p_parser->source->code);
+  sub.current.line_info.line = line;
+  sub.current.line_info.column = (uint32_t)(p_start - line_start) + 1;
+  sub.previous = sub.current;
+  lexer_init_region(&sub.lexer, p_parser->source->code, p_start, p_end, line_start, line);
+  ast_expression* inner = NULL;
+  if (advance(&sub)) {
+    if (sub.current.type == TOKEN_EOF) {
+      error_at(&sub,
+               sub.current,
+               ok_create_string_view("an interpolation wants an expression - '${}' is empty.",
+                                     OK_STRING_VIEW_CALCULATE_LENGTH,
+                                     true));
+    } else if (advance(&sub)) {
+      inner = parse_expression(&sub, PREC_NONE);
+      if (inner != NULL && sub.current.type == TOKEN_COLON) {
+        // the format-spec ruling: ':' after the expression is reserved so a
+        // later spec addition breaks nobody - for now it is a located error.
+        error_at(&sub,
+                 sub.current,
+                 ok_create_string_view("a ':' after the interpolation's expression is reserved (format specs are not supported yet).",
+                                       OK_STRING_VIEW_CALCULATE_LENGTH,
+                                       true));
+        inner = NULL;
+      } else if (inner != NULL && sub.current.type != TOKEN_EOF) {
+        error_at(&sub,
+                 sub.current,
+                 ok_create_string_view("expected the interpolation to end with its '}'.",
+                                       OK_STRING_VIEW_CALCULATE_LENGTH,
+                                       true));
+        inner = NULL;
+      }
+    }
+  }
+  lexer_deinit(&sub.lexer);
+  p_parser->had_error = p_parser->had_error || sub.had_error;
+  p_parser->panic = p_parser->panic || sub.panic;
+  if (inner == NULL) {
+    return NULL;
+  }
+  return inner;
+}
+
+// the P3 f-string, re-opened. an f"..."/fm"..."/m"..." is ONE lexer token;
+// this walks its body for ${...} regions (escapes never open one - `\${` is
+// the ruled literal dollar-brace), parses each region with the region
+// sub-parser, and desugars the whole literal to a left-leaning chain of
+// string + to_string(expr) + string ... over the same infix ADD two plain
+// string operands already ride. m"..." takes the same road with regions
+// off: no ${ in its body, the desugar is a single plain string node, so a
+// multiline literal is just a string that happens to hold newlines. (fm""
+// is the ruled stacking order; mf"" stays the identifier `mf` next to a
+// plain string - the lexer's call, not ours.)
+ast_expression* parse_fstring(parser* p_parser, token p_trigger) {
+  allocators* alloc = p_parser->alloc;
+  const bool interpolate = p_trigger.type != TOKEN_MSTRING;
+  const uint32_t prefix = (p_trigger.type == TOKEN_FMSTRING) ? 2u : 1u;
+  const char* body = p_trigger.start + prefix + 1u;
+  const uint32_t body_length = p_trigger.length >= prefix + 2u ? p_trigger.length - (prefix + 2u) : 0u;
+  const char* const body_end = body + body_length;
+
+  ast_expression* acc = NULL;
+  const char* chunk = body;
+  uint32_t i = 0;
+  while (i < body_length) {
+    if (body[i] == '\\') {
+      i += 2u; // an escape never opens a region (the `\${` ruling)
+      continue;
+    }
+    if (!(interpolate && body[i] == '$' && i + 1u < body_length && body[i + 1u] == '{')) {
+      ++i;
+      continue;
+    }
+    const char* const region = body + i + 2u;
+    const char* const close = ok_fstring_region_end(region, body_end);
+    if (close == NULL) {
+      error_at(p_parser,
+               p_trigger,
+               ok_create_string_view("unterminated interpolation - a '${' wants its matching '}'.",
+                                     OK_STRING_VIEW_CALCULATE_LENGTH,
+                                     true));
+      ast_dispatch_deinit((ast_node*)acc);
+      alloc->release(alloc, acc);
+      return NULL;
+    }
+    if (region - 2u > chunk) {
+      ast_expression* part =
+          parse_fstring_chunk(p_parser, &p_trigger, chunk, (uint32_t)(region - 2u - chunk), interpolate);
+      if (part != NULL) {
+        part = parse_fstring_fold(p_parser, &p_trigger, acc, part);
+      }
+      if (part == NULL) {
+        ast_dispatch_deinit((ast_node*)acc);
+        alloc->release(alloc, acc);
+        return NULL;
+      }
+      acc = part;
+    }
+    ast_expression* inner = parse_interpolation_region(p_parser, &p_trigger, region, close);
+    if (inner == NULL) {
+      ast_dispatch_deinit((ast_node*)acc);
+      alloc->release(alloc, acc);
+      return NULL;
+    }
+    ast_to_string_expression* wrap =
+        (ast_to_string_expression*)alloc->allocate(alloc, sizeof(ast_to_string_expression));
+    if (wrap == NULL) {
+      error_at(p_parser,
+               p_trigger,
+               ok_create_string_view("failed to allocate memory for the interpolation's node.",
+                                     OK_STRING_VIEW_CALCULATE_LENGTH,
+                                     true));
+      ast_dispatch_deinit((ast_node*)inner);
+      alloc->release(alloc, inner);
+      ast_dispatch_deinit((ast_node*)acc);
+      alloc->release(alloc, acc);
+      return NULL;
+    }
+    ast_specs s = {alloc};
+    token region_token = fstring_part_token(&p_trigger, body + i, 2u); // the '${' itself
+    ast_to_string_expression_init(wrap, region_token, inner, &s);
+    ast_expression* folded = parse_fstring_fold(p_parser, &p_trigger, acc, (ast_expression*)wrap);
+    if (folded == NULL) {
+      ast_dispatch_deinit((ast_node*)acc);
+      alloc->release(alloc, acc);
+      return NULL;
+    }
+    acc = folded;
+    chunk = close + 1u;
+    i = (uint32_t)(close + 1u - body);
+  }
+  // the tail chunk (or the whole body, when nothing interpolated: an m" or
+  // an f" with no regions desugars to a single plain string node)
+  if (chunk < body_end || acc == NULL) {
+    ast_expression* part = parse_fstring_chunk(p_parser, &p_trigger, chunk, (uint32_t)(body_end - chunk), interpolate);
+    if (part != NULL) {
+      part = parse_fstring_fold(p_parser, &p_trigger, acc, part);
+    }
+    if (part == NULL) {
+      ast_dispatch_deinit((ast_node*)acc);
+      alloc->release(alloc, acc);
+      return NULL;
+    }
+    acc = part;
+  }
+  return acc;
 }
 
 ast_expression* parse_number(parser* p_parser, token p_trigger) {
@@ -719,6 +1031,9 @@ static bool token_starts_expression(token_type p_type) {
   case TOKEN_IDENTIFIER:
   case TOKEN_NUMBER:
   case TOKEN_STRING:
+  case TOKEN_FSTRING:
+  case TOKEN_MSTRING:
+  case TOKEN_FMSTRING:
   case TOKEN_LEFT_PAREN:
   case TOKEN_LEFT_BRACE:
   case TOKEN_LEFT_BRACKET:

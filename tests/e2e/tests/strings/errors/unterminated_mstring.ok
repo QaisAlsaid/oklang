@@ -1,0 +1,7 @@
+// the m"" ruling: the unterminated error names the OPENING line (line 4
+// here), not whatever line the wall was found on.
+print "before";
+print m"starts here
+and runs
+and never
+ends // expect error: 4:7: error: unterminated string.

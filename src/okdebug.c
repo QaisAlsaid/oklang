@@ -42,6 +42,8 @@ static const char* const OPCODE_NAMES[] = {
     "NOT_LONG",
     "NEGATE",
     "NEGATE_LONG",
+    "TOSTRING",
+    "TOSTRING_LONG",
     "ADD",
     "ADD_LONG",
     "SUBTRACT",
@@ -550,6 +552,22 @@ uint32_t debug_disassemble_instruction(disassembler* p_disassembler, uint32_t p_
     break;
   case OP_NEGATE_LONG:
     printf("r%u = -%s", A, p ? "k" : "r");
+    if (p) {
+      print_constant_inline(chunk, B);
+    } else {
+      printf("%u", B);
+    }
+    break;
+  case OP_TOSTRING:
+    printf("r%u = to_string %s", ap, p ? "k" : "r");
+    if (p) {
+      print_constant_inline(chunk, bp);
+    } else {
+      printf("%u", bp);
+    }
+    break;
+  case OP_TOSTRING_LONG:
+    printf("r%u = to_string %s", A, p ? "k" : "r");
     if (p) {
       print_constant_inline(chunk, B);
     } else {

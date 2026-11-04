@@ -10,9 +10,26 @@ void lexer_init(lexer* p_lexer, const char* p_src) {
   p_lexer->start = p_src;
   p_lexer->current = p_src;
   p_lexer->line_start = p_src;
+  p_lexer->end = NULL; // whole-source mode: the NUL is the end
   p_lexer->line_info.line = 1;
   p_lexer->line_info.offset = 0;
   p_lexer->line_info.column = 1;
+}
+
+void lexer_init_region(lexer* p_lexer,
+                       const char* p_src_base,
+                       const char* p_region_start,
+                       const char* p_region_end,
+                       const char* p_line_start,
+                       uint32_t p_line) {
+  p_lexer->src = p_src_base;
+  p_lexer->start = p_region_start;
+  p_lexer->current = p_region_start;
+  p_lexer->line_start = p_line_start;
+  p_lexer->end = p_region_end;
+  p_lexer->line_info.line = p_line;
+  p_lexer->line_info.offset = (uint32_t)(p_region_start - p_src_base);
+  p_lexer->line_info.column = (uint32_t)(p_region_start - p_line_start) + 1;
 }
 
 void lexer_deinit(lexer* p_lexer) {
@@ -20,12 +37,16 @@ void lexer_deinit(lexer* p_lexer) {
   p_lexer->start = NULL;
   p_lexer->current = NULL;
   p_lexer->line_start = NULL;
+  p_lexer->end = NULL;
   p_lexer->line_info.line = 0;
   p_lexer->line_info.offset = 0;
   p_lexer->line_info.column = 0;
 }
 
 static bool at_end(lexer* p_lexer) {
+  if (p_lexer->end != NULL && p_lexer->current >= p_lexer->end) {
+    return true; // region mode: the closing brace is the wall
+  }
   return *p_lexer->current == '\0';
 }
 
@@ -73,44 +94,182 @@ static char peek1(lexer* p_lexer) {
   return p_lexer->current[1];
 }
 
-static token string(lexer* p_lexer, char p_start, bool p_multiline) {
-  while (peek(p_lexer) != p_start && !at_end(p_lexer)) {
-    if (peek(p_lexer) == '\\') {
-      // the P2 string rework: an escape never terminates the string. the
-      // raw bytes ride through here; the parser's unescape lane owns the
-      // meaning (and its errors).
-      advance(p_lexer);
-      if (at_end(p_lexer)) {
-        break;
+static bool is_allowed_identifier(char c);
+
+// ---------------------------------------------------------------------------
+// the P3 byte scanners: one extent algorithm, two riders.
+//
+// an f-string is ONE token, so the lexer must know where its interpolations
+// end (a region's strings may quote the body's own quote char), and the
+// parser must later re-derive the same extents when it re-opens the token.
+// both ride these scanners - one source of truth, no drift. they are pure
+// byte walks: extents only, no line counting (the lexer catches its own
+// position up afterwards; the parser only ever wanted the span).
+//
+// p_wall semantics: NULL means the source's NUL is the wall (whole-source
+// lexing); otherwise a hard stop (region lexing stops at the interpolation's
+// closing brace, the parser's re-scan at the token's closing quote).
+static bool at_wall(const char* p, const char* p_wall) {
+  if (p_wall != NULL) {
+    return p >= p_wall;
+  }
+  return *p == '\0';
+}
+
+static const char* scan_region(const char* p, const char* p_wall, const char** p_died);
+
+// scan a string body (from just past its opening quote) to its closing
+// quote. an escape never closes anything (the P2 ruling: `\` + newline
+// rides multiline only); p_interpolate skips ${...} regions, which may
+// quote the body's own quote char. returns the closing quote's position,
+// or NULL with *p_died at the byte the wall was found on.
+static const char* scan_body(const char* p,
+                             const char* p_wall,
+                             char p_quote,
+                             bool p_multiline,
+                             bool p_interpolate,
+                             const char** p_died) {
+  for (;;) {
+    if (at_wall(p, p_wall)) {
+      *p_died = p;
+      return NULL;
+    }
+    const char c = *p;
+    if (c == '\\') {
+      ++p; // the escape byte never closes anything
+      if (at_wall(p, p_wall)) {
+        *p_died = p;
+        return NULL; // a dangling escape at the wall
       }
-      if (peek(p_lexer) == '\n') {
-        if (!p_multiline) {
-          return create_error_token(p_lexer, "unterminated string.");
-        }
-        p_lexer->line_info.line++;
-        advance(p_lexer);
-        p_lexer->line_start = p_lexer->current;
-        continue;
+      if (*p == '\n' && !p_multiline) {
+        *p_died = p;
+        return NULL; // a single-line string dies at its newline
       }
-      advance(p_lexer);
+      ++p;
       continue;
     }
-    if (peek(p_lexer) == '\n' && !p_multiline) {
-      token error = create_error_token(p_lexer, "unterminated string.");
-      return error;
-    } else if (peek(p_lexer) == '\n') {
-      p_lexer->line_info.line++;
-      advance(p_lexer);
-      p_lexer->line_start = p_lexer->current;
+    if (c == '\n' && !p_multiline) {
+      *p_died = p;
+      return NULL;
+    }
+    if (p_interpolate && c == '$' && !at_wall(p + 1, p_wall) && p[1] == '{') {
+      const char* close = scan_region(p + 2, p_wall, p_died);
+      if (close == NULL) {
+        return NULL;
+      }
+      p = close + 1;
       continue;
+    }
+    if (c == p_quote) {
+      return p;
+    }
+    ++p;
+  }
+}
+
+// scan a ${...} region (from just past its '${') to its matching brace.
+// braces nest (map literals); line comments hide theirs to the newline; a
+// quoted string hides its own - and one riding an f/fm prefix is an f-string
+// itself, whose regions may in turn quote this region's quote char, so its
+// body takes the same scan one level down. (the prefix test mirrors the
+// lexer's own token start: an f before the quote only counts when the byte
+// before IT cannot continue an identifier - `xf"` is the identifier `xf`
+// then a plain string. `2f"` disagrees only in garbage source, where a
+// number glued to an f-string is not a program either side accepts.)
+static const char* scan_region(const char* p, const char* p_wall, const char** p_died) {
+  uint32_t depth = 1;
+  for (;;) {
+    if (at_wall(p, p_wall)) {
+      *p_died = p;
+      return NULL;
+    }
+    const char c = *p;
+    if (c == '/' && !at_wall(p + 1, p_wall) && p[1] == '/') {
+      p += 2; // a line comment hides braces to its newline
+      while (!at_wall(p, p_wall) && *p != '\n') {
+        ++p;
+      }
+      continue;
+    }
+    if (c == '\'' || c == '"') {
+      const bool f_prefix = p[-1] == 'f' && !is_allowed_identifier(p[-2]);
+      const bool m_prefix = p[-1] == 'm' && !is_allowed_identifier(p[-2]);
+      const bool fm_prefix = p[-1] == 'm' && p[-2] == 'f' && !is_allowed_identifier(p[-3]);
+      ++p; // the quote
+      const char* close = scan_body(p, p_wall, c, m_prefix || fm_prefix, f_prefix || fm_prefix, p_died);
+      if (close == NULL) {
+        return NULL;
+      }
+      p = close + 1;
+      continue;
+    }
+    if (c == '{') {
+      ++depth;
+    } else if (c == '}') {
+      if (--depth == 0) {
+        return p;
+      }
+    }
+    ++p;
+  }
+}
+
+// the P3 prefixed strings ride the same scan: f"..." interpolates, m"..."
+// spans lines, fm"..." stacks both (the prefix lives in the token bytes; the
+// parser's slice arithmetic knows each type's prefix length). a successful
+// token reports its OPENING line and column - a multiline body crosses
+// newlines, and the unterminated error especially must name the opening line
+// (the m"" ruling), not whatever line the wall was found on.
+static token string(lexer* p_lexer, char p_start, bool p_multiline, bool p_interpolate) {
+  const uint32_t opening_line = p_lexer->line_info.line;
+  const char* opening_line_start = p_lexer->line_start;
+  // the body scan is a pure byte walk; the wall is the region's hard end
+  // when lexing inside an interpolation, else the source's NUL.
+  const char* const wall = p_lexer->end;
+  const char* const body = p_lexer->current; // just past the opening quote
+  const char* died = body;
+  const char* close = scan_body(body, wall, p_start, p_multiline, p_interpolate, &died);
+  if (close == NULL) {
+    // catch up to where the scan died, counting lines honestly (the error
+    // span and every token after it keep real positions)
+    while (p_lexer->current < died) {
+      if (*p_lexer->current == '\n') {
+        p_lexer->line_info.line++;
+        p_lexer->line_start = p_lexer->current + 1;
+      }
+      advance(p_lexer);
+    }
+    token error = create_error_token(p_lexer, "unterminated string.");
+    error.line_info.line = opening_line;
+    error.line_info.column = (uint32_t)(p_lexer->start - opening_line_start) + 1;
+    return error;
+  }
+  // catch up to the closing quote, counting lines honestly (a multiline
+  // body crosses newlines; every later token anchors to its real line)
+  while (p_lexer->current < close) {
+    if (*p_lexer->current == '\n') {
+      p_lexer->line_info.line++;
+      p_lexer->line_start = p_lexer->current + 1;
     }
     advance(p_lexer);
   }
-  if (at_end(p_lexer)) {
-    return create_error_token(p_lexer, "unterminated string.");
-  }
-  advance(p_lexer);
-  return create_token(p_lexer, TOKEN_STRING);
+  advance(p_lexer); // the closing quote
+  const token_type type = p_multiline ? (p_interpolate ? TOKEN_FMSTRING : TOKEN_MSTRING)
+                                      : (p_interpolate ? TOKEN_FSTRING : TOKEN_STRING);
+  token out = create_token(p_lexer, type);
+  out.line_info.line = opening_line;
+  out.line_info.column = (uint32_t)(p_lexer->start - opening_line_start) + 1;
+  return out;
+}
+
+// the parser's f-string re-scan: where does the ${...} region starting at
+// p_start end? the same scanner the lexer rode to close the token - one
+// source of truth for the interpolation extents, so they can never drift
+// from the token's own boundaries. p_wall is the token body's end (its
+// closing quote). returns the matching '}', or NULL when the wall wins.
+const char* ok_fstring_region_end(const char* p_start, const char* p_wall) {
+  const char* died = p_start;
+  return scan_region(p_start, p_wall, &died);
 }
 
 static token number(lexer* p_lexer) {
@@ -438,12 +597,30 @@ start:
   case '\r':
     goto start;
   case '\'':
-    return string(p_lexer, '\'', false);
+    return string(p_lexer, '\'', false, false);
   case '"':
-    return string(p_lexer, '"', false);
+    return string(p_lexer, '"', false, false);
   default: {
     if (isdigit(c)) {
       return number(p_lexer);
+    }
+    // the P3 string prefixes: f" m" fm" (either quote char). only immediate
+    // adjacency counts - `f "x"` is an identifier then a separate string,
+    // and `mf"` stays the identifier `mf` (fm is the ruled stacking order).
+    // anything else falls through to the identifier scan unchanged.
+    if (c == 'f' || c == 'm') {
+      const bool interpolate = (c == 'f');
+      if (peek(p_lexer) == '\'' || peek(p_lexer) == '"') {
+        const char quote = advance(p_lexer);
+        // f" interpolates without spanning; m" spans without interpolating
+        return string(p_lexer, quote, !interpolate, interpolate);
+      }
+      if (interpolate && peek(p_lexer) == 'm' &&
+          (peek1(p_lexer) == '\'' || peek1(p_lexer) == '"')) {
+        advance(p_lexer); // the m
+        const char quote = advance(p_lexer);
+        return string(p_lexer, quote, true, true);
+      }
     }
     if (is_allowed_identifier(c)) {
       return identifier(p_lexer);

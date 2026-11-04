@@ -1,0 +1,4 @@
+// no format-spec mini-language: ':' after the expression is reserved and
+// errors for now, so a later spec addition breaks nobody.
+let n = 5;
+print f"${n:03d}"; // expect error: a ':' after the interpolation's expression is reserved
