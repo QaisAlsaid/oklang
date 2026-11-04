@@ -1,0 +1,4 @@
+// log's domain is the positives (log(0) is -infinity, not a value).
+import "std/math" as math;
+print math.log(0);
+// expect error: math.log expects a positive number.

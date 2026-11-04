@@ -1,0 +1,77 @@
+// the P3 str toolkit: methods on the str class only (std.str is killed,
+// the class surface is the canonical surface). byte-exact matching over
+// the utf-8 payload, codepoint answers where an index is involved.
+let s = "  \t hi \n  ";
+print s.trim(); // expect: hi
+print "   ".trim(); // expect:
+print "a b".trim(); // expect: a b
+print "".trim(); // expect:
+
+let pieces = "a,b,,c".split(",");
+print len(pieces); // expect: 4
+print pieces[0]; // expect: a
+print pieces[2]; // expect:
+print pieces[3]; // expect: c
+print len("abc".split("z")); // expect: 1
+print "abc".split("z")[0]; // expect: abc
+let commas = ",,".split(",");
+print len(commas); // expect: 3
+print commas[0]; // expect:
+// multibyte: splitting a well-formed utf-8 string on a well-formed needle
+// can never split a codepoint
+let unicode_pieces = "héllo".split("l");
+print len(unicode_pieces); // expect: 3
+print unicode_pieces[0]; // expect: hé
+print unicode_pieces[2]; // expect: o
+
+print "-".join(["a", "b", "c"]); // expect: a-b-c
+print "-".join([]); // expect:
+print "-".join(["solo"]); // expect: solo
+print " + ".join(["héllo", "wörld"]); // expect: héllo + wörld
+
+print "hello".contains("ell"); // expect: true
+print "hello".contains("z"); // expect: false
+print "hello".contains(""); // expect: true
+print "héllo".contains("é"); // expect: true
+
+print "hello".starts_with("hell"); // expect: true
+print "hello".starts_with(""); // expect: true
+print "hello".starts_with("hello!"); // expect: false
+print "hello".ends_with("llo"); // expect: true
+print "hello".ends_with(""); // expect: true
+print "hello".ends_with("xhello"); // expect: false
+
+print "hello".index_of("l"); // expect: 2
+print "hello".index_of("lo"); // expect: 3
+print "hello".index_of("z"); // expect: null
+print "hello".index_of(""); // expect: 0
+// the index unit is codepoints, same as s[i]
+print "héllo".index_of("l"); // expect: 2
+print "héllo".index_of("o"); // expect: 4
+
+print "hello".upper(); // expect: HELLO
+print "HeLLo".lower(); // expect: hello
+// the ASCII fold only: every non-ASCII byte rides through untouched
+print "héLLo".upper(); // expect: HéLLO
+print "HÉLLO".lower(); // expect: hÉllo
+print "a1b!".upper(); // expect: A1B!
+print "123".upper(); // expect: 123
+
+print "ab".repeat(3); // expect: ababab
+print "ab".repeat(0); // expect:
+print "ab".repeat(1); // expect: ab
+print "é".repeat(3); // expect: ééé
+
+// the byte/codepoint pair: len answers codepoints, bytes is the embedder's
+// byte door surfaced. two views, one string.
+print "héllo".bytes(); // expect: 6
+print "héllo".codepoints(); // expect: 5
+print len("héllo"); // expect: 5
+print "".bytes(); // expect: 0
+print "".codepoints(); // expect: 0
+print "abc".bytes(); // expect: 3
+print "abc".codepoints(); // expect: 3
+
+// the toolkit composes with the P3 interpolation lane
+print f"${"x".repeat(3)}!".upper(); // expect: XXX!
+print ", ".join(["a", f"${1 + 1}"] ); // expect: a, 2

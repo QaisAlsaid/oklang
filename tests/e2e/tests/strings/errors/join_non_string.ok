@@ -1,0 +1,4 @@
+// every member must already be a string - the explicit `as str` lane
+// exists, join never rides it implicitly (the conversion ruling).
+print "-".join(["a", 1]);
+// expect error: invalid argument: 'join' expects an array of strings.

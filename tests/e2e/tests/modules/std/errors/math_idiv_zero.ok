@@ -1,0 +1,4 @@
+// the ruled idiv error: the zero divisor is refused, hard.
+import "std/math" as math;
+print math.idiv(1, 0);
+// expect error: math.idiv expects a non-zero divisor.

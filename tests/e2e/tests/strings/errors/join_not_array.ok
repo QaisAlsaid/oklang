@@ -1,0 +1,3 @@
+// join's argument is an array, the receiver is the separator.
+print "-".join("abc");
+// expect error: invalid argument: 'join' expects an array.

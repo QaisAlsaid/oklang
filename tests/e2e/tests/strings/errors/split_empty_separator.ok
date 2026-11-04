@@ -1,0 +1,4 @@
+// split refuses the empty separator: no implicit whitespace lane, no
+// character-split magic.
+print "abc".split("");
+// expect error: invalid argument: 'split' expects a non-empty separator.

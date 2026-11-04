@@ -1,0 +1,5 @@
+// pow's NaN lanes (negative base, fractional exponent) die at the same
+// result check.
+import "std/math" as math;
+print math.pow(-8, 0.5);
+// expect error: the result of 'math.pow' is out of range.

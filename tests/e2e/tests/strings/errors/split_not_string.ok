@@ -1,0 +1,3 @@
+// the separator must be a string, no coercion.
+print "abc".split(1);
+// expect error: invalid argument: 'split' expects a string separator.

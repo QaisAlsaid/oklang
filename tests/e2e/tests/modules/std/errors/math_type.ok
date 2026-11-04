@@ -1,0 +1,4 @@
+// math takes numbers, nothing else crosses the door.
+import "std/math" as math;
+print math.sin("x");
+// expect error: invalid argument: 'math.sin' expects numbers.

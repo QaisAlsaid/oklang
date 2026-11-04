@@ -1,0 +1,2 @@
+print "ab".repeat(1.5);
+// expect error: the count for 'repeat' must be a whole number.

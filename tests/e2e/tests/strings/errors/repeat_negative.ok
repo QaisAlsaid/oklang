@@ -1,0 +1,2 @@
+print "ab".repeat(-1);
+// expect error: the count for 'repeat' must not be negative.

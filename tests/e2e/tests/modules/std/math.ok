@@ -1,0 +1,60 @@
+// std.math (P3): the deterministic cmath surface - finite in, finite out,
+// every domain violation a hard error (those live in errors/). the ruled
+// idiv rides here: trunc toward zero, no operator (// is comments forever).
+import "std/math" as math;
+import "std/math";
+
+print math.abs(-5); // expect: 5
+print math.abs(2.5); // expect: 2.5
+print math.floor(2.7); // expect: 2
+print math.floor(-2.7); // expect: -3
+print math.ceil(2.1); // expect: 3
+print math.ceil(-2.1); // expect: -2
+
+print math.sqrt(16); // expect: 4
+print math.sqrt(2); // expect: 1.41421
+print math.sqrt(0); // expect: 0
+
+print math.exp(0); // expect: 1
+print math.log(1); // expect: 0
+print math.log2(8); // expect: 3
+print math.log10(1000); // expect: 3
+
+print math.sin(0); // expect: 0
+print math.cos(0); // expect: 1
+print math.tan(0); // expect: 0
+print math.asin(0); // expect: 0
+print math.acos(1); // expect: 0
+print math.atan(0); // expect: 0
+print math.sinh(0); // expect: 0
+print math.cosh(0); // expect: 1
+print math.tanh(0); // expect: 0
+
+print math.pow(2, 10); // expect: 1024
+print math.pow(2, 0.5); // expect: 1.41421
+print math.pow(9, 0.5); // expect: 3
+print math.atan2(1, 1); // expect: 0.785398
+print math.atan2(0, 0); // expect: 0
+
+// the ruled idiv: truncation toward zero (7/2 = 3.5 -> 3, -7/2 -> -3, not
+// floor's -4 - that is what % stays for)
+print math.idiv(7, 2); // expect: 3
+print math.idiv(-7, 2); // expect: -3
+print math.idiv(7, -2); // expect: -3
+print math.idiv(-7, -2); // expect: 3
+print math.idiv(6, 3); // expect: 2
+print math.idiv(0, 5); // expect: 0
+// floor semantics compose when wanted (the ruling's own recipe)
+print math.floor(7 / 2); // expect: 3
+print math.floor(-7 / 2); // expect: -4
+
+// both door spellings are the same module value
+print std.math.sqrt(16); // expect: 4
+print std.math.idiv(9, 4); // expect: 2
+print std.math; // expect: <module std/math>
+print math; // expect: <module std/math>
+
+from "std/math" import sqrt;
+print sqrt(25); // expect: 5
+from "std/math" import idiv as div;
+print div(9, 2); // expect: 4

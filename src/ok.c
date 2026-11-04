@@ -1,5 +1,7 @@
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define OK_GC_EXPOSE
 #include "ok/ok.h"
@@ -13,6 +15,7 @@
 #include "okparser.h"
 #include "okspecs.h"
 #include "okstate.h"
+#include "okutf8.h"
 #include "okutils.h"
 #include "okvalue.h"
 #include "okvm.h"
@@ -25,9 +28,9 @@ vm* ok_vm(ok* p_ok) {
 
 // the core builtins are receiver-first native functions: `len(a)` and
 // `a.len()` are one C entry, mounted twice (free function + method on the
-// array/map class singletons). str carries no methods in v0.5.0 - nothing
-// existed as a str function builtin to mirror, and the ruling is no new stdlib.
-// errors go through the supported path ok_native_error -> vm_native_error.
+// array/map class singletons). the P3 str toolkit below is methods-only (the
+// class-canonical ruling), and std.math's members are module-only. errors go
+// through the supported path ok_native_error -> vm_native_error.
 
 static ok_value native_len(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
   (void)p_argc;
@@ -45,8 +48,9 @@ static ok_value native_len(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
     return NUMBER_AS_VALUE((double)str->codepoints);
   }
   ok_native_error(p_ok,
-                  ok_create_string_view(
-                      "invalid argument: 'len' expects an array, a map, or a string.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+                  ok_create_string_view("invalid argument: 'len' expects an array, a map, or a string.",
+                                        OK_STRING_VIEW_CALCULATE_LENGTH,
+                                        true));
   return NULL_AS_VALUE();
 }
 
@@ -260,6 +264,409 @@ static ok_value native_remove(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) 
   return NULL_AS_VALUE();
 }
 
+// ---------------------------------------------------------------------------
+// the P3 str method toolkit. methods on the str class only (the ruling: the
+// class surface is the canonical surface, std.str is killed) - no free
+// spellings, no hidden globals, the seeding table is untouched. every method
+// is receiver-first like the rest of the class surface.
+//
+// matching is byte-exact over the utf-8 payload: an occurrence of a
+// well-formed needle always lands on codepoint boundaries, so no decode is
+// needed to find, and no piece can split a codepoint. index_of answers in
+// CODEPOINTS (the s[i] unit); upper/lower fold the ASCII pairs only, every
+// other byte rides through - full case mapping wants tables the core will
+// not carry.
+
+static bool str_is_ascii_space(char p_c) {
+  return p_c == ' ' || p_c == '\t' || p_c == '\n' || p_c == '\r' || p_c == '\f' || p_c == '\v';
+}
+
+// naive substring search: the toolkit's needles are short, memmem is GNU.
+static const char* str_find_bytes(const char* p_hay, uint64_t p_hay_len, const char* p_needle, uint64_t p_needle_len) {
+  if (p_needle_len == 0) {
+    return p_hay;
+  }
+  if (p_needle_len > p_hay_len) {
+    return NULL;
+  }
+  const uint64_t last = p_hay_len - p_needle_len;
+  for (uint64_t i = 0; i <= last; ++i) {
+    if (p_hay[i] == p_needle[0] && memcmp(p_hay + i, p_needle, (size_t)p_needle_len) == 0) {
+      return p_hay + i;
+    }
+  }
+  return NULL;
+}
+
+// the receiver/argument unpack: bytes + length of a string value.
+typedef struct {
+  const char* chars;
+  uint64_t length;
+} str_bytes;
+
+static bool str_unpack(ok_value p_value, str_bytes* p_out) {
+  if (!IS_VALUE_STRING(p_value)) {
+    return false;
+  }
+  const object_string* str = VALUE_AS_STRING(p_value);
+  p_out->chars = str->string.chars;
+  p_out->length = string_get_length(&str->string);
+  return true;
+}
+
+// one fresh string from a byte range. the "final allocation last" contract:
+// callers build everything in C memory first, this is the only GC object,
+// and call_native guards it the moment the native returns.
+static ok_value str_from_range(ok* p_ok, const char* p_chars, uint64_t p_length) {
+  object_specs specs = {&p_ok->alloc, &p_ok->objects_store};
+  object_string* str = create_object_string(ok_create_string_view(p_chars, p_length, false), &specs);
+  if (str == NULL) {
+    ok_native_error(p_ok,
+                    ok_create_string_view(
+                        "out of memory: failed to allocate string object.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  return OBJECT_AS_VALUE(str);
+}
+
+// s.trim(): both ends, the six ASCII whitespaces, a new string.
+static ok_value native_str_trim(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  str_bytes s;
+  if (!str_unpack(p_argv[0], &s)) {
+    ok_native_error(
+        p_ok,
+        ok_create_string_view("invalid argument: 'trim' expects a string.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  uint64_t first = 0;
+  uint64_t last = s.length; // one past the last byte
+  while (first < last && str_is_ascii_space(s.chars[first])) {
+    ++first;
+  }
+  while (last > first && str_is_ascii_space(s.chars[last - 1])) {
+    --last;
+  }
+  return str_from_range(p_ok, s.chars + first, last - first);
+}
+
+// s.split(sep): non-empty separator required, no default, no magic trimming.
+// returns n+1 pieces for n occurrences (python's shape, minus its implicit
+// whitespace lane).
+static ok_value native_str_split(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  str_bytes s;
+  str_bytes sep;
+  if (!str_unpack(p_argv[0], &s) || !str_unpack(p_argv[1], &sep)) {
+    ok_native_error(p_ok,
+                    ok_create_string_view("invalid argument: 'split' expects a string separator.",
+                                          OK_STRING_VIEW_CALCULATE_LENGTH,
+                                          true));
+    return NULL_AS_VALUE();
+  }
+  if (sep.length == 0) {
+    ok_native_error(p_ok,
+                    ok_create_string_view("invalid argument: 'split' expects a non-empty separator.",
+                                          OK_STRING_VIEW_CALCULATE_LENGTH,
+                                          true));
+    return NULL_AS_VALUE();
+  }
+  object_specs specs = {&p_ok->alloc, &p_ok->objects_store};
+  object_array* arr = create_object_array(&specs);
+  if (arr == NULL || !gc_guard_up(p_ok->alloc.gc, OBJECT_AS_VALUE(arr))) {
+    ok_native_error(p_ok,
+                    ok_create_string_view(
+                        "out of memory: failed to allocate array object.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  uint64_t pos = 0;
+  for (;;) {
+    const char* hit = str_find_bytes(s.chars + pos, s.length - pos, sep.chars, sep.length);
+    if (hit == NULL) {
+      break;
+    }
+    const uint64_t piece_length = (uint64_t)(hit - (s.chars + pos));
+    object_string* piece = create_object_string(ok_create_string_view(s.chars + pos, piece_length, false), &specs);
+    if (piece == NULL || !gc_guard_up(p_ok->alloc.gc, OBJECT_AS_VALUE(piece))) {
+      gc_guard_down(p_ok->alloc.gc); // the array
+      ok_native_error(p_ok,
+                      ok_create_string_view(
+                          "out of memory: failed to allocate string object.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      return NULL_AS_VALUE();
+    }
+    const bool appended = value_array_append(&arr->values, OBJECT_AS_VALUE(piece));
+    gc_guard_down(p_ok->alloc.gc); // the piece: the array owns it now
+    if (!appended) {
+      gc_guard_down(p_ok->alloc.gc); // the array
+      ok_native_error(
+          p_ok, ok_create_string_view("out of memory: failed to grow array.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      return NULL_AS_VALUE();
+    }
+    pos += piece_length + sep.length;
+  }
+  const ok_value tail = str_from_range(p_ok, s.chars + pos, s.length - pos);
+  if (IS_VALUE_STRICTLY_NULL(tail)) {
+    gc_guard_down(p_ok->alloc.gc); // the array
+    return NULL_AS_VALUE();        // str_from_range reported the oom
+  }
+  const bool appended = value_array_append(&arr->values, tail);
+  gc_guard_down(p_ok->alloc.gc); // the array
+  if (!appended) {
+    ok_native_error(
+        p_ok, ok_create_string_view("out of memory: failed to grow array.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  return OBJECT_AS_VALUE(arr);
+}
+
+// sep.join(array): the receiver is the separator. every member must already
+// be a string - the explicit `as str` lane exists, join does not ride it
+// implicitly (the conversion ruling, same shape as binary +).
+static ok_value native_str_join(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  str_bytes sep;
+  if (!str_unpack(p_argv[0], &sep)) {
+    ok_native_error(
+        p_ok,
+        ok_create_string_view("invalid argument: 'join' expects a string.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  if (!IS_VALUE_ARRAY(p_argv[1])) {
+    ok_native_error(
+        p_ok,
+        ok_create_string_view("invalid argument: 'join' expects an array.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  const object_array* arr = VALUE_AS_ARRAY(p_argv[1]);
+  uint64_t total = 0;
+  for (uint32_t i = 0; i < arr->values.count; ++i) {
+    str_bytes piece;
+    if (!str_unpack(arr->values.data[i], &piece)) {
+      ok_native_error(p_ok,
+                      ok_create_string_view("invalid argument: 'join' expects an array of strings.",
+                                            OK_STRING_VIEW_CALCULATE_LENGTH,
+                                            true));
+      return NULL_AS_VALUE();
+    }
+    if (i > 0) {
+      if (total > UINT64_MAX - sep.length || total + sep.length > UINT64_MAX - piece.length) {
+        ok_native_error(
+            p_ok,
+            ok_create_string_view("out of memory: 'join' result is too large.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+        return NULL_AS_VALUE();
+      }
+      total += sep.length;
+    }
+    if (total > UINT64_MAX - piece.length) {
+      ok_native_error(
+          p_ok,
+          ok_create_string_view("out of memory: 'join' result is too large.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+      return NULL_AS_VALUE();
+    }
+    total += piece.length;
+  }
+  char* scratch = (char*)p_ok->alloc.allocate(&p_ok->alloc, total);
+  if (scratch == NULL) {
+    ok_native_error(
+        p_ok,
+        ok_create_string_view("out of memory: failed to concatenate strings.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  uint64_t written = 0;
+  for (uint32_t i = 0; i < arr->values.count; ++i) {
+    const object_string* piece = VALUE_AS_STRING(arr->values.data[i]);
+    const uint64_t piece_length = string_get_length(&piece->string);
+    if (i > 0 && sep.length > 0) {
+      memcpy(scratch + written, sep.chars, (size_t)sep.length);
+      written += sep.length;
+    }
+    memcpy(scratch + written, piece->string.chars, (size_t)piece_length);
+    written += piece_length;
+  }
+  const ok_value joined = str_from_range(p_ok, scratch, written);
+  p_ok->alloc.release(&p_ok->alloc, scratch);
+  return joined;
+}
+
+static ok_value native_str_contains(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  str_bytes s;
+  str_bytes sub;
+  if (!str_unpack(p_argv[0], &s) || !str_unpack(p_argv[1], &sub)) {
+    ok_native_error(
+        p_ok,
+        ok_create_string_view("invalid argument: 'contains' expects a string.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  return BOOL_AS_VALUE(str_find_bytes(s.chars, s.length, sub.chars, sub.length) != NULL);
+}
+
+static ok_value native_str_starts_with(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  str_bytes s;
+  str_bytes prefix;
+  if (!str_unpack(p_argv[0], &s) || !str_unpack(p_argv[1], &prefix)) {
+    ok_native_error(p_ok,
+                    ok_create_string_view(
+                        "invalid argument: 'starts_with' expects a string.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  return BOOL_AS_VALUE(prefix.length <= s.length && memcmp(s.chars, prefix.chars, (size_t)prefix.length) == 0);
+}
+
+static ok_value native_str_ends_with(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  str_bytes s;
+  str_bytes suffix;
+  if (!str_unpack(p_argv[0], &s) || !str_unpack(p_argv[1], &suffix)) {
+    ok_native_error(p_ok,
+                    ok_create_string_view(
+                        "invalid argument: 'ends_with' expects a string.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  return BOOL_AS_VALUE(suffix.length <= s.length &&
+                       memcmp(s.chars + (s.length - suffix.length), suffix.chars, (size_t)suffix.length) == 0);
+}
+
+// s.index_of(sub): the first occurrence's CODEPOINT index (the s[i] unit),
+// null when absent - the get(m, k) convention for absence, not a -1 that
+// arithmetic would silently eat.
+static ok_value native_str_index_of(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  str_bytes s;
+  str_bytes sub;
+  if (!str_unpack(p_argv[0], &s) || !str_unpack(p_argv[1], &sub)) {
+    ok_native_error(
+        p_ok,
+        ok_create_string_view("invalid argument: 'index_of' expects a string.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  const char* hit = str_find_bytes(s.chars, s.length, sub.chars, sub.length);
+  if (hit == NULL) {
+    return NULL_AS_VALUE();
+  }
+  return NUMBER_AS_VALUE((double)ok_utf8_count_lossy(s.chars, (uint64_t)(hit - s.chars)));
+}
+
+// the ASCII case fold: one table-less pass, every other byte rides through.
+static ok_value str_ascii_case(ok* p_ok, ok_value p_value, bool p_to_upper) {
+  str_bytes s;
+  if (!str_unpack(p_value, &s)) {
+    ok_native_error(
+        p_ok,
+        ok_create_string_view("invalid argument: 'upper' expects a string.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  char* scratch = (char*)p_ok->alloc.allocate(&p_ok->alloc, s.length == 0 ? 1 : s.length);
+  if (scratch == NULL) {
+    ok_native_error(p_ok,
+                    ok_create_string_view(
+                        "out of memory: failed to allocate string buffer.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  for (uint64_t i = 0; i < s.length; ++i) {
+    const char c = s.chars[i];
+    if (p_to_upper && c >= 'a' && c <= 'z') {
+      scratch[i] = (char)(c - 'a' + 'A');
+    } else if (!p_to_upper && c >= 'A' && c <= 'Z') {
+      scratch[i] = (char)(c - 'A' + 'a');
+    } else {
+      scratch[i] = c;
+    }
+  }
+  const ok_value folded = str_from_range(p_ok, scratch, s.length);
+  p_ok->alloc.release(&p_ok->alloc, scratch);
+  return folded;
+}
+
+static ok_value native_str_upper(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  return str_ascii_case(p_ok, p_argv[0], true);
+}
+
+static ok_value native_str_lower(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  return str_ascii_case(p_ok, p_argv[0], false);
+}
+
+// s.repeat(n): a whole, non-negative count.
+static ok_value native_str_repeat(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  str_bytes s;
+  if (!str_unpack(p_argv[0], &s)) {
+    ok_native_error(
+        p_ok,
+        ok_create_string_view("invalid argument: 'repeat' expects a string.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  if (!IS_VALUE_NUMBER(p_argv[1])) {
+    ok_native_error(
+        p_ok,
+        ok_create_string_view("the count for 'repeat' must be a whole number.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  const double d = VALUE_AS_NUMBER(p_argv[1]);
+  if (isnan(d) || d != (double)(int64_t)d || d < MIN_SAFE_INTEGER || d > MAX_SAFE_INTEGER) {
+    ok_native_error(
+        p_ok,
+        ok_create_string_view("the count for 'repeat' must be a whole number.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  if (d < 0) {
+    ok_native_error(
+        p_ok,
+        ok_create_string_view("the count for 'repeat' must not be negative.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  const uint64_t count = (uint64_t)d;
+  if (s.length != 0 && count > 0 && count > (uint64_t)(SIZE_MAX / 2) / s.length) {
+    ok_native_error(
+        p_ok,
+        ok_create_string_view("out of memory: 'repeat' result is too large.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  const uint64_t total = s.length * count;
+  char* scratch = (char*)p_ok->alloc.allocate(&p_ok->alloc, total == 0 ? 1 : total);
+  if (scratch == NULL) {
+    ok_native_error(p_ok,
+                    ok_create_string_view(
+                        "out of memory: failed to allocate string buffer.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  for (uint64_t i = 0; i < count; ++i) {
+    memcpy(scratch + i * s.length, s.chars, (size_t)s.length);
+  }
+  const ok_value repeated = str_from_range(p_ok, scratch, total);
+  p_ok->alloc.release(&p_ok->alloc, scratch);
+  return repeated;
+}
+
+// the byte/codepoint pair: len (and codepoints()) answer codepoints, bytes()
+// is the embedder's byte door surfaced at last. two views, one string.
+static ok_value native_str_bytes(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  if (!IS_VALUE_STRING(p_argv[0])) {
+    ok_native_error(
+        p_ok,
+        ok_create_string_view("invalid argument: 'bytes' expects a string.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  const object_string* str = VALUE_AS_STRING(p_argv[0]);
+  return NUMBER_AS_VALUE((double)string_get_length(&str->string));
+}
+
+static ok_value native_str_codepoints(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  if (!IS_VALUE_STRING(p_argv[0])) {
+    ok_native_error(p_ok,
+                    ok_create_string_view(
+                        "invalid argument: 'codepoints' expects a string.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  const object_string* str = VALUE_AS_STRING(p_argv[0]);
+  return NUMBER_AS_VALUE((double)str->codepoints);
+}
+
 static bool ok_define_core_natives(ok* p_ok) {
   bool status = true;
   status &= ok_global_define_native_function(
@@ -291,15 +698,202 @@ static bool ok_define_core_natives(ok* p_ok) {
   return status;
 }
 
+// ---------------------------------------------------------------------------
+// std.math (P3): the deterministic cmath surface. "deterministic" is the
+// ruling's word and it means: finite in, finite out, every domain violation
+// a hard located error - no NaN or infinity ever crosses back into script,
+// where it would coerce silently through the arithmetic lanes. module
+// members only (hidden globals, never flat seeds): math is not any class's
+// surface, the way len was the containers'. the error text composes the
+// function name at the call site; math_one's view spans one message, the
+// name is spliced where the * sits by the callers below.
+
+typedef enum {
+  MATH_TOTAL, // defined for every finite number
+  MATH_NON_NEGATIVE,
+  MATH_POSITIVE,
+  MATH_UNIT, // the inverse trig domains, [-1, 1]
+} math_domain;
+
+typedef struct {
+  const char* name;
+  double (*fn)(double);
+  math_domain domain;
+} math_def;
+
+// the splice: one static message per site, the name replaces the '*'.
+static void math_error(ok* p_ok, const char* p_pattern, const char* p_name) {
+  char message[128];
+  const int written = snprintf(message, sizeof(message), p_pattern, p_name);
+  if (written > 0 && (size_t)written < sizeof(message)) {
+    ok_native_error(p_ok, ok_create_string_view(message, (uint64_t)written, true));
+  } else {
+    ok_native_error(p_ok, ok_create_string_view("invalid argument.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+  }
+}
+
+static ok_value math_one(ok* p_ok, ok_value p_arg, const math_def* p_def) {
+  if (!IS_VALUE_NUMBER(p_arg)) {
+    math_error(p_ok, "invalid argument: 'math.%s' expects numbers.", p_def->name);
+    return NULL_AS_VALUE();
+  }
+  const double x = VALUE_AS_NUMBER(p_arg);
+  if (isnan(x) || isinf(x)) {
+    math_error(p_ok, "invalid argument: 'math.%s' expects finite numbers.", p_def->name);
+    return NULL_AS_VALUE();
+  }
+  switch (p_def->domain) {
+  case MATH_NON_NEGATIVE:
+    if (x < 0.0) {
+      math_error(p_ok, "math.%s expects a non-negative number.", p_def->name);
+      return NULL_AS_VALUE();
+    }
+    break;
+  case MATH_POSITIVE:
+    if (x <= 0.0) {
+      math_error(p_ok, "math.%s expects a positive number.", p_def->name);
+      return NULL_AS_VALUE();
+    }
+    break;
+  case MATH_UNIT:
+    if (x < -1.0 || x > 1.0) {
+      math_error(p_ok, "math.%s expects a number between -1 and 1.", p_def->name);
+      return NULL_AS_VALUE();
+    }
+    break;
+  case MATH_TOTAL:
+    break;
+  }
+  const double r = p_def->fn(x);
+  if (isnan(r) || isinf(r)) {
+    math_error(p_ok, "the result of 'math.%s' is out of range.", p_def->name);
+    return NULL_AS_VALUE();
+  }
+  return NUMBER_AS_VALUE(r);
+}
+
+#define MATH_UNARY_X(X)                                                                                                \
+  X(abs, fabs, MATH_TOTAL)                                                                                             \
+  X(floor, floor, MATH_TOTAL)                                                                                          \
+  X(ceil, ceil, MATH_TOTAL)                                                                                            \
+  X(sqrt, sqrt, MATH_NON_NEGATIVE)                                                                                     \
+  X(exp, exp, MATH_TOTAL)                                                                                              \
+  X(log, log, MATH_POSITIVE)                                                                                           \
+  X(log2, log2, MATH_POSITIVE)                                                                                         \
+  X(log10, log10, MATH_POSITIVE)                                                                                       \
+  X(sin, sin, MATH_TOTAL)                                                                                              \
+  X(cos, cos, MATH_TOTAL)                                                                                              \
+  X(tan, tan, MATH_TOTAL)                                                                                              \
+  X(asin, asin, MATH_UNIT)                                                                                             \
+  X(acos, acos, MATH_UNIT)                                                                                             \
+  X(atan, atan, MATH_TOTAL)                                                                                            \
+  X(sinh, sinh, MATH_TOTAL)                                                                                            \
+  X(cosh, cosh, MATH_TOTAL)                                                                                            \
+  X(tanh, tanh, MATH_TOTAL)
+
+// one body, seventeen front doors: the X table is the single source.
+#define MATH_UNARY_DEF(id, sym, dom)                                                                                   \
+  static ok_value native_math_##id(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {                                 \
+    (void)p_argc;                                                                                                      \
+    static const math_def def = {#id, sym, dom};                                                                       \
+    return math_one(p_ok, p_argv[0], &def);                                                                            \
+  }
+MATH_UNARY_X(MATH_UNARY_DEF)
+
+static bool math_arg(ok* p_ok, ok_value p_arg, double* p_out, const char* p_name) {
+  if (!IS_VALUE_NUMBER(p_arg)) {
+    math_error(p_ok, "invalid argument: 'math.%s' expects numbers.", p_name);
+    return false;
+  }
+  const double d = VALUE_AS_NUMBER(p_arg);
+  if (isnan(d) || isinf(d)) {
+    math_error(p_ok, "invalid argument: 'math.%s' expects finite numbers.", p_name);
+    return false;
+  }
+  *p_out = d;
+  return true;
+}
+
+// math.pow(x, y): total over the finite pairs whose result is finite.
+// pow(-8, 0.5) style NaN lanes and the overflow lanes both die at the
+// result check - the error names the range, not C's errno folklore.
+static ok_value native_math_pow(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  double x;
+  double y;
+  if (!math_arg(p_ok, p_argv[0], &x, "pow") || !math_arg(p_ok, p_argv[1], &y, "pow")) {
+    return NULL_AS_VALUE();
+  }
+  const double r = pow(x, y);
+  if (isnan(r) || isinf(r)) {
+    math_error(p_ok, "the result of 'math.%s' is out of range.", "pow");
+    return NULL_AS_VALUE();
+  }
+  return NUMBER_AS_VALUE(r);
+}
+
+// math.atan2(y, x): total over the finite pairs (the axis conventions are
+// C's, which are IEEE's).
+static ok_value native_math_atan2(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  double y;
+  double x;
+  if (!math_arg(p_ok, p_argv[0], &y, "atan2") || !math_arg(p_ok, p_argv[1], &x, "atan2")) {
+    return NULL_AS_VALUE();
+  }
+  return NUMBER_AS_VALUE(atan2(y, x));
+}
+
+// math.idiv(a, b) (RULED): integer division, truncation toward zero, a hard
+// error on the zero divisor. whole operands inside the safe range divide
+// through int64 exactly; anything else (huge or fractional) falls to
+// trunc(a / b) and the f64 rounding that carries - documented, not secret.
+static ok_value native_math_idiv(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  double a;
+  double b;
+  if (!math_arg(p_ok, p_argv[0], &a, "idiv") || !math_arg(p_ok, p_argv[1], &b, "idiv")) {
+    return NULL_AS_VALUE();
+  }
+  if (b == 0.0) {
+    math_error(p_ok, "math.%s expects a non-zero divisor.", "idiv");
+    return NULL_AS_VALUE();
+  }
+  if (a == (double)(int64_t)a && b == (double)(int64_t)b && a >= MIN_SAFE_INTEGER && a <= MAX_SAFE_INTEGER &&
+      b >= MIN_SAFE_INTEGER && b <= MAX_SAFE_INTEGER) {
+    return NUMBER_AS_VALUE((double)((int64_t)a / (int64_t)b));
+  }
+  return NUMBER_AS_VALUE(trunc(a / b));
+}
+
+// the hidden globals std.math's registry rows harvest. never seeded flat:
+// the module is the only door (the print_fn precedent).
+static bool ok_define_math_natives(ok* p_ok) {
+  bool status = true;
+#define MATH_GLOBAL(id, ...)                                                                                           \
+  status &= ok_global_define_native_function(                                                                          \
+      p_ok, ok_create_string_view(" " #id, OK_STRING_VIEW_CALCULATE_LENGTH, true), 1, native_math_##id);
+  MATH_UNARY_X(MATH_GLOBAL)
+  status &= ok_global_define_native_function(
+      p_ok, ok_create_string_view(" pow", OK_STRING_VIEW_CALCULATE_LENGTH, true), 2, native_math_pow);
+  status &= ok_global_define_native_function(
+      p_ok, ok_create_string_view(" atan2", OK_STRING_VIEW_CALCULATE_LENGTH, true), 2, native_math_atan2);
+  status &= ok_global_define_native_function(
+      p_ok, ok_create_string_view(" idiv", OK_STRING_VIEW_CALCULATE_LENGTH, true), 2, native_math_idiv);
+  return status;
+}
+
 // the natives-as-classes step: mount the method surfaces on the builtin
-// singletons, then seal them. the C handlers are the SAME functions the
-// free-function spellings use - they were receiver-first all along
-// (`len(x)` always took its receiver as argv[0]) - so `len(a)` and `a.len()`
-// are one entry, and the "no new stdlib" ruling holds by construction:
-// only what already existed as a function builtin gets a method spelling
-// (array: len/push/pop/remove; map: len/remove/get; str/function/num/bool/
-// nil carry nothing in v0.5.0). the sealing happens here, after the tables
-// fill - which is why vm_init_singletons leaves the builtins unfrozen.
+// singletons, then seal them. the container C handlers are the SAME
+// functions the free-function spellings use - they were receiver-first all
+// along (`len(x)` always took its receiver as argv[0]) - so `len(a)` and
+// `a.len()` are one entry, and the "no new stdlib" ruling held by
+// construction through v0.8.0 (array: len/push/pop/remove; map:
+// len/remove/get). the P3 str toolkit breaks that mirror ON PURPOSE, the
+// ruled direction: new surface lands as methods only, the free spellings
+// retire through the 0.9.0 deprecation window. the sealing happens here,
+// after the tables fill - which is why vm_init_singletons leaves the
+// builtins unfrozen.
 static bool ok_define_builtin_surfaces(ok* p_ok) {
   object_specs specs = {&p_ok->alloc, &p_ok->objects_store};
   struct {
@@ -316,15 +910,31 @@ static bool ok_define_builtin_surfaces(ok* p_ok) {
       {OK_BUILTIN_MAP, "remove", OK_NATIVE_ARITY_ANY, native_remove},
       {OK_BUILTIN_STR, "len", 1, native_len}, // P2: the codepoint count - str's first method
       {OK_BUILTIN_MAP, "get", OK_NATIVE_ARITY_ANY, native_get},
+      // the P3 str toolkit (the ruling: methods on the class, std.str killed).
+      // these have no free spellings and no hidden globals - the class is the
+      // only door, the retier direction the deprecation windows document.
+      {OK_BUILTIN_STR, "trim", 1, native_str_trim},
+      {OK_BUILTIN_STR, "split", 2, native_str_split},
+      {OK_BUILTIN_STR, "join", 2, native_str_join},
+      {OK_BUILTIN_STR, "contains", 2, native_str_contains},
+      {OK_BUILTIN_STR, "starts_with", 2, native_str_starts_with},
+      {OK_BUILTIN_STR, "ends_with", 2, native_str_ends_with},
+      {OK_BUILTIN_STR, "index_of", 2, native_str_index_of},
+      {OK_BUILTIN_STR, "upper", 1, native_str_upper},
+      {OK_BUILTIN_STR, "lower", 1, native_str_lower},
+      {OK_BUILTIN_STR, "repeat", 2, native_str_repeat},
+      {OK_BUILTIN_STR, "bytes", 1, native_str_bytes},
+      {OK_BUILTIN_STR, "codepoints", 1, native_str_codepoints},
   };
   bool status = true;
   for (uint32_t i = 0; i < sizeof(methods) / sizeof(methods[0]); ++i) {
-    status &= object_class_define_native_method(p_ok->vm.builtin_classes[methods[i].klass],
-                                                ok_create_string_view(methods[i].name, OK_STRING_VIEW_CALCULATE_LENGTH, true),
-                                                methods[i].arity,
-                                                methods[i].fn,
-                                                /*p_pub*/ true,
-                                                &specs);
+    status &=
+        object_class_define_native_method(p_ok->vm.builtin_classes[methods[i].klass],
+                                          ok_create_string_view(methods[i].name, OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                                          methods[i].arity,
+                                          methods[i].fn,
+                                          /*p_pub*/ true,
+                                          &specs);
   }
   // the coro surface (R20-R24): the native static `operator ()`
   // (construction), `resume`, and `status`, mounted before the seal like
@@ -344,14 +954,14 @@ static bool ok_define_builtin_surfaces(ok* p_ok) {
 // global (the space prefix is what hides them); builtin classes pull the vm
 // singletons; object and type ride the same walk.
 typedef enum {
-  SEED_NATIVE,       // the value is hidden-global " <name>" (a native fn)
+  SEED_NATIVE,        // the value is hidden-global " <name>" (a native fn)
   SEED_BUILTIN_CLASS, // the value is vm->builtin_classes[class_id]
-  SEED_OBJECT,       // the root singleton
-  SEED_CLASS,        // the metaclass singleton
+  SEED_OBJECT,        // the root singleton
+  SEED_CLASS,         // the metaclass singleton
 } seed_kind;
 
 typedef struct {
-  const char* name;   // the visible top-level binding
+  const char* name; // the visible top-level binding
   seed_kind kind;
   builtin_class_id class_id; // SEED_BUILTIN_CLASS only, else OK_BUILTIN_COUNT
 } seed_entry;
@@ -380,8 +990,8 @@ top_level_declarations ok_get_top_level_declarations(ok* p_ok, bool* p_error) {
   top_level_declarations decls;
   top_level_declarations_init(&decls, &p_ok->alloc);
   for (uint32_t i = 0; i < sizeof(top_level_seeds) / sizeof(top_level_seeds[0]); ++i) {
-    variable_declaration decl = {.identifier =
-        ok_create_string_view(top_level_seeds[i].name, OK_STRING_VIEW_CALCULATE_LENGTH, true)};
+    variable_declaration decl = {
+        .identifier = ok_create_string_view(top_level_seeds[i].name, OK_STRING_VIEW_CALCULATE_LENGTH, true)};
     if (!top_level_declarations_append(&decls, decl)) {
       *p_error = true;
       break;
@@ -492,6 +1102,10 @@ ok* ok_create(ok_specs p_specs) {
     ok_free(okay);
     return NULL;
   }
+  if (!ok_define_math_natives(okay)) { // std.math's hidden globals (P3)
+    ok_free(okay);
+    return NULL;
+  }
   if (!ok_define_builtin_surfaces(okay)) { // mount the method tables, then seal
     ok_free(okay);
     return NULL;
@@ -564,8 +1178,8 @@ ok_result ok_run(ok* p_ok, ok_source p_source) {
       p_ok->modules.name_arena_count = 0;
       char** entry_imports = NULL;
       uint32_t entry_imports_count = 0;
-      result = ok_modules_prepare(&p_ok->modules, parsed.root, &p_ok->source, &bindings, &entry_imports,
-                                  &entry_imports_count);
+      result = ok_modules_prepare(
+          &p_ok->modules, parsed.root, &p_ok->source, &bindings, &entry_imports, &entry_imports_count);
       // the entry TU is not a module: its edge list is information for the
       // host (the registry reads it per module), not state we keep.
       for (uint32_t i = 0; i < entry_imports_count; ++i) {
@@ -769,11 +1383,11 @@ ok_value ok_class_new(ok* p_ok, ok_string_view p_name, ok_value p_parent) {
 // class is sealed, a same-name redeclaration, a private override of a pub
 // ancestor, an arity disagreement with an ancestor, or OOM.
 bool ok_class_define_native_method(ok* p_ok,
-                                    ok_value p_class,
-                                    ok_string_view p_name,
-                                    uint16_t p_arity_including_receiver,
-                                    ok_native_fn p_cb,
-                                    bool p_pub) {
+                                   ok_value p_class,
+                                   ok_string_view p_name,
+                                   uint16_t p_arity_including_receiver,
+                                   ok_native_fn p_cb,
+                                   bool p_pub) {
   if (!IS_VALUE_CLASS(p_class)) {
     return false;
   }
@@ -814,12 +1428,8 @@ bool ok_class_add_field(ok* p_ok, ok_value p_class, ok_string_view p_name, bool 
 
 // the pub form (patch 51): the private default stays the patch-49 behavior,
 // p_pub opens the member ring from script. the C lane is trusted either way.
-bool ok_class_add_field_ex(ok* p_ok,
-                           ok_value p_class,
-                           ok_string_view p_name,
-                           bool p_mut,
-                           bool p_pub,
-                           ok_value p_initial) {
+bool ok_class_add_field_ex(
+    ok* p_ok, ok_value p_class, ok_string_view p_name, bool p_mut, bool p_pub, ok_value p_initial) {
   if (!IS_VALUE_CLASS(p_class) || p_name.chars == NULL || ok_string_view_get_length(&p_name) == 0) {
     return false;
   }

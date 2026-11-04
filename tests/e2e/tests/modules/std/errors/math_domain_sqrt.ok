@@ -1,0 +1,5 @@
+// the hard error half of "deterministic": sqrt's domain is the
+// non-negatives, no NaN ever crosses back into script.
+import "std/math" as math;
+print math.sqrt(-1);
+// expect error: math.sqrt expects a non-negative number.

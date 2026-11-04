@@ -76,6 +76,20 @@ Features:
 * Minimal C embedding API
 * Disassembler `ok --dump`
 
+## Deprecations (0.9.0 windows)
+
+The 0.9.0 wave opens deprecation windows: the spellings below still work,
+their removal lands with v1.0.0.
+
+* The free function spellings `push`, `pop`, and `remove` are deprecated in
+  favor of the class methods (`a.push(v)`, `a.pop()`, `m.remove(k)`), which
+  are the canonical surface. `len` stays a free function: the language's own
+  iteration shapes lean on it.
+* The `print` statement is deprecated in favor of `std.io.print` (same hook,
+  same formatting today).
+* Number printing's `%g` default is scheduled to become std.io's own
+  shortest-exact formatting behind the same window.
+
 ## Building
 
 Clone the repository:

@@ -1299,9 +1299,9 @@ static ok_result load_module(module_system* p_modules,
 // members are the same native function objects the flat spellings use,
 // harvested from their hidden globals into the same sealed-namespace shape
 // file modules get, so a std module value IS a module value: same freezes,
-// same print shape, same from-import probe. math and str are importable
-// today and open empty, the stdlib growth version fills them, and the
-// resolution lane does not change when it does.
+// same print shape, same from-import probe. math filled with P3 (the
+// deterministic cmath surface + idiv); str stays empty forever - the ruling
+// killed it, the toolkit lives on the class.
 typedef struct {
   const char* export_name;
   const char* hidden_global;
@@ -1327,11 +1327,35 @@ static const std_member_def std_map_members[] = {
 static const std_member_def std_io_members[] = {
     {"print", " print"},
 };
+// std.math (P3): the deterministic cmath surface + the ruled idiv. order
+// mirrors the X table in ok.c, the three two-argument members last.
+static const std_member_def std_math_members[] = {
+    {"abs", " abs"},
+    {"floor", " floor"},
+    {"ceil", " ceil"},
+    {"sqrt", " sqrt"},
+    {"exp", " exp"},
+    {"log", " log"},
+    {"log2", " log2"},
+    {"log10", " log10"},
+    {"sin", " sin"},
+    {"cos", " cos"},
+    {"tan", " tan"},
+    {"asin", " asin"},
+    {"acos", " acos"},
+    {"atan", " atan"},
+    {"sinh", " sinh"},
+    {"cosh", " cosh"},
+    {"tanh", " tanh"},
+    {"pow", " pow"},
+    {"atan2", " atan2"},
+    {"idiv", " idiv"},
+};
 static const std_module_def std_modules[] = {
     {"array", std_array_members, sizeof(std_array_members) / sizeof(std_array_members[0])},
     {"io", std_io_members, sizeof(std_io_members) / sizeof(std_io_members[0])},
     {"map", std_map_members, sizeof(std_map_members) / sizeof(std_map_members[0])},
-    {"math", NULL, 0},
+    {"math", std_math_members, sizeof(std_math_members) / sizeof(std_math_members[0])},
     {"str", NULL, 0},
 };
 

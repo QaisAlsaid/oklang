@@ -1,0 +1,4 @@
+// overflow dies at the result check, the error names the range.
+import "std/math" as math;
+print math.exp(10000);
+// expect error: the result of 'math.exp' is out of range.
