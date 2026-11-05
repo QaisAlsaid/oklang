@@ -1,0 +1,4 @@
+// \x stops at ascii - \u{} is the codepoint escape, and a high \x byte
+// would build the malformed utf-8 the front door refuses as raw source
+print "\xC0ffee";
+// expect error: the \x escape writes ascii bytes (up to 7F); \u{...} writes codepoints.

@@ -1,0 +1,3 @@
+// C's octal lane is the classic silent trap; \0 is exactly the nul byte
+print "\01";
+// expect error: a digit cannot follow \0 (no octal escapes); \x01 is how such bytes are spelled.

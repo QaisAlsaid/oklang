@@ -1,6 +1,7 @@
-// from-import's missing-export error, pinned against std/math. the P3
-// fill superseded the old pin (floor exists now): pi is the new missing
-// name, and that is the honest state - the registry carries natives only,
-// no constants lane exists (OPEN for Q, not snuck in).
-from "std/math" import pi;
-// expect error: module 'std/math' has no pub export 'pi'
+// from-import's missing-export error, pinned against std/math. the pin's
+// own history: floor (until P3 filled it), then pi (the constants lane's
+// OPEN marker, 56), now nan - and nan is the permanent spelling: the
+// no-NaN doctrine (finite in, finite out, nothing crosses back) means
+// std/math can never export it. the pin can never go stale again.
+from "std/math" import nan;
+// expect error: module 'std/math' has no pub export 'nan'

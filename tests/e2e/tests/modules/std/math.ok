@@ -58,3 +58,21 @@ from "std/math" import sqrt;
 print sqrt(25); // expect: 5
 from "std/math" import idiv as div;
 print div(9, 2); // expect: 4
+
+// the constants (57, the registry's non-native lane): plain numbers on the
+// namespace, the module door still the only door - no flat pi, no pi().
+print math.pi; // expect: 3.14159
+print math.e; // expect: 2.71828
+print math.pi * 2; // expect: 6.28319
+print math.pi + math.e; // expect: 5.85987
+print math.e > 2.7; // expect: true
+print math.pi < 3.15; // expect: true
+print math.floor(math.pi); // expect: 3
+// the constants compose with the surface. sin(pi) is honestly ~1.22e-16
+// (the double's own rounding, pinned as-is - no fake zero), log(e) exact
+print math.sin(math.pi); // expect: 1.22465e-16
+print math.log(math.e); // expect: 1
+print std.math.pi == math.pi; // expect: true
+// the from-import door carries them like any member
+from "std/math" import pi, e;
+print pi + e; // expect: 5.85987

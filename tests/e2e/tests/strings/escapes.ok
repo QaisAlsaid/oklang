@@ -16,3 +16,26 @@ print "\u{41}"; // expect: A
 print "\u{E9}" == "é"; // expect: true
 print len("\u{1F600}"); // expect: 1
 print "\u{1F600}" == "😀"; // expect: true
+
+// the 58 completion: the full control-byte set. every new escape pinned
+// against its \u{} spelling - control bytes never ride the expect lane raw.
+print "\a" == "\u{7}"; // expect: true
+print "\b" == "\u{8}"; // expect: true
+print "\e" == "\u{1B}"; // expect: true
+print "\f" == "\u{C}"; // expect: true
+print "\v" == "\u{B}"; // expect: true
+print "\0" == "\u{0}"; // expect: true
+// \xNN: the ascii byte escape, one or two hex digits then it stops
+print "\x41"; // expect: A
+print "\x7F" == "\u{7F}"; // expect: true
+print "\x9" == "\t"; // expect: true
+print "\xb" == "\v"; // expect: true
+// the ANSI color receipt itself: ESC rides the escape lane
+print "\x1B[31mred\x1B[0m" == "\u{1B}[31mred\u{1B}[0m"; // expect: true
+print "\e[1mbold\e[0m" == "\x1B[1mbold\x1B[0m"; // expect: true
+// all single-byte, all one codepoint each
+print len("\a\b\e\f\v\0"); // expect: 6
+// a \0 that looks like octal's start is just the nul byte and a literal
+print "\0x" == "\u{0}x"; // expect: true
+// the single-quote lane gets \e too (all four quote flavors share the lane)
+print '\e' == "\x1B"; // expect: true

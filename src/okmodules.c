@@ -1296,12 +1296,14 @@ static ok_result load_module(module_system* p_modules,
 
 // the built-in std registry. the std root resolves against this table ONLY
 // (M8): never the filesystem, never OKPATH, nothing can shadow it. the
-// members are the same native function objects the flat spellings use,
-// harvested from their hidden globals into the same sealed-namespace shape
+// members are values harvested from their hidden globals into the same
+// sealed-namespace shape
 // file modules get, so a std module value IS a module value: same freezes,
 // same print shape, same from-import probe. math filled with P3 (the
-// deterministic cmath surface + idiv); str stays empty forever - the ruling
-// killed it, the toolkit lives on the class.
+// deterministic cmath surface + idiv) and carries the constants lane since
+// 57: pi and e are hidden number globals, harvested exactly like the
+// functions - a member is a value, native or not. str stays empty forever
+// - the ruling killed it, the toolkit lives on the class.
 typedef struct {
   const char* export_name;
   const char* hidden_global;
@@ -1327,9 +1329,13 @@ static const std_member_def std_map_members[] = {
 static const std_member_def std_io_members[] = {
     {"print", " print"},
 };
-// std.math (P3): the deterministic cmath surface + the ruled idiv. order
-// mirrors the X table in ok.c, the three two-argument members last.
+// std.math (P3): the deterministic cmath surface + the ruled idiv. the
+// constants lead (57, the registry's non-native lane): hidden number
+// globals, harvested like the functions. the rest mirrors the X table in
+// ok.c, the three two-argument members last.
 static const std_member_def std_math_members[] = {
+    {"pi", " pi"},
+    {"e", " e"},
     {"abs", " abs"},
     {"floor", " floor"},
     {"ceil", " ceil"},

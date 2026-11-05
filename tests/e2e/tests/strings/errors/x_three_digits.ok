@@ -1,0 +1,3 @@
+// one or two hex digits, the house shape (the same bound \u{} carries)
+print "\x123";
+// expect error: a \x escape takes at most two hex digits

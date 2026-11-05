@@ -866,9 +866,19 @@ static ok_value native_math_idiv(ok* p_ok, uint8_t p_argc, const ok_value* p_arg
   return NUMBER_AS_VALUE(trunc(a / b));
 }
 
-// the hidden globals std.math's registry rows harvest. never seeded flat:
-// the module is the only door (the print_fn precedent).
-static bool ok_define_math_natives(ok* p_ok) {
+// the constants (the registry's non-native lane, Q-approved for v1):
+// std.math's pi and e. spelled to full precision - the C library's M_PI
+// family is POSIX, not c99, and the strict gate hides it - and both
+// literals round to the correctly-rounded doubles (verified against the
+// library's own values at patch time).
+#define OK_MATH_PI 3.14159265358979323846
+#define OK_MATH_E 2.71828182845904523536
+
+// the hidden globals std.math's registry rows harvest - the functions,
+// and since the constants lane the numbers too (the harvest never cared
+// what a hidden global holds; only the table rows say). never seeded
+// flat: the module is the only door (the print_fn precedent).
+static bool ok_define_math_members(ok* p_ok) {
   bool status = true;
 #define MATH_GLOBAL(id, ...)                                                                                           \
   status &= ok_global_define_native_function(                                                                          \
@@ -880,6 +890,16 @@ static bool ok_define_math_natives(ok* p_ok) {
       p_ok, ok_create_string_view(" atan2", OK_STRING_VIEW_CALCULATE_LENGTH, true), 2, native_math_atan2);
   status &= ok_global_define_native_function(
       p_ok, ok_create_string_view(" idiv", OK_STRING_VIEW_CALCULATE_LENGTH, true), 2, native_math_idiv);
+  // the constants ride the same hidden lane: plain immutable numbers,
+  // unreachable flat (the leading space), harvested by the std table.
+  status &= ok_global_define(p_ok,
+                             ok_create_string_view(" pi", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                             NUMBER_AS_VALUE(OK_MATH_PI),
+                             false);
+  status &= ok_global_define(p_ok,
+                             ok_create_string_view(" e", OK_STRING_VIEW_CALCULATE_LENGTH, true),
+                             NUMBER_AS_VALUE(OK_MATH_E),
+                             false);
   return status;
 }
 
@@ -1102,7 +1122,7 @@ ok* ok_create(ok_specs p_specs) {
     ok_free(okay);
     return NULL;
   }
-  if (!ok_define_math_natives(okay)) { // std.math's hidden globals (P3)
+  if (!ok_define_math_members(okay)) { // std.math's hidden globals: the natives (P3), the constants (57)
     ok_free(okay);
     return NULL;
   }

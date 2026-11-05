@@ -1,0 +1,3 @@
+// \x with no hex digits behind it
+print "\x hi";
+// expect error: a \x escape wants hex digits: \x1B.

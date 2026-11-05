@@ -15,3 +15,8 @@ print f"back\\slash ${1}"; // expect: back\slash 1
 print f"\${1} is not an interpolation"; // expect: ${1} is not an interpolation
 let key = "k";
 print f"\$${key}"; // expect: $k
+
+// the 58 escapes ride the chunk lane too (the shared unescape): the ANSI
+// receipt inside an interpolation
+print f"\x1B[31m${"red"}\x1B[0m" == "\e[31mred\e[0m"; // expect: true
+print f"\e is ${"ESC"}" == "\x1B is ESC"; // expect: true

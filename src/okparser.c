@@ -491,8 +491,17 @@ ast_expression* parse_identifier(parser* p_parser, token p_trigger) {
 }
 
 // the P2 unescape lane: translate a string literal's raw slice (between
-// the quotes) into its value bytes. the escape set: \n \t \r \\ \' \"
-// and \u{HEX} (1-6 digits, <= U+10FFFF, no surrogates). anything else
+// the quotes) into its value bytes. the escape set (58 completed the
+// control bytes): \a \b \e \f \n \r \t \v \0 \xNN \\ \' \" and
+// \u{HEX} (1-6 digits, <= U+10FFFF, no surrogates). \xNN takes one or
+// two hex digits and stops at ascii (0x7F): literals only ever produce
+// valid utf-8 - \u{} is the codepoint escape, and a high \x byte would
+// build the malformed utf-8 the front door refuses as raw source. \0 is
+// exactly the nul byte - a digit after it is the refused octal lane
+// (C's "\01" silent trap). \e is 0x1B, the terminal escape byte: the
+// front door keeps raw control bytes out of source, so the escape is the
+// only door in, and the ANSI color spellings ride it. \? stays refused
+// like any unknown - the trigraph fossil has no use here. anything else
 // after a backslash is a located compile error - unknown escapes never
 // pass silently. returns false with the error already reported.
 // p_dollar_escape is the P3 f-string lane: `\${` writes the literal
@@ -548,12 +557,108 @@ static bool unescape_string_literal(parser* p_parser,
       out[written++] = '\r';
       ++i;
       break;
+    // the 58 control bytes: the C set plus \e (0x1B, the terminal escape
+    // byte - ESC - which the front door keeps out of raw source, so the
+    // escape is the only door; the ANSI color spellings ride it)
+    case 'a':
+      out[written++] = '\a';
+      ++i;
+      break;
+    case 'b':
+      out[written++] = '\b';
+      ++i;
+      break;
+    case 'e':
+      out[written++] = '\x1B';
+      ++i;
+      break;
+    case 'f':
+      out[written++] = '\f';
+      ++i;
+      break;
+    case 'v':
+      out[written++] = '\v';
+      ++i;
+      break;
     case '\\':
     case '\'':
     case '"':
       out[written++] = e;
       ++i;
       break;
+    case '0':
+      // exactly the nul byte. C's octal lane is refused on purpose: it is
+      // the classic silent trap ("\01" reading as one byte), and the bytes
+      // it spelled are spelled \xNN now.
+      ++i;
+      if (i < raw_length && raw[i] >= '0' && raw[i] <= '9') {
+        error_at(p_parser,
+                 p_token,
+                 ok_create_string_view("a digit cannot follow \\0 (no octal escapes); \\x01 is how such bytes are spelled.",
+                                       OK_STRING_VIEW_CALCULATE_LENGTH,
+                                       true));
+        ok = false;
+        break;
+      }
+      out[written++] = '\0';
+      break;
+    case 'x': {
+      // one or two hex digits, an ascii byte out (the same shape as \u{}'s
+      // 1-6: the digit count bounds are the house style). the 0x7F ceiling
+      // is the doctrine: a literal only ever produces valid utf-8 - \u{}
+      // is the codepoint escape, and a high \x byte would build malformed
+      // utf-8 the front door would refuse as raw source.
+      ++i;
+      uint32_t value = 0;
+      uint32_t digits = 0;
+      while (i < raw_length && digits < 2) {
+        const char h = raw[i];
+        uint32_t d;
+        if (h >= '0' && h <= '9') {
+          d = (uint32_t)(h - '0');
+        } else if (h >= 'a' && h <= 'f') {
+          d = (uint32_t)(h - 'a') + 10u;
+        } else if (h >= 'A' && h <= 'F') {
+          d = (uint32_t)(h - 'A') + 10u;
+        } else {
+          break;
+        }
+        value = (value << 4) | d;
+        ++digits;
+        ++i;
+      }
+      if (digits == 0) {
+        error_at(p_parser,
+                 p_token,
+                 ok_create_string_view("a \\x escape wants hex digits: \\x1B.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+        ok = false;
+        break;
+      }
+      if (value > 0x7F) {
+        error_at(p_parser,
+                 p_token,
+                 ok_create_string_view("the \\x escape writes ascii bytes (up to 7F); \\u{...} writes codepoints.",
+                                       OK_STRING_VIEW_CALCULATE_LENGTH,
+                                       true));
+        ok = false;
+        break;
+      }
+      // the bound is enforced, not silently truncated: a third hex-looking
+      // byte after two digits is exactly the ambiguity the \u{} braces kill,
+      // and \x refuses it the same way (the "at most six" precedent). this
+      // check rides last so "\xC0ffee" reports its real error (the ascii
+      // ceiling) and not the trailing-hex coincidence.
+      if (digits == 2 && i < raw_length && ((raw[i] >= '0' && raw[i] <= '9') || (raw[i] >= 'a' && raw[i] <= 'f') ||
+                                            (raw[i] >= 'A' && raw[i] <= 'F'))) {
+        error_at(p_parser,
+                 p_token,
+                 ok_create_string_view("a \\x escape takes at most two hex digits.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+        ok = false;
+        break;
+      }
+      out[written++] = (char)value;
+      break;
+    }
     case '$':
       if (!p_dollar_escape) {
         char message[48];
