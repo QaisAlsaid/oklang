@@ -900,6 +900,37 @@ int main(void) {
     ok_free(m_ok);
   }
 
+  // ---------- sys.exit (P4): the host request lane ----------
+  {
+    ok_specs xspecs = {0};
+    ok* x_ok = ok_create(xspecs);
+    CHECK(x_ok != NULL);
+    ok_set_print(x_ok, log_print, NULL);
+    // the exit lands as OK_EXITED carrying the code, nothing after it
+    // runs, and no diagnostic fires anywhere (the run ENDED, not failed)
+    log_reset();
+    ok_source leaving = {"import \"std/sys\" as sys;\nprint \"bye\";\nsys.exit(5);\nprint \"never\";\n", "exit.ok"};
+    CHECK(ok_run(x_ok, leaving) == OK_EXITED);
+    CHECK(ok_exit_code(x_ok) == 5);
+    CHECK(strstr(g_log, "bye") != NULL && strstr(g_log, "never") == NULL);
+    // the lane resets with every run: the next one on the same instance
+    // runs clean and reports 0
+    ok_source staying = {"print \"still here\";\n", "stay.ok"};
+    CHECK(ok_run(x_ok, staying) == OK);
+    CHECK(ok_exit_code(x_ok) == 0);
+    ok_free(x_ok);
+    // and the HOST gate: an instance born without the cap never sees the
+    // module - the import refuses with the ratchet's message
+    ok_specs locked = {0};
+    locked.caps_dropped = (uint32_t)OK_CAP_HOST;
+    ok* r_ok = ok_create(locked);
+    CHECK(r_ok != NULL);
+    ok_source gated = {"import \"std/fs\" as fs;\n", "gated.ok"};
+    CHECK(ok_run(r_ok, gated) == OK_COMPILE_ERROR);
+    CHECK(ok_exit_code(r_ok) == 0); // no exit ever happened
+    ok_free(r_ok);
+  }
+
   ok_free(p_ok);
 
   printf("capi: %d checks OK\n", g_checks);

@@ -56,6 +56,8 @@ target_sources(ok PRIVATE
   src/okcompiler.c
   src/okdebug.c
   src/okdiag.c
+  src/ok_env.c
+  src/ok_fs.c
   src/okglobals_store.c
   src/oklexer.c
   src/okmm.c
@@ -67,6 +69,7 @@ target_sources(ok PRIVATE
   src/okoperator.c
   src/okparser.c
   src/oktoken.c
+  src/ok_time.c
   src/okutils.c
   src/okvalue.c
   src/okvm.c

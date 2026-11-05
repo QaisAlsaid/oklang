@@ -1,0 +1,4 @@
+// fs.read's miss: a plain 404 names the path and the shape it wanted
+import "std/fs" as fs;
+print fs.read("e2e_fs_absent_file.txt");
+// expect error: fs.read failed: 'e2e_fs_absent_file.txt' is not a readable regular file.

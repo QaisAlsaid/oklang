@@ -1,0 +1,9 @@
+// fopen happily "opens" a directory on linux - the read refuses instead.
+// the start-clean keeps the fixture idempotent across runs.
+import "std/fs" as fs;
+if fs.exists("e2e_fs_err_dir") {
+  fs.remove("e2e_fs_err_dir");
+}
+fs.mkdir("e2e_fs_err_dir");
+print fs.read("e2e_fs_err_dir");
+// expect error: fs.read failed: 'e2e_fs_err_dir' is not a readable regular file.

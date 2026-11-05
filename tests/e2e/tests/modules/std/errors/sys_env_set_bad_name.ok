@@ -1,0 +1,4 @@
+// setenv's EINVAL lane: an '=' inside the name is not a name
+import "std/sys" as sys;
+sys.env_set("OK_E2E_BAD=NAME", "value");
+// expect error: sys.env_set failed: 'OK_E2E_BAD=NAME' is not a valid environment name.

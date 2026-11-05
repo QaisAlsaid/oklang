@@ -8,6 +8,8 @@
 #include "ok/ok_module.h"
 #include "okcompiler.h"
 #include "okdebug.h"
+#include "ok_env.h" // P4: std.sys's environment door
+#include "ok_fs.h"  // P4: std.fs's file door
 #include "okgc.h"
 #include "okmodules.h"
 #include "okobject.h"
@@ -15,6 +17,7 @@
 #include "okparser.h"
 #include "okspecs.h"
 #include "okstate.h"
+#include "ok_time.h" // P4: std.sys's clock door
 #include "okutf8.h"
 #include "okutils.h"
 #include "okvalue.h"
@@ -903,6 +906,449 @@ static bool ok_define_math_members(ok* p_ok) {
   return status;
 }
 
+// ============================ std.fs + std.sys (P4) ============================
+//
+// the host door natives. every host call routes through the ok_fs /
+// ok_time / ok_env layers (the audit's one-door rule) - nothing here
+// touches a syscall directly, so an embedder reading those three files
+// knows every byte ok can move across the host boundary. the modules
+// themselves are HOST-gated at the import site (okmodules.c's std lane);
+// these natives can therefore assume the cap held when the module loaded.
+
+// the splice: one static message per site, the '*' is the member name.
+static void host_error(ok* p_ok, const char* p_pattern, const char* p_name) {
+  char message[192];
+  const int written = snprintf(message, sizeof(message), p_pattern, p_name);
+  if (written > 0 && (size_t)written < sizeof(message)) {
+    ok_native_error(p_ok, ok_create_string_view(message, (uint64_t)written, true));
+  } else {
+    ok_native_error(p_ok, ok_create_string_view("invalid argument.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+  }
+}
+
+// a message carrying one path: 512 (the defer lane's buffer precedent -
+// a path longer than this truncates the MESSAGE, never the operation).
+static void host_path_error(ok* p_ok, const char* p_pattern, const char* p_path) {
+  char message[512];
+  const int written = snprintf(message, sizeof(message), p_pattern, p_path);
+  if (written > 0 && (size_t)written < sizeof(message)) {
+    ok_native_error(p_ok, ok_create_string_view(message, (uint64_t)written, true));
+  } else {
+    ok_native_error(p_ok, ok_create_string_view("the host operation failed.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+  }
+}
+
+// one NUL-terminated copy of a path/name argument. the C host APIs want
+// C strings; ok strings are length-carried and may contain anything, and
+// an embedded NUL would silently truncate - which for a path is a WRONG
+// path, so it refuses instead. the caller releases the copy.
+static bool host_zstring(ok* p_ok, ok_value p_arg, char** p_out, const char* p_who) {
+  str_bytes s;
+  if (!str_unpack(p_arg, &s)) {
+    host_error(p_ok, "invalid argument: '%s' expects a string.", p_who);
+    return false;
+  }
+  if (memchr(s.chars, '\0', s.length) != NULL) {
+    host_error(p_ok, "invalid argument: the string passed to '%s' contains a NUL.", p_who);
+    return false;
+  }
+  char* z = (char*)p_ok->alloc.allocate(&p_ok->alloc, s.length + 1);
+  if (z == NULL) {
+    ok_native_error(p_ok,
+                    ok_create_string_view(
+                        "out of memory: failed to allocate a path buffer.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return false;
+  }
+  memcpy(z, s.chars, (size_t)s.length);
+  z[s.length] = '\0';
+  *p_out = z;
+  return true;
+}
+
+// one ok array of strings from a C name list (ok_fs_list / ok_env_list's
+// shape). the C list is released here - the ok array is the caller's
+// (call_native guards it the moment the native returns).
+static ok_value host_names_array(ok* p_ok, char** p_names, uint32_t p_count) {
+  object_specs specs = {&p_ok->alloc, &p_ok->objects_store};
+  object_array* arr = create_object_array(&specs);
+  if (arr == NULL || !gc_guard_up(&p_ok->gc, OBJECT_AS_VALUE(arr))) {
+    goto fail;
+  }
+  for (uint32_t i = 0; i < p_count; ++i) {
+    object_string* piece =
+        create_object_string(ok_create_string_view(p_names[i], (uint32_t)strlen(p_names[i]), false), &specs);
+    if (piece == NULL || !gc_guard_up(&p_ok->gc, OBJECT_AS_VALUE(piece))) {
+      gc_guard_down(&p_ok->gc); // the array
+      goto fail;
+    }
+    const bool appended = value_array_append(&arr->values, OBJECT_AS_VALUE(piece));
+    gc_guard_down(&p_ok->gc); // the piece: the array owns it now
+    if (!appended) {
+      goto fail_with_array;
+    }
+  }
+  gc_guard_down(&p_ok->gc); // the array: the caller owns it now
+  for (uint32_t i = 0; i < p_count; ++i) {
+    p_ok->raw_alloc.release(p_names[i]);
+  }
+  p_ok->raw_alloc.release(p_names);
+  return OBJECT_AS_VALUE(arr);
+
+fail_with_array:
+  gc_guard_down(&p_ok->gc); // the array (half-built, unreferenced)
+fail:
+  for (uint32_t i = 0; i < p_count; ++i) {
+    p_ok->raw_alloc.release(p_names[i]);
+  }
+  p_ok->raw_alloc.release(p_names);
+  ok_native_error(p_ok,
+                  ok_create_string_view(
+                      "out of memory: failed to build the names array.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+  return NULL_AS_VALUE();
+}
+
+// fs.read(path): the whole file, one string. the 1 GiB cap and the
+// regular-files-only rule are ok_fs's own (the loader's contract, shared).
+static ok_value native_fs_read(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  char* path = NULL;
+  if (!host_zstring(p_ok, p_argv[0], &path, "fs.read")) {
+    return NULL_AS_VALUE();
+  }
+  ok_fs_buffer buffer;
+  const bool read = ok_fs_read_file(path, &p_ok->raw_alloc, &buffer);
+  if (!read) {
+    host_path_error(p_ok, "fs.read failed: '%s' is not a readable regular file.", path);
+    p_ok->alloc.release(&p_ok->alloc, path);
+    return NULL_AS_VALUE();
+  }
+  p_ok->alloc.release(&p_ok->alloc, path);
+  const ok_value contents = str_from_range(p_ok, buffer.chars, buffer.length);
+  p_ok->raw_alloc.release(buffer.chars);
+  return contents;
+}
+
+// fs.write / fs.append: whole-buffer, one fwrite, checked. the DATA may
+// carry NULs - only paths refuse them.
+static ok_value native_fs_write_impl(ok* p_ok, ok_value p_path_arg, ok_value p_data_arg, bool p_append,
+                                     const char* p_who) {
+  char* path = NULL;
+  if (!host_zstring(p_ok, p_path_arg, &path, p_who)) {
+    return NULL_AS_VALUE();
+  }
+  str_bytes data;
+  if (!str_unpack(p_data_arg, &data)) {
+    host_error(p_ok, "invalid argument: '%s' expects a string of data.", p_who);
+    p_ok->alloc.release(&p_ok->alloc, path);
+    return NULL_AS_VALUE();
+  }
+  const bool written = ok_fs_write_file(path, data.chars, data.length, p_append);
+  if (!written) {
+    // two-step splice: the member name rides the pattern, host_path_error
+    // carries the path (one format arg each, never a dangling conversion)
+    char pattern[64];
+    snprintf(pattern, sizeof(pattern), "%s failed: cannot write '%%s'.", p_who);
+    host_path_error(p_ok, pattern, path);
+    p_ok->alloc.release(&p_ok->alloc, path);
+    return NULL_AS_VALUE();
+  }
+  p_ok->alloc.release(&p_ok->alloc, path);
+  return NULL_AS_VALUE();
+}
+
+static ok_value native_fs_write(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  return native_fs_write_impl(p_ok, p_argv[0], p_argv[1], false, "fs.write");
+}
+
+static ok_value native_fs_append(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  return native_fs_write_impl(p_ok, p_argv[0], p_argv[1], true, "fs.append");
+}
+
+// the probes: three shapes of "what is at this path".
+static ok_value native_fs_exists(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  char* path = NULL;
+  if (!host_zstring(p_ok, p_argv[0], &path, "fs.exists")) {
+    return NULL_AS_VALUE();
+  }
+  const bool exists = ok_fs_exists(path);
+  p_ok->alloc.release(&p_ok->alloc, path);
+  return BOOL_AS_VALUE(exists);
+}
+
+static ok_value native_fs_is_file(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  char* path = NULL;
+  if (!host_zstring(p_ok, p_argv[0], &path, "fs.is_file")) {
+    return NULL_AS_VALUE();
+  }
+  const bool is_file = ok_fs_is_file(path);
+  p_ok->alloc.release(&p_ok->alloc, path);
+  return BOOL_AS_VALUE(is_file);
+}
+
+static ok_value native_fs_is_dir(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  char* path = NULL;
+  if (!host_zstring(p_ok, p_argv[0], &path, "fs.is_dir")) {
+    return NULL_AS_VALUE();
+  }
+  const bool is_dir = ok_fs_is_dir(path);
+  p_ok->alloc.release(&p_ok->alloc, path);
+  return BOOL_AS_VALUE(is_dir);
+}
+
+// fs.remove: a file or an EMPTY directory (the layer has no recursion,
+// ever). fs.mkdir: one level, no parents.
+static ok_value native_fs_remove(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  char* path = NULL;
+  if (!host_zstring(p_ok, p_argv[0], &path, "fs.remove")) {
+    return NULL_AS_VALUE();
+  }
+  const bool removed = ok_fs_remove(path);
+  if (!removed) {
+    host_path_error(p_ok, "fs.remove failed: '%s' is not an existing file or empty directory.", path);
+  }
+  p_ok->alloc.release(&p_ok->alloc, path);
+  return NULL_AS_VALUE();
+}
+
+static ok_value native_fs_mkdir(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  char* path = NULL;
+  if (!host_zstring(p_ok, p_argv[0], &path, "fs.mkdir")) {
+    return NULL_AS_VALUE();
+  }
+  const bool made = ok_fs_mkdir(path);
+  if (!made) {
+    host_path_error(p_ok, "fs.mkdir failed: cannot create '%s' (it may exist, or a parent is missing).", path);
+  }
+  p_ok->alloc.release(&p_ok->alloc, path);
+  return NULL_AS_VALUE();
+}
+
+// fs.list: the entry names, sorted - the determinism rule. "." and ".."
+// are structure, not entries.
+static ok_value native_fs_list(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  char* path = NULL;
+  if (!host_zstring(p_ok, p_argv[0], &path, "fs.list")) {
+    return NULL_AS_VALUE();
+  }
+  char** names = NULL;
+  uint32_t count = 0;
+  const bool listed = ok_fs_list(path, &p_ok->raw_alloc, &names, &count);
+  if (!listed) {
+    host_path_error(p_ok, "fs.list failed: '%s' is not a readable directory.", path);
+    p_ok->alloc.release(&p_ok->alloc, path);
+    return NULL_AS_VALUE();
+  }
+  p_ok->alloc.release(&p_ok->alloc, path);
+  return host_names_array(p_ok, names, count);
+}
+
+// fs.cwd: the process working directory (its CONTENT is host state -
+// never a fixture's output).
+static ok_value native_fs_cwd(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  (void)p_argv;
+  char buffer[4096];
+  if (!ok_fs_cwd(buffer, sizeof(buffer))) {
+    ok_native_error(p_ok,
+                    ok_create_string_view("fs.cwd failed: the working directory is unreadable or too long.",
+                                          OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  return str_from_range(p_ok, buffer, (uint64_t)strlen(buffer));
+}
+
+// fs.join(a, b): pure path joining, no host contact at all - it rides
+// the module because that is where path shape lives. empty sides pass
+// through; a trailing separator does not double.
+static ok_value native_fs_join(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  str_bytes a;
+  str_bytes b;
+  if (!str_unpack(p_argv[0], &a) || !str_unpack(p_argv[1], &b)) {
+    host_error(p_ok, "invalid argument: '%s' expects strings.", "fs.join");
+    return NULL_AS_VALUE();
+  }
+  if (a.length == 0) {
+    return p_argv[1];
+  }
+  if (b.length == 0) {
+    return p_argv[0];
+  }
+  const bool sep = a.chars[a.length - 1] == '/';
+  const uint64_t total = a.length + (sep ? 0 : 1) + b.length;
+  char* scratch = (char*)p_ok->alloc.allocate(&p_ok->alloc, total);
+  if (scratch == NULL) {
+    ok_native_error(p_ok,
+                    ok_create_string_view(
+                        "out of memory: failed to allocate the joined path.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  memcpy(scratch, a.chars, (size_t)a.length);
+  if (!sep) {
+    scratch[a.length] = '/';
+  }
+  memcpy(scratch + a.length + (sep ? 0 : 1), b.chars, (size_t)b.length);
+  const ok_value joined = str_from_range(p_ok, scratch, total);
+  p_ok->alloc.release(&p_ok->alloc, scratch);
+  return joined;
+}
+
+// sys.env_get: the entry's value, or null when unset (null is a legal
+// value in ok - the sentinel question never arises).
+static ok_value native_sys_env_get(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  char* name = NULL;
+  if (!host_zstring(p_ok, p_argv[0], &name, "sys.env_get")) {
+    return NULL_AS_VALUE();
+  }
+  const char* value = ok_env_get(name);
+  p_ok->alloc.release(&p_ok->alloc, name);
+  if (value == NULL) {
+    return NULL_AS_VALUE();
+  }
+  return str_from_range(p_ok, value, (uint64_t)strlen(value));
+}
+
+// sys.env_set / sys.env_unset: setenv's EINVAL lanes (an '=' or NUL in
+// the name) arrive as the invalid-name error; unset is idempotent.
+static ok_value native_sys_env_set(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  char* name = NULL;
+  if (!host_zstring(p_ok, p_argv[0], &name, "sys.env_set")) {
+    return NULL_AS_VALUE();
+  }
+  char* value = NULL;
+  if (!host_zstring(p_ok, p_argv[1], &value, "sys.env_set")) {
+    p_ok->alloc.release(&p_ok->alloc, name);
+    return NULL_AS_VALUE();
+  }
+  const bool set = ok_env_set(name, value);
+  if (!set) {
+    host_path_error(p_ok, "sys.env_set failed: '%s' is not a valid environment name.", name);
+  }
+  p_ok->alloc.release(&p_ok->alloc, name);
+  p_ok->alloc.release(&p_ok->alloc, value);
+  return NULL_AS_VALUE();
+}
+
+static ok_value native_sys_env_unset(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  char* name = NULL;
+  if (!host_zstring(p_ok, p_argv[0], &name, "sys.env_unset")) {
+    return NULL_AS_VALUE();
+  }
+  const bool unset = ok_env_unset(name);
+  if (!unset) {
+    host_path_error(p_ok, "sys.env_unset failed: '%s' is not a valid environment name.", name);
+  }
+  p_ok->alloc.release(&p_ok->alloc, name);
+  return NULL_AS_VALUE();
+}
+
+// sys.env_keys: the names, sorted and deduped - the determinism rule.
+static ok_value native_sys_env_keys(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  (void)p_argv;
+  char** names = NULL;
+  uint32_t count = 0;
+  if (!ok_env_list(&p_ok->raw_alloc, &names, &count)) {
+    ok_native_error(p_ok,
+                    ok_create_string_view(
+                        "out of memory: failed to list the environment.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return NULL_AS_VALUE();
+  }
+  return host_names_array(p_ok, names, count);
+}
+
+// sys.clock / sys.monotonic: seconds as doubles. fixtures assert
+// relations (>=, later >= earlier), never values - the host's clock is
+// not the suite's to know.
+static ok_value native_sys_clock(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_ok;
+  (void)p_argc;
+  (void)p_argv;
+  double now = 0.0;
+  ok_time_wall(&now);
+  return NUMBER_AS_VALUE(now);
+}
+
+static ok_value native_sys_monotonic(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_ok;
+  (void)p_argc;
+  (void)p_argv;
+  double now = 0.0;
+  ok_time_monotonic(&now);
+  return NUMBER_AS_VALUE(now);
+}
+
+// sys.exit(code): the host request. sets the code, then rides the error
+// lane (a native's only control-flow escape) as OK_EK_EXIT - the unwind
+// closes frames and runs defers, no catch may take it, and ok_run maps
+// the end to OK_EXITED. a failing defer on the way out replaces the
+// request (a real error outranks a mere ask - first-failure-wins).
+static ok_value native_sys_exit(ok* p_ok, uint8_t p_argc, const ok_value* p_argv) {
+  (void)p_argc;
+  if (!IS_VALUE_NUMBER(p_argv[0])) {
+    host_error(p_ok, "invalid argument: '%s' expects a number (the exit code).", "sys.exit");
+    return NULL_AS_VALUE();
+  }
+  const double code = VALUE_AS_NUMBER(p_argv[0]);
+  if (isnan(code) || isinf(code) || code != floor(code) || code < -2147483648.0 || code > 2147483647.0) {
+    host_error(p_ok, "invalid argument: '%s' expects a whole number between -2147483648 and 2147483647.", "sys.exit");
+    return NULL_AS_VALUE();
+  }
+  p_ok->exit_requested = true;
+  p_ok->exit_code = (int32_t)code;
+  vm_raise_exit(ok_vm(p_ok));
+  return NULL_AS_VALUE();
+}
+
+// the hidden globals the std tables harvest - the same lane math uses.
+// never seeded flat: the module is the only door.
+static bool ok_define_fs_members(ok* p_ok) {
+  bool status = true;
+#define FS_GLOBAL(id, arity)                                                                                             \
+  status &= ok_global_define_native_function(                                                                            \
+      p_ok, ok_create_string_view(" " #id, OK_STRING_VIEW_CALCULATE_LENGTH, true), arity, native_##id);
+  FS_GLOBAL(fs_read, 1)
+  FS_GLOBAL(fs_write, 2)
+  FS_GLOBAL(fs_append, 2)
+  FS_GLOBAL(fs_exists, 1)
+  FS_GLOBAL(fs_is_file, 1)
+  FS_GLOBAL(fs_is_dir, 1)
+  FS_GLOBAL(fs_remove, 1)
+  FS_GLOBAL(fs_mkdir, 1)
+  FS_GLOBAL(fs_list, 1)
+  FS_GLOBAL(fs_cwd, 0)
+  FS_GLOBAL(fs_join, 2)
+#undef FS_GLOBAL
+  return status;
+}
+
+static bool ok_define_sys_members(ok* p_ok) {
+  bool status = true;
+#define SYS_GLOBAL(id, arity)                                                                                            \
+  status &= ok_global_define_native_function(                                                                            \
+      p_ok, ok_create_string_view(" " #id, OK_STRING_VIEW_CALCULATE_LENGTH, true), arity, native_##id);
+  SYS_GLOBAL(sys_env_get, 1)
+  SYS_GLOBAL(sys_env_set, 2)
+  SYS_GLOBAL(sys_env_unset, 1)
+  SYS_GLOBAL(sys_env_keys, 0)
+  SYS_GLOBAL(sys_clock, 0)
+  SYS_GLOBAL(sys_monotonic, 0)
+  SYS_GLOBAL(sys_exit, 1)
+#undef SYS_GLOBAL
+  return status;
+}
+
 // the natives-as-classes step: mount the method surfaces on the builtin
 // singletons, then seal them. the container C handlers are the SAME
 // functions the free-function spellings use - they were receiver-first all
@@ -1126,6 +1572,14 @@ ok* ok_create(ok_specs p_specs) {
     ok_free(okay);
     return NULL;
   }
+  if (!ok_define_fs_members(okay)) { // std.fs's hidden globals: the host door (P4)
+    ok_free(okay);
+    return NULL;
+  }
+  if (!ok_define_sys_members(okay)) { // std.sys's hidden globals: the host door (P4)
+    ok_free(okay);
+    return NULL;
+  }
   if (!ok_define_builtin_surfaces(okay)) { // mount the method tables, then seal
     ok_free(okay);
     return NULL;
@@ -1153,6 +1607,10 @@ ok_result ok_run(ok* p_ok, ok_source p_source) {
   // a fresh run starts with a clean error lane: ok_last_error reads the
   // most recent failed run, and this run hasn't failed yet.
   vm_clear_error(&p_ok->vm);
+  // and a clean exit lane: a previous run's half-spent request (or its
+  // code) never leaks into this one.
+  p_ok->exit_requested = false;
+  p_ok->exit_code = 0;
   const uint32_t source_id = vm_begin_source(&p_ok->vm, p_source.code, p_source.path);
   if (source_id == VM_SOURCE_UNSTAMPED) {
     return OK_INIT_ERROR;
@@ -1236,6 +1694,12 @@ uint32_t ok_caps_get(ok* p_ok) {
 // property: not a native, not a script, not a manifest can escalate.
 void ok_caps_drop(ok* p_ok, uint32_t p_caps) {
   p_ok->caps_dropped |= p_caps;
+}
+
+// P4: the code sys.exit requested. meaningful after ok_run answered
+// OK_EXITED; 0 otherwise (the guard makes a stale code unreadable).
+int32_t ok_exit_code(ok* p_ok) {
+  return p_ok->exit_requested ? p_ok->exit_code : 0;
 }
 
 /* the loader (OR-3, the public ok_module.h door) */
@@ -1595,7 +2059,9 @@ static ok_result ok_run_inner(ok* p_ok, uint32_t p_source_id, parse_result* p_pa
   value_array_deinit(&interpret_specs.top_level_values, &p_ok->alloc);
   if (interpret_result.status != RUNTIME_OK) {
     interpret_result_deinit(&interpret_result);
-    return OK_RUNTIME_ERROR;
+    // P4: sys.exit unwound to the top as an uncatchable error - the run
+    // ENDED, it did not fail. the code reads back through ok_exit_code.
+    return p_ok->exit_requested ? OK_EXITED : OK_RUNTIME_ERROR;
   }
 
   return OK;

@@ -1,0 +1,4 @@
+// the code is a process status: whole, inside int32
+import "std/sys" as sys;
+sys.exit(1.5);
+// expect error: invalid argument: 'sys.exit' expects a whole number between -2147483648 and 2147483647.

@@ -34,9 +34,17 @@ typedef enum {
   OK_EK_CONVERSION,
   OK_EK_NATIVE,
   OK_EK_INTERNAL,
+  // sys.exit rides the error lane (the only control-flow escape a native
+  // has) but is a host request, not a script error: no catch may take it,
+  // the run unwinds to the top and answers OK_EXITED.
+  OK_EK_EXIT,
 } ok_error_kind;
 
 const char* ok_error_kind_name(ok_error_kind p_kind);
+
+// raise the exit request (P4): sys.exit's lane. uncatchable by design -
+// see OK_EK_EXIT above; the natives call this through ok_vm().
+void vm_raise_exit(vm* p_vm);
 
 // one entry per compiled TU: the entry file's run, plus one per loaded
 // module (OR-1) - appended at each load, alive until ok_free. the path is

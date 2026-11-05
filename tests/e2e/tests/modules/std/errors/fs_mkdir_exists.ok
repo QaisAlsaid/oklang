@@ -1,0 +1,8 @@
+// one level, no parents, no overwrite: an existing path refuses
+import "std/fs" as fs;
+if fs.exists("e2e_fs_taken_dir") {
+  fs.remove("e2e_fs_taken_dir");
+}
+fs.mkdir("e2e_fs_taken_dir");
+fs.mkdir("e2e_fs_taken_dir");
+// expect error: fs.mkdir failed: cannot create 'e2e_fs_taken_dir' (it may exist, or a parent is missing).

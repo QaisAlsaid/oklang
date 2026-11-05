@@ -18,6 +18,10 @@ typedef enum {
   OK_PARSE_ERROR,
   OK_COMPILE_ERROR,
   OK_RUNTIME_ERROR,
+  // P4: the script asked the host to stop (std.sys's exit). not an error:
+  // the run ENDED, nothing failed, no diagnostic printed. the requested
+  // code reads back with ok_exit_code.
+  OK_EXITED,
 } ok_result;
 
 /* runtime */
@@ -29,6 +33,12 @@ void ok_free(ok* p_ok);
 // during the call, your buffers are yours. the path is interned (copied) so diagnostics can name it
 // after the run. the code is copied only when source retention is on.
 ok_result ok_run(ok* p_ok, ok_source p_source);
+
+// the exit code std.sys's exit() requested. meaningful after ok_run
+// answered OK_EXITED; 0 otherwise (including after every other result -
+// a stale code from an earlier run can never leak through, the lane
+// resets at every ok_run).
+int32_t ok_exit_code(ok* p_ok);
 
 // opt-in source retention (default off).
 // when on: every ok_run's source is copied into the ok state and kept alive until ok_free.

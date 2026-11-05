@@ -20,11 +20,11 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/stat.h>
 
 #include "ok/ok.h"
 #include "ok/ok_module.h"
 
+#include "ok_fs.h" // P4: the probe routes through the one fs door
 #include "okstate.h"
 
 // one formatted error into the caller's lane, NULL-safe (a NULL p_err just
@@ -196,8 +196,7 @@ bool ok_load_native_default(ok* p_ok,
   // continues) from "a native candidate exists but is broken" (a message,
   // the hard error). a file that is not a regular file is a miss, not a
   // broken native (the ladder's directory candidates die here).
-  struct stat info;
-  if (stat(p_path, &info) != 0 || !S_ISREG(info.st_mode)) {
+  if (!ok_fs_is_file(p_path)) {
     return false; // clean miss: no message
   }
   char err[256];

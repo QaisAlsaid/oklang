@@ -64,6 +64,7 @@ struct test_case {
   std::string name;
   std::string expected_result;
   std::optional<std::string> expected_error;
+  std::optional<int> expected_exit;
   bool has_expectation = false;
 };
 
@@ -75,6 +76,8 @@ test_case parse_test_file(const std::filesystem::path& p_path) {
   std::string line;
   std::regex expect_out_re(R"(//\s*expect:\s*(.*))");
   std::regex expect_err_re(R"(//\s*expect\s+error(?::\s*(.*))?)");
+  // the sys.exit lane (P4): the process's code is the assertion.
+  std::regex expect_exit_re(R"(//\s*expect\s+exit:\s*(-?\d+))");
 
   while (std::getline(fs, line)) {
     std::smatch match;
@@ -86,6 +89,9 @@ test_case parse_test_file(const std::filesystem::path& p_path) {
         tc.expected_error = match[1].str();
       else
         tc.expected_error = "";
+      tc.has_expectation = true;
+    } else if (std::regex_search(line, match, expect_exit_re)) {
+      tc.expected_exit = std::stoi(match[1].str());
       tc.has_expectation = true;
     }
   }
@@ -272,7 +278,25 @@ int main(int argc, char** argv) {
       continue;
     }
 
-    if (tc.expected_error.has_value()) {
+    if (tc.expected_exit.has_value()) {
+      // the exit lane: the requested code is the assertion; stdout still
+      // compares when expect lines are present.
+      if (rr.exit_code != tc.expected_exit.value()) {
+        std::println("{}[NOTOK]{}: '{}'", COLOR_RED, COLOR_RESET, test_path);
+        std::println("expected exit {}, got exit {}", tc.expected_exit.value(), rr.exit_code);
+        std::println("got:\nstdout: {}\nstderr: {}", rr.std_out, rr.std_err);
+        fail(notok, ok_debug_path, test_path);
+      } else if (!tc.expected_result.empty() && rr.std_out != tc.expected_result) {
+        std::println("{}[NOTOK]{}: '{}'", COLOR_RED, COLOR_RESET, test_path);
+        std::println("output mismatch (exit code matched)");
+        std::println("expected:\n{}", tc.expected_result);
+        std::println("got:\nstdout: {}\nstderr: {}", rr.std_out, rr.std_err);
+        fail(notok, ok_debug_path, test_path);
+      } else {
+        ok++;
+        std::println("{}[OK]{}: {}", COLOR_GREEN, COLOR_RESET, test_path);
+      }
+    } else if (tc.expected_error.has_value()) {
       if (rr.exit_code == 0) {
         std::println("{}[NOTOK]{}: '{}'", COLOR_RED, COLOR_RESET, test_path);
         std::println("expected error, but non occurred");

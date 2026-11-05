@@ -52,6 +52,8 @@ const char* ok_error_kind_name(ok_error_kind p_kind) {
     return "native";
   case OK_EK_INTERNAL:
     return "internal";
+  case OK_EK_EXIT:
+    return "exit";
   }
   return "internal";
 }
@@ -2648,6 +2650,13 @@ static unwind_resume __attribute__((noinline, cold)) attempt_unwind(vm* p_vm, ui
     }
     if (defer_failed) {
       continue; // restart the walk for the defer's error (its chain already ran)
+    }
+    if (exe->error_kind == OK_EK_EXIT) {
+      // sys.exit rides the unwind - frames close, defers fire - but no
+      // catch may take it: it is a host request, not a script error. the
+      // record dies unconsumed and the walk keeps going outward.
+      exe->handlers.count--;
+      continue;
     }
     // consume the record and restore the handler frame
     exe->handlers.count--;
@@ -6407,6 +6416,14 @@ void runtime_error(vm* p_vm, ok_error_kind p_kind, const char* p_fmt, ...) {
   exe->has_error = true;
 }
 
+// raise the exit request (P4): sys.exit's uncatchable lane. the same
+// stash as runtime_error with the exit kind - the unwind's records all
+// decline it (attempt_unwind), the top level maps the end to OK_EXITED,
+// and the report lane prints nothing (vm_report_error's guard).
+void vm_raise_exit(vm* p_vm) {
+  runtime_error(p_vm, OK_EK_EXIT, "exit");
+}
+
 // raise (hard): the oom lane. out of memory is not a value and not
 // catchable, prints immediately (from the live state, the report
 // path itself must not allocate) and resets: nothing may resume.
@@ -6476,6 +6493,14 @@ static interpret_result __attribute__((cold)) vm_report_error(vm* p_vm) {
     return result;
   }
   exe->error_reported = true;
+
+  if (exe->error_kind == OK_EK_EXIT) {
+    // sys.exit reached the top: the run ENDED by request, nothing failed.
+    // no diagnostic, no stack trace - ok_run answers OK_EXITED and the
+    // code reads back through ok_exit_code. marking reported also keeps
+    // every later lane (deferred reports, ok_last_error prints) quiet.
+    return result;
+  }
 
   {
     bool panic = false;

@@ -1,0 +1,4 @@
+// okflags: --restrict
+// the same gate on the sys side: env/clock are host access too
+import "std/sys" as sys;
+// expect error: std module 'std/sys' refused: OK_CAP_HOST is dropped in this ok instance.

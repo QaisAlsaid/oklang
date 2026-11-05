@@ -1,0 +1,5 @@
+// an embedded NUL would silently truncate a C path - a WRONG path - so
+// it refuses. the \0 escape is P3's escape set doing real work.
+import "std/fs" as fs;
+print fs.exists("a\0b");
+// expect error: invalid argument: the string passed to 'fs.exists' contains a NUL.

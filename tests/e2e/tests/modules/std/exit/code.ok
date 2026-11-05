@@ -1,0 +1,6 @@
+// the requested code is the process's code
+import "std/sys" as sys;
+print "leaving";
+sys.exit(7);
+// expect: leaving
+// expect exit: 7

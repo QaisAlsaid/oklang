@@ -20,11 +20,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 
 #include "okmodules.h"
 
 #include "okdiag.h"
+#include "ok_env.h" // P4: the OKPATH read routes through the one env door
+#include "ok_fs.h"  // P4: the source reads route through the one fs door
 #include "okparser.h"
 #include "okstate.h"
 #include "okutils.h"
@@ -87,43 +88,13 @@ static char* mod_strdup(const ok_allocators* p_a, const char* p_text) {
 // allocator", and the default loader honors it by construction.
 static bool fs_read_source(void* p_ctx, const char* p_path, ok_source* p_out) {
   module_system* modules = (module_system*)p_ctx;
-  const ok_allocators* a = &modules->ok->raw_alloc;
-  // a regular file only: fopen alone happily "opens" a directory on linux,
-  // and ftell then answers a garbage-huge size (the allocation blast asan
-  // caught). the probe contract needs the read to fail for anything that is
-  // not a file.
-  struct stat info;
-  if (stat(p_path, &info) != 0 || !S_ISREG(info.st_mode)) {
+  // P4: the read itself lives behind ok_fs now (the audit's one-door
+  // rule); this hook stays the embedder-replaceable loader contract.
+  ok_fs_buffer buffer;
+  if (!ok_fs_read_file(p_path, &modules->ok->raw_alloc, &buffer)) {
     return false;
   }
-  FILE* file = fopen(p_path, "rb");
-  if (file == NULL) {
-    return false;
-  }
-  if (fseek(file, 0L, SEEK_END) != 0) {
-    fclose(file);
-    return false;
-  }
-  const long size = ftell(file);
-  rewind(file);
-  if (size < 0 || (unsigned long)size > (1u << 30)) {
-    // unreadable or absurd: refuse rather than trust ftell on exotic nodes
-    fclose(file);
-    return false;
-  }
-  char* buff = (char*)mod_alloc(a, (size_t)size + 1);
-  if (buff == NULL) {
-    fclose(file);
-    return false;
-  }
-  const size_t read = fread(buff, sizeof(char), (size_t)size, file);
-  fclose(file);
-  if (read != (size_t)size) {
-    mod_free(a, buff);
-    return false;
-  }
-  buff[read] = '\0';
-  p_out->code = buff;
+  p_out->code = buffer.chars;
   p_out->path = p_path;
   return true;
 }
@@ -1313,6 +1284,10 @@ typedef struct {
   const char* stem;
   const std_member_def* members;
   uint32_t member_count;
+  // P4: std.fs/std.sys touch the host (files, environment, clocks) - the
+  // import refuses unless the instance holds OK_CAP_HOST. the first std
+  // modules the capability families were built for.
+  bool host_gated;
 } std_module_def;
 
 static const std_member_def std_array_members[] = {
@@ -1357,12 +1332,41 @@ static const std_member_def std_math_members[] = {
     {"atan2", " atan2"},
     {"idiv", " idiv"},
 };
+// std.fs (P4): the host's file system through the ok_fs door. the list is
+// sorted (determinism), remove refuses non-empty directories, read caps
+// at 1 GiB, join is pure compute riding the module for convenience.
+static const std_member_def std_fs_members[] = {
+    {"append", " fs_append"},
+    {"cwd", " fs_cwd"},
+    {"exists", " fs_exists"},
+    {"is_dir", " fs_is_dir"},
+    {"is_file", " fs_is_file"},
+    {"join", " fs_join"},
+    {"list", " fs_list"},
+    {"mkdir", " fs_mkdir"},
+    {"read", " fs_read"},
+    {"remove", " fs_remove"},
+    {"write", " fs_write"},
+};
+// std.sys (P4): the running program's system context - the environment,
+// the clocks, the exit request - through the ok_env/ok_time doors.
+static const std_member_def std_sys_members[] = {
+    {"clock", " sys_clock"},
+    {"env_get", " sys_env_get"},
+    {"env_keys", " sys_env_keys"},
+    {"env_set", " sys_env_set"},
+    {"env_unset", " sys_env_unset"},
+    {"exit", " sys_exit"},
+    {"monotonic", " sys_monotonic"},
+};
 static const std_module_def std_modules[] = {
-    {"array", std_array_members, sizeof(std_array_members) / sizeof(std_array_members[0])},
-    {"io", std_io_members, sizeof(std_io_members) / sizeof(std_io_members[0])},
-    {"map", std_map_members, sizeof(std_map_members) / sizeof(std_map_members[0])},
-    {"math", std_math_members, sizeof(std_math_members) / sizeof(std_math_members[0])},
-    {"str", NULL, 0},
+    {"array", std_array_members, sizeof(std_array_members) / sizeof(std_array_members[0]), false},
+    {"fs", std_fs_members, sizeof(std_fs_members) / sizeof(std_fs_members[0]), true},
+    {"io", std_io_members, sizeof(std_io_members) / sizeof(std_io_members[0]), false},
+    {"map", std_map_members, sizeof(std_map_members) / sizeof(std_map_members[0]), false},
+    {"math", std_math_members, sizeof(std_math_members) / sizeof(std_math_members[0]), false},
+    {"str", NULL, 0, false},
+    {"sys", std_sys_members, sizeof(std_sys_members) / sizeof(std_sys_members[0]), true},
 };
 
 static const std_module_def* std_module_find(const ok_string_view p_stem) {
@@ -1503,10 +1507,25 @@ static bool resolve_import(module_system* p_modules,
     const std_module_def* def = std_module_find(stem);
     if (def == NULL) {
       string message = asprint(&p_modules->ok->alloc,
-                               "there is no std module '%.*s': the std modules are array, io, map, math, str.",
+                               "there is no std module '%.*s': the std modules are array, fs, io, map, math, str, sys.",
                                (int)ok_string_view_get_length(&stem),
                                stem.chars);
       module_report(p_source, p_site, message.chars != NULL ? message.chars : "no such std module.");
+      string_deinit(&message, &p_modules->ok->alloc);
+      str_list_deinit(&tried, a);
+      return false;
+    }
+    // P4: the HOST gate. fs/env/clock are data-plane host access (D16's
+    // family), so an instance that dropped OK_CAP_HOST at birth never
+    // sees the surface: the import refuses with the ratchet's shape (the
+    // same message the native lane uses). the where lane stays a pure
+    // resolution query - it reports where a load WOULD come from.
+    if (def->host_gated && p_where == NULL && (p_modules->ok->caps_dropped & OK_CAP_HOST) != 0) {
+      string message = asprint(&p_modules->ok->alloc,
+                               "std module 'std/%.*s' refused: OK_CAP_HOST is dropped in this ok instance.",
+                               (int)ok_string_view_get_length(&stem),
+                               stem.chars);
+      module_report(p_source, p_site, message.chars != NULL ? message.chars : "the std module is refused in this instance.");
       string_deinit(&message, &p_modules->ok->alloc);
       str_list_deinit(&tried, a);
       return false;
@@ -1585,7 +1604,7 @@ static bool resolve_import(module_system* p_modules,
       }
     }
     // the OKPATH lane: colon-separated roots, the same ladder at each.
-    const char* okpath = getenv("OKPATH");
+    const char* okpath = ok_env_get("OKPATH");
     if (okpath != NULL && *okpath != '\0') {
       char* roots = mod_strdup(a, okpath);
       if (roots != NULL) {

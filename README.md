@@ -73,6 +73,8 @@ Features:
 * Ternary expression that reads naturally `condition then consequence otherwise alternative`
 * Mark-and-sweep garbage collection with a stress mode that caught a lot of bugs
 * Native functions and opaque native values (handles)
+* Modules (script and native, one registry, one import ladder) with a built-in `std/` tree: `std.math`, and the HOST-gated host doors `std.fs` (files, directories, paths) and `std.sys` (environment, clocks, `exit`) - the latter refuse to import unless the instance holds `OK_CAP_HOST`
+* `sys.exit(code)`: ends the run cleanly (uncatchable, defers run, the code surfaces through the embedder's `ok_exit_code`)
 * Minimal C embedding API
 * Disassembler `ok --dump`
 

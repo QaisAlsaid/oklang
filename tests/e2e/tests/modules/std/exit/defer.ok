@@ -1,0 +1,21 @@
+// the exit unwind runs the defers - the callee's and the top level's -
+// exactly like an uncaught error's walk, then ends with the code
+import "std/sys" as sys;
+fu cleanup_inner() {
+  print "cleanup-inner";
+}
+fu cleanup_top() {
+  print "cleanup-top";
+}
+fu work() {
+  defer cleanup_inner();
+  sys.exit(0);
+}
+defer cleanup_top();
+print "before";
+work();
+print "after";
+// expect: before
+// expect: cleanup-inner
+// expect: cleanup-top
+// expect exit: 0

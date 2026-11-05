@@ -1,0 +1,3 @@
+import "std/sys" as sys;
+print sys.env_get(1);
+// expect error: invalid argument: 'sys.env_get' expects a string.

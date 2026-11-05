@@ -1,0 +1,4 @@
+// no implicit mkdir: writing into a missing directory fails, teaching it
+import "std/fs" as fs;
+fs.write("e2e_fs_missing_dir/x.txt", "data");
+// expect error: fs.write failed: cannot write 'e2e_fs_missing_dir/x.txt'.

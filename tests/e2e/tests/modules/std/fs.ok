@@ -1,0 +1,60 @@
+// std.fs (P4): the host's file system, HOST-gated at the import. the
+// fixture is self-contained: everything happens inside one scratch
+// directory under the runner's cwd, cleaned at entry AND exit, so a
+// failed earlier run never poisons this one.
+import "std/fs" as fs;
+
+// join is pure compute - no host contact of its own
+print fs.join("a", "b"); // expect: a/b
+print fs.join("", "b"); // expect: b
+print fs.join("a", ""); // expect: a
+print fs.join("dir/", "file"); // expect: dir/file
+
+// the clean slate (a previous failed run may have left the scratch behind)
+if fs.exists("e2e_fs_dir") {
+  for let name : fs.list("e2e_fs_dir") {
+    fs.remove(fs.join("e2e_fs_dir", name));
+  }
+  fs.remove("e2e_fs_dir");
+}
+if fs.exists("e2e_fs_file.txt") {
+  fs.remove("e2e_fs_file.txt");
+}
+
+// the write/read/append round trip
+fs.write("e2e_fs_file.txt", "hello ");
+fs.append("e2e_fs_file.txt", "world");
+print fs.read("e2e_fs_file.txt"); // expect: hello world
+
+// the probes
+print fs.exists("e2e_fs_file.txt"); // expect: true
+print fs.is_file("e2e_fs_file.txt"); // expect: true
+print fs.is_dir("e2e_fs_file.txt"); // expect: false
+print fs.exists("e2e_fs_absent.txt"); // expect: false
+print fs.is_file("."); // expect: false
+print fs.is_dir("."); // expect: true
+
+// directories: one level, sorted listing, no . or ..
+fs.mkdir("e2e_fs_dir");
+fs.write("e2e_fs_dir/zebra.txt", "z");
+fs.write("e2e_fs_dir/apple.txt", "a");
+fs.mkdir("e2e_fs_dir/mid");
+print fs.is_dir("e2e_fs_dir"); // expect: true
+let names = fs.list("e2e_fs_dir");
+print names.len(); // expect: 3
+print names[0]; // expect: apple.txt
+print names[1]; // expect: mid
+print names[2]; // expect: zebra.txt
+
+// cwd: host state - the fixture asserts shape, never content
+print fs.cwd().len() > 0; // expect: true
+print fs.is_dir(fs.cwd()); // expect: true
+
+// the cleanup: files first, then dirs (remove refuses non-empty)
+fs.remove("e2e_fs_dir/zebra.txt");
+fs.remove("e2e_fs_dir/apple.txt");
+fs.remove("e2e_fs_dir/mid");
+fs.remove("e2e_fs_dir");
+fs.remove("e2e_fs_file.txt");
+print fs.exists("e2e_fs_dir"); // expect: false
+print fs.exists("e2e_fs_file.txt"); // expect: false

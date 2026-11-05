@@ -1,0 +1,3 @@
+import "std/fs" as fs;
+print fs.read(5);
+// expect error: invalid argument: 'fs.read' expects a string.

@@ -1,0 +1,4 @@
+// okflags: --restrict
+// std.fs under a dropped OK_CAP_HOST: the import refuses, teaching the cap
+import "std/fs" as fs;
+// expect error: std module 'std/fs' refused: OK_CAP_HOST is dropped in this ok instance.

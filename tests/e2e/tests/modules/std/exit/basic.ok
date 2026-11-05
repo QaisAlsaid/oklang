@@ -1,0 +1,6 @@
+// sys.exit ends the run: nothing after it executes, nothing fails
+import "std/sys" as sys;
+print "before";
+sys.exit(0);
+print "after";
+// expect: before

@@ -1,0 +1,10 @@
+// remove never recurses: a non-empty directory refuses (the safe shape)
+import "std/fs" as fs;
+if fs.exists("e2e_fs_full_dir") {
+  fs.remove("e2e_fs_full_dir/inner.txt");
+  fs.remove("e2e_fs_full_dir");
+}
+fs.mkdir("e2e_fs_full_dir");
+fs.write("e2e_fs_full_dir/inner.txt", "i");
+fs.remove("e2e_fs_full_dir");
+// expect error: fs.remove failed: 'e2e_fs_full_dir' is not an existing file or empty directory.

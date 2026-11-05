@@ -1,0 +1,40 @@
+// std.sys (P4): the environment + the clocks, HOST-gated at the import
+// (the exit fixtures live under exit/). one dedicated env name only - the
+// surrounding environment (CI, shells, flavors) must never leak into the
+// output.
+import "std/sys" as sys;
+
+sys.env_set("OK_E2E_SYS_VAR", "first");
+print sys.env_get("OK_E2E_SYS_VAR"); // expect: first
+
+let mut seen = false;
+for let name : sys.env_keys() {
+  if name == "OK_E2E_SYS_VAR" {
+    seen = true;
+  }
+}
+print seen; // expect: true
+
+sys.env_set("OK_E2E_SYS_VAR", "second");
+print sys.env_get("OK_E2E_SYS_VAR"); // expect: second
+
+sys.env_unset("OK_E2E_SYS_VAR");
+print sys.env_get("OK_E2E_SYS_VAR"); // expect: null
+
+let mut gone = true;
+for let name : sys.env_keys() {
+  if name == "OK_E2E_SYS_VAR" {
+    gone = false;
+  }
+}
+print gone; // expect: true
+
+// unset is idempotent: an unset name unsets clean
+sys.env_unset("OK_E2E_SYS_VAR");
+
+// clocks: relations only - the host's clock is not the suite's to know
+print sys.monotonic() >= 0.0; // expect: true
+print sys.clock() > 1000000000.0; // expect: true
+let start = sys.monotonic();
+print sys.monotonic() >= start; // expect: true
+print sys.monotonic() - start < 60.0; // expect: true

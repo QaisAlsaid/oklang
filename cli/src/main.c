@@ -468,6 +468,10 @@ void repl(ok* p_ok) {
       fprintf(stderr, "runtime error occurred.\n");
     } else if (result == OK_INIT_ERROR) {
       fprintf(stderr, "init error occurred.\n");
+    } else if (result == OK_EXITED) {
+      // the script asked to stop (std.sys's exit): the process answers with
+      // the requested code. a REPL host would instead break its loop here.
+      exit(ok_exit_code(p_ok));
     }
   }
 }
@@ -486,6 +490,10 @@ void run_file(ok* p_ok, const char* p_path) {
     exit(65);
   } else if (result == OK_RUNTIME_ERROR || result == OK_INIT_ERROR) {
     exit(70);
+  } else if (result == OK_EXITED) {
+    // P4: the script's own request (std.sys's exit) - its code is the
+    // process's code. the sysexits lanes above stay for real failures.
+    exit(ok_exit_code(p_ok));
   }
 }
 

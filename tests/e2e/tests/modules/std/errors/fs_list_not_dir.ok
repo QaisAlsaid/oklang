@@ -1,0 +1,5 @@
+// listing a file (that exists!) is a shape error, not a miss
+import "std/fs" as fs;
+fs.write("e2e_fs_err_file.txt", "x");
+print fs.list("e2e_fs_err_file.txt");
+// expect error: fs.list failed: 'e2e_fs_err_file.txt' is not a readable directory.

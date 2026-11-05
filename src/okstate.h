@@ -48,6 +48,12 @@ struct ok {
   const ok_dylib* dylib;
   bool dump_bytecode;
   bool dump_skip_run;
+  // P4: sys.exit's request. the native sets both; the exit unwinds like
+  // an uncaught error (no catch may take it), and ok_run maps the run's
+  // end to OK_EXITED with the code readable through ok_exit_code. every
+  // ok_run starts with the lane reset.
+  bool exit_requested;
+  int32_t exit_code;
 };
 
 // the seeds (ok.c): the builtin surface every TU's <main> pre-declares in its
