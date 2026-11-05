@@ -118,19 +118,27 @@ static const parse_rule parse_rules[] = {
     [TOKEN_ASTERISK] = {NULL, parse_binary_infix, PREC_PRODUCT},
     [TOKEN_SLASH] = {NULL, parse_binary_infix, PREC_PRODUCT},
     [TOKEN_MODULO] = {NULL, parse_binary_infix, PREC_PRODUCT},
-    [TOKEN_CARET] = {NULL, parse_binary_infix, PREC_BITWISE_XOR},
-    [TOKEN_AMPERSAND] = {NULL, parse_binary_infix, PREC_AND},
-    [TOKEN_BAR] = {NULL, parse_binary_infix, PREC_OR},
+    // the bitwise four (& | ^ and their compounds) reject at parse: the
+    // operator tables have spelled them since the beginning, but the
+    // compiler never implemented a lane for any of them (the fuzzer's P6
+    // round-two find - `a & b` parsed clean and crashed the internal-bug
+    // lane, `a &= b` tripped the infix dispatcher's assertion). the tokens
+    // stay reserved (the spellings live on in the operator table); when a
+    // ruling lands the lanes, these rules flip back on with real opcodes
+    // behind them. same rejection shape as `<<`, which never had a rule.
+    [TOKEN_CARET] = {NULL, NULL, PREC_NONE},
+    [TOKEN_AMPERSAND] = {NULL, NULL, PREC_NONE},
+    [TOKEN_BAR] = {NULL, NULL, PREC_NONE},
     [TOKEN_PLUS_EQUAL] = {NULL, parse_compound_assign_expression, PREC_ASSIGNMENT},
     [TOKEN_MINUS_EQUAL] = {NULL, parse_compound_assign_expression, PREC_ASSIGNMENT},
     [TOKEN_ASTERISK_EQUAL] = {NULL, parse_compound_assign_expression, PREC_ASSIGNMENT},
     [TOKEN_SLASH_EQUAL] = {NULL, parse_compound_assign_expression, PREC_ASSIGNMENT},
     [TOKEN_MODULO_EQUAL] = {NULL, parse_compound_assign_expression, PREC_ASSIGNMENT},
-    [TOKEN_CARET_EQUAL] = {NULL, parse_binary_infix, PREC_ASSIGNMENT},
-    [TOKEN_AMPERSAND_EQUAL] = {NULL, parse_binary_infix, PREC_ASSIGNMENT},
-    [TOKEN_BAR_EQUAL] = {NULL, parse_binary_infix, PREC_ASSIGNMENT},
-    [TOKEN_SHIFT_LEFT_EQUAL] = {NULL, parse_binary_infix, PREC_ASSIGNMENT},
-    [TOKEN_SHIFT_RIGHT_EQUAL] = {NULL, parse_binary_infix, PREC_ASSIGNMENT},
+    [TOKEN_CARET_EQUAL] = {NULL, NULL, PREC_NONE},
+    [TOKEN_AMPERSAND_EQUAL] = {NULL, NULL, PREC_NONE},
+    [TOKEN_BAR_EQUAL] = {NULL, NULL, PREC_NONE},
+    [TOKEN_SHIFT_LEFT_EQUAL] = {NULL, NULL, PREC_NONE},
+    [TOKEN_SHIFT_RIGHT_EQUAL] = {NULL, NULL, PREC_NONE},
     [TOKEN_COMMA] = {NULL, NULL, PREC_NONE},
     [TOKEN_COLON] = {NULL, NULL, PREC_NONE},
     [TOKEN_BANG] = {parse_unary_prefix, NULL, PREC_PREFIX},

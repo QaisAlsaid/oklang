@@ -5,6 +5,7 @@
 # or a mangled landing - run crosscheck.sh to settle both.
 fnv1a64 1f35eef0788e9b2a class_shapes.ok
 fnv1a64 635abcf17bc08623 comments_only.ok
+fnv1a64 44c65e845a8da819 condition_chains.ok
 fnv1a64 b485e1927d57b66b coroutines.ok
 fnv1a64 25aa92676f596cc7 deep_blocks.ok
 fnv1a64 6f3f1244ed271c43 deep_parens.ok
@@ -15,7 +16,7 @@ fnv1a64 9d3edeaa4c650bd6 fstring_chain.ok
 fnv1a64 fe018a1ec808ecf7 invalid_utf8.bin
 fnv1a64 ee55bdfdff37bedb modules.ok
 fnv1a64 93cd53309a16da5b numbers.ok
-fnv1a64 c770bbd0b78ad6a9 operators.ok
+fnv1a64 2e65a856fdc179da operators.ok
 fnv1a64 223311471f71c209 strings_multiline.ok
 fnv1a64 1cc87409902bd746 tailcalls.ok
 fnv1a64 933397058c73a3b0 unterminated.ok

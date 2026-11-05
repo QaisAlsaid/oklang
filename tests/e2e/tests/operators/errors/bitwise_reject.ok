@@ -1,0 +1,17 @@
+// the bitwise tokens reject at parse: the operator tables have spelled
+// & | ^ (and their compounds) since the beginning, but no compile lane was
+// ever implemented for them - before the P6 round-two fix, `a & b` parsed
+// clean and crashed the compiler's internal-bug lane, and `a &= b` tripped
+// the infix dispatcher's assertion. they now reject exactly like `<<`
+// (which never had a parse rule); the spellings stay reserved in the
+// operator table for the day a ruling lands them real lanes.
+let mut a = 5;
+let b = 2;
+a & b; // expect error: expected ';'
+a | b; // expect error: expected ';'
+a ^ b; // expect error: expected ';'
+a &= b; // expect error: expected ';'
+a |= b; // expect error: expected ';'
+a ^= b; // expect error: expected ';'
+a <<= b; // expect error: expected ';'
+a >>= b; // expect error: expected ';'

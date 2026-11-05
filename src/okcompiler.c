@@ -2802,93 +2802,160 @@ static bool emit_incomplete_jump_if_set(
 }
 
 // the fused condition lane (the compare+jump fusion's condition half, the
-// "branch no materialize" sizing): a DIRECT comparison as an if/while/for
-// condition emits one instruction instead of the binop's bool + OP_JUMP_IF
-// pair. the operands keep their natural homes - a local's register is used
-// as-is (the vm saves and restores it around the result), a constant rhs
-// rides the k-operand - so the fused shape adds zero staging. every other
-// condition shape (logical operators, negation, plain values) returns
-// UNSUPPORTED having emitted nothing, and the caller runs the generic path.
-typedef enum {
-  FUSED_CONDITION_UNSUPPORTED,
-  FUSED_CONDITION_OK,
-  FUSED_CONDITION_ERROR,
-} fused_condition_result;
+// "branch no materialize" sizing): a condition in an if/while/for compiles
+// to a CHAIN of branches that never materialize the condition's boolean
+// value. pass 1 fused the direct comparison (one OP_JUMP_IF_CMP where the
+// generic path spends the binop's bool + OP_JUMP_IF's re-read); pass 2
+// extends the lane over the logical shapes:
+//   - `X and Y` / `X or Y` compile per De Morgan:
+//       jump when (X and Y) is false -> jump when X is false, jump when Y is false
+//       jump when (X or Y) is true   -> jump when X is true,  jump when Y is true
+//       jump when (X and Y) is true  -> jump when X is false to Lend, jump when Y is true
+//       jump when (X or Y) is false  -> jump when X is true to Lend,  jump when Y is false
+//     where Lend is the position after the chain: the operand that already
+//     decided the outcome skips the remaining tests. the p operand carries
+//     the sense (the sketched S-flag proved unnecessary - p inversion is
+//     total for the logical ops, whose value lane IS truthiness-based).
+//   - `not X` / `!X` CANNOT ride the inversion: oklang's `!` is bool-STRICT
+//     (perform_not: numbers and objects are type errors), so a polarity
+//     flip would swallow the error lane - `not (x < y)` with an overloaded
+//     comparison returning a non-bool must error exactly as the value lane
+//     does. negation keeps its literal shape: the whole `not` node compiles
+//     as a generic leaf (the operand's value, OP_NOT with its runtime
+//     check, one JUMP_IF on the bool) - the same instructions the old
+//     fallback spent, minus the chain-level value bookkeeping.
+//   - every other leaf takes the generic operand lane: the expression
+//     compiles to a temp, one OP_JUMP_IF reads it - the same pair the value
+//     lane spends on that operand, minus the value bookkeeping. the chain's
+//     VALUE is dead in condition position (`a or b` evaluating to a rather
+//     than true is only observable in value position, which still compiles
+//     through compile_logical_operator).
+// evaluation order and short-circuit match the generic lane exactly: the
+// left operand always runs first, the right is skipped when the left
+// decides. each leaf rolls its temps back once its jump is emitted - the
+// jump consumed them in execution order before any later leaf's code can
+// overwrite the slots - so a chain of any length holds at most two temps.
 
-static fused_condition_result compile_fused_condition_jump(
-    compiler* p_compiler, ast_expression* p_condition, bool p_truthy, uint32_t* p_out, ast_node* p_author) {
-  if (p_condition->node.node_type != AST_INFIX_BINARY_EXPRESSION) {
-    return FUSED_CONDITION_UNSUPPORTED;
+// the ledger of jumps that must all reach the condition's branch target:
+// every leaf contributes exactly one jump. the parser's depth guard
+// (OK_PARSER_MAX_DEPTH) bounds any single condition's
+// leaves under the cap, so overflow is structurally unreachable; the guard
+// stays defensive anyway (a loud error, never a miscompile).
+#define OK_CONDITION_JUMPS_MAX 256u
+
+typedef struct {
+  uint32_t jumps[OK_CONDITION_JUMPS_MAX];
+  uint32_t count;
+} condition_jumps;
+
+static bool condition_jumps_append(condition_jumps* p_jumps, uint32_t p_at) {
+  if (p_jumps->count >= OK_CONDITION_JUMPS_MAX) {
+    return false;
   }
-  ast_infix_binary_expression* binexpr = (ast_infix_binary_expression*)p_condition;
-  comparison cmp;
-  switch (binexpr->_operator) {
+  p_jumps->jumps[p_jumps->count++] = p_at;
+  return true;
+}
+
+// the comparator table for the fusable comparisons (pass 1's set, unchanged).
+static bool condition_comparison_of(operator_type p_operator, comparison* p_out) {
+  switch (p_operator) {
   case OPERATOR_BIN_EQUALS:
-    cmp = CMP_EQUALS;
-    break;
+    *p_out = CMP_EQUALS;
+    return true;
   case OPERATOR_BIN_BANG_EQUAL:
-    cmp = CMP_NOT_EQUAL;
-    break;
+    *p_out = CMP_NOT_EQUAL;
+    return true;
   case OPERATOR_BIN_LESS:
-    cmp = CMP_LESS;
-    break;
+    *p_out = CMP_LESS;
+    return true;
   case OPERATOR_BIN_LESS_EQUAL:
-    cmp = CMP_LESS_EQUAL;
-    break;
+    *p_out = CMP_LESS_EQUAL;
+    return true;
   case OPERATOR_BIN_GREATER:
-    cmp = CMP_GREATER;
-    break;
+    *p_out = CMP_GREATER;
+    return true;
   case OPERATOR_BIN_GREATER_EQUAL:
-    cmp = CMP_GREATER_EQUAL;
-    break;
+    *p_out = CMP_GREATER_EQUAL;
+    return true;
   case OPERATOR_BIN_STRICT_EQUALS:
-    cmp = CMP_STRICT_EQUAL;
-    break;
+    *p_out = CMP_STRICT_EQUAL;
+    return true;
   case OPERATOR_BIN_IS:
-    cmp = CMP_IS;
-    break;
+    *p_out = CMP_IS;
+    return true;
   default:
-    return FUSED_CONDITION_UNSUPPORTED;
+    return false;
+  }
+}
+
+static bool compile_condition_chain(compiler* p_compiler,
+                                    ast_expression* p_condition,
+                                    bool p_jump_when_true,
+                                    condition_jumps* p_jumps,
+                                    ast_node* p_author);
+
+// the probing shape patches its Lend jumps before the definition below.
+static bool patch_jump_if(compiler* p_compiler,
+                          bool p_is_loop,
+                          uint32_t p_jump_instruction,
+                          uint32_t p_jump_end,
+                          ast_node* p_author);
+
+// the comparison leaf: pass 1's whole shape, generalized over the branch
+// polarity. the operands keep their natural homes - a local's register is
+// used as-is (the vm saves and restores it around the result), a constant
+// rhs rides the k-operand - so the fused shape adds zero staging.
+static bool compile_condition_comparison_leaf(compiler* p_compiler,
+                                              ast_infix_binary_expression* p_binexpr,
+                                              bool p_jump_when_true,
+                                              condition_jumps* p_jumps,
+                                              ast_node* p_author) {
+  comparison cmp;
+  if (!condition_comparison_of(p_binexpr->_operator, &cmp)) {
+    // unreachable from the chain dispatcher; kept as a guard so the leaf
+    // stays callable on its own terms.
+    return false;
   }
   register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
   // temps for the operands the compiler cannot address in place (constants
   // never load, locals keep their registers, expressions stage here)
+  const uint32_t checkpoint = regalloc->temp_top;
   _register lhs_dest;
   if (!register_allocator_allocate_temp(regalloc, &lhs_dest)) {
     report_oom(p_compiler, p_author);
-    return FUSED_CONDITION_ERROR;
+    return false;
   }
   expression_result lhs;
-  if (!compile_expression(p_compiler, binexpr->left, lhs_dest, 1, &lhs)) {
-    return FUSED_CONDITION_ERROR;
+  if (!compile_expression(p_compiler, p_binexpr->left, lhs_dest, 1, &lhs)) {
+    return false;
   }
   _register rhs_dest;
   if (!register_allocator_allocate_temp(regalloc, &rhs_dest)) {
     report_oom(p_compiler, p_author);
-    return FUSED_CONDITION_ERROR;
+    return false;
   }
   expression_result rhs;
-  if (!compile_expression(p_compiler, binexpr->right, rhs_dest, 1, &rhs)) {
-    return FUSED_CONDITION_ERROR;
+  if (!compile_expression(p_compiler, p_binexpr->right, rhs_dest, 1, &rhs)) {
+    return false;
   }
   // the lhs lands in a register (its temp, or the local it already is); the
   // rhs may stay a constant - the same operand policy the value binops use.
   if (!materialize_into_if_not_register(p_compiler, &lhs.value, lhs_dest, p_author)) {
-    return FUSED_CONDITION_ERROR;
+    return false;
   }
   bool is_rhs_const = false;
   if (!materialize_into_if_not_common(
           p_compiler, &is_rhs_const, LOCATION_KIND_CONSTANT, &rhs.value, rhs_dest, p_author)) {
-    return FUSED_CONDITION_ERROR;
+    return false;
   }
   // (P1 sweep note: no width guard is needed here - ok_index and the 2w
   // operand fields are both 16 bit, so the fused window is structural.
   // the guard this replaces compared a uint16 against UINT16_MAX and
   // could never fire.)
-  *p_out = current_chunk(p_compiler)->code.count;
+  uint32_t at = current_chunk(p_compiler)->code.count;
   if (!emit_word2(p_compiler,
                   encode_OPPABCQC(OP_JUMP_IF_CMP,
-                                  p_truthy,
+                                  p_jump_when_true,
                                   0,
                                   lhs.value.index,
                                   rhs.value.index,
@@ -2896,9 +2963,98 @@ static fused_condition_result compile_fused_condition_jump(
                                   (uint8_t)cmp),
                   p_author)) {
     report_oom(p_compiler, p_author);
-    return FUSED_CONDITION_ERROR;
+    return false;
   }
-  return FUSED_CONDITION_OK;
+  // the jump consumed the operand temps (it is the next instruction to
+  // execute after everything the operands staged), so the next leaf may
+  // reuse the slots.
+  register_allocator_reset_temps(regalloc, checkpoint);
+  if (!condition_jumps_append(p_jumps, at)) {
+    error_at(p_compiler,
+             p_author,
+             ok_create_string_view("condition is too large to compile.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return false;
+  }
+  return true;
+}
+
+static bool compile_condition_chain(compiler* p_compiler,
+                                    ast_expression* p_condition,
+                                    bool p_jump_when_true,
+                                    condition_jumps* p_jumps,
+                                    ast_node* p_author) {
+  // (`not X` / `!X` is deliberately NOT recursed into - see the lane comment
+  // above: oklang's `!` is bool-strict, so the node falls through to the
+  // generic leaf, compiling the operand's value + OP_NOT + one JUMP_IF.)
+  if (p_condition->node.node_type == AST_INFIX_BINARY_EXPRESSION) {
+    ast_infix_binary_expression* binexpr = (ast_infix_binary_expression*)p_condition;
+    if (binexpr->_operator == OPERATOR_LOG_AND || binexpr->_operator == OPERATOR_LOG_OR) {
+      const bool is_and = binexpr->_operator == OPERATOR_LOG_AND;
+      if (is_and != p_jump_when_true) {
+        // the deciding shape (and when jumping on false, or when jumping on
+        // true): either operand deciding the outcome decides the branch, so
+        // both operands' jumps share the caller's target.
+        return compile_condition_chain(p_compiler, binexpr->left, p_jump_when_true, p_jumps, p_author) &&
+               compile_condition_chain(p_compiler, binexpr->right, p_jump_when_true, p_jumps, p_author);
+      }
+      // the probing shape (and when jumping on true, or when jumping on
+      // false): the left operand deciding means the chain must NOT jump,
+      // so its jumps bend to Lend - the position after the right operand's
+      // tests - while the right operand's jumps carry the branch.
+      condition_jumps decided = {.count = 0};
+      if (!compile_condition_chain(p_compiler, binexpr->left, !p_jump_when_true, &decided, p_author)) {
+        return false;
+      }
+      if (!compile_condition_chain(p_compiler, binexpr->right, p_jump_when_true, p_jumps, p_author)) {
+        return false;
+      }
+      const uint32_t lend = current_chunk(p_compiler)->code.count;
+      for (uint32_t i = 0; i < decided.count; ++i) {
+        if (!patch_jump_if(p_compiler, false, decided.jumps[i], lend, p_author)) {
+          return false;
+        }
+      }
+      return true;
+    }
+    if (condition_comparison_of(binexpr->_operator, &(comparison){0})) {
+      return compile_condition_comparison_leaf(p_compiler, binexpr, p_jump_when_true, p_jumps, p_author);
+    }
+  }
+  // the generic leaf: any other expression compiles to a temp and one
+  // OP_JUMP_IF reads it - the caller's old fallback shape for that operand,
+  // minus the value bookkeeping the condition never observes.
+  register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
+  const uint32_t checkpoint = regalloc->temp_top;
+  _register temp;
+  if (!register_allocator_allocate_temp(regalloc, &temp)) {
+    report_oom(p_compiler, p_author);
+    return false;
+  }
+  expression_result value;
+  if (!compile_expression(p_compiler, p_condition, temp, 1, &value)) {
+    return false;
+  }
+  // the value may live anywhere (a local's register, a constant, the temp);
+  // constants materialize into the temp, registers stay put.
+  if (!materialize_into_if_not_register(p_compiler, &value.value, temp, p_author)) {
+    return false;
+  }
+  _register cond;
+  cond.index = value.value.index;
+  cond.flags = REGISTER_FLAG_NONE;
+  cond.errors = REGISTER_OK;
+  uint32_t at;
+  if (!emit_incomplete_jump_if(p_compiler, p_jump_when_true, cond, &at, p_author)) {
+    return false;
+  }
+  register_allocator_reset_temps(regalloc, checkpoint);
+  if (!condition_jumps_append(p_jumps, at)) {
+    error_at(p_compiler,
+             p_author,
+             ok_create_string_view("condition is too large to compile.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
+    return false;
+  }
+  return true;
 }
 
 // defaults ladder guard: jump forward when the argument for parameter position
@@ -3010,32 +3166,9 @@ static bool patch_jump_if_set(compiler* p_compiler,
 }
 
 bool compile_if_statement(compiler* p_compiler, ast_if_statement* p_if) {
-  uint32_t cons_jump;
-  const fused_condition_result fused =
-      compile_fused_condition_jump(p_compiler, p_if->condition, false, &cons_jump, (ast_node*)p_if);
-  if (fused == FUSED_CONDITION_ERROR) {
+  condition_jumps cons_jumps = {.count = 0};
+  if (!compile_condition_chain(p_compiler, p_if->condition, false, &cons_jumps, (ast_node*)p_if)) {
     return false;
-  }
-  if (fused == FUSED_CONDITION_UNSUPPORTED) {
-    expression_result condition;
-    _register condition_register;
-    if (!register_allocator_allocate_temp(&current_context(p_compiler)->register_allocator, &condition_register)) {
-      report_oom(p_compiler, (ast_node*)p_if);
-      return false;
-    }
-    if (!compile_expression(p_compiler, p_if->condition, condition_register, 1, &condition)) {
-      return false;
-    }
-    if (!materialize_into_if_not_register(p_compiler, &condition.value, condition_register, (ast_node*)p_if)) {
-      return false;
-    }
-    condition_register.error = REGISTER_OK;
-    condition_register.index = condition.value.index;
-    condition_register.flags = REGISTER_FLAG_NONE; // for all that it matters this is a temp
-
-    if (!emit_incomplete_jump_if(p_compiler, false, condition_register, &cons_jump, (ast_node*)p_if)) {
-      return false;
-    }
   }
 
   if (!compile_statement(p_compiler, p_if->consequence)) {
@@ -3048,8 +3181,10 @@ bool compile_if_statement(compiler* p_compiler, ast_if_statement* p_if) {
     return false;
   }
 
-  if (!patch_jump_if(p_compiler, false, cons_jump, chunk->code.count, (ast_node*)p_if)) {
-    return false;
+  for (uint32_t i = 0; i < cons_jumps.count; ++i) {
+    if (!patch_jump_if(p_compiler, false, cons_jumps.jumps[i], chunk->code.count, (ast_node*)p_if)) {
+      return false;
+    }
   }
 
   if (p_if->alternative != NULL) {
@@ -3094,33 +3229,9 @@ bool compile_while_statement(compiler* p_compiler, ast_while_statement* p_while)
   CTX.handlers_at_entry = ctx->active_handlers;
   chunk* chunk = current_chunk(p_compiler);
   const uint32_t loop_start = chunk->code.count;
-  uint32_t exit_jmp;
-  const fused_condition_result fused =
-      compile_fused_condition_jump(p_compiler, p_while->condition, false, &exit_jmp, (ast_node*)p_while);
-  if (fused == FUSED_CONDITION_ERROR) {
+  condition_jumps exit_jumps = {.count = 0};
+  if (!compile_condition_chain(p_compiler, p_while->condition, false, &exit_jumps, (ast_node*)p_while)) {
     return false;
-  }
-  if (fused == FUSED_CONDITION_UNSUPPORTED) {
-    expression_result condition;
-    _register condition_reg;
-    if (!register_allocator_allocate_temp(&current_context(p_compiler)->register_allocator, &condition_reg)) {
-      report_oom(p_compiler, (ast_node*)p_while);
-      return false;
-    }
-    if (!compile_expression(p_compiler, p_while->condition, condition_reg, 1, &condition)) {
-      return false;
-    }
-    if (!materialize_into_if_not_register(p_compiler, &condition.value, condition_reg, (ast_node*)p_while)) {
-      return false;
-    }
-
-    condition_reg.error = REGISTER_OK;
-    condition_reg.index = condition.value.index;
-    condition_reg.flags = REGISTER_FLAG_NONE;
-
-    if (!emit_incomplete_jump_if(p_compiler, false, condition_reg, &exit_jmp, (ast_node*)p_while)) {
-      return false;
-    }
   }
 
   if (!compile_statement(p_compiler, p_while->body)) {
@@ -3131,9 +3242,12 @@ bool compile_while_statement(compiler* p_compiler, ast_while_statement* p_while)
     return false;
   }
 
-  if (!patch_jump_if(p_compiler, false, exit_jmp, current_chunk(p_compiler)->code.count, (ast_node*)p_while)) {
-    return false;
+  for (uint32_t i = 0; i < exit_jumps.count; ++i) {
+    if (!patch_jump_if(p_compiler, false, exit_jumps.jumps[i], current_chunk(p_compiler)->code.count, (ast_node*)p_while)) {
+      return false;
+    }
   }
+
   CTX.continue_target = loop_start;
   CTX.break_target = chunk->code.count;
   if (!patch_loop_context(p_compiler, &CTX, (ast_node*)p_while)) {
@@ -3168,39 +3282,13 @@ bool compile_for_statement(compiler* p_compiler, ast_for_statement* p_for) {
     goto fail;
   }
   bool is_exit_set = false;
-  uint32_t exit_jump;
+  condition_jumps exit_jumps = {.count = 0};
   const uint32_t loop_start = chunk->code.count;
   if (p_for->condition != NULL) {
-    const fused_condition_result fused =
-        compile_fused_condition_jump(p_compiler, p_for->condition, false, &exit_jump, (ast_node*)p_for->condition);
-    if (fused == FUSED_CONDITION_ERROR) {
+    if (!compile_condition_chain(p_compiler, p_for->condition, false, &exit_jumps, (ast_node*)p_for->condition)) {
       goto fail;
     }
-    if (fused == FUSED_CONDITION_OK) {
-      is_exit_set = true;
-    } else {
-      expression_result condition;
-      _register condition_reg;
-      if (!register_allocator_allocate_temp(&current_context(p_compiler)->register_allocator, &condition_reg)) {
-        report_oom(p_compiler, (ast_node*)p_for);
-        return false;
-      }
-      if (!compile_expression(p_compiler, p_for->condition, condition_reg, 1, &condition)) {
-        goto fail;
-      }
-      if (!materialize_into_if_not_register(p_compiler, &condition.value, condition_reg, (ast_node*)p_for)) {
-        goto fail;
-      }
-
-      condition_reg.error = REGISTER_OK;
-      condition_reg.index = condition.value.index;
-      condition_reg.flags = REGISTER_FLAG_NONE;
-
-      if (!emit_incomplete_jump_if(p_compiler, false, condition_reg, &exit_jump, (ast_node*)p_for->condition)) {
-        goto fail;
-      }
-      is_exit_set = true;
-    }
+    is_exit_set = true;
   }
   if (p_for->update != NULL) {
     CTX.continue_forward = true;
@@ -3226,8 +3314,11 @@ bool compile_for_statement(compiler* p_compiler, ast_for_statement* p_for) {
     goto fail;
   }
   if (is_exit_set) {
-    if (!patch_jump_if(p_compiler, false, exit_jump, current_chunk(p_compiler)->code.count, (ast_node*)p_for)) {
-      goto fail;
+    for (uint32_t i = 0; i < exit_jumps.count; ++i) {
+      if (!patch_jump_if(
+              p_compiler, false, exit_jumps.jumps[i], current_chunk(p_compiler)->code.count, (ast_node*)p_for)) {
+        goto fail;
+      }
     }
   }
   CTX.break_target = chunk->code.count;
@@ -4003,7 +4094,15 @@ static bool compile_logical_operator(compiler* p_compiler,
     return false;
   }
 
-  if (!materialize_into_if_not_register(p_compiler, &rhs.value, p_dest, (ast_node*)p_logical)) {
+  // the rhs must LAND in p_dest (the find of P6 round two): the fall-through
+  // path's result is whatever p_dest holds when the jump did not fire, and
+  // an identifier rhs resolves to its own register without emitting
+  // anything - the loose any-register check let `x or y` print the stale
+  // left value (or unwritten null) instead of y. the ternary's arms already
+  // kept this discipline; the logical lane now matches it. the lhs keeps
+  // the loose read: the jump reads wherever the lhs lives, and the set
+  // writes p_dest from there on the taken path.
+  if (!materialize_into(p_compiler, &rhs.value, p_dest, (ast_node*)p_logical)) {
     return false;
   }
 

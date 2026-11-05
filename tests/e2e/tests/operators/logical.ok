@@ -44,3 +44,37 @@ print(1 and 2 and 3); // expect: 3
 print(null and 2 and 3); // expect: null
 // 0 is truthy, so the chain stops at 0
 print(null or 0 or 7); // expect: 0
+// identifier operands (the P6-round-two find): an identifier rhs resolves
+// to its own register without emitting anything, so the fall-through path
+// must explicitly land it in the result register - before the fix these
+// printed the stale left value (or unwritten null)
+let x = false;
+let y = 42;
+print(x or y); // expect: 42
+print(x and y); // expect: false
+print(true and y); // expect: 42
+print(false or y); // expect: 42
+print(y or x); // expect: 42
+print(y and x); // expect: false
+let a = 3;
+let b = 7;
+print(a > b or a); // expect: 3
+print(a < b and b); // expect: 7
+print(a < b or b); // expect: true
+print(a > b and a); // expect: false
+// the same shapes inside a larger expression
+print((x or y) + 1); // expect: 43
+print(not (x or x)); // expect: true
+// and as a call argument (the window discipline)
+fu echo(v) { return v; }
+print(echo(x or y)); // expect: 42
+print(echo(y and x)); // expect: false
+// upvalue and global homes for the lazy rhs (a lambda capture, a glob)
+glob let g = 9;
+fu capture() {
+  let u = 5;
+  return fu() { return x or u; };
+}
+print(capture()()); // expect: 5
+print(x or g); // expect: 9
+print(g and x); // expect: false

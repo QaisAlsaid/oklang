@@ -1,0 +1,21 @@
+// the condition chain lane's shapes: and/or chains with comparison,
+// value, and call leaves; negation in every position (the bool-strict
+// op stays literal); while/for windows; overloaded comparisons returning
+// non-bools - one seed the mutations can remix.
+let a = 3;
+let b = 7;
+let flag = true;
+if a < b and b < 10 { print("and-both"); }
+if a > b or b > a { print("or-second"); }
+if a < b or a == 99 { print("or-probe"); }
+if not (a > b and b < 10) { print("not-and"); }
+if not flag { print("no"); } else { print("not-flag"); }
+if flag and a < b and not (b > 10) { print("mixed"); }
+fu probe(x) { return x; }
+if probe(a) < b or probe(b) < a { print("call-leaf"); }
+let mut i = 0;
+while i < 4 and i >= 0 { i = i + 1; }
+while not (i >= 3 or i < 0) { i = i + 1; }
+for let mut f = 0; f < 3 and f >= 0; f = f + 1 { print(f); }
+print(a < b or a);
+print(a > b and b);

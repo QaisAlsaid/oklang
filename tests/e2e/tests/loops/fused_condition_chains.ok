@@ -1,0 +1,164 @@
+// the fused condition lane, pass 2: the logical shapes. `X and Y` and
+// `X or Y` in an if/while/for condition compile to a CHAIN of branches
+// (per De Morgan) that never materialize the chain's boolean - the
+// comparisons ride OP_JUMP_IF_CMP with the polarity carrying the sense, the
+// operand that decides the outcome skips the remaining tests, and each leaf
+// costs one branch. `not X` keeps its literal shape (oklang's `!` is
+// bool-strict, so it cannot ride the polarity inversion - see
+// fused_condition_chains_errors.ok for the error-lane pins). this file
+// pins the semantics against the value lane: short-circuit order, side
+// effects, non-bool truthiness, overloaded comparisons in chains, and the
+// for/while window shapes.
+let a = 3;
+let b = 7;
+let n = 4;
+
+// the deciding shapes: either operand deciding decides the branch
+if a < b and b < 10 { print "and-both"; } // expect: and-both
+if a > b and b < 10 { print "and-bad"; }
+if a < 1 and b < 10 { print "and-bad2"; }
+if a > b or b > a { print "or-second"; } // expect: or-second
+if a > b or a > 10 { print "or-bad"; }
+
+// the probing shapes: the left operand deciding means NO branch (its jumps
+// bend to Lend, the position after the chain)
+if a < b or a == 99 { print "or-left-decides"; } // expect: or-left-decides
+if a > b or a == 99 { print "or-bad2"; }
+if a > 99 or a == 3 { print "or-right-decides"; } // expect: or-right-decides
+if (a > b and b > 1) or a == 3 { print "and-under-or"; } // expect: and-under-or
+if (a < b and b < 10) or a == 99 { print "or-under-and"; } // expect: or-under-and
+if (a < 1 and b < 10) or a == 99 { print "or-under-and-bad"; }
+
+// negation keeps its literal shape and still works in every position
+if not (a < b) { print "not-cmp-bad"; } else { print "not-cmp"; } // expect: not-cmp
+if !(a > b) { print "bang-cmp"; } // expect: bang-cmp
+if not not (a < b) { print "double-not"; } // expect: double-not
+let flag = true;
+if not flag { print "not-flag-bad"; } else { print "not-flag"; } // expect: not-flag
+
+// chains of three and more, mixed operators (left associative)
+if a < b and b < 10 and a == 3 { print "and-3"; } // expect: and-3
+if a < b and b < 10 and a == 4 { print "and-3-bad"; }
+if a > b or b > a or a == 99 { print "or-3"; } // expect: or-3
+if a > b or a > 10 or a == 99 { print "or-3-bad"; }
+
+// mixed nesting: and over or, or over and, negation inside chains
+if a < b and (b > 10 or a == 3) { print "and-or"; } // expect: and-or
+if a < b and (b > 10 or a == 4) { print "and-or-bad"; }
+if (a > b or b > a) and a == 3 { print "or-and"; } // expect: or-and
+if (a > b or b > a) and a == 4 { print "or-and-bad"; }
+if a < b and not (b > 10) { print "and-not"; } // expect: and-not
+if not (a > b) or a == 3 { print "not-or-2"; } // expect: not-or-2
+
+// non-comparison leaves ride the generic operand lane
+let t = true;
+let f = false;
+if t and a < b { print "value-and-cmp"; } // expect: value-and-cmp
+if f or a > b { print "value-or-bad"; }
+if f or a < b { print "value-or-cmp"; } // expect: value-or-cmp
+if a < b and t { print "cmp-and-value"; } // expect: cmp-and-value
+// oklang truthiness is lua-shaped: only strict false and null are falsy -
+// 0 is TRUTHY, so these run the then arm through the chain exactly as the
+// value lane would
+if 0 and a < b { print "zero-and"; } // expect: zero-and
+if 1 or a > b { print "one-or"; } // expect: one-or
+
+// calls as chain leaves
+fu truthy() { return true; }
+fu falsy() { return false; }
+if truthy() and a < b { print "call-and-cmp"; } // expect: call-and-cmp
+if falsy() or a > b { print "call-or-bad"; }
+if not falsy() and a < b { print "not-call-and"; } // expect: not-call-and
+
+// short-circuit order and side effects: the right operand must not run
+// when the left decides
+let mut trace = "";
+fu mark_first() { trace = trace + "first"; return true; }
+fu mark_second() { trace = trace + "second"; return true; }
+if mark_first() and mark_second() { trace = trace + "-then"; }
+print trace; // expect: firstsecond-then
+trace = "";
+if mark_first() or mark_second() { trace = trace + "-then"; }
+print trace; // expect: first-then
+trace = "";
+if not mark_first() or mark_second() { trace = trace + "-then"; }
+print trace; // expect: firstsecond-then
+trace = "";
+if mark_first() and not mark_second() { trace = trace + "-then"; } else { trace = trace + "-else"; }
+print trace; // expect: firstsecond-else
+
+// comparison operands in chains keep their evaluation order too
+let mut order = "";
+fu lt_probe(x, y) { order = order + "p"; return x < y; }
+if lt_probe(1, 2) and lt_probe(3, 4) { order = order + "!"; }
+print order; // expect: pp!
+
+// while with a chained condition: runs and exits, locals survive
+let mut i = 0;
+let limit = 4;
+while i < limit and i >= 0 { i = i + 1; }
+print i; // expect: 4
+
+// while with a negated chain (the not node rides the generic leaf)
+let mut j = 0;
+while not (j >= 3 or j < 0) { j = j + 1; }
+print j; // expect: 3
+
+// while with an or chain that stays true too long: the break exits
+let mut k = 0;
+while k < 100 or k < 200 {
+  k = k + 1;
+  if k == 5 { break; }
+}
+print k; // expect: 5
+
+// c-style for with a chained condition
+let mut total = 0;
+for let mut f2 = 0; f2 < 5 and f2 >= 0; f2 = f2 + 1 { total = total + f2; }
+print total; // expect: 10
+
+// c-style for with a negated condition
+let mut g = 0;
+for ; not (g >= 3); g = g + 1 { }
+print g; // expect: 3
+
+// chained conditions over class instances with overloaded comparisons
+class Version {
+  let major = 0;
+  let minor = 0;
+  fu init(major, minor) { this.major = major; this.minor = minor; }
+  pub fu operator <(o) { return major < o.major or (major == o.major and minor < o.minor); }
+  pub fu operator ==(o) { return major == o.major and minor == o.minor; }
+}
+let v1 = Version(1, 0);
+let v2 = Version(1, 0);
+let v3 = Version(2, 1);
+if v1 < v3 and v1 == v2 { print "op-chain"; } // expect: op-chain
+if v3 < v1 or v1 == v3 { print "op-chain-bad"; }
+let mut vc = Version(0, 3);
+let mut steps = 0;
+while vc < v3 and steps < 10 {
+  steps = steps + 1;
+  vc = Version(steps, 3);
+}
+print steps; // expect: 2
+
+// an overloaded comparison returning a NON-BOOL truthy value: the chain's
+// truthiness read must match the value lane exactly (the fused compare
+// consumes the result with is_falsy, exactly like OP_JUMP_IF would)
+class Weird {
+  fu init() { }
+  pub fu operator <(o) { return "definitely"; }
+  pub fu operator >(o) { return 0; }
+}
+let w = Weird();
+if w < 5 { print "weird-truthy"; } // expect: weird-truthy
+if w < 5 and a < b { print "weird-and"; } // expect: weird-and
+if w > 5 or a > b { print "weird-or"; } // expect: weird-or
+print(w < 5); // expect: definitely
+
+// the VALUE lane is untouched: `a or b` is still a, `a and b` is still b
+print(a > b or a); // expect: 3
+print(a < b and b); // expect: 7
+print(flag or "fallback"); // expect: true
+print(f and "fallback"); // expect: false

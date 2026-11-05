@@ -1,0 +1,31 @@
+// the fused condition lane, pass 2 - the negation error pins. oklang's `!`
+// is bool-STRICT (perform_not: numbers and objects are type errors), so a
+// negated condition CANNOT ride the chain's polarity inversion: `not (x < y)`
+// with an overloaded comparison returning a non-bool must error exactly as
+// the value lane does, and `not <non-bool>` must keep its runtime error.
+// these pins hold the chain to that exactness.
+let a = 3;
+let zero = 0;
+
+// `not` over a non-bool value: the runtime type error stands
+if not zero { print "unreachable"; } // expect error: invalid operand for unary '!'
+
+// `not` over an overloaded comparison returning a non-bool truthy value:
+// the chain must not swallow the error by branching on truthiness instead
+class Weird {
+  fu init() { }
+  pub fu operator <(o) { return "definitely"; }
+  pub fu operator >(o) { return 0; }
+}
+let w = Weird();
+if not (w < 5) { print "unreachable"; } // expect error: invalid operand for unary '!'
+
+// the same shape through the while window
+let mut i = 0;
+while not (w > 5) { i = i + 1; } // expect error: invalid operand for unary '!'
+
+// and inside an and-chain: the right operand's error still surfaces
+if a < 10 and not (w < 5) { print "unreachable"; } // expect error: invalid operand for unary '!'
+
+// the value lane agrees (the error is not chain-specific)
+print(not (w < 5)); // expect error: invalid operand for unary '!'

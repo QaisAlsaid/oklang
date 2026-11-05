@@ -249,6 +249,8 @@ accept  loops/for/nested_break.ok
 accept  loops/for/nested_continue.ok
 accept  loops/for/one_iter.ok
 accept  loops/for/zero_iter.ok
+accept  loops/fused_condition_chains.ok
+accept  loops/fused_condition_chains_errors.ok
 accept  loops/fused_conditions.ok
 accept  loops/numeric/basic.ok
 accept  loops/numeric/bounds_evaluated_once.ok
@@ -527,6 +529,7 @@ accept  operators/assignment.ok
 accept  operators/chain.ok
 accept  operators/comparison.ok
 accept  operators/equality.ok
+reject  operators/errors/bitwise_reject.ok  (parse)
 accept  operators/errors/modulo_invalid.ok
 accept  operators/errors/modulo_zero.ok
 accept  operators/grouping.ok
@@ -691,6 +694,7 @@ accept  variables/use_before_decl_error.ok
 # root: tests/fuzz/corpus
 reject  class_shapes.ok  (parse)
 accept  comments_only.ok
+accept  condition_chains.ok
 reject  coroutines.ok  (parse)
 reject  deep_blocks.ok  (parse)
 reject  deep_parens.ok  (parse)
