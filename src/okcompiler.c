@@ -549,6 +549,8 @@ static bool compile_for_in_statement(compiler* p_compiler, ast_for_in_statement*
 static bool compile_for_numeric_statement(compiler* p_compiler, ast_for_numeric_statement* p_for_numeric);
 static bool compile_control_flow_statement(compiler* p_compiler, ast_control_flow_statement* p_control);
 static bool compile_return_statement(compiler* p_compiler, ast_return_statement* p_return);
+static bool compile_expressions_list(
+    compiler* p_compiler, ast_expressions_list* p_list, uint32_t p_limit, _register* p_args_start, ast_node* p_author);
 static bool compile_throw_statement(compiler* p_compiler, ast_throw_statement* p_throw);
 static bool compile_try_statement(compiler* p_compiler, ast_try_statement* p_try);
 static bool compile_defer_statement(compiler* p_compiler, ast_defer_statement* p_defer);
@@ -3641,6 +3643,67 @@ static bool compile_return_statement(compiler* p_compiler, ast_return_statement*
     return emit_default_return(p_compiler, (ast_node*)p_return);
   }
   if (count == 1) {
+    // the tailcall lane (P6): `return name(args);` where the callee is a
+    // plain identifier in a register/upvalue/global. the call's results
+    // answer this frame's return contract directly - OP_TAILCALL hands the
+    // window to the callee in place (constant stack for the deep-recursion
+    // lane). v1 scope: method/super invokes, spreads, field/static callees,
+    // and lambda-expression callees keep the classic call-then-return shape.
+    {
+      ast_expression* returned_expr = p_return->returned.data[0];
+      if (returned_expr->node.node_type == AST_CALL_EXPRESSION) {
+        ast_call_expression* call = (ast_call_expression*)returned_expr;
+        const bool has_spread = call->arguments.count > 0 &&
+                                call->arguments.data[call->arguments.count - 1]->node.node_type ==
+                                    AST_SPREAD_EXPRESSION;
+        if (call->callable->node.node_type == AST_IDENTIFIER_EXPRESSION && !has_spread) {
+          ok_string_view callee_name =
+              ast_identifier_expression_get_value((ast_identifier_expression*)call->callable);
+          location loc = resolve_variable(p_compiler, callee_name, (ast_node*)p_return);
+          if (loc.error == LOCATION_OK && (loc.kind == LOCATION_KIND_REGISTER || loc.kind == LOCATION_KIND_UPVALUE ||
+                                           loc.kind == LOCATION_KIND_GLOBAL)) {
+            register_allocator* regalloc = &current_context(p_compiler)->register_allocator;
+            _register dest;
+            if (!register_allocator_allocate_temp(regalloc, &dest)) {
+              report_oom(p_compiler, (ast_node*)p_return);
+              return false;
+            }
+            if (!materialize_value(p_compiler, dest, loc, (ast_node*)p_return)) {
+              return false;
+            }
+            _register args;
+            args.index = 0;
+            args.flags = REGISTER_FLAG_NONE;
+            args.errors = REGISTER_OK;
+            if (!compile_expressions_list(p_compiler, &call->arguments, A_MAX, &args, (ast_node*)p_return)) {
+              return false;
+            }
+            // the crossed scopes' defers run before the handover, exactly
+            // like the classic return: the thunks stage at the runtime top,
+            // above the callable and args staged here.
+            if (!emit_defer_exits_from_innermost(p_compiler, 0, (ast_node*)p_return)) {
+              return false;
+            }
+            const uint32_t argc = call->arguments.count;
+            const bool is_long = dest.index > a_MAX || (argc > 0 && args.index > a_MAX) || argc > b_MAX;
+            bool emitted = false;
+            if (is_long) {
+              emitted = emit_word2(p_compiler,
+                                   encode_OPPABCQ(OP_TAILCALL_LONG, false, dest.index, argc, 0, false),
+                                   (ast_node*)p_return);
+            } else {
+              emitted = emit_word(
+                  p_compiler, encode_oppabc(OP_TAILCALL, false, (uint8_t)dest.index, (uint8_t)argc, 0), (ast_node*)p_return);
+            }
+            if (!emitted) {
+              report_oom(p_compiler, (ast_node*)p_return);
+              return false;
+            }
+            return true; // the tailcall IS the return - nothing follows it
+          }
+        }
+      }
+    }
     // the classic single-result fast path: RETURN_1 with its
     // constant/global/upvalue/register operand encodings.
     expression_result returned;
@@ -4296,14 +4359,18 @@ static bool compile_assign_expression(compiler* p_compiler,
   // keep the scratch-then-store path. store_lvalue still runs afterwards:
   // the mutability gate and the (now no-op) self move check both still apply.
   _register rhs_dest = p_dest;
-  if (lv.kind == LVALUE_SUBSCRIPT) {
-    // the rhs compiles into its own temp above the lvalue's staged base/index.
+  if (lv.kind == LVALUE_SUBSCRIPT || lv.kind == LVALUE_MEMBER) {
+    // the rhs compiles into its own temp above the lvalue's staged registers.
     // a call rhs opens the callee's register window at its destination, and the
     // callee's frame ([dest, dest + fu->registers)) null-fills every slot above it.
-    // the staged base/index temps sit above p_dest, so compiling the rhs
+    // the staged temps sit above p_dest, so compiling the rhs
     // there let the callee erase them (arr[0] = reseat(), where reseat captures
-    // and reseats arr, died with "expected an array"). found by the elision-gate
-    // regression hunt. compound assigns were always safe because their cur/rhs temps are allocated after the staging.
+    // and reseats arr, died with "expected an array"; obj.f = not this.g(),
+    // the P6 pub-fields finding, died with "only instances and classes have
+    // assignable members" - the member store's staged receiver sat inside the
+    // callee's window and was null-filled before the store read it). found by
+    // the elision-gate regression hunt, then again by delta blue's rewrite.
+    // compound assigns were always safe because their cur/rhs temps are allocated after the staging.
     if (!register_allocator_allocate_temp(&current_context(p_compiler)->register_allocator, &rhs_dest)) {
       report_oom(p_compiler, (ast_node*)p_assign);
       return false;

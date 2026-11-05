@@ -17,5 +17,6 @@ fnv1a64 ee55bdfdff37bedb modules.ok
 fnv1a64 93cd53309a16da5b numbers.ok
 fnv1a64 c770bbd0b78ad6a9 operators.ok
 fnv1a64 223311471f71c209 strings_multiline.ok
+fnv1a64 1cc87409902bd746 tailcalls.ok
 fnv1a64 933397058c73a3b0 unterminated.ok
 fnv1a64 db2f5bb2fee01fac utf8.ok

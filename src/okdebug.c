@@ -33,6 +33,8 @@ static const char* const OPCODE_NAMES[] = {
     "CLOSE_UPVALUES",
     "CALL",
     "CALL_LONG",
+    "TAILCALL",
+    "TAILCALL_LONG",
     "RETURN",
     "RETURN_LONG",
     "RETURN_1",
@@ -222,6 +224,7 @@ static bool op_is_two_words(opcode p_op) {
   case OP_LOAD_UPVALUE_LONG:
   case OP_STORE_UPVALUE_LONG:
   case OP_CALL_LONG:
+  case OP_TAILCALL_LONG:
   case OP_RETURN_LONG:
   case OP_CLOSURE_LONG:
   case OP_NOT_LONG:
@@ -436,6 +439,12 @@ uint32_t debug_disassemble_instruction(disassembler* p_disassembler, uint32_t p_
     } else {
       printf("%u", C - 1);
     }
+    break;
+  case OP_TAILCALL:
+    printf("tailcall r%u, argc %u (frame's contract)", a, b);
+    break;
+  case OP_TAILCALL_LONG:
+    printf("tailcall r%u, argc %u (frame's contract)", A, B);
     break;
   case OP_VA_PACK:
     printf("r%u = pack r%u ... r[argc]", ap, bp);

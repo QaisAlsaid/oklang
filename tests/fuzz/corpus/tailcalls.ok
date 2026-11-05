@@ -1,0 +1,16 @@
+// the tailcall lane's shapes: self and mutual recursion, defer epilogues,
+// try crossings, native degrade - one seed the mutations can remix.
+fu count(n) {
+  if n == 0 { return 0; }
+  defer say(n);
+  return count(n - 1);
+}
+fu say(what) { return what; }
+glob let mut is_odd = null;
+fu even(n) { if n == 0 { return true; } return is_odd(n - 1); }
+fu odd_impl(n) { if n == 0 { return false; } return even(n - 1); }
+is_odd = odd_impl;
+try { print(count(3)); } catch { print("caught"); }
+print(even(10));
+fu tail_len(x) { return len(x); }
+print(tail_len("abc"));

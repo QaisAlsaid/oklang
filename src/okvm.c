@@ -3487,6 +3487,8 @@ static void* ok_dispatch_table[OP__COUNT] = {
   [OP_CLOSE_UPVALUES] = &&L_OP_CLOSE_UPVALUES,
   [OP_CALL] = &&L_OP_CALL,
   [OP_CALL_LONG] = &&L_OP_CALL_LONG,
+  [OP_TAILCALL] = &&L_OP_TAILCALL,
+  [OP_TAILCALL_LONG] = &&L_OP_TAILCALL_LONG,
   [OP_RETURN] = &&L_OP_RETURN,
   [OP_RETURN_LONG] = &&L_OP_RETURN_LONG,
   [OP_RETURN_1] = &&L_OP_RETURN_1,
@@ -3891,6 +3893,200 @@ static void* ok_dispatch_table[OP__COUNT] = {
       ip = frame->ip;
       if (exe->native_suspend_pending) {
         return native_suspend_park(exe, reg, frame, A);
+      }
+      DISPATCH();
+    }
+    CASE(OP_TAILCALL):
+    CASE(OP_TAILCALL_LONG): {
+      // the frame in place runs the callee and its results answer THIS
+      // frame's return contract. the compiler's only writer is
+      // `return name(args);` - the defer epilogue already ran in bytecode,
+      // so what remains is the frame's own teardown: close the upvalues,
+      // drop this frame's handler records, then hand the window over.
+      const bool is_long = op_of(instruction) == OP_TAILCALL_LONG;
+      word2 joined = 0;
+      if (is_long) {
+        joined = JOIN_WORD(instruction); // consumes the second word, long ops only
+      }
+      const uint16_t a = is_long ? A_of(joined) : (uint16_t)a_of(instruction);
+      const uint16_t b = is_long ? B_of(joined) : (uint16_t)b_of(instruction);
+      value callee_v = REG_AT(a);
+      if (IS_VALUE_CLOSURE(callee_v)) {
+        object_closure* callee = VALUE_AS_CLOSURE(callee_v);
+        const object_function* fu = callee->function;
+        const uint32_t base = frame->registers_base;
+        // the same two-sided arity walk as call(), against the INHERITED
+        // contract: the original caller's request is this frame's
+        // return_count, and the tail callee must satisfy it exactly.
+        const uint32_t retc = frame->return_count;
+        if (fu->has_varargs) {
+          const uint32_t floor = (uint32_t)(fu->arity - fu->ndefaults) - 1u;
+          if (b < floor) {
+            runtime_error(p_vm,
+                          OK_EK_ARITY,
+                          "invalid call to '%s': expected at least %u argument%s, got %u.",
+                          fu->name->string.chars,
+                          floor,
+                          s_if_plural(floor),
+                          b);
+            FAIL_PATH();
+            DISPATCH();
+          }
+        } else if (b < (uint32_t)(fu->arity - fu->ndefaults) || b > fu->arity) {
+          if (fu->ndefaults == 0) {
+            runtime_error(p_vm,
+                          OK_EK_ARITY,
+                          "invalid call to '%s': expected %u argument%s, got %u.",
+                          fu->name->string.chars,
+                          fu->arity,
+                          s_if_plural(fu->arity),
+                          b);
+          } else if (b < fu->arity - fu->ndefaults) {
+            runtime_error(p_vm,
+                          OK_EK_ARITY,
+                          "invalid call to '%s': expected at least %u argument%s, got %u.",
+                          fu->name->string.chars,
+                          fu->arity - fu->ndefaults,
+                          s_if_plural(fu->arity - fu->ndefaults),
+                          b);
+          } else {
+            runtime_error(p_vm,
+                          OK_EK_ARITY,
+                          "invalid call to '%s': expected at most %u argument%s, got %u.",
+                          fu->name->string.chars,
+                          fu->arity,
+                          s_if_plural(fu->arity),
+                          b);
+          }
+          FAIL_PATH();
+          DISPATCH();
+        }
+        if (retc != RETURN_COUNT_DYNAMIC && retc >= 1 && retc != (uint32_t)fu->results) {
+          runtime_error(p_vm,
+                        OK_EK_ARITY,
+                        "invalid call to '%s': it returns %u value%s, %u were requested here.",
+                        fu->name->string.chars,
+                        fu->results,
+                        s_if_plural(fu->results),
+                        retc);
+          FAIL_PATH();
+          DISPATCH();
+        }
+        uint32_t frame_top = base + fu->registers;
+        if (fu->has_varargs && (uint32_t)b + 1u > frame_top) {
+          frame_top = base + b + 1u;
+        }
+        if (frame_top > UINT16_MAX + 1u) {
+          runtime_error(p_vm, OK_EK_ARITY, "invalid call to '%s': too many arguments.", fu->name->string.chars);
+          FAIL_PATH();
+          DISPATCH();
+        }
+        if (frame_top > reg->array.capacity) {
+          const uint32_t target = frame_top + (frame_top >> 1u);
+          const uint32_t new_capacity = target > UINT16_MAX + 1u ? UINT16_MAX + 1u : target;
+          const uint32_t initialized_uptill = reg->array.capacity;
+          if (!register_array_grow(&reg->array, new_capacity)) {
+            runtime_oom(p_vm, "out of memory: failed to grow register file.");
+            FAIL_PATH();
+            DISPATCH();
+          }
+          for (uint32_t i = initialized_uptill; i < new_capacity; ++i) {
+            reg->array.data[i] = NULL_AS_VALUE();
+          }
+        }
+        // the frame's own teardown, then the handover. order matters: the
+        // upvalue cells snapshot the CURRENT window, the dying frame's try
+        // records must not outlive it (a stale record would hijack a later
+        // error into a dead window).
+        close_upvalues(exe, base);
+        while (exe->handlers.count > 0 &&
+               exe->handlers.data[exe->handlers.count - 1].frame >= exe->call_stack.count - 1) {
+          exe->handlers.count--;
+        }
+        // the callable rode r[a]; the callee's window wants it at r0 with the
+        // args at r1..rargc (the calling convention's window shape). move
+        // the whole staged span down to the frame base - a downward memmove,
+        // overlap-safe by definition.
+        memmove(&reg->array.data[base],
+                &reg->array.data[base + a],
+                (size_t)(b + 1u) * sizeof(value));
+        // everything the callee has not received reads as null (call()'s
+        // stale-bits discipline: mark_vm roots [0, top) unconditionally).
+        {
+          uint32_t first_unwritten = base + b + 1u;
+          if (first_unwritten > frame_top) {
+            first_unwritten = frame_top;
+          }
+          for (uint32_t i = first_unwritten; i < frame_top; ++i) {
+            reg->array.data[i] = NULL_AS_VALUE();
+          }
+        }
+        reg->top = frame_top;
+        // the in-place replacement: same window base, same return contract,
+        // the callee's code. the call stack never grew - that is the whole
+        // point (deep recursion rides one frame slot).
+        frame->closure = callee;
+        frame->ip = fu->chunk.code.data;
+        frame->argc = b;
+        frame->defer_thunk = false;
+        ip = frame->ip;
+        DISPATCH();
+      }
+      // the degrade: a non-closure callee (native, class construction, bound
+      // method, instance operator) cannot take the frame in place. run it
+      // exactly like vm_call would - push through call_value, nested-run if a
+      // frame was pushed - then answer the return contract with its result.
+      // one C-frame deeper than the closure lane for the pushed shapes; the
+      // deep-recursion use case (plain closures) never lands here.
+      frame->ip = ip;
+      {
+        const uint32_t my_depth = exe->call_stack.count;
+        if (!call_value(p_vm, exe, reg, frame->registers_base, a, b, frame->return_count)) {
+          FAIL_PATH();
+          DISPATCH();
+        }
+        exe = p_vm->current_execution_state;
+        reg = &exe->registers;
+        if (exe->call_stack.count > my_depth) {
+          // a frame was pushed: run it to completion under a yield barrier
+          // (this C frame holds the return bookkeeping - a yield from under
+          // it could never resume honestly, the defer lane's discipline).
+          const uint8_t saved_barrier = exe->yield_barrier;
+          if (exe->yield_barrier == 0) {
+            exe->yield_barrier_kind = YIELD_BARRIER_DEFER;
+          }
+          exe->yield_barrier++;
+          const interpret_result nested = run_until(p_vm, my_depth);
+          exe->yield_barrier = saved_barrier;
+          if (nested.status != RUNTIME_OK) {
+            FAIL_PATH();
+            DISPATCH();
+          }
+          exe = p_vm->current_execution_state;
+          reg = &exe->registers;
+        }
+      }
+      frame = &exe->call_stack.data[exe->call_stack.count - 1];
+      ip = frame->ip;
+      if (exe->native_suspend_pending) {
+        // a suspend-requesting native in direct tail position: the parked
+        // frame would be this spent frame, and its resume would continue
+        // past the tailcall into a body that already returned. refuse it
+        // loudly - the same discipline as the yield barrier's edges.
+        runtime_error(p_vm, OK_EK_VALUE, "cannot suspend from a tail call: the frame is spent.");
+        FAIL_PATH();
+        DISPATCH();
+      }
+      // the callee's results answered the contract at the call window
+      // (return_base = this frame's base + a): hand them back as this
+      // frame's return, exactly like RETURN would.
+      {
+        const uint16_t returned = return_from_frame(exe, reg, frame, a, 1);
+        if (exe->call_stack.count == p_call_depth) {
+          return top_level_return(reg, frame, returned);
+        }
+        frame = &exe->call_stack.data[exe->call_stack.count - 1];
+        ip = frame->ip;
       }
       DISPATCH();
     }

@@ -201,6 +201,13 @@ typedef enum {
   OP_CLOSE_UPVALUES,     // w:    (A)             -> close upvalues where index >= A
   OP_CALL,               // w:    (p, a, b, c)    -> r[a] ... r[a + c - 2] = r[a](r[a + 1] ... r[a + b]); { p == 1 => argc = r[a + 1] ... r[top - 1] } { c == 0 => take all returned, else take c - 1 }
   OP_CALL_LONG,          // 2w:   (p, A, B, C)    -> r[A] ... r[A + C - 2] = r[A](r[A + 1] ... r[A + B - 1]); { same as narrow variant }
+  OP_TAILCALL,           // w:    (a, b)          -> the frame in place runs r[a](r[a + 1] ... r[a + b]) and its results
+                         //                          answer THIS frame's return contract (c room reserved, unused:
+                         //                          the inherited return_count is the runtime truth). the compiler's only
+                         //                          writer: `return name(args);` after its defer epilogue. closures
+                         //                          replace the frame (constant stack, the deep-recursion lane);
+                         //                          a non-closure callee degrades to call-then-return.
+  OP_TAILCALL_LONG,      // 2w:   (A, B)          -> same, wide
   OP_RETURN,             // w:    (a', b')        -> return r[a'] ... r[a' + b' - 1] { b' == 0 => return r[a'] ... r[top - 1] (passthrough) }
   OP_RETURN_LONG,        // 2w:   (A, B)          -> return r[A] ... r[A + B - 1]; { same as narrow variant }
   OP_RETURN_1,           // w:    (A, e)          -> return switch RETURNED(e)
@@ -668,6 +675,7 @@ static inline uint32_t opcode_word_count(opcode p_op) {
   case OP_LOAD_UPVALUE_LONG:
   case OP_STORE_UPVALUE_LONG:
   case OP_CALL_LONG:
+  case OP_TAILCALL_LONG:
   case OP_RETURN_LONG:
   case OP_CLOSURE_LONG:
   case OP_NOT_LONG:

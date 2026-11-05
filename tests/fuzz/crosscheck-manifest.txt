@@ -76,6 +76,7 @@ accept  classes/local_class_redefine_closures.ok
 accept  classes/local_class_redefine_in_method.ok
 accept  classes/local_class_redefine_inherit.ok
 accept  classes/local_class_twice.ok
+accept  classes/member_store_call_rhs.ok
 accept  classes/method_assign_error.ok
 accept  classes/native_method_arity_error.ok
 accept  classes/native_method_error.ok
@@ -218,6 +219,7 @@ accept  functions/nested_call.ok
 accept  functions/recursion.ok
 accept  functions/repeated_call.ok
 accept  functions/return.ok
+accept  functions/tailcalls.ok
 accept  generated/1/constant_long.ok
 accept  generated/2/global_long.ok
 accept  generated/3/jump_long.ok
@@ -701,6 +703,7 @@ reject  modules.ok  (parse)
 reject  numbers.ok  (parse)
 reject  operators.ok  (parse)
 reject  strings_multiline.ok  (parse)
+accept  tailcalls.ok
 reject  unterminated.ok  (parse)
 accept  utf8.ok
 # end of manifest

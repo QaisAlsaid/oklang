@@ -1,0 +1,101 @@
+// OP_TAILCALL (P6): `return name(args);` hands the frame to the callee in
+// place - the call stack stays flat, so deep recursion rides one frame slot.
+// found its first real shapes the moment delta blue's rewrite landed; the
+// lane is deliberately narrow (plain identifier callees, no spread - the
+// method/super invokes keep the classic shape) and the contract it answers
+// is the original caller's.
+
+// self-recursion through the global lane: half a million deep, flat
+fu count(n) {
+    if n == 0 {
+        return 0;
+    }
+    return count(n - 1);
+}
+print(count(500000)); // expect: 0
+
+// mutual recursion through a glob (sequential visibility: one name must be
+// declared before the other's body, the glob breaks the cycle)
+glob let mut is_odd = null;
+fu deep_even(n) {
+    if n == 0 {
+        return true;
+    }
+    return is_odd(n - 1);
+}
+fu deep_odd_impl(n) {
+    if n == 0 {
+        return false;
+    }
+    return deep_even(n - 1);
+}
+is_odd = deep_odd_impl;
+print(deep_even(1000000)); // expect: true
+print(is_odd(999999)); // expect: true
+
+// the defer epilogue runs before the handover (lifo, per scope)
+fu say(what) {
+    print(what);
+    return true;
+}
+fu deferred(n) {
+    if n == 0 {
+        return 100;
+    }
+    defer say(n);
+    return deferred(n - 1);
+}
+print(deferred(3)); // expect: 3
+// expect: 2
+// expect: 1
+// expect: 100
+
+// a try region crossed by the tailcall pops its record
+fu tried(n) {
+    try {
+        if n == 0 {
+            return "done";
+        }
+        return tried(n - 1);
+    } catch {
+        return "caught";
+    }
+}
+print(tried(1000)); // expect: done
+
+// an error thrown past a tailcalled frame unwinds to the right catch
+fu boom() {
+    throw "boom";
+}
+fu tail_to_boom() {
+    return boom();
+}
+try {
+    tail_to_boom();
+} catch {
+    say("outer caught"); // expect: outer caught
+}
+
+// upvalues close at the handover; the callee reads its own, unbothered
+fu make_inner() {
+    let captured = 7;
+    return fu() {
+        return captured;
+    };
+}
+fu tail_to(f) {
+    return f();
+}
+print(tail_to(make_inner())); // expect: 7
+
+// a native callee in tail position (the degrade lane: call, then return)
+fu tail_to_len(x) {
+    return len(x);
+}
+print(tail_to_len("abc")); // expect: 3
+
+// the plain non-tail return keeps its shape (a value, not a call)
+fu plain(n) {
+    return n + 1;
+}
+print(plain(41)); // expect: 42

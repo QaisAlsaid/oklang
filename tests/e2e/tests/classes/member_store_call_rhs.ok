@@ -1,0 +1,58 @@
+// the member-store receiver must survive a call-shaped rhs: a call opens
+// the callee's register window at its destination and the callee's frame
+// null-fills every slot above it, so the assignment's staged receiver has
+// to sit below that window. found by delta blue's pub-fields rewrite
+// (obj.stay_ = not this.is_input() died with "only instances and classes
+// have assignable members" - the receiver register was erased mid-statement).
+class Box {
+  pub let mut flag_ = false;
+  pub let mut n_ = 0;
+  fu init() {}
+}
+
+class Widget {
+  let box_;
+  fu init(box) { this.box_ = box; }
+  pub fu is_ready() { return true; }
+  pub fu value_for(x) { return x * 2; }
+
+  pub fu round1() {
+    // the direct shape: call in the rhs of a member store
+    box_.flag_ = this.is_ready();
+    // the not-wrapped call (delta blue's exact shape) - overwrites to false
+    box_.flag_ = not this.is_ready();
+    // a call with arguments, receiver staged before the window opens
+    box_.n_ = this.value_for(21);
+  }
+
+  pub fu round2() {
+    // nested member stores in sequence, one temp reusing the other's slot
+    box_.n_ = this.value_for(box_.n_);
+    box_.flag_ = box_.n_ == 42;
+  }
+}
+
+let box = Box();
+let w = Widget(box);
+w.round1();
+print(box.flag_); // expect: false
+print(box.n_); // expect: 42
+w.round2();
+print(box.flag_); // expect: false
+print(box.n_); // expect: 84
+
+// subscript + member on the same line: both lvalue kinds stage registers
+let boxes = [Box(), Box()];
+boxes[0].flag_ = w.is_ready();
+print(boxes[0].flag_); // expect: true
+
+// chained through a method call result: this.input().value_ = ... (the
+// equality constraint's execute shape)
+class Pair {
+  pub let mut v_ = 0;
+  fu init() {}
+  pub fu other() { return this; }
+}
+let p = Pair();
+p.other().v_ = 7;
+print(p.v_); // expect: 7
