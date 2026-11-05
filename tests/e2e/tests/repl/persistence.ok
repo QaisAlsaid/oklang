@@ -1,0 +1,15 @@
+// persistence is the language's own lane: `glob` survives the entry, plain
+// `let` is local to its entry (a per-buffer local of that run's main).
+// an assignment is an expression: bare (no ';') it auto-prints its value.
+// repl:
+glob let x = 10;
+x * 2
+glob let mut count = 0;
+count = count + x
+count
+let local_only = 99;
+print("runs fine");
+// expect: 20
+// expect: 10
+// expect: 10
+// expect: runs fine

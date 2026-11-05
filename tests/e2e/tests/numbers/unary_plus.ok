@@ -1,0 +1,8 @@
+// unary plus is the identity (P5, the fuzzer's fourth find): the parse
+// tables always promised it, the compiler now honors it. no coercion.
+print(+5); // expect: 5
+print(+-3); // expect: -3
+print(+"hi"); // expect: hi
+print(+1.5); // expect: 1.5
+let x = 7;
+print(+x); // expect: 7

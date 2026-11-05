@@ -36,6 +36,7 @@ allocators create_allocators(ok_allocators* p_alloc) {
   alloc.allocate = allocate_impl;
   alloc.release = release_impl;
   alloc.gc = NULL;
+  alloc.impl = NULL;
   return alloc;
 }
 
@@ -64,5 +65,6 @@ allocators create_raw_allocators_wrapper(ok_allocators* p_alloc) {
   alloc.allocate = allocate_wrapper_impl;
   alloc.release = release_wrapper_impl;
   alloc.gc = NULL;
+  alloc.impl = NULL;
   return alloc;
 }

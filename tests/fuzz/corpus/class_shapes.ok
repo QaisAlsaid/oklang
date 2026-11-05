@@ -1,0 +1,9 @@
+pub class Point {
+  pub let x = 0;
+  pub let y = 0;
+  fu init(a, b) { self.x = a; self.y = b; }
+  fu show() { print(self.x); }
+}
+class Sub extends Point { fu show() { super.show(); } }
+let p = new Point(1, 2);
+p.show();

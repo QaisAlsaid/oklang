@@ -1,0 +1,19 @@
+// auto-print rides the language's own print: numbers, strings raw,
+// booleans, null, the composite <shape n> pins. no host-side formatting.
+// repl:
+1.5
+-0.25
+"s"
+true
+false
+null
+[1, 2]
+{"k": 1}
+// expect: 1.5
+// expect: -0.25
+// expect: s
+// expect: true
+// expect: false
+// expect: null
+// expect: <array 2>
+// expect: <map 1>

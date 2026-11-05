@@ -1,0 +1,5 @@
+let s = m"""
+line one ${1 + 1}
+line "quoted" three
+""";
+print(s.bytes());

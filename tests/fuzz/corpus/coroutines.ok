@@ -1,0 +1,3 @@
+fu gen() { defer print("done"); return 1; }
+let c = coro(gen);
+print(c());

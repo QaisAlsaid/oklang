@@ -1,0 +1,9 @@
+// a broken entry reports and the session keeps breathing; the exit is
+// still clean at EOF (the repl is a host, not a crash).
+// repl:
+let = oops;
+print("still alive");
+1 + undefined_name
+print("and again");
+// expect: still alive
+// expect: and again

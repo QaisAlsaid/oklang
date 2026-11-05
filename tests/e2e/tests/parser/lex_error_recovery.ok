@@ -1,0 +1,5 @@
+// the offending byte is consumed and the walk continues to the end
+print("before");
+@
+print("after");
+// expect error: unexpected character

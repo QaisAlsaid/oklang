@@ -63,6 +63,24 @@ report_status okdiag_report(bool* p_panic,
                             const ok_string_view p_message,
                             const ok_note* p_note);
 
+// the diagnostics sink (P5): when installed, every rendered diagnostic
+// routes here INSTEAD of stderr - the rendering is replaced, not merely
+// forwarded. the sink owns the panic/had_error contract (set both, the
+// first report wins otherwise). consumers today: the fuzz harness (validates
+// the every-diagnostic-carries-a-location bar over hostile input) and the
+// REPL's shape-sniff (runs its trial parse silenced). internal lane, not
+// public api - hosts keep stderr.
+typedef report_status (*okdiag_sink)(bool* p_panic,
+                                     bool* p_had_error,
+                                     const char* p_path,
+                                     const char* p_source,
+                                     const ok_span* p_span,
+                                     bool p_is_eof,
+                                     report_severity p_severity,
+                                     const ok_string_view p_message,
+                                     const ok_note* p_note);
+void okdiag_install_sink(okdiag_sink p_sink);
+
 // the (path, line, column) header every diagnostic starts with, exposed for
 // the runtime report's stack trace lines.
 void okdiag_print_header(

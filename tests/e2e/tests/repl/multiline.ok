@@ -1,0 +1,16 @@
+// continuation: open brackets, m-strings, and interpolation regions keep
+// the buffer open until they close; each block below is ONE entry.
+// repl:
+glob class Shape {
+  pub fu corners() { return 4; }
+}
+Shape().corners()
+glob let banner = m"line one
+line two
+";
+print(banner.bytes());
+print(f"${1 +
+2}");
+// expect: 4
+// expect: 18
+// expect: 3

@@ -1,0 +1,6 @@
+// P5 recovery: a failed statement syncs to the next boundary, the walk
+// continues - every bad statement reports, not just the first
+let = 5;
+print("between");
+let = 6;
+// expect error: expected an expression

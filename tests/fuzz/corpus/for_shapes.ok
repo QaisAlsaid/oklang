@@ -1,0 +1,4 @@
+for let i = 0; i < 3; i = i + 1 { print(i); }
+for x in [1, 2] { print(x); }
+let m = {"a": 1};
+for k, v in m { print(k); }

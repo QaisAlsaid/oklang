@@ -1,0 +1,14 @@
+// the repl's plain lanes: statements run, output compares, the session
+// breathes past errors. this file IS the stdin script - the repl lane
+// pipes it through a bare `ok`.
+// repl:
+print("hello");
+1 + 2
+"hi" + "!"
+[1, 2, 3].len()
+print("done");
+// expect: hello
+// expect: 3
+// expect: hi!
+// expect: 3
+// expect: done

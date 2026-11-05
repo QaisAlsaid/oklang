@@ -10,7 +10,9 @@
 
 static ast_root* parse_root(parser* p_parser);
 static ast_expression* parse_expression(parser* p_parser, precedence p_precedence);
+static ast_expression* parse_expression_inner(parser* p_parser, precedence p_precedence);
 static ast_statement* parse_statement(parser* p_parser);
+static ast_statement* parse_statement_inner(parser* p_parser);
 static ast_statement* try_parse_declaration(parser* p_parser);
 static ast_let_declaration* parse_let_declaration(parser* p_parser,
                                                 ast_declaration_modifiers_t p_modifiers,
@@ -55,7 +57,7 @@ error_at_noted(parser* p_parser, token p_token, const ok_string_view p_message, 
 
 static bool advance(parser* p_parser);
 static bool expect(parser* p_parser, token_type p_type, const ok_string_view p_message);
-static void sync_state(parser* p_parser);
+static void sync_state(parser* p_parser, bool p_stop_at_brace);
 
 static ast_expression* parse_unary_prefix(parser* p_parser, token p_trigger);
 static ast_expression* parse_grouping(parser* p_parser, token p_trigger);
@@ -191,14 +193,32 @@ static const parse_rule parse_rules[] = {
 void parser_init(parser* p_parser, parser_specs p_specs) {
   p_parser->panic = false;
   p_parser->had_error = false;
+  p_parser->bail = false;
+  p_parser->depth = 0;
+  p_parser->report_count = 0;
   p_parser->defer_serial = 0;
   p_parser->source = p_specs.source;
-  p_parser->alloc = p_specs.alloc;
+  // P5: the AST rides an arena. every node, list buffer and diagnostic
+  // temporary bumps out of chained blocks; release is a no-op; the whole
+  // tree dies in one walk at parse_result_deinit. a failed statement can
+  // no longer leak its half-built nodes, and teardown stopped recursing
+  // (the depth guard bounds the way in, the arena the way out).
+  ok_arena_init(&p_parser->arena, p_specs.alloc);
+  p_parser->arena_view = ok_arena_allocators(&p_parser->arena);
+  p_parser->alloc = &p_parser->arena_view;
+  // the first advance copies current into previous, and current is
+  // stack garbage until the lexer fills it - zero it so a first-byte lex
+  // error leaves a defined previous instead of an uninitialized read
+  // (P5's recovery paths look at previous where the old code never did).
+  memset(&p_parser->current, 0, sizeof(p_parser->current));
   lexer_init(&p_parser->lexer, p_parser->source->code);
   advance(p_parser);
 }
 
 void parser_deinit(parser* p_parser) {
+  // the arena is NOT touched here: parser_parse moved it into the result
+  // (or it dies with the parser for the callers that never parse). the
+  // lexer is the only field with its own state left.
   lexer_deinit(&p_parser->lexer);
   p_parser->source = NULL;
 }
@@ -239,26 +259,26 @@ parse_result parser_parse(parser* p_parser) {
                      ok_create_string_view("the source is not acceptable utf-8.", OK_STRING_VIEW_CALCULATE_LENGTH, true),
                      ok_create_string_view(ok_utf8_rejection_text(why), OK_STRING_VIEW_CALCULATE_LENGTH, true));
       parse_result result;
-      result.alloc = p_parser->alloc;
       result.status = PARSE_ERROR;
       result.root = NULL;
+      ok_arena_move(&result.arena, &p_parser->arena);
       return result;
     }
   }
   ast_root* root = parse_root(p_parser);
   parse_result result;
-  result.alloc = p_parser->alloc;
   result.status = (root == NULL || p_parser->had_error) ? PARSE_ERROR : PARSE_OK;
   result.root = root;
+  ok_arena_move(&result.arena, &p_parser->arena);
   return result;
 }
 
 void parse_result_deinit(parse_result* parse_result) {
-  if (parse_result->root != NULL) {
-    ast_root_deinit(parse_result->root);
-    parse_result->alloc->release(parse_result->alloc, parse_result->root);
-    parse_result->root = NULL;
-  }
+  // P5: the arena owns the whole tree. one block walk frees it - no
+  // recursive deinit (deep trees exit iteratively), no per-node release,
+  // and a failed parse's orphan nodes die with it instead of leaking.
+  ok_arena_deinit(&parse_result->arena);
+  parse_result->root = NULL;
 }
 
 void error_at(parser* p_parser, token p_token, const ok_string_view p_message) {
@@ -266,20 +286,46 @@ void error_at(parser* p_parser, token p_token, const ok_string_view p_message) {
 }
 
 void error_at_noted(parser* p_parser, token p_token, const ok_string_view p_message, const ok_string_view p_note) {
+  p_parser->had_error = true;
+  // the report cap (P5): a garbage file gets 25 diagnostics and one
+  // closing line, then the parse goes silent and unwinds - error floods
+  // helped nobody. counted are RENDERED reports only (panic-suppressed
+  // repeats were never seen).
+  if (p_parser->bail) {
+    p_parser->panic = true;
+    return;
+  }
   ok_note note;
   note.text = p_note;
   note.has_span = false;
   note.span.line = 0;
   note.span.offset = 0;
   note.span.length = 0;
-  report_at_noted(&p_parser->panic,
-                  &p_parser->had_error,
-                  p_token.type == TOKEN_EOF,
-                  p_parser->source,
-                  &p_token,
-                  REPORT_SEVERITY_ERROR,
-                  p_message,
-                  p_note.chars != NULL ? &note : NULL);
+  const report_status reported = report_at_noted(&p_parser->panic,
+                                                  &p_parser->had_error,
+                                                  p_token.type == TOKEN_EOF,
+                                                  p_parser->source,
+                                                  &p_token,
+                                                  REPORT_SEVERITY_ERROR,
+                                                  p_message,
+                                                  p_note.chars != NULL ? &note : NULL);
+  if (reported != REPORT_STATUS_SKIPPED && ++p_parser->report_count >= OK_PARSER_MAX_REPORTED) {
+    // the closing line rides a FRESH panic flag: the error that tripped the
+    // cap just set the real one, and a suppressed "too many errors" line
+    // would make the cap invisible
+    bool closing_panic = false;
+    report_at_noted(&closing_panic,
+                    &p_parser->had_error,
+                    p_token.type == TOKEN_EOF,
+                    p_parser->source,
+                    &p_token,
+                    REPORT_SEVERITY_ERROR,
+                    ok_create_string_view("too many errors - the parse stops reporting here.",
+                                          OK_STRING_VIEW_CALCULATE_LENGTH,
+                                          true),
+                    NULL);
+    p_parser->bail = true;
+  }
 }
 
 bool advance(parser* p_parser) {
@@ -306,9 +352,18 @@ bool expect(parser* p_parser, token_type p_type, const ok_string_view p_message)
   return false;
 }
 
-void sync_state(parser* p_parser) {
+void sync_state(parser* p_parser, bool p_stop_at_brace) {
+  // statement-boundary recovery (P5): skip to the next statement start.
+  // p_stop_at_brace is the nesting-aware half - inside a block the sync
+  // stops AT the closing brace so the enclosing structure can close
+  // cleanly instead of swallowing its terminator; at module top level a
+  // stray '}' must stay visible (it is the next statement's error to
+  // report, eating it would mis-locate everything after).
   p_parser->panic = false;
   while (p_parser->current.type != TOKEN_EOF) {
+    if (p_stop_at_brace && p_parser->current.type == TOKEN_RIGHT_BRACE) {
+      return;
+    }
     switch (p_parser->previous.type) {
     case TOKEN_CLASS:
     case TOKEN_FU:
@@ -338,7 +393,19 @@ ast_root* parse_root(parser* p_parser) {
   }
   ast_specs s = {alloc};
   ast_root_init(root, trigger, &s);
-  while (advance(p_parser) && p_parser->previous.type != TOKEN_EOF) {
+  for (;;) {
+    if (p_parser->bail) {
+      break; // the cap tripped: stop consuming, the parse is already failed
+    }
+    if (!advance(p_parser)) {
+      // P5: a lex error mid-stream - the offending byte was reported and
+      // consumed; recover at the next boundary and keep walking
+      sync_state(p_parser, false);
+      continue;
+    }
+    if (p_parser->previous.type == TOKEN_EOF) {
+      break;
+    }
     ast_statement* statement = NULL;
     // imports are module-top-level-only (OR-1): parse_root is the one place
     // they are born. every other route (blocks, class bodies, for-inits)
@@ -356,7 +423,13 @@ ast_root* parse_root(parser* p_parser) {
       ast_empty_statement_deinit((ast_empty_statement*)statement);
       alloc->release(alloc, statement);
     } else {
+      // P5 recovery: a failed top-level statement no longer ends the walk -
+      // sync to the next statement boundary and keep collecting diagnostics
+      // (and statements). had_error still fails the whole parse.
       p_parser->had_error = true;
+    }
+    if (p_parser->panic) {
+      sync_state(p_parser, false);
     }
   }
   if (p_parser->previous.type == TOKEN_EOF) {
@@ -365,7 +438,26 @@ ast_root* parse_root(parser* p_parser) {
   return root;
 }
 
+// P5: the shared depth funnel. every recursive descent into an expression
+// passes here - prefix chains, groupings, call args, subscripts, f-string
+// regions - so one counter bounds them all. over the cap is a located
+// error, never a crash.
 ast_expression* parse_expression(parser* p_parser, precedence p_precedence) {
+  if (p_parser->depth >= OK_PARSER_MAX_DEPTH) {
+    error_at(p_parser,
+             p_parser->current,
+             ok_create_string_view("expression nests too deeply (the limit is 200).",
+                                   OK_STRING_VIEW_CALCULATE_LENGTH,
+                                   true));
+    return NULL;
+  }
+  p_parser->depth++;
+  ast_expression* out = parse_expression_inner(p_parser, p_precedence);
+  p_parser->depth--;
+  return out;
+}
+
+static ast_expression* parse_expression_inner(parser* p_parser, precedence p_precedence) {
   token tok = p_parser->previous;
   const parse_rule prefix_rule = parse_rules[tok.type];
   if (prefix_rule.prefix == NULL) {
@@ -930,9 +1022,12 @@ static ast_expression* parse_interpolation_region(parser* p_parser,
   parser sub;
   sub.panic = false;
   sub.had_error = false;
+  sub.bail = p_parser->bail;      // the cap's state crosses the region border
+  sub.report_count = 0;           // the region reports into its own budget
+  sub.depth = (uint16_t)(p_parser->depth + 1u); // f-string nesting is depth too
   sub.defer_serial = 0;
   sub.source = p_parser->source;
-  sub.alloc = p_parser->alloc;
+  sub.alloc = p_parser->alloc; // the arena view: region nodes ride the same arena
   sub.current.type = TOKEN_EOF;
   sub.current.start = p_start;
   sub.current.length = 0;
@@ -973,6 +1068,14 @@ static ast_expression* parse_interpolation_region(parser* p_parser,
   lexer_deinit(&sub.lexer);
   p_parser->had_error = p_parser->had_error || sub.had_error;
   p_parser->panic = p_parser->panic || sub.panic;
+  // P5: the region's report budget folds back (the cap guards the whole
+  // parse, regions included) and a tripped cap propagates up
+  if (p_parser->report_count + sub.report_count > p_parser->report_count) {
+    p_parser->report_count = (uint16_t)(p_parser->report_count + sub.report_count);
+  }
+  if (sub.bail) {
+    p_parser->bail = true;
+  }
   if (inner == NULL) {
     return NULL;
   }
@@ -1618,6 +1721,23 @@ fail:
 }
 
 ast_statement* parse_statement(parser* p_parser) {
+  // P5: statements recurse through compound bodies - the same shared
+  // depth counter bounds block nesting as bounds expression nesting.
+  if (p_parser->depth >= OK_PARSER_MAX_DEPTH) {
+    error_at(p_parser,
+             p_parser->current,
+             ok_create_string_view("statements nest too deeply (the limit is 200).",
+                                   OK_STRING_VIEW_CALCULATE_LENGTH,
+                                   true));
+    return NULL;
+  }
+  p_parser->depth++;
+  ast_statement* out = parse_statement_inner(p_parser);
+  p_parser->depth--;
+  return out;
+}
+
+static ast_statement* parse_statement_inner(parser* p_parser) {
   switch (p_parser->previous.type) {
   case TOKEN_PRINT:
     return (ast_statement*)parse_print_statement(p_parser);
@@ -1746,9 +1866,9 @@ ast_statement* try_parse_declaration(parser* p_parser) {
     break;
   }
   }
-  if (p_parser->panic) {
-    sync_state(p_parser);
-  }
+  // P5: the sync moved UP - the statement loops (parse_root, compound
+  // bodies) own the boundary now, nesting-aware, so a bad statement inside
+  // a block recovers instead of unwinding the whole block.
   return statement;
 }
 
@@ -1876,6 +1996,12 @@ ast_let_declaration* parse_let_declaration(parser* p_parser,
         ast_dispatch_deinit((ast_node*)expr);
         goto free;
       }
+      // born initialized (the fuzzer's second find): the old code deferred
+      // this init past the semicolon check, so a failed check deinit'd the
+      // let, which dispatched this node while its bytes were still arena
+      // garbage - whatever node_type the garbage decoded as got walked. the
+      // final re-init below keeps the authored-by-the-semicolon semantics.
+      ast_null_expression_init(null, let_tok, &s);
       ast_expression* ident = (ast_expression*)expr;
       ast_binding_init(binding, ident, binding_mods, ident->node.token, &s);
       ast_let_declaration_init(let, binding, (ast_expression*)null, p_declaration_modifiers, let_tok, &s);
@@ -2493,7 +2619,8 @@ ast_expression_statement* parse_expression_statement(parser* p_parser) {
     goto fail;
   }
   advance(p_parser); // ;
-  ast_expression_statement* expression_statement = (ast_expression_statement*)malloc(sizeof(ast_expression_statement));
+  ast_expression_statement* expression_statement =
+      (ast_expression_statement*)alloc->allocate(alloc, sizeof(ast_expression_statement));
   if (expression_statement == NULL) {
     error_at(p_parser,
              p_parser->current,
@@ -2557,12 +2684,24 @@ ast_compound_statement* parse_compound_statement(parser* p_parser) {
   ast_statements_list list;
   ast_statements_list_init(&list, alloc);
   while (p_parser->current.type != TOKEN_RIGHT_BRACE && p_parser->current.type != TOKEN_EOF) {
-    if (!advance(p_parser)) {
+    // the cap tripped: the block (and the parse) is already failed
+    if (p_parser->bail) {
       goto fail;
+    }
+    if (!advance(p_parser)) {
+      // P5: a lex error no longer kills the block - the token was reported
+      // and the lexer consumed its byte; sync to the next boundary and keep
+      // going (sync stops AT the closing brace, so the block still closes)
+      sync_state(p_parser, true);
+      continue;
     }
     ast_statement* stmt = try_parse_declaration(p_parser);
     if (stmt == NULL) {
-      goto fail;
+      // P5 recovery: skip to the next statement boundary, keep the block
+      // alive for the statements after the bad one. the enclosing compile
+      // still fails (had_error), but the diagnostics all land.
+      sync_state(p_parser, true);
+      continue;
     }
     if (stmt->node.node_type == AST_EMPTY_STATEMENT) {
       ast_dispatch_deinit((ast_node*)stmt);
@@ -2571,6 +2710,9 @@ ast_compound_statement* parse_compound_statement(parser* p_parser) {
     }
     if (!ast_statements_list_append(&list, stmt)) {
       goto fail;
+    }
+    if (p_parser->panic) {
+      sync_state(p_parser, true);
     }
   }
   if (p_parser->current.type != TOKEN_RIGHT_BRACE) {
@@ -2746,6 +2888,12 @@ static ast_for_in_statement* parse_for_in_rest(parser* p_parser,
                  "failed to allocate memory for ranged-for binding.", OK_STRING_VIEW_CALCULATE_LENGTH, true));
     goto fail_body;
   }
+  ast_specs s = {alloc};
+  // born initialized (the fuzzer's class find): every node is initialized
+  // the moment it is allocated, so the OOM-labeled failure chains below
+  // deinit only nodes whose bytes were ever walked. the deferred-init shape
+  // this replaces could dispatch arena garbage as a node type.
+  ast_identifier_expression_init(ident, p_name_tok, &s);
   ast_binding* binding = (ast_binding*)alloc->allocate(alloc, sizeof(ast_binding));
   if (binding == NULL) {
     error_at(p_parser,
@@ -2756,6 +2904,7 @@ static ast_for_in_statement* parse_for_in_rest(parser* p_parser,
     alloc->release(alloc, ident);
     goto fail_body;
   }
+  ast_binding_init(binding, (ast_expression*)ident, p_binds, p_name_tok, &s);
   ast_identifier_expression* value_ident = NULL;
   ast_binding* value_binding = NULL;
   if (p_has_value) {
@@ -2774,6 +2923,8 @@ static ast_for_in_statement* parse_for_in_rest(parser* p_parser,
       }
       goto fail_binding;
     }
+    ast_identifier_expression_init(value_ident, p_value_name_tok, &s);
+    ast_binding_init(value_binding, (ast_expression*)value_ident, p_value_binds, p_value_name_tok, &s);
   }
   ast_for_in_statement* fin = (ast_for_in_statement*)alloc->allocate(alloc, sizeof(ast_for_in_statement));
   if (fin == NULL) {
@@ -2784,16 +2935,13 @@ static ast_for_in_statement* parse_for_in_rest(parser* p_parser,
     if (value_ident != NULL) {
       ast_identifier_expression_deinit(value_ident);
       alloc->release(alloc, value_ident);
+      value_binding->lvalue = NULL;
     }
-    alloc->release(alloc, value_binding);
+    if (value_binding != NULL) {
+      ast_binding_deinit(value_binding);
+      alloc->release(alloc, value_binding);
+    }
     goto fail_binding;
-  }
-  ast_specs s = {alloc};
-  ast_identifier_expression_init(ident, p_name_tok, &s);
-  ast_binding_init(binding, (ast_expression*)ident, p_binds, p_name_tok, &s);
-  if (p_has_value) {
-    ast_identifier_expression_init(value_ident, p_value_name_tok, &s);
-    ast_binding_init(value_binding, (ast_expression*)value_ident, p_value_binds, p_value_name_tok, &s);
   }
   ast_for_in_statement_init(fin, p_for_tok, &s);
   fin->binding = binding;
@@ -2966,6 +3114,12 @@ static ast_let_declaration* build_let_init_from_expression(
       ast_dispatch_deinit((ast_node*)expr);
       goto malformed;
     }
+    // born initialized (the fuzzer's third find - the same deferred-init
+    // disease parse_let_declaration carried): a failed semicolon check
+    // deinits the let, which walks this node; arena garbage must never
+    // decode as a node type. the re-init below keeps the authored-by-';'
+    // semantics.
+    ast_null_expression_init(null, p_let_tok, &s);
     ast_binding_init(binding, expr, p_binds, p_name_tok, &s);
     ast_let_declaration_init(let, binding, (ast_expression*)null, DECLARATION_NONE, p_let_tok, &s);
   } else {

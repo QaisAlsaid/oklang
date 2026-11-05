@@ -16,6 +16,9 @@ struct allocators {
   release release;
   gc* gc;
   ok_allocators* raw_allocators;
+  // the impl lane (P5): allocator vtables with their own backing store -
+  // the parse arena - reach it through here. NULL on the plain wrappers.
+  void* impl;
 };
 
 allocators create_allocators(ok_allocators* p_alloc);

@@ -1,0 +1,7 @@
+// an empty entry and a comment-only entry never run:
+// repl:
+
+// just a comment
+
+print("end");
+// expect: end

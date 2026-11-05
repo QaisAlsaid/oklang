@@ -4,6 +4,13 @@
 
 #include "okdiag.h"
 
+// the installed sink, or NULL for the real renderer. see okdiag.h.
+static okdiag_sink okdiag_sink_fn = NULL;
+
+void okdiag_install_sink(okdiag_sink p_sink) {
+  okdiag_sink_fn = p_sink;
+}
+
 // the source line containing p_offset. returns the line's bounds; the caret
 // column comes from the span (precomputed by the lexer).
 static void line_bounds_of(const char* p_source, const ok_span* p_span, uint32_t* p_line_start, uint32_t* p_line_end) {
@@ -99,6 +106,21 @@ report_status okdiag_report(bool* p_panic,
                             const ok_note* p_note) {
   if (*p_panic) {
     return REPORT_STATUS_SKIPPED;
+  }
+  // the sink lane (P5): an installed sink replaces the rendering entirely.
+  // the fuzz harness validates the location contract here; the REPL's
+  // shape-sniff runs silenced through it. the sink owns the panic/had_error
+  // semantics from here (the flags the renderer sets below are its contract).
+  if (okdiag_sink_fn != NULL) {
+    return okdiag_sink_fn(p_panic,
+                          p_had_error,
+                          p_path,
+                          p_source,
+                          p_span,
+                          p_is_eof,
+                          p_severity,
+                          p_message,
+                          p_note);
   }
   bool printf_fail = false;
   *p_panic = true;

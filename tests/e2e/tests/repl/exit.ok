@@ -1,0 +1,9 @@
+// std.sys's exit ends the session with its code - the process's code.
+// imports are per-entry (bindings are TU constants, spent with their
+// entry): the import and the exit share one entry.
+// repl:
+print("before");
+import "std/sys" as sys; sys.exit(3);
+print("never");
+// expect: before
+// expect exit: 3

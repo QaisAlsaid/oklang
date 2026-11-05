@@ -12,6 +12,7 @@
 #include "ok/ok_version.h"
 
 #include "project.h"
+#include "repl.h"
 
 // the compiled-in OK_ROOT fallback (P1): the checkout the binary was built
 // from. the sandbox's build script and cmake both pass it; an unset prefix
@@ -21,7 +22,6 @@
 #define OK_ROOT_PREFIX ""
 #endif
 
-static void repl(ok* p_ok);
 static void run_file(ok* p_ok, const char* p_path);
 static char* read_file(const char* p_path);
 
@@ -434,7 +434,13 @@ int main(int argc, char** argv) {
   }
 
   if (path == NULL && natives_count == 0) {
-    repl(ok);
+    // the REPL (P5): termios editing, history, auto-print, multi-line -
+    // the session's exit code is the process's (std.sys's exit, or 0)
+    int32_t repl_code = 0;
+    repl_run(ok, &repl_code);
+    ok_free(ok);
+    cli_graph_free(graph);
+    return repl_code;
   } else if (path != NULL) {
     run_file(ok, path);
   } else {
@@ -445,35 +451,6 @@ int main(int argc, char** argv) {
   }
   ok_free(ok);
   cli_graph_free(graph);
-}
-
-void repl(ok* p_ok) {
-  char line[1024];
-  ok_retain_source(p_ok, true);
-  for (;;) {
-    printf("> ");
-    if (!fgets(line, sizeof(line), stdin)) {
-      printf("\n");
-      break;
-    }
-    ok_source source;
-    source.code = line;
-    source.path = "stdin";
-    ok_result result = ok_run(p_ok, source);
-    if (result == OK_PARSE_ERROR) {
-      fprintf(stderr, "parse error occurred.\n");
-    } else if (result == OK_COMPILE_ERROR) {
-      fprintf(stderr, "compiler error occurred.\n");
-    } else if (result == OK_RUNTIME_ERROR) {
-      fprintf(stderr, "runtime error occurred.\n");
-    } else if (result == OK_INIT_ERROR) {
-      fprintf(stderr, "init error occurred.\n");
-    } else if (result == OK_EXITED) {
-      // the script asked to stop (std.sys's exit): the process answers with
-      // the requested code. a REPL host would instead break its loop here.
-      exit(ok_exit_code(p_ok));
-    }
-  }
 }
 
 void run_file(ok* p_ok, const char* p_path) {

@@ -3865,6 +3865,20 @@ static bool compile_prefix_unary_expression(compiler* p_compiler,
     return false;
   }
 
+  // unary plus is the identity (the fuzzer's fourth find): the parse rules
+  // and the operator table have promised it since the beginning, but the
+  // compiler never implemented it - `print(+5);` crashed the internal-bug
+  // lane. the operand evaluates into the destination and passes through
+  // unchanged. numeric coercion (python's lane) stays an open ruling; today
+  // plus is what the tables said it is.
+  if (p_expression->_operator == OPERATOR_PRE_PLUS) {
+    p_out->type = EXPRESSION_VALUE;
+    p_out->value = rhs.value;
+    p_out->lvalue = (lvalue){LVALUE_VARIABLE, (location){0, LOCATION_KIND_INVALID, LOCATION_OK}};
+    p_out->count = 1;
+    return true;
+  }
+
   opcode op;
   opcode op_long;
   switch (p_expression->_operator) {

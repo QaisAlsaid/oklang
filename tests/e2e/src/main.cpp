@@ -60,11 +60,27 @@ run_result run_oklang(const std::string_view path,
   return {decode_system_status(ret), read_file("out.log"), read_file("err.log")};
 }
 
+// the repl lane (P5): the fixture is the stdin script - piped through a
+// bare `ok` with no path, prompts suppressed on the non-tty road. the
+// `// repl:` directive marks the shape; the expect lines ride the fixture
+// itself (they arrive as comments, which the repl's walker skips).
+run_result run_oklang_repl(const std::string_view path, const std::string_view okpath) {
+  std::stringstream cmd;
+  std::string stdout_file = "out.log";
+  std::string stderr_file = "err.log";
+  cmd << "\"" << okpath << "\" < \"" << path << "\" > " << stdout_file << " 2> " << stderr_file;
+
+  std::string cmd_str = cmd.str();
+  int ret = system(cmd_str.c_str());
+  return {decode_system_status(ret), read_file("out.log"), read_file("err.log")};
+}
+
 struct test_case {
   std::string name;
   std::string expected_result;
   std::optional<std::string> expected_error;
   std::optional<int> expected_exit;
+  bool is_repl = false; // the P5 lane: pipe the fixture through a bare `ok`
   bool has_expectation = false;
 };
 
@@ -76,12 +92,18 @@ test_case parse_test_file(const std::filesystem::path& p_path) {
   std::string line;
   std::regex expect_out_re(R"(//\s*expect:\s*(.*))");
   std::regex expect_err_re(R"(//\s*expect\s+error(?::\s*(.*))?)");
+  // the repl lane (P5): the fixture feeds a bare `ok` through stdin.
+  std::regex repl_re(R"(//\s*repl:)");
   // the sys.exit lane (P4): the process's code is the assertion.
   std::regex expect_exit_re(R"(//\s*expect\s+exit:\s*(-?\d+))");
 
   while (std::getline(fs, line)) {
     std::smatch match;
-    if (std::regex_search(line, match, expect_out_re)) {
+    if (std::regex_search(line, match, repl_re)) {
+      // the P5 lane: the fixture pipes through a bare `ok` (stdin, no path)
+      tc.is_repl = true;
+      tc.has_expectation = true;
+    } else if (std::regex_search(line, match, expect_out_re)) {
       expected << match[1].str() << "\n";
       tc.has_expectation = true;
     } else if (std::regex_search(line, match, expect_err_re)) {
@@ -269,7 +291,7 @@ int main(int argc, char** argv) {
     const std::string okpath_value = parse_okpath(entry.path());
     const std::string flags = parse_okflags(entry.path());
     auto tc = parse_test_file(test_path);
-    auto rr = run_oklang(test_path, okpath, okpath_value, flags);
+    auto rr = tc.is_repl ? run_oklang_repl(test_path, okpath) : run_oklang(test_path, okpath, okpath_value, flags);
 
     if (!tc.has_expectation) {
       std::println("{}[NOTOK]{}: '{}'", COLOR_RED, COLOR_RESET, test_path);

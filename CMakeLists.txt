@@ -51,6 +51,7 @@ endif()
 
 target_sources(ok PRIVATE
   src/ok.c
+  src/okarena.c
   src/okast.c
   src/okchunk.c
   src/okcompiler.c

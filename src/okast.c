@@ -2019,6 +2019,14 @@ string ast_class_declaration_asprint(const ast_class_declaration* p_class) {
 }
 
 void ast_dispatch_deinit(ast_node* p_node) {
+  // P5 (the fuzzer's first find): half-built trees deinit their nulls. a
+  // failed f-string region with no folded chunk yet handed its NULL acc
+  // straight here and crashed - and the infix deinit passes NULL children
+  // on every failed right-hand side. the arena owns the bytes either way;
+  // a NULL node releases quietly.
+  if (p_node == NULL) {
+    return;
+  }
 #define X(type, klass)                                                                                                 \
   case type:                                                                                                           \
     klass##_deinit((klass*)p_node);                                                                                    \

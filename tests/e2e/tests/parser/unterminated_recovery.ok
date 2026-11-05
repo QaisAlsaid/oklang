@@ -1,0 +1,4 @@
+print("before");
+let s = "never closed;
+print("after");
+// expect error: unterminated string

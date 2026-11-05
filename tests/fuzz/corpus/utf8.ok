@@ -1,0 +1,3 @@
+let café = "naïve — über";
+print(café.len());
+print("🚀 unicode 🎉");

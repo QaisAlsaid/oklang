@@ -1,0 +1,9 @@
+// the sync stops AT the closing brace: the block closes cleanly after
+// a failed statement and the walk keeps reporting
+{
+  let = 1;
+  print("still inside");
+  let = 2;
+}
+let = 3;
+// expect error: expected an expression

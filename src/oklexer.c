@@ -116,7 +116,15 @@ static bool at_wall(const char* p, const char* p_wall) {
   return *p == '\0';
 }
 
-static const char* scan_region(const char* p, const char* p_wall, const char** p_died);
+// P5: the byte scanners recurse one level per nested quoted string inside
+// an interpolation (a quoted body may ride an f-prefix whose regions may
+// quote again, ...). the cap turns a hostile `f"${f"${f"${...` chain into
+// the clean unterminated-string error instead of a stack overflow. it
+// matches the parser's own OK_PARSER_MAX_DEPTH (the token can never be
+// deeper than the tree it would build).
+#define OK_SCAN_MAX_DEPTH 200u
+
+static const char* scan_region(const char* p, const char* p_wall, const char** p_died, uint32_t p_depth);
 
 // scan a string body (from just past its opening quote) to its closing
 // quote. an escape never closes anything (the P2 ruling: `\` + newline
@@ -128,7 +136,8 @@ static const char* scan_body(const char* p,
                              char p_quote,
                              bool p_multiline,
                              bool p_interpolate,
-                             const char** p_died) {
+                             const char** p_died,
+                             uint32_t p_depth) {
   for (;;) {
     if (at_wall(p, p_wall)) {
       *p_died = p;
@@ -153,7 +162,11 @@ static const char* scan_body(const char* p,
       return NULL;
     }
     if (p_interpolate && c == '$' && !at_wall(p + 1, p_wall) && p[1] == '{') {
-      const char* close = scan_region(p + 2, p_wall, p_died);
+      if (p_depth >= OK_SCAN_MAX_DEPTH) {
+        *p_died = p; // the nesting cap: report it as the wall winning
+        return NULL;
+      }
+      const char* close = scan_region(p + 2, p_wall, p_died, p_depth + 1);
       if (close == NULL) {
         return NULL;
       }
@@ -176,7 +189,7 @@ static const char* scan_body(const char* p,
 // before IT cannot continue an identifier - `xf"` is the identifier `xf`
 // then a plain string. `2f"` disagrees only in garbage source, where a
 // number glued to an f-string is not a program either side accepts.)
-static const char* scan_region(const char* p, const char* p_wall, const char** p_died) {
+static const char* scan_region(const char* p, const char* p_wall, const char** p_died, uint32_t p_depth) {
   uint32_t depth = 1;
   for (;;) {
     if (at_wall(p, p_wall)) {
@@ -196,7 +209,8 @@ static const char* scan_region(const char* p, const char* p_wall, const char** p
       const bool m_prefix = p[-1] == 'm' && !is_allowed_identifier(p[-2]);
       const bool fm_prefix = p[-1] == 'm' && p[-2] == 'f' && !is_allowed_identifier(p[-3]);
       ++p; // the quote
-      const char* close = scan_body(p, p_wall, c, m_prefix || fm_prefix, f_prefix || fm_prefix, p_died);
+      const char* close =
+          scan_body(p, p_wall, c, m_prefix || fm_prefix, f_prefix || fm_prefix, p_died, p_depth);
       if (close == NULL) {
         return NULL;
       }
@@ -228,7 +242,7 @@ static token string(lexer* p_lexer, char p_start, bool p_multiline, bool p_inter
   const char* const wall = p_lexer->end;
   const char* const body = p_lexer->current; // just past the opening quote
   const char* died = body;
-  const char* close = scan_body(body, wall, p_start, p_multiline, p_interpolate, &died);
+  const char* close = scan_body(body, wall, p_start, p_multiline, p_interpolate, &died, 0);
   if (close == NULL) {
     // catch up to where the scan died, counting lines honestly (the error
     // span and every token after it keep real positions)
@@ -269,7 +283,7 @@ static token string(lexer* p_lexer, char p_start, bool p_multiline, bool p_inter
 // closing quote). returns the matching '}', or NULL when the wall wins.
 const char* ok_fstring_region_end(const char* p_start, const char* p_wall) {
   const char* died = p_start;
-  return scan_region(p_start, p_wall, &died);
+  return scan_region(p_start, p_wall, &died, 0);
 }
 
 static token number(lexer* p_lexer) {

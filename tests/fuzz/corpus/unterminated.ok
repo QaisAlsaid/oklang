@@ -1,0 +1,3 @@
+print("before);
+let s = "never closed;
+{

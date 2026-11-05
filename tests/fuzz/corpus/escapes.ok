@@ -1,0 +1,3 @@
+print("\a\b\e\f\v\0\x41\x1B\u{1F600}\u{7F}\n\r\t\\\"\'");
+print(m"""a\u{41}b""");
+print(f"${\"s\"}");

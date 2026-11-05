@@ -120,6 +120,13 @@ or run the REPL:
 ./ok
 ```
 
+The REPL edits raw-mode (arrows, ctrl-left/right word jumps, history) and
+auto-prints a lone expression's value - end the line with `;` to suppress.
+Continuation is nesting-aware: an open brace, an `m"..."` string, or an
+interpolation region keeps reading. Persistence is the language's own lane:
+`glob let x = 10;` survives the entry, plain `let` is local to it, and every
+entry imports what it uses.
+
 ## Embedding
 
 OKLang can be embedded into C or C++ through a simple C API `#include <ok/ok.h>`.

@@ -1,6 +1,8 @@
 add_executable(ok_cli
   src/main.c
   src/project.c
+  src/repl.c
+  src/term.c
 )
 
 target_link_libraries(ok_cli

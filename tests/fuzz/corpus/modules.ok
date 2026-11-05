@@ -1,0 +1,5 @@
+import std.math;
+import std.io;
+print(std.math.pi);
+import { sin } from "std.math";
+print(sin(0));

@@ -6,3 +6,5 @@ err.log
 
 # OR-3 native fixture artifacts: build.sh builds them, never ship them
 tests/e2e/tests/modules/*/*.so
+e2e_fs_err_file.txt
+e2e_fs_full_dir/
