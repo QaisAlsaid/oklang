@@ -558,6 +558,14 @@ accept  regressions/load_null_count_operand.ok
 accept  regressions/local_slots_compiler_reuse.ok
 accept  regressions/shadow_len_does_not_invalidate_for_in.ok
 accept  regressions/ternary_then_in_then_arm.ok
+reject  repl/autoprint_shapes.ok  (parse)
+reject  repl/basic.ok  (parse)
+accept  repl/empty_entries.ok
+reject  repl/errors_breathe.ok  (parse)
+accept  repl/exit.ok
+reject  repl/multiline.ok  (parse)
+reject  repl/persistence.ok  (parse)
+accept  repl/suppression.ok
 accept  scope/after_block.ok
 accept  scope/deep.ok
 accept  scope/locals_in_expr.ok

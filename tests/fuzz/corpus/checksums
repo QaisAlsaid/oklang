@@ -1,0 +1,21 @@
+# the corpus integrity pins: fnv1a64 of every seed's bytes, names
+# relative to tests/fuzz/corpus, walk order. verified by okfuzz at
+# corpus load (both consuming lanes); binary seeds regenerate from
+# gen.sh, so a seed failing its pin is either an unregen'd change
+# or a mangled landing - run crosscheck.sh to settle both.
+fnv1a64 1f35eef0788e9b2a class_shapes.ok
+fnv1a64 635abcf17bc08623 comments_only.ok
+fnv1a64 b485e1927d57b66b coroutines.ok
+fnv1a64 25aa92676f596cc7 deep_blocks.ok
+fnv1a64 6f3f1244ed271c43 deep_parens.ok
+fnv1a64 04b684f1508ed798 empty.ok
+fnv1a64 96d1c5491e68319e escapes.ok
+fnv1a64 cd962214c80da94a for_shapes.ok
+fnv1a64 9d3edeaa4c650bd6 fstring_chain.ok
+fnv1a64 fe018a1ec808ecf7 invalid_utf8.bin
+fnv1a64 ee55bdfdff37bedb modules.ok
+fnv1a64 93cd53309a16da5b numbers.ok
+fnv1a64 c770bbd0b78ad6a9 operators.ok
+fnv1a64 223311471f71c209 strings_multiline.ok
+fnv1a64 933397058c73a3b0 unterminated.ok
+fnv1a64 db2f5bb2fee01fac utf8.ok
